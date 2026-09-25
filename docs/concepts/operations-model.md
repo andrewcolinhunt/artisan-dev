@@ -108,7 +108,7 @@ computation keeps `execute_function` testable without framework dependencies.
 Creators with no inputs (empty `inputs` dict) skip preprocess entirely. They
 only implement `execute_function` and `postprocess`. The framework does not require a
 `preprocess` override when there are no input artifacts to adapt. Their outputs
-declare `infer_lineage_from={"inputs": []}` to signal that the produced
+declare `derives_from={"inputs": []}` to signal that the produced
 artifacts have no parents.
 
 ### Why this design matters
@@ -176,14 +176,16 @@ what new artifacts to create.
 
 ### Explicit lineage in ArtifactResult
 
-When a curator (or a creator's postprocess) returns an `ArtifactResult`, it can
-optionally include a `lineage` dict mapping output roles to lists of
-`LineageMapping` objects. Each mapping declares an explicit parent-child
-relationship between a draft artifact's `original_name` and a source artifact
-ID. When `lineage` is provided, the framework uses it directly instead of
-inferring lineage from filename matching. This is useful when the default
-filename-matching algorithm cannot determine the correct parent — for example,
-when input and output filenames share no common stem.
+When a curator or creator returns an `ArtifactResult`, it must include a
+`lineage` dictionary with exactly the emitted artifact role keys. Each mapping
+addresses a target by its role-local index and names an exact input ID or
+sibling-output index. Root roles explicitly contain an empty list. The optional
+`add_artifact` method constructs the same records while appending a draft;
+manual construction remains supported.
+
+Names, config content, and dispatch positions never supply missing parents.
+The [provenance system](provenance-system.md#explicit-lineage) explains the
+contract and joint parent groups.
 
 ### Abstract curator bases
 
@@ -224,12 +226,11 @@ for usage and [Python API](../reference/python-api.md) for the spec definitions.
 ### Output specs
 
 Each entry in `outputs` maps a role name to an `OutputSpec` that declares the
-artifact type produced, whether the output is required, and — for creator
-operations — which inputs the output derives from for provenance tracking.
+artifact type produced, whether the output is required, and which roles must
+and may supply parents when the operation emits new drafts.
 
-The `infer_lineage_from` field is the core of per-output lineage control.
-It tells the framework which artifacts to consider when matching output
-filenames to establish parent-child provenance edges. Three patterns:
+The `derives_from` field constrains each output occurrence’s explicit parent
+declarations. It selects no artifacts. Three patterns:
 
 - `{"inputs": ["data"]}` — output derives from the named input role
 - `{"outputs": ["processed"]}` — output derives from another output role
@@ -237,12 +238,13 @@ filenames to establish parent-child provenance edges. Three patterns:
   same operation produced)
 - `{"inputs": []}` — generative output with no parents
 
-Creator operations must set `infer_lineage_from` on every output. Curator
-operations leave it as `None` (lineage for passthrough results is handled
-differently). An empty dict `{}` is always invalid — it is ambiguous whether
-you meant "no lineage" or "default matching." Combining both `"inputs"` and
-`"outputs"` keys in the same dict is also invalid; use separate output roles
-instead.
+Creator operations must set `derives_from` on every output. Curator outputs
+may leave it as `None` only when returning passthrough artifacts. Curators
+returning new drafts receive the same runtime validation as creators.
+An empty dict `{}` and mixed `"inputs"`/`"outputs"` parent kinds are invalid.
+Output-role dependency cycles are rejected. Each listed role is both required
+and allowed for every derived occurrence; reference-only inputs stay outside
+ancestry unless explicitly included.
 
 ### Role enums
 
@@ -270,7 +272,7 @@ For concrete classes (non-empty `name`):
 - Exactly one of `execute_function()`, `execute_command()`, or
   `execute_curator()` must be overridden (command ops also need a `tool`
   ToolSpec); overriding more than one raises `TypeError`
-- Creator outputs must have explicit `infer_lineage_from` (not `None`)
+- Creator outputs must have explicit `derives_from` (not `None`)
 - Creator operations with inputs must implement `preprocess()`
 - `OutputRole` enum values must match `outputs` keys
 - `InputRole` enum values must match `inputs` keys (when inputs exist)
@@ -443,7 +445,7 @@ hidden dependencies on each other or on global state.
   — See operations in action in a complete pipeline
 - [Execution Flow](execution-flow.md) — How operations execute within the
   dispatch-execute-commit pipeline
-- [Provenance System](provenance-system.md) — How `infer_lineage_from` drives
+- [Provenance System](provenance-system.md) — How declarations constrain
   lineage tracking
 - [Design Principles](design-principles.md) — Rationale for pure operations
   and the layered architecture

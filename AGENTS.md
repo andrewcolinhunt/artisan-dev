@@ -130,7 +130,7 @@ src/artisan/                # Framework (domain-agnostic)
 │   ├── context/            # Execution context builder + sandbox setup
 │   ├── executors/          # Creator/curator phase executors
 │   ├── inputs/             # Input grouping, instantiation, lineage matching, materialization
-│   ├── lineage/            # Lineage capture, enrichment, name derivation, validation
+│   ├── lineage/            # Explicit lineage validation, resolution, enrichment
 │   ├── models/             # Execution unit model
 │   ├── recording/          # Execution records, command evidence, replay snapshots + parquet writer
 │   ├── tool_endpoint/      # Operation-as-tool endpoint (client, server, deploy, docker)

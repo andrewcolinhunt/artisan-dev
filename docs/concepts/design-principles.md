@@ -99,21 +99,18 @@ artifact were co-inputs to a single derivation. This lets you reconstruct
 which specific combination of inputs produced a given output, not
 only that they were all present in the same batch.
 
-**Why capture at execution time?** Because the context needed to establish
-derivation edges — filename stems, pairing order, explicit declarations — is
-available only during execution. The framework captures lineage automatically
-via filename stem matching: it strips file extensions from output names and
-matches them against input stems using longest-prefix lookup. Operations with
-non-standard naming provide explicit lineage declarations through
-`infer_lineage_from` on their output specs.
+**Why declare during execution?** The operation knows exactly which inputs
+produced each output and can retain that association through computation.
+It must return those parents explicitly, including sibling-output indices for
+co-produced artifacts. Artisan validates and records the declarations.
 
-**The trade-off:** Capturing provenance adds work to every operation. The
-framework handles most of it automatically via stem matching, but operations
-with non-standard naming need explicit declarations. The cost of annotating
-lineage is far lower than the cost of not having it.
+**The trade-off:** Operation authors maintain an additional correctness contract.
+The optional append-and-declare method reduces bookkeeping, and operations may
+call a filename matcher when their own naming convention is sufficient. The
+executor never selects parents or repairs missing declarations.
 
-**See:** [Provenance System](provenance-system.md) for the dual system, stem
-matching algorithm, and lineage declaration.
+**See:** [Provenance System](provenance-system.md) for the dual system, explicit
+lineage, and parent groups.
 
 ---
 
@@ -294,14 +291,14 @@ immediate, actionable errors.
 - Operations that implement none of `execute_function()`, `execute_curator()`,
   or `execute_command()` (or implement more than one) raise `TypeError` at
   class definition time.
-- Creator operations must declare `infer_lineage_from` on every output spec.
+- Creator operations must declare `derives_from` on every output spec.
   Missing declarations are rejected at class definition, not at pipeline
   runtime.
 - Creator operations with inputs must implement `preprocess`. Omitting it
   raises `TypeError` at class definition.
 - `OutputRole` and `InputRole` enums must match the `outputs` and `inputs`
   dicts exactly. Mismatches are caught at class definition.
-- Empty `infer_lineage_from = {}` is rejected as ambiguous intent — you must
+- Empty `derives_from = {}` is rejected as ambiguous intent — you must
   choose `{"inputs": [...]}` for declared lineage or `{"inputs": []}` for
   generative operations.
 - Combined `{"inputs": [...], "outputs": [...]}` lineage patterns are rejected;

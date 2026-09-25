@@ -206,9 +206,9 @@ execution duration is not charged to the current run.
   same run ID.
 - If metrics are empty, inspect the step's artifact types before assuming it
   produced metrics.
-- If lineage is missing, check the operation's `infer_lineage_from`, filename
-  stems, and explicit mappings. Generative artifacts intentionally have no
-  parents.
+- If lineage is unexpected, check the operation's `derives_from` contract and
+  exact mappings in `ArtifactResult.lineage`. Missing required declarations
+  fail execution; explicitly declared roots intentionally have no parents.
 - If a graph is too large, narrow `max_step` or trace one artifact in code.
 - If the stepper fails to render, use a Jupyter environment with `ipywidgets`
   and Graphviz installed.

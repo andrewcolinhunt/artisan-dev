@@ -281,19 +281,20 @@ direction; `s3://` inputs pass by reference.
 
 ## Lineage capture
 
-After postprocess, the framework captures artifact provenance -- which specific
-input produced which specific output. This happens during execution because
-the context needed for matching (filename stems, pairing order, declarations)
-is lost once execution completes.
+After postprocess, Artisan validates the operation’s explicit `ArtifactResult`
+declarations against each output’s `derives_from` contract. Every emitted role
+must have a lineage entry; every derived occurrence must name its required
+parents. Root roles explicitly contain an empty list.
 
-The framework uses [filename stem matching](provenance-system.md#the-algorithm)
-to infer which input produced which output. Each output's lineage source is
-declared via [`infer_lineage_from`](operations-model.md#output-specs) on
-`OutputSpec`, which the framework validates at class definition time.
+Finalization preserves output order and human names. The framework resolves
+role-local output indices to artifact IDs, looks up known types, and records
+only the declared edges. Group labels represent the declared unique parent
+sets; input pairing never supplies extra parents. Config materialization still
+resolves embedded artifact references to paths, while config ancestry comes
+from the producing operation’s declarations.
 
-When multi-input pairing is active (`group_by` is set), the framework creates
-co-input edges from all paired input roles at the matched index. Each co-input
-edge carries a `group_id` that links it to the rest of its paired group.
+See [Provenance System](provenance-system.md) for exact references, joint parent
+groups, and optional operation-called matching helpers.
 
 ---
 
@@ -495,8 +496,8 @@ when `CachePolicy.STEP_COMPLETED` is selected.
   layers, and the orchestrator-worker mental model
 - [Operations Model](operations-model.md) -- Two operation types, three-phase
   lifecycle, spec system
-- [Provenance System](provenance-system.md) -- Dual provenance, stem matching
-  algorithm, co-input edges
+- [Provenance System](provenance-system.md) -- Dual provenance, explicit declarations,
+  joint parent groups
 - [Storage and Delta Lake](storage-and-delta-lake.md) -- Table layout, the
   staging-commit pattern, querying with Polars
 - [Design Principles](design-principles.md) -- Foundational rationale for
