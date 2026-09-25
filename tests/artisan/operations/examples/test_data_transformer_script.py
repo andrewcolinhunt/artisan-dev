@@ -70,6 +70,45 @@ def _setup_grouped_inputs(
 
 
 class TestDataTransformerScript:
+    def test_duplicate_config_names_keep_separate_outputs_and_parents(
+        self, tmp_path: Path
+    ):
+        pairs = [
+            _setup_grouped_inputs(tmp_path / str(factor), scale_factor=factor)
+            for factor in (2.0, 3.0)
+        ]
+        input_artifacts = {
+            "dataset": [pair[0] for pair in pairs],
+            "config": [pair[1] for pair in pairs],
+        }
+        execute_dir = tmp_path / "execute"
+        execute_dir.mkdir()
+        op = DataTransformerScript()
+        prepared = op.preprocess(
+            PreprocessInput(
+                input_artifacts=input_artifacts, preprocess_dir=str(tmp_path / "pre")
+            )
+        )
+        raw = op.execute_function(
+            ExecuteInput(inputs=prepared, execute_dir=str(execute_dir))
+        )
+        result = op.postprocess(
+            PostprocessInput(
+                memory_outputs=json.loads(json.dumps(raw)),
+                file_outputs=[str(path) for path in execute_dir.iterdir()],
+                input_artifacts=input_artifacts,
+                step_number=1,
+                postprocess_dir=str(tmp_path / "post"),
+            )
+        )
+        outputs = result.artifacts["dataset"]
+        assert len(list(execute_dir.glob("*.csv"))) == 2
+        assert outputs[0].original_name == outputs[1].original_name
+        assert outputs[0].content != outputs[1].content
+        assert [
+            mapping.source_artifact_id for mapping in result.lineage["dataset"]
+        ] == [pair[1].artifact_id for pair in pairs]
+
     def test_basic_transform(self, tmp_path: Path):
         data_art, config_art = _setup_grouped_inputs(
             tmp_path, scale_factor=2.0, noise_amplitude=0.0
@@ -87,7 +126,9 @@ class TestDataTransformerScript:
                 preprocess_dir=str(tmp_path / "pre"),
             )
         )
-        op.execute_function(ExecuteInput(inputs=prepared, execute_dir=execute_dir))
+        raw = op.execute_function(
+            ExecuteInput(inputs=prepared, execute_dir=execute_dir)
+        )
 
         output_files = [
             f
@@ -99,7 +140,7 @@ class TestDataTransformerScript:
         result = op.postprocess(
             PostprocessInput(
                 file_outputs=output_files,
-                memory_outputs=None,
+                memory_outputs=raw,
                 input_artifacts=input_artifacts,
                 step_number=1,
                 postprocess_dir=str(tmp_path / "post"),
@@ -107,6 +148,9 @@ class TestDataTransformerScript:
         )
         assert result.success
         assert len(result.artifacts["dataset"]) == 1
+        assert len(result.lineage["dataset"]) == 1
+        assert result.lineage["dataset"][0].source_artifact_id == config_art.artifact_id
+        assert result.lineage["dataset"][0].source_role == "config"
 
     def test_config_parameter_application(self, tmp_path: Path):
         data_art, config_art = _setup_grouped_inputs(
@@ -165,7 +209,8 @@ class TestDataTransformerScript:
             for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
             if os.path.isfile(f)
         ]
-        # Output should use config original_name as basename
+        # Distinct configs may share a human name; their files must not collide.
         assert (
-            os.path.basename(output_files[0]) == "dataset_00000_config_0_variant_0.csv"
+            os.path.basename(output_files[0])
+            == f"{config_art.artifact_id}_variant_0.csv"
         )

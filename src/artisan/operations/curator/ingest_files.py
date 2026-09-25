@@ -95,22 +95,24 @@ class IngestFiles(OperationDefinition):
 
         output_role = next(iter(self.outputs))
 
-        drafts: list[Artifact] = []
+        result = ArtifactResult()
         for fid in file_ref_ids:
             file_ref = file_refs_by_id.get(fid)
             if file_ref is not None:
-                drafts.append(
+                result.add_artifact(
+                    output_role,
                     self.convert_file(
                         cast("FileRefArtifact", file_ref),
                         step_number,
                         fs=artifact_store.filesystem,
-                    )
+                    ),
+                    sources={"file": [fid]},
                 )
 
-        if not drafts:
+        if not result.artifacts:
             return ArtifactResult(
                 success=False,
                 error="None of the provided file refs could be resolved from the artifact store",
             )
 
-        return ArtifactResult(success=True, artifacts={output_role: drafts})
+        return result

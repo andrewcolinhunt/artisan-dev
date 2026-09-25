@@ -43,7 +43,7 @@ class DataGenerator(OperationDefinition):
         OutputRole.datasets: OutputSpec(
             artifact_type="data",
             description="Generated CSV dataset files",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -128,6 +128,7 @@ class DataGenerator(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts={"datasets": drafts},
+            lineage={"datasets": []},
             metadata={
                 "operation": "data_generator",
                 "count": self.params.count,

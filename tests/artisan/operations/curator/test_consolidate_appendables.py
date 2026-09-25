@@ -158,6 +158,10 @@ class TestConsolidateBasicExecution:
         result = op.execute_curator(inputs, step_number=0, artifact_store=store)
 
         assert len(result.artifacts["records"]) == 2
+        assert [
+            (mapping.draft_index, mapping.source_artifact_id)
+            for mapping in result.lineage["records"]
+        ] == [(0, art_0.artifact_id), (1, art_1.artifact_id)]
 
     def test_artifact_identity_survives_relocation(self, backend_fs) -> None:
         """Relocating identical external bytes preserves artifact identity."""
@@ -180,6 +184,7 @@ class TestConsolidateBasicExecution:
         draft = result.artifacts["records"][0]
         draft.finalize()
         assert draft.artifact_id == art.artifact_id
+        assert result.lineage["records"][0].source_artifact_id == art.artifact_id
 
 
 class TestConsolidateErrorHandling:
@@ -214,7 +219,7 @@ class TestConsolidateClassAttributes:
 
     def test_output_lineage_traces_to_input(self) -> None:
         spec = ConsolidateAppendables.outputs["records"]
-        assert spec.infer_lineage_from == {"inputs": ["records"]}
+        assert spec.derives_from == {"inputs": ["records"]}
 
 
 class TestConsolidateAppendablesBackendParametrized:

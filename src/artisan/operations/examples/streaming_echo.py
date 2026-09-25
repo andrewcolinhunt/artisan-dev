@@ -45,7 +45,7 @@ class StreamingEcho(OperationDefinition):
         OutputRole.output: OutputSpec(
             artifact_type="data",
             description="Marker recording how many lines were emitted",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -107,6 +107,7 @@ class StreamingEcho(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts={"output": drafts},
+            lineage={"output": []},
             metadata={
                 "operation": "streaming_echo",
                 "lines": inputs.memory_outputs.get("lines"),

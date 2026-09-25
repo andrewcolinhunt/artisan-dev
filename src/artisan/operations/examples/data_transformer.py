@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
@@ -62,7 +61,7 @@ class DataTransformer(OperationDefinition):
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
             description="Transformed CSV dataset file(s)",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
@@ -104,10 +103,18 @@ class DataTransformer(OperationDefinition):
     )
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
+        """Carry each dataset's path, identity, and human name together."""
         return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
+            "dataset": PerArtifact(
+                [
+                    {
+                        "path": artifact.materialized_path,
+                        "artifact_id": artifact.artifact_id,
+                        "original_name": artifact.original_name,
+                    }
+                    for artifact in inputs.input_artifacts["dataset"]
+                ]
+            )
         }
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
@@ -120,16 +127,13 @@ class DataTransformer(OperationDefinition):
             msg = "No dataset input provided"
             raise ValueError(msg)
 
-        if isinstance(dataset_input, str):
-            input_files = [dataset_input]
-        else:
-            input_files = list(dataset_input)
-
         rng = random.Random(self.params.seed)
         created_files = []
+        outputs = []
         numeric_cols = {"x", "y", "z", "score"}
 
-        for input_path in input_files:
+        for dataset in dataset_input:
+            input_path = dataset["path"]
             if not os.path.exists(input_path):
                 msg = f"Input file not found: {input_path}"
                 raise FileNotFoundError(msg)
@@ -166,29 +170,23 @@ class DataTransformer(OperationDefinition):
                         writer.writerow(new_row)
 
                 created_files.append(output_path)
+                outputs.append(
+                    {
+                        "path": output_path,
+                        "original_name": f"{dataset['original_name']}_{variant_idx}{suffix}.csv",
+                        "source_artifact_id": dataset["artifact_id"],
+                    }
+                )
 
-        return {"created_files": created_files}
+        return {"created_files": created_files, "outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from transformed CSV files."""
         raw = inputs.memory_outputs
 
-        drafts: list[Artifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.endswith(".csv"):
-                with open(file_path, "rb") as f:
-                    content = f.read()
-                drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(file_path),
-                        step_number=inputs.step_number,
-                    )
-                )
-
-        return ArtifactResult(
-            success=True,
-            artifacts={"dataset": drafts},
+        result = ArtifactResult(
+            artifacts={"dataset": []},
+            lineage={"dataset": []},
             metadata={
                 "operation": "data_transformer",
                 "scale_factor": self.params.scale_factor,
@@ -198,6 +196,17 @@ class DataTransformer(OperationDefinition):
                 "created_files": raw.get("created_files", []),
             },
         )
+        for output in raw["outputs"]:
+            with open(output["path"], "rb") as f:
+                draft = DataArtifact.draft(
+                    content=f.read(),
+                    original_name=output["original_name"],
+                    step_number=inputs.step_number,
+                )
+            result.add_artifact(
+                "dataset", draft, sources={"dataset": [output["source_artifact_id"]]}
+            )
+        return result
 
 
 class SequentialDataTransformer(DataTransformer):

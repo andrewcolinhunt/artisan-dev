@@ -174,8 +174,7 @@ class DeclareLineage(OperationDefinition):
             pairs, parent_ids, child_ids, artifact_store
         )
 
-        # Reuse the framework's edge builder so type resolution and the
-        # UNKNOWN fallback match every other edge-emitting code path.
+        # Reuse strict type resolution for these explicitly declared pairs.
         source_target_pairs = [
             SourceTargetPair(
                 source=parent_id,

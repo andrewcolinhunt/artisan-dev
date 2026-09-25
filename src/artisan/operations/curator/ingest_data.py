@@ -35,7 +35,7 @@ class IngestData(IngestFiles):
         OutputRole.data: OutputSpec(
             artifact_type="data",
             description="Ingested data artifact",
-            infer_lineage_from={"inputs": ["file"]},
+            derives_from={"inputs": ["file"]},
         ),
     }
 

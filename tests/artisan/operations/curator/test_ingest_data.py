@@ -109,6 +109,10 @@ class TestIngestDataBasicExecution:
 
         assert result.success
         assert len(result.artifacts["data"]) == 3
+        assert [
+            (mapping.draft_index, mapping.source_role, mapping.source_artifact_id)
+            for mapping in result.lineage["data"]
+        ] == [(index, "file", source.artifact_id) for index, source in enumerate(files)]
         names = [a.original_name for a in result.artifacts["data"]]
         assert "data_0" in names
         assert "data_1" in names

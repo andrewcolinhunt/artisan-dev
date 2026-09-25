@@ -10,7 +10,7 @@ import pytest
 
 from artisan.execution.compute.invoke import invoke_op_work
 from artisan.operations.examples import WaitTool
-from artisan.schemas import ExecuteInput, PostprocessInput
+from artisan.schemas import DataArtifact, ExecuteInput, PostprocessInput
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 
@@ -67,8 +67,16 @@ class TestWaitTool:
 
     def test_postprocess_builds_one_artifact_per_marker(self, tmp_path: Path):
         markers = []
+        sources = []
         for host in ("host-a", "host-b"):
-            path = tmp_path / f"{host}.csv"
+            source = DataArtifact.draft(
+                content=f"value\n{host}\n".encode(),
+                original_name=f"{host}.csv",
+                step_number=0,
+            ).finalize()
+            source.materialized_path = str(tmp_path / f"{source.artifact_id}.csv")
+            sources.append(source)
+            path = tmp_path / f"{source.artifact_id}_waited.csv"
             path.write_text(f"seconds,host,source\n1,{host},x.csv\n")
             markers.append(str(path))
 
@@ -76,7 +84,7 @@ class TestWaitTool:
             PostprocessInput(
                 file_outputs=markers,
                 memory_outputs=None,
-                input_artifacts={},
+                input_artifacts={"dataset": sources},
                 step_number=1,
                 postprocess_dir=str(tmp_path / "post"),
             )
@@ -84,3 +92,10 @@ class TestWaitTool:
 
         assert result.success is True
         assert len(result.artifacts["output"]) == 2
+        assert [artifact.original_name for artifact in result.artifacts["output"]] == [
+            "host-a_waited",
+            "host-b_waited",
+        ]
+        assert [mapping.source_artifact_id for mapping in result.lineage["output"]] == [
+            source.artifact_id for source in sources
+        ]

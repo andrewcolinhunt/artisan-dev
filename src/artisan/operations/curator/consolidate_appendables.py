@@ -56,7 +56,7 @@ class ConsolidateAppendables(OperationDefinition):
         OutputRole.records: OutputSpec(
             artifact_type="appendable",
             description="Consolidated appendable artifacts",
-            infer_lineage_from={"inputs": ["records"]},
+            derives_from={"inputs": ["records"]},
         ),
     }
 
@@ -111,12 +111,13 @@ class ConsolidateAppendables(OperationDefinition):
                 with fs.open(worker_file, "r") as f:
                     out.write(f.read())
 
-        drafts: list[AppendableArtifact] = []
+        result = ArtifactResult(artifacts={"records": []}, lineage={"records": []})
         for art in artifacts.values():
             assert art.record_id is not None, "finalized appendable has record_id"
             assert art.content_hash is not None, "finalized appendable has content_hash"
             assert art.size_bytes is not None, "finalized appendable has size_bytes"
-            drafts.append(
+            result.add_artifact(
+                "records",
                 AppendableArtifact.draft(
                     record_id=art.record_id,
                     content_hash=art.content_hash,
@@ -124,10 +125,8 @@ class ConsolidateAppendables(OperationDefinition):
                     step_number=step_number,
                     external_path=combined_uri,
                     original_name=art.original_name,
-                )
+                ),
+                sources={"records": [art.artifact_id]},
             )
 
-        return ArtifactResult(
-            success=True,
-            artifacts={"records": list(drafts)},
-        )
+        return result

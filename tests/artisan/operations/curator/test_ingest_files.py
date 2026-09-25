@@ -62,6 +62,7 @@ class ConcreteIngest(IngestFiles):
         OutputRole.data: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
             description="Test output",
+            derives_from={"inputs": ["file"]},
         ),
     }
 
@@ -139,6 +140,10 @@ class TestIngestFilesExecution:
 
         assert result.success
         assert len(result.artifacts["data"]) == 3
+        assert [mapping.source_artifact_id for mapping in result.lineage["data"]] == [
+            ref.artifact_id for ref in refs
+        ]
+        assert [mapping.draft_index for mapping in result.lineage["data"]] == [0, 1, 2]
 
     def test_should_fail_for_empty_input(self):
         """Empty file list returns ArtifactResult(success=False)."""

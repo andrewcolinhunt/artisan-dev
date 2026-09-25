@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from artisan.operations.examples import DataTransformerConfig
@@ -140,3 +141,48 @@ class TestDataTransformerConfig:
 
         ids = [c.values["input"]["$artifact"] for c in result.artifacts["config"]]
         assert ids == [a.artifact_id, a.artifact_id, b.artifact_id, b.artifact_id]
+        assert [
+            (mapping.draft_index, mapping.source_role, mapping.source_artifact_id)
+            for mapping in result.lineage["config"]
+        ] == [(index, "dataset", artifact_id) for index, artifact_id in enumerate(ids)]
+
+    def test_every_variant_declares_its_reference_and_resolves_to_path(
+        self, tmp_path: Path
+    ):
+        artifacts = [
+            DataArtifact.draft(
+                content=f"x\n{value}\n".encode(),
+                original_name="same.csv",
+                step_number=0,
+            ).finalize()
+            for value in (1, 2)
+        ]
+        op = DataTransformerConfig(
+            params={"scale_factors": [1.0, 2.0], "noise_amplitudes": [0.0, 0.2]}
+        )
+        result = _run_config_op(op, artifacts, tmp_path / "out")
+        assert len(result.artifacts["config"]) == 8
+        materialized_dir = tmp_path / "materialized"
+        materialized_dir.mkdir()
+        resolved_paths = {
+            artifact.artifact_id: artifact.materialize_to(str(materialized_dir))
+            for artifact in artifacts
+        }
+        declarations = result.lineage["config"]
+        for index, config in enumerate(result.artifacts["config"]):
+            expected_id = artifacts[index // 4].artifact_id
+            assert config.get_artifact_references() == [expected_id]
+            assert [
+                (mapping.source_role, mapping.source_artifact_id)
+                for mapping in declarations
+                if mapping.draft_index == index
+            ] == [("dataset", expected_id)]
+            config.finalize()
+            path = config.materialize_to(
+                str(materialized_dir), resolved_paths=resolved_paths
+            )
+            assert (
+                json.loads(Path(path).read_text())["input"]
+                == resolved_paths[expected_id]
+            )
+            assert config.values["input"] == {"$artifact": expected_id}

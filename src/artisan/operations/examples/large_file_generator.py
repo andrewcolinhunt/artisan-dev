@@ -49,7 +49,7 @@ class LargeFileGenerator(OperationDefinition):
         OutputRole.files: OutputSpec(
             artifact_type="large_file",
             description="Generated large binary files",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -119,4 +119,5 @@ class LargeFileGenerator(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts={"files": drafts},
+            lineage={"files": []},
         )
