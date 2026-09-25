@@ -244,13 +244,14 @@ Some outputs cannot be produced from any single input alone. When you compare
 two datasets, both are jointly necessary -- neither by itself could produce the
 comparison result. Co-input edges represent this joint derivation.
 
-**The test:** can the output be produced from any proper subset of the inputs?
-If yes, use independent edges. If no -- if all inputs were jointly necessary --
-use co-input edges.
+The author declares the complete parent set for each output occurrence. Artisan
+labels every set of several unique parents as one joint derivation. Independent
+derivations need separate output occurrences and declarations, even if they
+finalize to the same artifact ID. Authors do not supply a grouping hash.
 
 | Scenario | Subset test | Edge pattern |
 |----------|-------------|--------------|
-| Filter pass-through | Single input suffices | Independent |
+| Filter pass-through | Route an existing artifact | No new derivation |
 | Batch processing 1:1 | Each input independently | Independent |
 | Compare(dataset_a, dataset_b) | Requires both datasets | Co-input |
 | Aggregate({d1, d2, d3}) | Requires all inputs | Co-input |
