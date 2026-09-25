@@ -332,8 +332,8 @@ packages:
   Graphviz), pipeline and step inspection helpers, and execution timing
   analysis.
 - **`provenance`** — graph traversal algorithms (forward and backward BFS
-  walks through provenance edges) used by both the execution layer for lineage
-  matching and the visualization layer for graph rendering.
+  walks through provenance edges) used to pair inputs through existing ancestry
+  and to render provenance graphs.
 
 These packages do not participate in the layered dependency hierarchy. They
 are consumed by whichever layer needs them.
@@ -357,17 +357,18 @@ What happens:
 1. **Orchestration** creates step 0, sees no inputs to resolve, dispatches
    `DataGenerator` to workers.
 2. **Execution** creates an isolated sandbox. `DataGenerator.execute_function()`
-   produces three files. `postprocess()` wraps them as draft artifacts.
-   The worker finalizes artifact IDs, captures lineage edges, and stages
-   results as Parquet.
+   produces three datasets. `postprocess()` wraps them as draft artifacts and
+   declares them as roots with an empty lineage list. The worker validates the
+   result, finalizes artifact IDs, and stages it as Parquet.
 3. **Orchestration** completes step 0's logical commit, including its terminal
    snapshot, then returns a `StepResult` with output references.
 4. **Orchestration** creates step 1. Resolves `output("generate", "datasets")`
    into three concrete artifact IDs. Computes cache key. No cache hit.
    Dispatches `DataTransformer` to workers.
 5. **Execution** materializes the three input artifacts to disk. Runs
-   `preprocess` → `execute_function` → `postprocess`. Captures lineage edges
-   A→D, B→E, C→F via filename stem matching. Stages results.
+   `preprocess` → `execute_function` → `postprocess`. The operation declares
+   A→D, B→E, C→F using the exact input IDs carried with its output records.
+   The worker validates those declarations and stages the resulting edges.
 6. **Orchestration** completes step 1's logical commit. Pipeline complete.
 
 Every artifact has a content-addressed ID. Every derivation is tracked. Every
