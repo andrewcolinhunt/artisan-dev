@@ -370,3 +370,27 @@ def test_executor_preserves_names_order_and_sibling_indices(execute_declared_res
         ("b" * 32, second.artifact_id),
         (second.artifact_id, child.artifact_id),
     }
+
+
+@pytest.mark.parametrize("execute_declared_result", ["curator"], indirect=True)
+@pytest.mark.parametrize("source_exists", [True, False])
+def test_identity_neutral_output_cannot_supply_missing_input_type(
+    execute_declared_result, source_exists
+):
+    source_id = _draft().finalize().artifact_id
+    output = _draft()
+    result = ArtifactResult(
+        artifacts={"data": [output]}, lineage={"data": [_mapping(source_id)]}
+    )
+    store = execute_declared_result.store
+    store.provenance.load_type_map.side_effect = None
+    store.provenance.load_type_map.return_value = (
+        {source_id: "data"} if source_exists else {}
+    )
+    if source_exists:
+        edges = execute_declared_result(result, inputs={"data": [source_id]})
+        assert len(edges) == 1
+        assert edges[0].source_artifact_id == edges[0].target_artifact_id == source_id
+    else:
+        with pytest.raises(LineageIntegrityError, match="type"):
+            execute_declared_result(result, inputs={"data": [source_id]})

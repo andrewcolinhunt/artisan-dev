@@ -17,7 +17,10 @@ import polars as pl
 
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.lineage.builder import build_edges
-from artisan.execution.lineage.enrich import build_artifact_edges_from_types
+from artisan.execution.lineage.enrich import (
+    build_artifact_edges_from_types,
+    require_artifact_type,
+)
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
     validate_lineage_completeness,
@@ -101,8 +104,13 @@ def _handle_artifact_result(
         if mapping.source_artifact_id is not None
     }
     artifact_types = (
-        artifact_store.provenance.load_type_map(sorted(source_ids)) if source_ids else {}
+        artifact_store.provenance.load_type_map(sorted(source_ids))
+        if source_ids
+        else {}
     )
+    # Identity-neutral outputs must not conceal an absent input in the store.
+    for source_id in source_ids:
+        require_artifact_type(source_id, artifact_types)
     artifact_types.update(
         {
             artifact.artifact_id: artifact.artifact_type
