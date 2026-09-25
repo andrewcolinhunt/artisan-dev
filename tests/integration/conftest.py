@@ -485,6 +485,44 @@ def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, str]]:
 # =============================================================================
 
 
+def prepare_paired_files(inputs: PreprocessInput) -> dict[str, Any]:
+    """Carry the operation's input IDs alongside its grouped file paths."""
+    prepared = {
+        role: PerArtifact([a.materialized_path for a in artifacts])
+        for role, artifacts in inputs.input_artifacts.items()
+    }
+    roles = list(inputs.input_artifacts)
+    prepared["source_ids"] = PerArtifact(
+        [
+            {
+                role: [artifact.artifact_id]
+                for role, artifact in zip(roles, group, strict=True)
+            }
+            for group in zip(*(inputs.input_artifacts[r] for r in roles), strict=True)
+        ]
+    )
+    return prepared
+
+
+def declared_file_result(
+    inputs: PostprocessInput, role: str = "result"
+) -> ArtifactResult:
+    """Return drafts using only associations carried by the fixture operation."""
+    result = ArtifactResult()
+    for record in inputs.memory_outputs["records"]:
+        path = Path(record["path"])
+        result.add_artifact(
+            role,
+            DataArtifact.draft(
+                content=path.read_bytes(),
+                original_name=record.get("name", path.name),
+                step_number=inputs.step_number,
+            ),
+            sources=record["sources"],
+        )
+    return result
+
+
 class FailingTransformer(OperationDefinition):
     """Transform CSV datasets with controllable failure injection.
 
@@ -512,7 +550,7 @@ class FailingTransformer(OperationDefinition):
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
             description="Transformed CSV dataset",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
@@ -535,6 +573,7 @@ class FailingTransformer(OperationDefinition):
             prepared[f"{role}_names"] = PerArtifact(
                 [a.original_name for a in artifacts]
             )
+            prepared[f"{role}_ids"] = PerArtifact([a.artifact_id for a in artifacts])
         return prepared
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
@@ -554,6 +593,7 @@ class FailingTransformer(OperationDefinition):
 
         # Use original names to extract dataset index for failure injection
         original_names = inputs.inputs.get("dataset_names", [])
+        records = []
         for file_idx, input_path in enumerate(input_files):
             input_path = Path(input_path)
             stem = input_path.stem
@@ -588,25 +628,16 @@ class FailingTransformer(OperationDefinition):
                         if col in ("x", "y", "z", "score"):
                             new_row[col] = round(float(row[col]) * 1.1, 4)
                     writer.writerow(new_row)
+            records.append(
+                {
+                    "path": out_path,
+                    "name": f"{orig_name}_0.csv",
+                    "sources": {"dataset": [inputs.inputs["dataset_ids"][file_idx]]},
+                }
+            )
 
-        return {}
+        return {"records": records}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from output CSV files."""
-        drafts: list[DataArtifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.endswith(".csv"):
-                with open(file_path, "rb") as f:
-                    content = f.read()
-                drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(file_path),
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(
-            success=True,
-            artifacts={"dataset": drafts},
-            metadata={"operation": "failing_transformer"},
-        )
+        return declared_file_result(inputs, "dataset")

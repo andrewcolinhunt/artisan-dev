@@ -51,7 +51,7 @@ class _ImageStampV1(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.RESULT: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -74,7 +74,9 @@ class _ImageStampV1(OperationDefinition):
                     step_number=inputs.step_number,
                 )
             )
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return ArtifactResult(
+            success=True, artifacts={"result": drafts}, lineage={"result": []}
+        )
 
 
 class _ImageStampV2(_ImageStampV1):

@@ -17,12 +17,10 @@ import pytest
 pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -37,8 +35,10 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from .conftest import (
     count_artifacts_by_step,
     count_executions_by_step,
+    declared_file_result,
     get_execution_outputs,
     load_artifact_edges,
+    prepare_paired_files,
 )
 
 # =============================================================================
@@ -66,7 +66,7 @@ class DualInputLineage(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["primary", "secondary"]},
+            derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
     group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
@@ -75,10 +75,7 @@ class DualInputLineage(OperationDefinition):
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_lineage")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return prepare_paired_files(inputs)
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
@@ -88,7 +85,8 @@ class DualInputLineage(OperationDefinition):
         if isinstance(primary_files, (str, Path)):
             primary_files = [primary_files]
 
-        for pf in primary_files:
+        records = []
+        for index, pf in enumerate(primary_files):
             pf = Path(pf)
             with open(pf) as fh:
                 reader = csv.DictReader(fh)
@@ -103,22 +101,14 @@ class DualInputLineage(OperationDefinition):
                     row["lineage_marker"] = "1"
                     writer.writerow(row)
 
-        return {}
+            records.append(
+                {"path": str(out_path), "sources": inputs.inputs["source_ids"][index]}
+            )
+
+        return {"records": records}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = []
-        for f in inputs.file_outputs:
-            if f.endswith(".csv"):
-                with open(f, "rb") as fh:
-                    content = fh.read()
-                drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(f),
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return declared_file_result(inputs)
 
 
 class AssociatedMetricConsumer(OperationDefinition):
@@ -142,7 +132,7 @@ class AssociatedMetricConsumer(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["primary"]},
+            derives_from={"inputs": ["primary"]},
         ),
     }
 
@@ -155,6 +145,7 @@ class AssociatedMetricConsumer(OperationDefinition):
             associated = inputs.associated_artifacts(artifact, "metric")
             result[f"primary_{i}_path"] = str(artifact.materialized_path)
             result[f"primary_{i}_assoc_count"] = len(associated)
+            result[f"primary_{i}_id"] = artifact.artifact_id
         result["count"] = len(inputs.input_artifacts["primary"])
         return result
 
@@ -163,6 +154,7 @@ class AssociatedMetricConsumer(OperationDefinition):
         os.makedirs(output_dir, exist_ok=True)
 
         count = inputs.inputs.get("count", 0)
+        records = []
         for i in range(count):
             assoc_count = inputs.inputs.get(f"primary_{i}_assoc_count", 0)
             primary_path = Path(inputs.inputs[f"primary_{i}_path"])
@@ -180,22 +172,17 @@ class AssociatedMetricConsumer(OperationDefinition):
                     row["assoc_count"] = str(assoc_count)
                     writer.writerow(row)
 
-        return {}
+            records.append(
+                {
+                    "path": str(out_path),
+                    "sources": {"primary": [inputs.inputs[f"primary_{i}_id"]]},
+                }
+            )
+
+        return {"records": records}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = []
-        for f in inputs.file_outputs:
-            if f.endswith(".csv"):
-                with open(f, "rb") as fh:
-                    content = fh.read()
-                drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(f),
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return declared_file_result(inputs)
 
 
 # =============================================================================
@@ -318,7 +305,7 @@ class DualInputDataLineage(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["primary", "secondary"]},
+            derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
 
@@ -326,10 +313,7 @@ class DualInputDataLineage(OperationDefinition):
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_data_lineage")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return prepare_paired_files(inputs)
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
@@ -346,20 +330,14 @@ class DualInputDataLineage(OperationDefinition):
         secondary = Path(secondary_paths[0])
         out_path = Path(out_dir) / f"{primary.stem}__{secondary.stem}.bin"
         out_path.write_bytes(primary.read_bytes() + b"\n---\n" + secondary.read_bytes())
-        return {}
+        return {
+            "records": [
+                {"path": str(out_path), "sources": inputs.inputs["source_ids"][0]}
+            ]
+        }
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = []
-        for f in inputs.file_outputs:
-            if f.endswith(".bin"):
-                drafts.append(
-                    DataArtifact.draft(
-                        content=Path(f).read_bytes(),
-                        original_name=os.path.basename(f),
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return declared_file_result(inputs)
 
 
 def test_lineage_grouping_sibling_collision_deterministic(
@@ -519,7 +497,7 @@ class DualInputCrossProduct(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["primary", "secondary"]},
+            derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
     # No class-level group_by — the per-step override drives pairing.
@@ -528,10 +506,7 @@ class DualInputCrossProduct(OperationDefinition):
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_cross_product")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return prepare_paired_files(inputs)
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
@@ -551,20 +526,14 @@ class DualInputCrossProduct(OperationDefinition):
         secondary = Path(secondary_paths[0])
         out_path = Path(out_dir) / f"{primary.stem}__{secondary.stem}.bin"
         out_path.write_bytes(primary.read_bytes() + b"\n---\n" + secondary.read_bytes())
-        return {}
+        return {
+            "records": [
+                {"path": str(out_path), "sources": inputs.inputs["source_ids"][0]}
+            ]
+        }
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = []
-        for f in inputs.file_outputs:
-            if f.endswith(".bin"):
-                drafts.append(
-                    DataArtifact.draft(
-                        content=Path(f).read_bytes(),
-                        original_name=os.path.basename(f),
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return declared_file_result(inputs)
 
 
 class DualInputCrossProductClassDefault(DualInputCrossProduct):
@@ -759,7 +728,7 @@ class DualInputName(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["from_a", "from_b"]},
+            derives_from={"inputs": ["from_a", "from_b"]},
         ),
     }
     group_by: GroupByStrategy | None = GroupByStrategy.NAME
@@ -768,10 +737,7 @@ class DualInputName(OperationDefinition):
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_name")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return prepare_paired_files(inputs)
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
@@ -789,20 +755,14 @@ class DualInputName(OperationDefinition):
         # Bytes depend on both inputs so paired artifact_ids are distinct.
         out_path = Path(out_dir) / f"{a_path.stem}.csv"
         out_path.write_bytes(a_path.read_bytes() + b"\n---\n" + b_path.read_bytes())
-        return {}
+        return {
+            "records": [
+                {"path": str(out_path), "sources": inputs.inputs["source_ids"][0]}
+            ]
+        }
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = []
-        for f in inputs.file_outputs:
-            if f.endswith(".csv"):
-                drafts.append(
-                    DataArtifact.draft(
-                        content=Path(f).read_bytes(),
-                        original_name=os.path.basename(f),
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return declared_file_result(inputs)
 
 
 def test_name_grouping_creates_co_input_edges(pipeline_env: dict[str, str]):

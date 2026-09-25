@@ -12,6 +12,7 @@ from artisan.composites import CompositeRef
 _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
     "artisan": ("__version__", "__version_tuple__"),
     "artisan.operations.base": ("OperationDefinition", "PerArtifact"),
+    "artisan.operations.lineage": ("match_outputs_to_inputs_by_stem",),
     "artisan.operations.curator": (
         "ConsolidateAppendables",
         "DeclareLineage",

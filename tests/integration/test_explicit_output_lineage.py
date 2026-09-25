@@ -1,10 +1,4 @@
-"""Integration test for explicit output->output lineage via source_original_name.
-
-A curator returns ``ArtifactResult`` with two output roles, declaring an
-output->output edge by referencing a co-produced artifact's
-``original_name`` rather than its (not-yet-assigned) ``artifact_id``.
-The test verifies the resulting provenance edge is staged.
-"""
+"""Persistence regressions for operation-owned explicit parent declarations."""
 
 from __future__ import annotations
 
@@ -16,16 +10,15 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
-from artisan.schemas import ArtifactResult, LineageMapping
+from artisan.schemas import ArtifactResult, ExecutionConfigArtifact, LineageMapping
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
@@ -38,7 +31,12 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
 
-from .conftest import get_artifact_edges, load_artifact_edges
+from .conftest import (
+    get_artifact_edges,
+    load_artifact_edges,
+    prepare_paired_files,
+    read_table,
+)
 
 
 class StructureAndMetricCurator(OperationDefinition):
@@ -46,8 +44,7 @@ class StructureAndMetricCurator(OperationDefinition):
 
     For each input dataset, emit a ``structures`` metric and a derived
     ``metrics`` artifact. The metric declares its parent via
-    ``source_original_name`` because the structure's ``artifact_id`` is
-    not yet assigned at curator return time.
+    its exact output index before the structure has a finalized artifact ID.
     """
 
     name = "structure_and_metric_curator"
@@ -64,8 +61,12 @@ class StructureAndMetricCurator(OperationDefinition):
         InputRole.datasets: InputSpec(artifact_type=ArtifactTypes.DATA),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.structures: OutputSpec(artifact_type=ArtifactTypes.METRIC),
-        OutputRole.metrics: OutputSpec(artifact_type=ArtifactTypes.METRIC),
+        OutputRole.structures: OutputSpec(
+            artifact_type=ArtifactTypes.METRIC, derives_from={"inputs": ["datasets"]}
+        ),
+        OutputRole.metrics: OutputSpec(
+            artifact_type=ArtifactTypes.METRIC, derives_from={"outputs": ["structures"]}
+        ),
     }
 
     def execute_curator(
@@ -76,9 +77,7 @@ class StructureAndMetricCurator(OperationDefinition):
     ) -> ArtifactResult:
         dataset_ids = inputs["datasets"]["artifact_id"].to_list()
 
-        structures: list = []
-        metrics: list = []
-        lineage_metrics: list[LineageMapping] = []
+        result = ArtifactResult()
 
         for i, dataset_id in enumerate(dataset_ids):
             structure = MetricArtifact.draft(
@@ -91,25 +90,18 @@ class StructureAndMetricCurator(OperationDefinition):
                 original_name=f"sample_{i:03d}_structure_energy.json",
                 step_number=step_number,
             )
-            structures.append(structure)
-            metrics.append(metric)
-            lineage_metrics.append(
-                LineageMapping(
-                    draft_original_name=metric.original_name,
-                    source_original_name=structure.original_name,
-                    source_role="structures",
-                )
+            parent_index = result.add_artifact(
+                "structures", structure, sources={"datasets": [dataset_id]}
+            )
+            result.add_artifact(
+                "metrics", metric, sources={"structures": [parent_index]}
             )
 
-        return ArtifactResult(
-            success=True,
-            artifacts={"structures": structures, "metrics": metrics},
-            lineage={"metrics": lineage_metrics},
-        )
+        return result
 
 
 def test_explicit_output_to_output_lineage(pipeline_env: dict[str, str]) -> None:
-    """source_original_name produces an output->output edge in the staged store."""
+    """An output index resolves to the exact persisted sibling artifact."""
     delta_root = pipeline_env["delta_root"]
 
     pipeline = PipelineManager.create(
@@ -156,28 +148,15 @@ def test_explicit_output_to_output_lineage(pipeline_env: dict[str, str]) -> None
 
 
 class TwoInputParity(OperationDefinition):
-    """Two-input creator op for auto-detect / explicit-lineage parity.
-
-    A ``Params`` flag toggles between returning ``ArtifactResult(lineage=None)``
-    (auto-detect) and returning explicit primary + co-input ``LineageMapping``s
-    matching the ZIP pairing. The same input fixtures and same execute body
-    produce identical content-addressed outputs in both modes, so any edge-set
-    difference observed downstream is attributable to the validator's
-    explicit-lineage path.
-    """
+    """Two-input creator proving manual and helper declarations are equivalent."""
 
     name = "two_input_parity"
-    description = "Two-input ZIP op toggling auto-detect vs explicit lineage"
+    description = "Two-input ZIP operation with explicit parent sets"
 
     class Params(BaseModel):
-        """Params for ``TwoInputParity``.
-
-        Attributes:
-            use_explicit_lineage: When True, return explicit primary +
-                co-input ``LineageMapping`` instead of auto-detect.
-        """
-
-        use_explicit_lineage: bool = False
+        use_helper: bool = Field(
+            default=False, description="Build mappings through add_artifact."
+        )
 
     params: Params = Params()
 
@@ -195,16 +174,13 @@ class TwoInputParity(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": ["primary", "secondary"]},
+            derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
     group_by: GroupByStrategy | None = GroupByStrategy.ZIP
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return prepare_paired_files(inputs)
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         out_dir = inputs.execute_dir
@@ -228,59 +204,39 @@ class TwoInputParity(OperationDefinition):
                 }
             )
         )
-        return {}
+        return {
+            "records": [
+                {"path": str(out_path), "sources": inputs.inputs["source_ids"][0]}
+            ]
+        }
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts: list[MetricArtifact] = []
-        for f in inputs.file_outputs:
-            if not f.endswith(".json"):
-                continue
-            content = json.loads(Path(f).read_text())
-            drafts.append(
-                MetricArtifact.draft(
-                    content=content,
-                    original_name=Path(f).stem,
-                    step_number=inputs.step_number,
-                )
+        result = ArtifactResult(artifacts={"result": []}, lineage={"result": []})
+        for record in inputs.memory_outputs["records"]:
+            draft = MetricArtifact.draft(
+                content=json.loads(Path(record["path"]).read_text()),
+                original_name="identical-name.json",
+                step_number=inputs.step_number,
             )
-
-        if not self.params.use_explicit_lineage:
-            return ArtifactResult(success=True, artifacts={"result": drafts})
-
-        # Explicit ZIP lineage: each draft descends from primary[i] + secondary[i]
-        # for the same unit. With artifacts_per_unit=1 (default), each execute
-        # call processes one pair and produces one draft, so indices align.
-        primary_arts = inputs.input_artifacts["primary"]
-        secondary_arts = inputs.input_artifacts["secondary"]
-        lineage_mappings: list[LineageMapping] = []
-        for idx, draft in enumerate(drafts):
-            primary_art = primary_arts[idx % len(primary_arts)]
-            secondary_art = secondary_arts[idx % len(secondary_arts)]
-            lineage_mappings.append(
-                LineageMapping(
-                    draft_original_name=draft.original_name,
-                    source_artifact_id=primary_art.artifact_id,
-                    source_role="primary",
+            if self.params.use_helper:
+                result.add_artifact("result", draft, sources=record["sources"])
+            else:
+                index = len(result.artifacts["result"])
+                result.artifacts["result"].append(draft)
+                result.lineage["result"].extend(
+                    LineageMapping(
+                        draft_index=index, source_role=role, source_artifact_id=source
+                    )
+                    for role, sources in record["sources"].items()
+                    for source in sources
                 )
-            )
-            lineage_mappings.append(
-                LineageMapping(
-                    draft_original_name=draft.original_name,
-                    source_artifact_id=secondary_art.artifact_id,
-                    source_role="secondary",
-                )
-            )
-        return ArtifactResult(
-            success=True,
-            artifacts={"result": drafts},
-            lineage={"result": lineage_mappings},
-        )
+        return result
 
 
 def _run_parity_pipeline(
     root: Path,
     *,
-    use_explicit_lineage: bool,
+    use_helper: bool,
 ) -> str:
     """Run the parity pipeline in an isolated delta_root and return its path."""
     delta_root = root / "delta"
@@ -291,7 +247,7 @@ def _run_parity_pipeline(
     working_root.mkdir()
 
     pipeline = PipelineManager.create(
-        name=f"parity_{'explicit' if use_explicit_lineage else 'auto'}",
+        name=f"parity_{'helper' if use_helper else 'manual'}",
         delta_root=str(delta_root),
         staging_root=str(staging_root),
         working_root=str(working_root),
@@ -312,65 +268,200 @@ def _run_parity_pipeline(
             "primary": primary.output("datasets"),
             "secondary": secondary.output("datasets"),
         },
-        params={"use_explicit_lineage": use_explicit_lineage},
+        params={"use_helper": use_helper},
         step_runner=Runner.LOCAL,
     )
     result = pipeline.finalize()
     assert result["overall_success"], (
-        f"parity pipeline (use_explicit_lineage={use_explicit_lineage}) failed"
+        f"parity pipeline (use_helper={use_helper}) failed"
     )
     return str(delta_root)
 
 
-def test_explicit_lineage_with_coinput_edges_matches_autodetect(
-    tmp_path: Path,
-) -> None:
-    """Auto-detect and explicit lineage produce identical artifact_edges.
-
-    Runs the same two-input ZIP op twice — once relying on auto-detect, once
-    declaring explicit primary + co-input ``LineageMapping``s — and asserts
-    the resulting ``artifact_edges`` rows match on
-    ``(source_artifact_id, target_artifact_id, source_role, target_role)``.
-    Without the validator relaxation, the explicit run would have raised
-    ``LineageIntegrityError`` on the second mapping per draft.
-    """
-    auto_root = _run_parity_pipeline(tmp_path / "auto", use_explicit_lineage=False)
-    explicit_root = _run_parity_pipeline(
-        tmp_path / "explicit", use_explicit_lineage=True
-    )
-
-    auto_store = ArtifactStore(auto_root)
-    explicit_store = ArtifactStore(explicit_root)
-    auto_targets = auto_store.provenance.load_artifact_ids_by_type(
+def test_manual_and_helper_persist_identical_edges_and_groups(tmp_path: Path) -> None:
+    """Both authoring forms persist exact parents despite duplicate output names."""
+    manual_root = _run_parity_pipeline(tmp_path / "manual", use_helper=False)
+    helper_root = _run_parity_pipeline(tmp_path / "helper", use_helper=True)
+    targets = ArtifactStore(manual_root).provenance.load_artifact_ids_by_type(
         ArtifactTypes.METRIC, step_numbers=[2]
     )
-    explicit_targets = explicit_store.provenance.load_artifact_ids_by_type(
+    assert targets == ArtifactStore(helper_root).provenance.load_artifact_ids_by_type(
         ArtifactTypes.METRIC, step_numbers=[2]
     )
-    assert auto_targets == explicit_targets, (
-        "Step-2 metric artifact_ids must match across runs "
-        "(inputs and outputs are content-addressed and deterministic)."
-    )
-    assert auto_targets, "expected step-2 metric outputs"
-
-    auto_edges = load_artifact_edges(auto_root, auto_targets)
-    explicit_edges = load_artifact_edges(explicit_root, explicit_targets)
-
-    cols = [
+    assert len(targets) == 2
+    columns = [
         "source_artifact_id",
         "target_artifact_id",
         "source_role",
         "target_role",
+        "group_id",
     ]
-    auto_tuples = set(map(tuple, auto_edges.select(cols).iter_rows()))
-    explicit_tuples = set(map(tuple, explicit_edges.select(cols).iter_rows()))
+    manual = load_artifact_edges(manual_root, targets)
+    helper = load_artifact_edges(helper_root, targets)
+    assert set(manual.select(columns).iter_rows()) == set(
+        helper.select(columns).iter_rows()
+    )
+    assert manual.height == 4
+    assert manual["group_id"].null_count() == 0
+    for target in targets:
+        rows = manual.filter(pl.col("target_artifact_id") == target)
+        assert set(rows["source_role"]) == {"primary", "secondary"}
+        assert rows["group_id"].n_unique() == 1
 
-    assert auto_tuples == explicit_tuples, (
-        f"Edge set diff — only in auto: {auto_tuples - explicit_tuples}; "
-        f"only in explicit: {explicit_tuples - auto_tuples}"
+
+class ConfigDeclarationCurator(OperationDefinition):
+    """Declare config references in the operation, including same-role fan-in."""
+
+    name = "config_declaration_curator"
+
+    class Params(BaseModel):
+        declare_all: bool = Field(
+            default=True, description="Declare every referenced artifact as a parent."
+        )
+
+    params: Params = Params()
+
+    class InputRole(StrEnum):
+        referenced = auto()
+
+    class OutputRole(StrEnum):
+        config = auto()
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "referenced": InputSpec(artifact_type="data"),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "config": OutputSpec(
+            artifact_type="config", derives_from={"inputs": ["referenced"]}
+        ),
+    }
+
+    def execute_curator(self, inputs, step_number, artifact_store) -> ArtifactResult:
+        ids = inputs["referenced"]["artifact_id"].to_list()
+        config = ExecutionConfigArtifact.draft(
+            content={"sources": [{"$artifact": source} for source in [*ids, ids[0]]]},
+            original_name="no-filename-correspondence.json",
+            step_number=step_number,
+        )
+        parents = sorted(set(config.get_artifact_references()))
+        if not self.params.declare_all:
+            parents = parents[:1]
+        result = ArtifactResult()
+        result.add_artifact("config", config, sources={"referenced": parents})
+        return result
+
+
+@pytest.mark.parametrize("declare_all", [True, False])
+def test_config_parents_are_operation_declared_once(pipeline_env, declare_all) -> None:
+    """Repeated references deduplicate; the executor never supplements declarations."""
+    pipeline = PipelineManager.create(name="explicit_config", **pipeline_env)
+    generated = pipeline.run(DataGenerator, params={"count": 2, "seed": 7})
+    pipeline.run(
+        ConfigDeclarationCurator,
+        inputs={"referenced": generated.output("datasets")},
+        params={"declare_all": declare_all},
     )
-    # Sanity: each output draft should have at least 2 parents (primary + secondary).
-    assert len(auto_tuples) >= 2 * len(auto_targets), (
-        "Expected primary + co-input edges; got only "
-        f"{len(auto_tuples)} edges for {len(auto_targets)} outputs."
+    assert pipeline.finalize()["overall_success"]
+    store = ArtifactStore(pipeline_env["delta_root"])
+    ids = store.provenance.load_artifact_ids_by_type("config", step_numbers=[1])
+    assert len(ids) == 1
+    configs = store.get_artifacts_by_type(list(ids), "config")
+    refs = sorted(set(next(iter(configs.values())).get_artifact_references()))
+    assert len(refs) == 2
+    edges = load_artifact_edges(pipeline_env["delta_root"], ids)
+    expected = refs if declare_all else refs[:1]
+    assert sorted(edges["source_artifact_id"]) == expected
+    assert set(edges["source_role"]) == {"referenced"}
+    assert set(edges["target_role"]) == {"config"}
+    assert edges["group_id"].null_count() == (0 if declare_all else 1)
+
+
+class DeclarationCreator(OperationDefinition):
+    """Emit a perfectly named output and optionally omit its declaration."""
+
+    name = "declaration_creator"
+
+    class Params(BaseModel):
+        omit: bool = Field(
+            default=False, description="Omit lineage to exercise failure behavior."
+        )
+
+    params: Params = Params()
+
+    class InputRole(StrEnum):
+        dataset = auto()
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "dataset": InputSpec(artifact_type="data"),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "result": OutputSpec(
+            artifact_type="metric", derives_from={"inputs": ["dataset"]}
+        ),
+    }
+
+    def preprocess(self, inputs: PreprocessInput) -> dict:
+        return {}
+
+    def execute_function(self, inputs: ExecuteInput) -> None:
+        pass
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        parent = inputs.input_artifacts["dataset"][0]
+        result = ArtifactResult()
+        result.add_artifact(
+            "result",
+            MetricArtifact.draft(
+                content={"score": 1},
+                original_name=parent.original_name,
+                step_number=inputs.step_number,
+            ),
+            sources={"dataset": [parent.artifact_id]},
+        )
+        if self.params.omit:
+            result.lineage = {}
+        return result
+
+
+class DeclarationCurator(DeclarationCreator):
+    """Exercise the same required declaration on the curator boundary."""
+
+    name = "declaration_curator"
+    execute_function = OperationDefinition.execute_function
+
+    def execute_curator(self, inputs, step_number, artifact_store) -> ArtifactResult:
+        parent_id = inputs["dataset"]["artifact_id"][0]
+        parent = artifact_store.get_artifacts_by_type([parent_id], "data")[parent_id]
+        return self.postprocess(
+            PostprocessInput(
+                input_artifacts={"dataset": [parent]},
+                step_number=step_number,
+                memory_outputs=None,
+                file_outputs=[],
+                postprocess_dir="",
+            )
+        )
+
+
+@pytest.mark.parametrize("operation", [DeclarationCreator, DeclarationCurator])
+@pytest.mark.parametrize("omit", [True, False])
+def test_missing_declaration_never_falls_back_to_names(
+    pipeline_env, operation, omit
+) -> None:
+    """Matching filenames cannot rescue a missing declaration or stage success."""
+    pipeline = PipelineManager.create(name="required_declaration", **pipeline_env)
+    generated = pipeline.run(DataGenerator, params={"count": 1})
+    step = pipeline.run(
+        operation,
+        inputs={"dataset": generated.output("datasets")},
+        params={"omit": omit},
     )
+    assert bool(step.failed_count) is omit
+    assert pipeline.finalize()["overall_success"] is (not omit)
+    executions = read_table(pipeline_env["delta_root"], "orchestration/executions")
+    current = executions.filter(pl.col("origin_step_number") == 1)
+    assert current.height == 1
+    assert current["success"][0] is (not omit)
