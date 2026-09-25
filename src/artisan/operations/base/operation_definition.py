@@ -130,11 +130,11 @@ class OperationDefinition(BaseModel):
         outputs: ClassVar[dict[str, OutputSpec]] = {
             "processed_data": OutputSpec(
                 artifact_type=ArtifactTypes.DATA,
-                infer_lineage_from={"inputs": ["data"]},
+                derives_from={"inputs": ["data"]},
             ),
             "scores": OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"outputs": ["processed_data"]},
+                derives_from={"outputs": ["processed_data"]},
             ),
         }
     """
@@ -203,15 +203,10 @@ class OperationDefinition(BaseModel):
           pair must produce a distinct artifact, its semantic content must
           depend on all inputs; identical semantic artifacts share one stored
           ``artifact_id`` even when they come from different pairs.
-        - **CROSS_PRODUCT lineage automatic recovery.** Lineage capture
-          recovers pair indices from the per-slot execute directory layout
-          when ``per_artifact_dispatch=True`` (the default) **and** every
-          output draft is backed by a file under its slot's ``execute_dir``.
-          When ``per_artifact_dispatch=False`` + CROSS_PRODUCT +
-          ``artifacts_per_unit > 1``, or for memory-only outputs (no file
-          on disk), the framework cannot recover pair-index automatically;
-          the operation author must set ``ArtifactResult.lineage``
-          explicitly when ``group_by`` is active.
+        - **Explicit ancestry.** Operations declare the exact parents used for
+          each output in ``ArtifactResult.lineage``. Carry those IDs with each
+          produced record or file, including repeated inputs in different pairs.
+          Input pairing and dispatch directories never supply output lineage.
     """
 
     per_artifact_dispatch: ClassVar[bool] = True
@@ -538,10 +533,10 @@ class OperationDefinition(BaseModel):
         is_creator = has_execute_function or has_execute_command
         if is_creator:
             for role_name, spec in cls.outputs.items():
-                if spec.infer_lineage_from is None:
+                if spec.derives_from is None:
                     msg = (
                         f"{cls.__name__}.outputs['{role_name}'] must set "
-                        "infer_lineage_from (explicit lineage required for creators)"
+                        "derives_from (explicit lineage required for creators)"
                     )
                     raise TypeError(msg)
 
@@ -625,7 +620,7 @@ class OperationDefinition(BaseModel):
     def _validate_lineage_roles(cls) -> None:
         """Validate each output's lineage references against declared roles."""
         for output_role, spec in cls.outputs.items():
-            lineage = spec.infer_lineage_from
+            lineage = spec.derives_from
             if lineage is None:
                 continue
             input_refs = lineage.get("inputs")
@@ -641,7 +636,7 @@ class OperationDefinition(BaseModel):
             if output_refs is not None:
                 if output_role in output_refs:
                     msg = (
-                        f"{cls.__name__}.outputs[{output_role!r}] cannot infer "
+                        f"{cls.__name__}.outputs[{output_role!r}] cannot derive "
                         "lineage from itself"
                     )
                     raise TypeError(msg)
@@ -652,6 +647,28 @@ class OperationDefinition(BaseModel):
                         f"output roles {unknown}; declared roles are {list(cls.outputs)}"
                     )
                     raise TypeError(msg)
+
+        dependencies = {
+            role: (spec.derives_from or {}).get("outputs", [])
+            for role, spec in cls.outputs.items()
+        }
+        visited: set[str] = set()
+        visiting: set[str] = set()
+
+        def visit(role: str) -> None:
+            if role in visiting:
+                msg = f"{cls.__name__} has a cycle in output lineage at {role!r}"
+                raise TypeError(msg)
+            if role in visited:
+                return
+            visiting.add(role)
+            for parent in dependencies[role]:
+                visit(parent)
+            visiting.remove(role)
+            visited.add(role)
+
+        for role in dependencies:
+            visit(role)
 
     @classmethod
     def _validate_execute_as_tool(
