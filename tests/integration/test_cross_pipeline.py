@@ -487,3 +487,137 @@ def test_ingest_partial_source_imports_only_successful_execution_outputs(
     accepted = get_execution_outputs(source.config.delta_root, 1, "dataset")
     assert len(accepted) == 2
     assert _imported_source_ids(destination, 0) == set(accepted)
+
+
+def test_config_sweep_preserves_declared_ancestry_and_resolved_paths(
+    pipeline_env: dict[str, str],
+) -> None:
+    """Every dataset/config variant keeps its parent through an actual script run."""
+    from artisan.operations.examples import DataTransformerScript
+
+    from .conftest import load_artifact_edges
+
+    pipeline = PipelineManager.create(
+        name="explicit_config_workflow", preserve_working=True, **pipeline_env
+    )
+    data = pipeline.run(
+        DataGenerator, params={"count": 2, "seed": 31, "rows_per_file": 3}
+    )
+    configs = pipeline.run(
+        DataTransformerConfig,
+        inputs={"dataset": data.output("datasets")},
+        params={
+            "scale_factors": [1.0, 2.0],
+            "noise_amplitudes": [0.0, 0.1],
+            "seed": 31,
+        },
+        batch_strategy={"artifacts_per_unit": 2},
+    )
+    pipeline.run(
+        DataTransformerScript,
+        inputs={"dataset": data.output("datasets"), "config": configs.output("config")},
+        batch_strategy={"artifacts_per_unit": 4},
+    )
+    assert pipeline.finalize()["overall_success"]
+    delta_root = pipeline_env["delta_root"]
+    data_ids = set(get_execution_outputs(delta_root, 0, "datasets"))
+    config_ids = set(get_execution_outputs(delta_root, 1, "config"))
+    output_ids = set(get_execution_outputs(delta_root, 2, "dataset"))
+    assert len(data_ids) == 2
+    assert len(config_ids) == len(output_ids) == 8
+    config_rows = read_table(delta_root, "artifacts/configs").filter(
+        pl.col("artifact_id").is_in(config_ids)
+    )
+    config_edges = load_artifact_edges(delta_root, config_ids)
+    output_edges = load_artifact_edges(delta_root, output_ids)
+    assert config_edges.height == output_edges.height == 8
+    assert set(config_edges["source_role"]) == {"dataset"}
+    assert set(output_edges["source_role"]) == {"config"}
+    assert set(output_edges["source_artifact_id"]) == config_ids
+    expected_parents = {
+        row["artifact_id"]: json.loads(row["content"])["input"]["$artifact"]
+        for row in config_rows.iter_rows(named=True)
+    }
+    assert set(expected_parents.values()) == data_ids
+    assert set(
+        zip(
+            config_edges["target_artifact_id"],
+            config_edges["source_artifact_id"],
+            strict=True,
+        )
+    ) == set(expected_parents.items())
+    resolved_configs = []
+    for path in Path(pipeline_env["working_root"]).rglob("*.json"):
+        if path.stem not in config_ids:
+            continue
+        content = json.loads(path.read_text())
+        if isinstance(content.get("input"), str):
+            resolved_configs.append((path, content))
+    assert {path.stem for path, _ in resolved_configs} == config_ids
+    for path, content in resolved_configs:
+        input_path = Path(content["input"])
+        assert input_path.exists()
+        assert input_path.stem == expected_parents[path.stem]
+        assert input_path.read_bytes()
+
+
+def test_imported_configs_are_explicit_new_roots(
+    dual_pipeline_env: dict[str, dict[str, str]],
+) -> None:
+    """Importing configs deliberately preserves content without foreign-ID edges."""
+    source = PipelineManager.create(name="config_source", **dual_pipeline_env["a"])
+    data = source.run(DataGenerator, params={"count": 1, "seed": 24})
+    source.run(DataTransformerConfig, inputs={"dataset": data.output("datasets")})
+    assert source.finalize()["overall_success"]
+    destination = PipelineManager.create(name="config_import", **dual_pipeline_env["b"])
+    destination.run(
+        IngestPipelineStep,
+        params={
+            "source_delta_root": source.config.delta_root,
+            "source_run_id": source.config.pipeline_run_id,
+            "source_step": 1,
+            "artifact_type": "config",
+        },
+    )
+    assert destination.finalize()["overall_success"]
+    imported = read_table(destination.config.delta_root, "artifacts/configs")
+    assert imported.height == 1
+    original = read_table(source.config.delta_root, "artifacts/configs")
+    assert imported["content"].to_list() == original["content"].to_list()
+    assert imported["artifact_id"].to_list() != original["artifact_id"].to_list()
+    assert read_table(
+        destination.config.delta_root, TablePath.ARTIFACT_EDGES.value
+    ).is_empty()
+
+
+def test_import_rejects_source_store_with_inferred_lineage_format(
+    dual_pipeline_env: dict[str, dict[str, str]],
+) -> None:
+    """The source-store boundary cannot admit historical inferred provenance."""
+    from artisan.storage.core.store_format import STORE_MANIFEST_PATH
+
+    source = PipelineManager.create(name="old_format_source", **dual_pipeline_env["a"])
+    source.run(DataGenerator, params={"count": 1, "seed": 42})
+    assert source.finalize()["overall_success"]
+    manifest_path = Path(source.config.delta_root) / STORE_MANIFEST_PATH
+    manifest = json.loads(manifest_path.read_text())
+    manifest["store_format"] = 5
+    manifest_path.write_text(json.dumps(manifest))
+    destination = PipelineManager.create(
+        name="reject_old_source", **dual_pipeline_env["b"]
+    )
+    result = destination.run(
+        IngestPipelineStep,
+        params={
+            "source_delta_root": source.config.delta_root,
+            "source_run_id": source.config.pipeline_run_id,
+            "source_step": 0,
+        },
+    )
+    assert not destination.finalize()["overall_success"]
+    assert result.error
+    assert "IncompatibleStoreError" in result.error
+    assert read_table(
+        destination.config.delta_root, TablePath.ARTIFACT_INDEX.value
+    ).is_empty()
+    assert json.loads(manifest_path.read_text())["store_format"] == 5
