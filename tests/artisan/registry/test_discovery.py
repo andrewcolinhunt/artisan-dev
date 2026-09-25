@@ -172,7 +172,7 @@ class TestNameCollision:
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     OutputRole.data: OutputSpec(
                         artifact_type=ArtifactTypes.DATA,
-                        infer_lineage_from={"inputs": ["data"]},
+                        derives_from={"inputs": ["data"]},
                     ),
                 }
 

@@ -52,7 +52,7 @@ class DocstringOnlyOp(OperationDefinition):
         OutputRole.dataset: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
             description="Pass-through output for the fixture.",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 

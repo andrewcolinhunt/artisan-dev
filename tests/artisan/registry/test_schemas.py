@@ -92,7 +92,7 @@ class TestFieldPrecedence:
                 OutputRole.dataset: OutputSpec(
                     artifact_type=ArtifactTypes.DATA,
                     description="x",
-                    infer_lineage_from={"inputs": ["dataset"]},
+                    derives_from={"inputs": ["dataset"]},
                 ),
             }
 

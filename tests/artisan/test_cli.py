@@ -28,7 +28,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 _RUNNER_OUTPUTS: dict[str, OutputSpec] = {
     "result": OutputSpec(
         artifact_type=ArtifactTypes.DATA,
-        infer_lineage_from={"inputs": []},
+        derives_from={"inputs": []},
     ),
 }
 

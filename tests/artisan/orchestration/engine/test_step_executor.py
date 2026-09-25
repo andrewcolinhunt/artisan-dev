@@ -216,7 +216,7 @@ class _SimpleCreatorOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.FILE_REF,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
@@ -243,7 +243,7 @@ class _SimpleToolOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.FILE_REF,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
@@ -777,9 +777,7 @@ class MockIngestOp(OperationDefinition):
         InputRole.file: InputSpec(artifact_type=ArtifactTypes.FILE_REF, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.data: OutputSpec(
-            artifact_type=ArtifactTypes.FILE_REF, is_memory_output=True
-        ),
+        OutputRole.data: OutputSpec(artifact_type=ArtifactTypes.FILE_REF),
     }
 
     def preprocess(self, inputs: PreprocessInput) -> dict:
@@ -853,7 +851,7 @@ class MockMultiInputCreatorOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.FILE_REF,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
@@ -880,7 +878,7 @@ class MockNoGroupByCreatorOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.FILE_REF,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
@@ -910,7 +908,6 @@ class MockMultiInputCuratorOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.FILE_REF,
-            is_memory_output=True,
         ),
     }
 
@@ -934,7 +931,6 @@ class MockNoGroupByCuratorOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.FILE_REF,
-            is_memory_output=True,
         ),
     }
 
@@ -3142,7 +3138,7 @@ class _DefaultHashOpV1(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "result": OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -3177,7 +3173,7 @@ class _DefaultHashOpV2(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "result": OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 

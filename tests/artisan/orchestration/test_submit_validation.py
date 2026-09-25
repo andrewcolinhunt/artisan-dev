@@ -81,9 +81,7 @@ class MockOpWithParams(OperationDefinition):
     name: ClassVar[str] = "mock_with_params"
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     class Params(BaseModel):
@@ -121,7 +119,7 @@ class MockCreatorOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
@@ -152,9 +150,7 @@ class MockCuratorOp(OperationDefinition):
         InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -173,9 +169,7 @@ class MockRuntimeInputsOp(OperationDefinition):
     runtime_defined_inputs: ClassVar[bool] = True
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.merged: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.merged: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -202,9 +196,7 @@ class MockOpWithOptionalInput(OperationDefinition):
         ),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -227,9 +219,7 @@ class MockOpWithAnyInput(OperationDefinition):
         InputRole.data: InputSpec(artifact_type=ArtifactTypes.ANY, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:

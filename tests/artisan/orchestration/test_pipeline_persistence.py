@@ -37,11 +37,11 @@ class MockOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.data: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
         OutputRole.metrics: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"outputs": ["data"]},
+            derives_from={"outputs": ["data"]},
         ),
     }
 

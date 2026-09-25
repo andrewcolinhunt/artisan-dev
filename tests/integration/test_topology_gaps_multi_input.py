@@ -16,7 +16,6 @@ import pytest
 pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.curator import Filter
 from artisan.operations.examples import (
     DataGenerator,
@@ -28,7 +27,6 @@ from artisan.operations.examples import (
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -44,8 +42,10 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from .conftest import (
     count_artifacts_by_step,
     count_executions_by_step,
+    declared_file_result,
     get_execution_outputs,
     get_step_status,
+    prepare_paired_files,
 )
 
 # =============================================================================
@@ -78,7 +78,7 @@ class DualInputConfigConsumer(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["dataset", "config"]},
+            derives_from={"inputs": ["dataset", "config"]},
         ),
     }
     group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
@@ -87,10 +87,7 @@ class DualInputConfigConsumer(OperationDefinition):
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_config_consumer")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return prepare_paired_files(inputs)
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
@@ -100,7 +97,8 @@ class DualInputConfigConsumer(OperationDefinition):
         if isinstance(dataset_files, (str, Path)):
             dataset_files = [dataset_files]
 
-        for df_path in dataset_files:
+        records = []
+        for index, df_path in enumerate(dataset_files):
             df_path = Path(df_path)
             with open(df_path) as fh:
                 reader = csv.DictReader(fh)
@@ -115,22 +113,14 @@ class DualInputConfigConsumer(OperationDefinition):
                     row["consumed"] = "1"
                     writer.writerow(row)
 
-        return {}
+            records.append(
+                {"path": str(out_path), "sources": inputs.inputs["source_ids"][index]}
+            )
+
+        return {"records": records}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = []
-        for f in inputs.file_outputs:
-            if f.endswith(".csv"):
-                with open(f, "rb") as fh:
-                    content = fh.read()
-                drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(f),
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return declared_file_result(inputs)
 
 
 # =============================================================================
