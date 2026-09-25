@@ -25,6 +25,7 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.utils import generate_execution_run_id
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -83,7 +84,7 @@ class MetricCopyTestOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": ["source"]},
+            derives_from={"inputs": ["source"]},
         ),
     }
 
@@ -132,7 +133,17 @@ class MetricCopyTestOp(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        source_ids = match_outputs_to_inputs_by_stem(
+            [draft.original_name for draft in drafts],
+            [
+                (a.materialized_path, a.artifact_id)
+                for a in inputs.input_artifacts["source"]
+            ],
+        )
+        result = ArtifactResult()
+        for draft, source_id in zip(drafts, source_ids, strict=True):
+            result.add_artifact("output", draft, sources={"source": [source_id]})
+        return result
 
 
 class GenerativeTestOp(OperationDefinition):
@@ -149,7 +160,7 @@ class GenerativeTestOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": []},  # Orphan - no lineage required
+            derives_from={"inputs": []},  # Explicit root contract
         ),
     }
 
@@ -185,7 +196,7 @@ class GenerativeTestOp(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        return ArtifactResult(artifacts={"output": drafts}, lineage={"output": []})
 
 
 class EchoToolTestOp(OperationDefinition):
@@ -199,7 +210,7 @@ class EchoToolTestOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -225,7 +236,7 @@ class EchoToolTestOp(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        return ArtifactResult(artifacts={"output": drafts}, lineage={"output": []})
 
 
 class FailingTestOp(OperationDefinition):
@@ -280,7 +291,7 @@ class MetricOutputTestOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.scores: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": []},  # Orphan - no lineage required
+            derives_from={"inputs": []},  # Explicit root contract
         ),
     }
 
@@ -306,7 +317,7 @@ class MetricOutputTestOp(OperationDefinition):
                 step_number=inputs.step_number,
             ),
         ]
-        return ArtifactResult(success=True, artifacts={"scores": drafts})
+        return ArtifactResult(artifacts={"scores": drafts}, lineage={"scores": []})
 
 
 @pytest.fixture

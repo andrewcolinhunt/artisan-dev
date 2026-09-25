@@ -184,7 +184,7 @@ def validate_stem_match_uniqueness(
         msg = (
             f"Stem-matched role '{role_name}' has duplicate original_name values: "
             f"{sorted(duplicates)}. Each artifact in the stem-matched role must "
-            f"have a unique name for lineage inference."
+            f"have a unique name for NAME input grouping."
         )
         raise ValueError(msg)
 

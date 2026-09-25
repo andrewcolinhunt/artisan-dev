@@ -44,7 +44,7 @@ class _FilesDirCapture(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -68,7 +68,7 @@ class _FilesDirCapture(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        return ArtifactResult(artifacts={"output": drafts}, lineage={"output": []})
 
 
 class TestExecuteInputFilesDir:

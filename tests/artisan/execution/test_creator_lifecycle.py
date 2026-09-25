@@ -1,7 +1,7 @@
 """End-to-end tests for artifact-ID materialization through the creator lifecycle.
 
-Verifies: materialization with artifact_id filenames -> filesystem match map
--> lineage via match map -> name derivation -> correct original_name in output.
+Verifies artifact-ID materialization and operation-owned matching and naming.
+The lifecycle preserves names and parent declarations returned by the operation.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from artisan.execution.executors.creator import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
@@ -66,9 +67,8 @@ def _setup_delta(base_path: Path, artifacts: list[MetricArtifact]) -> None:
 class _SuffixOp(OperationDefinition):
     """Test operation that reads inputs by materialized path and appends a suffix.
 
-    The key behavior: the output filename preserves the input filename stem
-    (the artifact_id) plus a suffix. This allows the filesystem
-    match map to connect outputs back to inputs.
+    The operation opts into the public matcher for its filename convention
+    and chooses its own human-readable output names.
     """
 
     class InputRole(StrEnum):
@@ -84,7 +84,7 @@ class _SuffixOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type="metric",
-            infer_lineage_from={"inputs": ["source"]},
+            derives_from={"inputs": ["source"]},
         ),
     }
 
@@ -124,7 +124,19 @@ class _SuffixOp(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        source_ids = match_outputs_to_inputs_by_stem(
+            [draft.original_name for draft in drafts],
+            [
+                (a.materialized_path, a.artifact_id)
+                for a in inputs.input_artifacts["source"]
+            ],
+        )
+        sources = {a.artifact_id: a for a in inputs.input_artifacts["source"]}
+        result = ArtifactResult()
+        for draft, source_id in zip(drafts, source_ids, strict=True):
+            draft.original_name = sources[source_id].original_name + self.params.suffix
+            result.add_artifact("output", draft, sources={"source": [source_id]})
+        return result
 
 
 @pytest.fixture
@@ -139,8 +151,8 @@ def delta_with_named_input(tmp_path: Path):
     return base, aid
 
 
-class TestCreatorLifecycleNameDerivation:
-    """End-to-end: materialization -> match map -> lineage -> name derivation."""
+class TestCreatorLifecycleDeclaredLineage:
+    """End-to-end materialization with explicitly declared parents and names."""
 
     def test_output_gets_human_name_with_suffix(
         self, delta_with_named_input, tmp_path: Path

@@ -32,7 +32,7 @@ class _EchoTool(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -63,7 +63,7 @@ class _FunctionOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -84,7 +84,7 @@ class _FlagOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 

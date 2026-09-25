@@ -17,13 +17,10 @@ import polars as pl
 
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.lineage.builder import build_edges
-from artisan.execution.lineage.capture import capture_lineage_metadata
-from artisan.execution.lineage.enrich import (
-    build_artifact_edges_from_dict,
-    build_config_reference_edges,
-)
+from artisan.execution.lineage.enrich import build_artifact_edges_from_types
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
+    validate_lineage_completeness,
     validate_lineage_integrity,
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
@@ -51,9 +48,6 @@ from artisan.execution.utils import (
     validate_passthrough_result,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import (
     ArtifactResult,
@@ -62,7 +56,6 @@ from artisan.schemas.execution.curator_result import (
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.utils.hashing import serialize_params
 from artisan.utils.timing import phase_timer
@@ -80,66 +73,12 @@ def is_curator_operation(op: type[OperationDefinition] | OperationDefinition) ->
     )
 
 
-def _hydrate_inputs_for_lineage(
-    inputs: dict[str, list[str]],
-    output_specs: dict[str, OutputSpec],
-    artifact_store: ArtifactStore,
-) -> dict[str, list[Artifact]]:
-    """Hydrate only input roles referenced by OutputSpec.infer_lineage_from.
-
-    Lineage capture needs Artifact objects with original_name for stem-matching.
-    This helper hydrates only the specific roles needed, avoiding full
-    instantiation of all inputs.
-
-    Args:
-        inputs: Raw inputs {role: [artifact_id, ...]}.
-        output_specs: Operation output specs to check infer_lineage_from.
-        artifact_store: Store for artifact hydration.
-
-    Returns:
-        {role: [Artifact, ...]} for roles referenced by lineage config.
-    """
-    needed_roles: set[str] = set()
-    for spec in output_specs.values():
-        if spec.infer_lineage_from is not None:
-            for input_role in spec.infer_lineage_from.get("inputs", []):
-                needed_roles.add(input_role)
-
-    result: dict[str, list[Artifact]] = {}
-    for role in needed_roles:
-        ids = inputs.get(role, [])
-        if not ids:
-            continue
-
-        # Resolve each artifact's type from the provenance type map
-        type_map = artifact_store.provenance.load_type_map(ids)
-
-        # Group by type for bulk loading
-        ids_by_type: dict[str, list[str]] = {}
-        for aid in ids:
-            atype = type_map.get(aid)
-            if atype:
-                ids_by_type.setdefault(atype, []).append(aid)
-
-        role_artifacts: dict[str, Artifact] = {}
-        for atype, type_ids in ids_by_type.items():
-            loaded = artifact_store.get_artifacts_by_type(type_ids, atype)
-            role_artifacts.update(loaded)
-
-        # Preserve input order
-        result[role] = [role_artifacts[aid] for aid in ids if aid in role_artifacts]
-
-    return result
-
-
 def _handle_artifact_result(
     result: ArtifactResult,
     operation: OperationDefinition,
     artifact_store: ArtifactStore,
     execution_context: ExecutionContext,
-    unit: ExecutionUnit,
-    inputs: dict[str, Any],
-    input_artifacts: dict[str, list[Artifact]],
+    inputs: dict[str, list[str]],
     timestamp_end: datetime,
     command_recording: CommandRecording,
     replay_snapshot: ReplaySnapshot,
@@ -147,58 +86,35 @@ def _handle_artifact_result(
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Finalize, validate, and stage new artifacts from a curator result."""
+    validate_artifacts_match_specs(
+        result.artifacts, operation.outputs, allow_dynamic_outputs=True
+    )
+    validate_lineage_integrity(
+        result.lineage, inputs, result.artifacts, operation.outputs
+    )
+    validate_lineage_completeness(result.artifacts, operation.outputs, result.lineage)
     finalized = finalize_artifacts(result.artifacts)
-    validate_artifacts_match_specs(finalized, operation.outputs)
-    artifact_edges: list[ArtifactProvenanceEdge] = []
-
-    # Build lookup of all artifacts for lineage edge construction
-    built_artifacts: dict[str, Artifact] = {}
-    for artifact_list in finalized.values():
-        for artifact in artifact_list:
-            if artifact.artifact_id is not None:
-                built_artifacts[artifact.artifact_id] = artifact
-    for artifact_list in input_artifacts.values():
-        for artifact in artifact_list:
-            if artifact.artifact_id is not None:
-                built_artifacts[artifact.artifact_id] = artifact
-
-    # Honor explicit lineage from the curator result, mirroring the creator pattern
-    output_specs = getattr(operation, "outputs", {})
-    if result.lineage is None:
-        lineage = capture_lineage_metadata(
-            finalized,
-            input_artifacts,
-            output_specs,
-            group_by=operation.group_by,
-            group_ids=unit.group_ids,
-        )
-    else:
-        validate_lineage_integrity(result.lineage, input_artifacts, finalized)
-        lineage = result.lineage
-    pairs = build_edges(lineage, finalized)
-    if pairs:
-        artifact_edges.extend(
-            build_artifact_edges_from_dict(
-                source_target_pairs=pairs,
-                execution_run_id=execution_context.execution_run_id,
-                built_artifacts=built_artifacts,
-            )
-        )
-
-    config_artifacts = [
-        artifact
-        for artifact_list in finalized.values()
-        for artifact in artifact_list
-        if isinstance(artifact, ExecutionConfigArtifact)
-    ]
-    if config_artifacts:
-        artifact_edges.extend(
-            build_config_reference_edges(
-                config_artifacts=config_artifacts,
-                artifact_store=artifact_store,
-                execution_run_id=execution_context.execution_run_id,
-            )
-        )
+    source_ids = {
+        mapping.source_artifact_id
+        for mappings in result.lineage.values()
+        for mapping in mappings
+        if mapping.source_artifact_id is not None
+    }
+    artifact_types = (
+        artifact_store.provenance.load_type_map(sorted(source_ids)) if source_ids else {}
+    )
+    artifact_types.update(
+        {
+            artifact.artifact_id: artifact.artifact_type
+            for artifacts in finalized.values()
+            for artifact in artifacts
+            if artifact.artifact_id is not None
+        }
+    )
+    pairs = build_edges(result.lineage, finalized, artifact_types)
+    artifact_edges = build_artifact_edges_from_types(
+        pairs, execution_context.execution_run_id, artifact_types
+    )
 
     params_dict = serialize_params(operation)
     return record_execution_success(
@@ -360,11 +276,6 @@ def _run_curator_flow(
 
                 match result_with_metadata:
                     case ArtifactResult():
-                        # Hydrate only input roles needed for lineage
-                        output_specs = getattr(operation, "outputs", {})
-                        input_artifacts = _hydrate_inputs_for_lineage(
-                            inputs, output_specs, artifact_store
-                        )
                         staging_result = _handle_artifact_result(
                             **replay_recording_fields(),
                             command_recording=command_snapshot(),
@@ -372,9 +283,7 @@ def _run_curator_flow(
                             operation=operation,
                             artifact_store=artifact_store,
                             execution_context=execution_context,
-                            unit=unit,
                             inputs=inputs,
-                            input_artifacts=input_artifacts,
                             timestamp_end=timestamp_end,
                             user_overrides=user_overrides,
                         )

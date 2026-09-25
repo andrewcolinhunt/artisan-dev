@@ -1,6 +1,6 @@
-"""Lightweight source-target pair for lineage inference.
+"""Lightweight source-target pair resolved from explicit lineage declarations.
 
-Created by ``LineageBuilder`` during execution, later enriched with
+Created by the lineage builder during execution, later enriched with
 execution context and artifact types to produce full
 ``ArtifactProvenanceEdge`` records.
 """
@@ -23,7 +23,7 @@ class SourceTargetPair:
         target: Artifact ID of the derived artifact.
         source_role: Role name of the source artifact.
         target_role: Role name of the target artifact.
-        group_id: Hash linking co-input edges. None for single-input.
+        group_id: Hash of the jointly declared parent set; None for one parent.
     """
 
     source: str

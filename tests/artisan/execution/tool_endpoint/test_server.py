@@ -32,6 +32,7 @@ from artisan.execution.tool_endpoint.server import (
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import WaitTool
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.operation_config.compute import (
@@ -78,7 +79,7 @@ class FailTool(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -105,7 +106,7 @@ class CatTool(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["source"]},
+            derives_from={"inputs": ["source"]},
         ),
     }
 
@@ -130,7 +131,7 @@ class NoopTool(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -144,8 +145,8 @@ class _CloudInputTool(OperationDefinition):
     """Endpoint-routed command op with a cloud ``large_file`` input.
 
     Names its output from the input file stem (``<stem>_waited.csv``) and
-    declares ``infer_lineage_from`` so lineage capture ties the output back
-    to the input — the shape the endpoint-routing skip must preserve.
+    explicitly matches output names to transported input names in postprocess.
+    Endpoint routing must preserve that operation-owned naming convention.
     """
 
     class InputRole(StrEnum):
@@ -162,7 +163,7 @@ class _CloudInputTool(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["source"]},
+            derives_from={"inputs": ["source"]},
         ),
     }
 
@@ -202,7 +203,17 @@ class _CloudInputTool(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        source_ids = match_outputs_to_inputs_by_stem(
+            [draft.original_name for draft in drafts],
+            [
+                (a.materialized_path, a.artifact_id)
+                for a in inputs.input_artifacts["source"]
+            ],
+        )
+        result = ArtifactResult()
+        for draft, source_id in zip(drafts, source_ids, strict=True):
+            result.add_artifact("output", draft, sources={"source": [source_id]})
+        return result
 
 
 def _tar_names(payload: bytes) -> list[str]:
@@ -1035,11 +1046,11 @@ class TestEndpointRoutedLineageMinIO:
         assert len(outputs) == 1
         out = outputs[0]
         # human-readable name from the natural basename — no artifact_id
-        # prefix to strip (derive_human_names is a no-op with the empty map)
+        # prefix to strip; postprocess selects the natural output name.
         assert out.original_name == "dataset_00001_waited"
         assert not out.original_name.startswith(art.artifact_id)
-        # input→output edge captured via the original_name stem fallback,
-        # even though the filesystem match map is empty under the skip
+        # The operation explicitly matches the transported basename and
+        # declares the input-to-output relationship.
         edges = {(e.source_artifact_id, e.target_artifact_id) for e in result.edges}
         assert (art.artifact_id, out.artifact_id) in edges
 
