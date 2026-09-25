@@ -84,18 +84,15 @@ class MyOperation(OperationDefinition):
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
             description="Transformed dataset",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
     class Params(BaseModel):
         """Algorithm parameters for MyOperation."""
 
-        threshold: float = Field(
-            default=0.5,
-            ge=0.0,
-            le=1.0,
-            description="Filtering threshold",
+        factor: float = Field(
+            default=2.0, ge=0.0, description="Multiplier for CSV values",
         )
 
     params: Params = Params()
@@ -105,34 +102,40 @@ class MyOperation(OperationDefinition):
     batch_strategy: BatchStrategy = BatchStrategy(job_name="my_operation")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
-        return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return {"datasets": PerArtifact([
+            {"path": a.materialized_path, "source_id": a.artifact_id,
+             "name": a.original_name}
+            for a in inputs.input_artifacts["dataset"]
+        ])}
 
-    def execute_function(self, inputs: ExecuteInput) -> Any:
-        """Core computation. Read from inputs, write to execute_dir."""
-        ...
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+        outputs = []
+        for item in inputs.inputs["datasets"]:
+            path = Path(item["path"])
+            lines = path.read_text().splitlines()
+            header, rows = lines[0], lines[1:]
+            scaled = []
+            for row in rows:
+                parts = row.split(",")
+                parts[1] = str(float(parts[1]) * self.params.factor)
+                scaled.append(",".join(parts))
+            out = Path(inputs.execute_dir) / path.name
+            out.write_text(header + "\n" + "\n".join(scaled) + "\n")
+            outputs.append({"path": str(out), "source_id": item["source_id"],
+                            "name": f"{item['name']}_scaled.csv"})
+        return {"outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build draft artifacts from execution outputs."""
-        drafts = []
-        for file_name in inputs.file_outputs:
-            file_path = Path(file_name)
-            if file_path.suffix == ".csv":
-                drafts.append(
-                    DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
-                        step_number=inputs.step_number,
-                    )
-                )
-
-        return ArtifactResult(
-            success=True,
-            artifacts={"dataset": drafts},
-        )
+        result = ArtifactResult()
+        for item in inputs.memory_outputs["outputs"]:
+            draft = DataArtifact.draft(
+                content=Path(item["path"]).read_bytes(),
+                original_name=item["name"],
+                step_number=inputs.step_number,
+            )
+            result.add_artifact("dataset", draft,
+                                sources={"dataset": [item["source_id"]]})
+        return result
 ```
 
 ## Runner selection belongs in the pipeline
@@ -222,7 +225,9 @@ class MyCurator(OperationDefinition):
 
 ## Lineage Patterns
 
-Every creator output **must** set `infer_lineage_from`. Curator outputs may use `None`.
+Every creator output **must** set `derives_from`. It declares required and
+allowed parent roles, never actual parents. Curator passthrough outputs may use
+`None`; artifact-producing curators follow the same explicit contract.
 
 | Pattern | Value | When to use |
 |---|---|---|
@@ -231,9 +236,39 @@ Every creator output **must** set `infer_lineage_from`. Curator outputs may use 
 | Output-to-output | `{"outputs": ["other_role"]}` | Co-produced artifact (e.g. metrics alongside data) |
 | Curator passthrough | `None` | Curator routing existing artifacts |
 
-**Stem-matching rule:** The framework infers 1:1 lineage by matching the
-`original_name` stem of output drafts against input artifact names. For
-transforms, preserve the input filename stem in the output name.
+Every emitted role must have a `lineage` entry, including present-empty roles.
+Every derived draft needs exact parents from all declared roles; no other roles
+are allowed. Roots explicitly return empty lists. Omitted optional roles appear
+in neither map. Duplicate names are legal; references use role-local indices.
+
+Use `result.add_artifact(role, draft, sources={"input_role": [source_id]})` to
+append the draft and its mappings together. String sources are input IDs;
+integer sources address co-produced output indices. `sources={}` declares a
+root. The helper returns the new draft index and never chooses its parents.
+Manual construction is equally supported:
+
+```python
+from artisan.schemas import ArtifactResult, LineageMapping
+
+result = ArtifactResult(
+    artifacts={"dataset": [draft]},
+    lineage={"dataset": [LineageMapping(
+        draft_index=0, source_role="dataset", source_artifact_id=source_id,
+    )]},
+)
+```
+
+Several parents in one role are allowed. For jointly necessary parents, supply
+the complete set; the framework hashes only that declared set into a group ID.
+Never copy an input dispatch group or guess a parent from an input position.
+
+When a tool's outputs encode their parents in filenames, the operation may
+explicitly call `match_outputs_to_inputs_by_stem` from
+`artisan.operations.lineage`, passing output names and chosen `(name, input_id)`
+candidates. It raises on no match or ambiguity. Executors never call it.
+Command operations and `execute_as_tool` have no Python return-value transport:
+use that helper or an operation-owned file manifest with relative output paths
+and exact parent IDs. Do not rely on an executor output-directory parser.
 
 ---
 
@@ -255,9 +290,9 @@ transforms, preserve the input filename stem in the output name.
 | `artifact_type` | `str` | Type of artifact produced |
 | `description` | `str` | Human-readable description |
 | `required` | `bool` | Whether the output must be non-empty |
-| `infer_lineage_from` | `dict \| None` | Lineage declaration (see patterns above) |
+| `derives_from` | `dict \| None` | Lineage declaration (see patterns above) |
 
-**`infer_lineage_from` constraints:** Empty dict `{}` is **invalid** (raises
+**`derives_from` constraints:** Empty dict `{}` is **invalid** (raises
 `ValidationError`). Combined `{"inputs": [...], "outputs": [...]}` is **not
 supported** — use separate output roles instead.
 
@@ -292,7 +327,9 @@ that need input context in postprocess (e.g., propagating annotations) use
 
 - Omit `InputRole`
 - Set `inputs: ClassVar[dict] = {}`
-- Set `infer_lineage_from={"inputs": []}` on all outputs
+- Set `derives_from={"inputs": []}` on all outputs
+- Return `ArtifactResult(artifacts={"datasets": drafts}, lineage={"datasets": []})`
+  or add each root with `sources={}`
 - Implement only `execute_function()` and `postprocess()` (no `preprocess()`)
 
 See `src/artisan/operations/examples/data_generator.py`.
@@ -313,6 +350,8 @@ def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
             {
                 "dataset": str(group["dataset"].materialized_path),
                 "config": str(group["config"].materialized_path),
+                "dataset_id": group["dataset"].artifact_id,
+                "config_id": group["config"].artifact_id,
             }
         )
     return {"items": PerArtifact(prepared)}
@@ -347,6 +386,9 @@ command-op form.
   placeholders in the content dict
 - The framework resolves `$artifact` references to materialized paths at
   execution time
+- Explicitly declare the same intended referenced parents in the result. The
+  executor does not scan config contents. An operation may call
+  `get_artifact_references()`, deduplicate IDs, and assign declared input roles.
 - Set `materialize=False` on the input to access artifact IDs without writing
   files to disk
 
@@ -354,10 +396,12 @@ See `src/artisan/operations/examples/data_transformer_config.py`.
 
 ## Variant: Output-to-output Lineage
 
-- Use `infer_lineage_from={"outputs": ["other_role"]}` when one output derives
+- Use `derives_from={"outputs": ["other_role"]}` when one output derives
   from another co-produced output (e.g. metrics computed alongside data)
 - The primary output uses `{"inputs": []}` or `{"inputs": ["role"]}`
-- The derived output points to the primary via `{"outputs": ["primary_role"]}`
+- Keep the index returned when adding the primary output; add the derived
+  output with `sources={"primary_role": [index]}`. Manual mappings use
+  `source_output_index=index`. The spec alone does not create an edge.
 
 See `src/artisan/operations/examples/data_generator_with_metrics.py`.
 
@@ -370,7 +414,7 @@ The framework validates at class definition time (import). These cause
 
 - Must declare exactly one execution slot: `execute_function()`,
   `execute_command()`, or `execute_curator()`
-- Creator outputs must set `infer_lineage_from` (cannot be `None`)
+- Creator outputs must set `derives_from` (cannot be `None`)
 - Creator operations with inputs must implement `preprocess()`
 - Must define `OutputRole(StrEnum)` with values matching `outputs` keys exactly
 - Must define `InputRole(StrEnum)` with values matching `inputs` keys exactly
@@ -393,8 +437,9 @@ MetricArtifact.draft(content=dict, original_name=str, step_number=int)
 ExecutionConfigArtifact.draft(content=dict, original_name=str, step_number=int)
 ```
 
-The `original_name` is critical: the framework uses filename stems for lineage
-matching. For 1:1 transforms, preserve the input's filename stem.
+Choose `original_name` explicitly for people reading the results. The framework
+preserves it; names never select parents. Finalization preserves output list
+order so explicit indices still reference the same drafts.
 
 ---
 
@@ -404,7 +449,7 @@ matching. For 1:1 transforms, preserve the input's filename stem.
 
 ```python
 def test_my_operation(tmp_path):
-    op = MyOperation(params=MyOperation.Params(threshold=0.8))
+    op = MyOperation(params=MyOperation.Params(factor=2.0))
 
     # Prepare input files
     input_csv = tmp_path / "input.csv"
@@ -412,10 +457,13 @@ def test_my_operation(tmp_path):
 
     execute_dir = tmp_path / "execute"
     execute_dir.mkdir()
-    execute_input = ExecuteInput(
-        execute_dir=str(execute_dir),
-        inputs={"dataset": str(input_csv)},
-    )
+    source = DataArtifact.draft(content=input_csv.read_bytes(),
+                                original_name="input.csv", step_number=0).finalize()
+    source.materialized_path = str(input_csv)
+    prepared = op.preprocess(PreprocessInput(
+        preprocess_dir=str(tmp_path / "pre"), input_artifacts={"dataset": [source]},
+    ))
+    execute_input = ExecuteInput(execute_dir=str(execute_dir), inputs=prepared)
     memory_outputs = op.execute_function(execute_input)
 
     post_input = PostprocessInput(
@@ -427,6 +475,7 @@ def test_my_operation(tmp_path):
     result = op.postprocess(post_input)
     assert result.success
     assert "dataset" in result.artifacts
+    assert result.lineage["dataset"][0].source_artifact_id == source.artifact_id
 ```
 
 Also run the operation through a pipeline with multiple inputs per execution

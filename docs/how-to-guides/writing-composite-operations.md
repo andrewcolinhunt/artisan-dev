@@ -154,7 +154,7 @@ inputs: ClassVar[dict[str, InputSpec]] = {
 ### Outputs
 
 Each entry maps a role name to an `OutputSpec`. Unlike creator
-operations, composites do not set `infer_lineage_from` — lineage is
+operations, composites do not set `derives_from` — lineage is
 handled by the internal operations:
 
 ```python
