@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from io import BytesIO
 from pathlib import Path
 from typing import Any
 
@@ -164,6 +165,31 @@ def test_recovery_reuses_finished_units_and_preserves_source_history(
         pl.col("step_run_id") == source_step
     )
     assert recovered.height == (3 if recover else 0)
+    recovered_edges = read_committed(delta, TablePath.ARTIFACT_EDGES, fs=fs).filter(
+        pl.col("execution_run_id").is_in(recovered["execution_run_id"])
+    )
+    if recover:
+        staged_edges = pl.concat(
+            [
+                pl.read_parquet(BytesIO(content))
+                for path, content in evidence.items()
+                if path.name == "artifact_edges.parquet"
+            ]
+        )
+        columns = [
+            "execution_run_id",
+            "source_artifact_id",
+            "target_artifact_id",
+            "source_role",
+            "target_role",
+            "group_id",
+        ]
+        assert staged_edges.height == 3
+        assert set(recovered_edges.select(columns).iter_rows()) == set(
+            staged_edges.select(columns).iter_rows()
+        )
+    else:
+        assert recovered_edges.is_empty()
     if not recover or preserve:
         assert all(path.read_bytes() == data for path, data in evidence.items())
     else:

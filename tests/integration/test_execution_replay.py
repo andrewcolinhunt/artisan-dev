@@ -137,6 +137,26 @@ def test_replay_python_unit_duplicates_fresh_ids_and_cache_exclusion(tmp_path):
         ids[1],
     ]
     assert replayed["replay_of_execution_run_id"] == source["execution_run_id"]
+    artifact_edges = _read(runtime, TablePath.ARTIFACT_EDGES)
+    columns = [
+        "source_artifact_id",
+        "target_artifact_id",
+        "source_role",
+        "target_role",
+        "source_artifact_type",
+        "target_artifact_type",
+        "group_id",
+    ]
+    source_edges = artifact_edges.filter(
+        pl.col("execution_run_id") == source["execution_run_id"]
+    )
+    replay_edges = artifact_edges.filter(
+        pl.col("execution_run_id") == result.execution_run_id
+    )
+    assert source_edges.height > 0
+    assert set(source_edges.select(columns).iter_rows()) == set(
+        replay_edges.select(columns).iter_rows()
+    )
     assert (
         cache_lookup(
             runtime.delta_root,
