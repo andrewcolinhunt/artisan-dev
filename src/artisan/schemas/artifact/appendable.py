@@ -67,7 +67,7 @@ class AppendableArtifact(Artifact):
     )
     original_name: str | None = Field(
         default=None,
-        description="Record key for operation-owned naming and matching (stem only).",
+        description="Human-readable record key (stem only).",
     )
     extension: str | None = Field(
         default=None,
@@ -185,7 +185,7 @@ class AppendableArtifact(Artifact):
             size_bytes: Size of this record's JSON line in bytes.
             step_number: Pipeline step number.
             external_path: Path to the JSONL file.
-            original_name: Record key for operation-owned naming and matching.
+            original_name: Human-readable record key.
             metadata: Optional metadata dict.
 
         Returns:

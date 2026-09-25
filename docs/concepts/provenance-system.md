@@ -63,16 +63,15 @@ Executions row                    A ──→ D
 "What went in and out"          "Which produced which"
 ```
 
-**Why you cannot derive artifact provenance later.** The information needed to
-match outputs to inputs -- filename stems and grouping indices -- is available
-only during the operation's lineage phase. Once execution finishes, this context
-is gone. Attempting to reconstruct lineage after the fact by scanning filenames
-or guessing relationships is brittle and unreliable.
+**Why execution records are insufficient.** A batch's input and output lists
+do not encode each output's exact parents. The operation must retain that
+association while computing and return it explicitly. Reconstructing it later
+from filenames or grouping positions can record the wrong relationship.
 
-**The framework's solution:** Lineage inference runs during a dedicated lineage
-phase (after postprocess), while context is still available. The resulting edges
-are staged alongside artifacts and exposed through the same completed logical
-commit. There is no separate "lineage reconstruction" step.
+**The framework's responsibility:** After postprocess, Artisan validates the
+declarations, resolves exact output references, and stages the resulting edges
+alongside artifacts. Both become visible through the same completed logical
+commit. There is no separate lineage reconstruction step.
 
 ---
 
