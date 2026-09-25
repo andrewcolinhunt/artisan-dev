@@ -1,32 +1,25 @@
-"""Enrich source-target lineage pairs into fully typed provenance edges.
-
-Provides three builders: from an in-memory artifact dict, from the
-artifact store, and for config-reference edges.
-"""
+"""Enrich explicitly declared artifact pairs with types and execution metadata."""
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
-from artisan.schemas.artifact.base import Artifact
+from artisan.execution.exceptions import LineageIntegrityError
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.provenance.source_target_pair import SourceTargetPair
 
 if TYPE_CHECKING:
-    from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
     from artisan.storage.core.artifact_store import ArtifactStore
 
-UNKNOWN_ARTIFACT_TYPE = "UNKNOWN"
-logger = logging.getLogger(__name__)
 
-
-def _artifact_type_or_unknown(artifact: Artifact | None) -> str:
-    """Return artifact type string or UNKNOWN when missing."""
-    if artifact is None:
-        return UNKNOWN_ARTIFACT_TYPE
-    return artifact.artifact_type
+def require_artifact_type(artifact_id: str, artifact_types: dict[str, str]) -> str:
+    """Resolve a concrete type or fail before recording an untyped edge."""
+    artifact_type = artifact_types.get(artifact_id)
+    if not artifact_type or artifact_type in ("UNKNOWN", ArtifactTypes.ANY):
+        msg = f"Missing concrete artifact type for {artifact_id!r}"
+        raise LineageIntegrityError(msg)
+    return artifact_type
 
 
 def build_artifact_edges_from_store(
@@ -34,138 +27,47 @@ def build_artifact_edges_from_store(
     execution_run_id: str,
     artifact_store: ArtifactStore,
 ) -> list[ArtifactProvenanceEdge]:
-    """Build typed provenance edges by resolving types from the artifact store.
+    """Resolve all declared endpoint types in one lookup and enrich the pairs.
 
-    Resolve all source and target types in one bulk lookup.
-
-    Args:
-        source_target_pairs: Untyped source/target pairs from lineage capture.
-        execution_run_id: ID of the current execution run.
-        artifact_store: Store used to resolve artifact type strings.
-
-    Returns:
-        Fully typed provenance edges ready for staging.
+    Raises:
+        LineageIntegrityError: If the store cannot resolve any endpoint type.
     """
     if not source_target_pairs:
         return []
-
-    all_ids: set[str] = set()
-    for pair in source_target_pairs:
-        all_ids.add(pair.source)
-        all_ids.add(pair.target)
-    type_map = artifact_store.provenance.load_type_map(list(all_ids))
-
-    artifact_edges: list[ArtifactProvenanceEdge] = []
-    for pair in source_target_pairs:
-        source_type = type_map.get(pair.source, UNKNOWN_ARTIFACT_TYPE)
-        target_type = type_map.get(pair.target, UNKNOWN_ARTIFACT_TYPE)
-
-        artifact_edges.append(
-            ArtifactProvenanceEdge(
-                execution_run_id=execution_run_id,
-                source_artifact_id=pair.source,
-                target_artifact_id=pair.target,
-                source_artifact_type=source_type,
-                target_artifact_type=target_type,
-                source_role=pair.source_role,
-                target_role=pair.target_role,
-                group_id=pair.group_id,
-            )
-        )
-
-    return artifact_edges
+    all_ids = {
+        endpoint
+        for pair in source_target_pairs
+        for endpoint in (pair.source, pair.target)
+    }
+    types = artifact_store.provenance.load_type_map(sorted(all_ids))
+    return build_artifact_edges_from_types(source_target_pairs, execution_run_id, types)
 
 
-def build_artifact_edges_from_dict(
+def build_artifact_edges_from_types(
     source_target_pairs: list[SourceTargetPair],
     execution_run_id: str,
-    built_artifacts: dict[str, Artifact],
+    artifact_types: dict[str, str],
 ) -> list[ArtifactProvenanceEdge]:
-    """Build typed provenance edges from an in-memory artifact dict.
+    """Enrich declared pairs using an ID-to-type map, preserving roles and groups.
 
     Args:
-        source_target_pairs: Untyped source/target pairs from lineage capture.
-        execution_run_id: ID of the current execution run.
-        built_artifacts: Mapping of artifact ID to Artifact for type lookup.
+        source_target_pairs: Explicit artifact relationships after resolution.
+        execution_run_id: Execution recording these declarations.
+        artifact_types: Concrete type for each source and target ID.
 
-    Returns:
-        Fully typed provenance edges ready for staging.
+    Raises:
+        LineageIntegrityError: If any declared endpoint lacks a concrete type.
     """
-    artifact_edges: list[ArtifactProvenanceEdge] = []
-
-    for pair in source_target_pairs:
-        source_type = _artifact_type_or_unknown(built_artifacts.get(pair.source))
-        target_type = _artifact_type_or_unknown(built_artifacts.get(pair.target))
-
-        artifact_edges.append(
-            ArtifactProvenanceEdge(
-                execution_run_id=execution_run_id,
-                source_artifact_id=pair.source,
-                target_artifact_id=pair.target,
-                source_artifact_type=source_type,
-                target_artifact_type=target_type,
-                source_role=pair.source_role,
-                target_role=pair.target_role,
-                group_id=pair.group_id,
-            )
+    return [
+        ArtifactProvenanceEdge(
+            execution_run_id=execution_run_id,
+            source_artifact_id=pair.source,
+            target_artifact_id=pair.target,
+            source_artifact_type=require_artifact_type(pair.source, artifact_types),
+            target_artifact_type=require_artifact_type(pair.target, artifact_types),
+            source_role=pair.source_role,
+            target_role=pair.target_role,
+            group_id=pair.group_id,
         )
-
-    return artifact_edges
-
-
-def build_config_reference_edges(
-    config_artifacts: list[ExecutionConfigArtifact],
-    artifact_store: ArtifactStore,
-    execution_run_id: str,
-) -> list[ArtifactProvenanceEdge]:
-    """Build provenance edges from referenced artifacts to config artifacts.
-
-    Uses a single bulk ``load_type_map`` call for all references.
-
-    Args:
-        config_artifacts: ExecutionConfigArtifact instances that reference
-            other artifacts.
-        artifact_store: Store used to resolve referenced artifact types.
-        execution_run_id: ID of the current execution run.
-
-    Returns:
-        Provenance edges pointing from each referenced artifact to its
-        config artifact.
-    """
-    from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-
-    all_ref_ids: set[str] = set()
-    config_refs: list[tuple[ExecutionConfigArtifact, list[str]]] = []
-    for config in config_artifacts:
-        if not isinstance(config, ExecutionConfigArtifact):
-            continue  # type: ignore[unreachable]
-        refs = list(config.get_artifact_references())
-        config_refs.append((config, refs))
-        all_ref_ids.update(refs)
-
-    type_map = (
-        artifact_store.provenance.load_type_map(list(all_ref_ids))
-        if all_ref_ids
-        else {}
-    )
-
-    edges: list[ArtifactProvenanceEdge] = []
-    for config, refs in config_refs:
-        if config.artifact_id is None:
-            continue
-        target_id = config.artifact_id
-        for ref_id in refs:
-            source_type = type_map.get(ref_id, UNKNOWN_ARTIFACT_TYPE)
-            edges.append(
-                ArtifactProvenanceEdge(
-                    execution_run_id=execution_run_id,
-                    source_artifact_id=ref_id,
-                    target_artifact_id=target_id,
-                    source_artifact_type=source_type,
-                    target_artifact_type=ArtifactTypes.CONFIG,
-                    source_role="referenced",
-                    target_role="config",
-                )
-            )
-
-    return edges
+        for pair in source_target_pairs
+    ]

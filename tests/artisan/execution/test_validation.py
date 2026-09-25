@@ -214,682 +214,226 @@ class TestValidateArtifactsMatchSpecs:
             validate_artifacts_match_specs(artifacts, specs)
 
 
-class TestValidateLineageCompleteness:
-    """Tests for validate_lineage_completeness function."""
-
-    def test_all_artifacts_have_lineage(self, draft_artifact, finalized_artifact):
-        """All non-orphan artifacts with lineage should pass."""
-        artifacts = {"outputs": [draft_artifact]}
-        specs = {
-            "outputs": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-            )
-        }
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                )
-            ]
-        }
-
-        validate_lineage_completeness(artifacts, specs, lineage)
-
-    def test_missing_lineage_for_non_orphan_raises_error(self, draft_artifact):
-        """Non-orphan artifact without lineage should raise error."""
-        artifacts = {"outputs": [draft_artifact]}
-        specs = {
-            "outputs": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-            )
-        }
-        lineage = {}  # No lineage mappings
-
-        with pytest.raises(LineageCompletenessError, match="has no lineage mapping"):
-            validate_lineage_completeness(artifacts, specs, lineage)
-
-    def test_orphan_outputs_skip_lineage_check(self, draft_artifact):
-        """Orphan outputs (generative ops) don't need lineage."""
-        artifacts = {"outputs": [draft_artifact]}
-        specs = {
-            "outputs": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"inputs": []},  # Orphan - no parents
-            )
-        }
-        lineage = {}  # No lineage mappings
-
-        validate_lineage_completeness(artifacts, specs, lineage)
-
-    def test_empty_artifact_list_passes(self):
-        """Empty artifact list should pass (no artifacts to validate)."""
-        artifacts = {"outputs": []}
-        specs = {
-            "outputs": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-            )
-        }
-        lineage = {}
-
-        validate_lineage_completeness(artifacts, specs, lineage)
-
-    def test_role_not_in_specs_skipped(self, draft_artifact):
-        """Roles not in specs should be skipped."""
-        artifacts = {"unknown_role": [draft_artifact]}
-        specs = {}
-        lineage = {}
-
-        validate_lineage_completeness(artifacts, specs, lineage)
-
-    def test_multiple_artifacts_all_need_lineage(
-        self,
-        draft_artifact,
-        draft_artifact_2,
-        finalized_artifact,
-    ):
-        """Multiple artifacts all need lineage mappings."""
-        artifacts = {"outputs": [draft_artifact, draft_artifact_2]}
-        specs = {
-            "outputs": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-            )
-        }
-        # Only first artifact has lineage
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                )
-            ]
-        }
-
-        with pytest.raises(LineageCompletenessError, match="sample_002"):
-            validate_lineage_completeness(artifacts, specs, lineage)
-
-    def test_explicit_input_lineage_requires_mapping(
-        self, draft_artifact, finalized_artifact
-    ):
-        """Explicit infer_lineage_from with inputs requires mapping."""
-        draft_for_test = MetricArtifact.draft(
-            content={"derived": 1.0},
-            original_name="sample_001_derived.json",
-            step_number=1,
+def test_dynamic_output_roles_require_explicit_curator_permission(draft_artifact):
+    outputs = {"runtime_role": [draft_artifact]}
+    with pytest.raises(ArtifactValidationError, match="Unexpected output roles"):
+        validate_artifacts_match_specs(outputs, {})
+    validate_artifacts_match_specs(outputs, {}, allow_dynamic_outputs=True)
+    with pytest.raises(ArtifactValidationError, match="Unexpected output roles"):
+        validate_artifacts_match_specs(
+            outputs,
+            {"declared": OutputSpec(required=False)},
+            allow_dynamic_outputs=True,
         )
-        artifacts = {"derived": [draft_for_test]}
-        specs = {
-            "derived": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"inputs": ["metrics"]},  # Explicit
-            )
-        }
-        lineage = {
-            "derived": [
-                LineageMapping(
-                    draft_original_name="sample_001_derived",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="metrics",
-                )
-            ]
-        }
 
-        validate_lineage_completeness(artifacts, specs, lineage)
 
-    def test_explicit_multi_input_lineage_requires_every_declared_role(
-        self, draft_artifact, finalized_artifact
-    ):
-        """One mapping is incomplete when the spec declares two parents."""
-        artifacts = {"outputs": [draft_artifact]}
-        specs = {
-            "outputs": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"inputs": ["primary", "secondary"]},
-            )
-        }
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="primary",
-                )
-            ]
-        }
-
-        with pytest.raises(LineageCompletenessError, match="secondary"):
-            validate_lineage_completeness(artifacts, specs, lineage)
-
-    def test_output_to_output_lineage(self, draft_artifact, finalized_artifact):
-        """Output->output lineage (outputs key) still requires mapping."""
-        draft_for_test = MetricArtifact.draft(
-            content={"derived": 1.0},
-            original_name="derived_metrics.json",
-            step_number=1,
+class TestExplicitLineageValidation:
+    @staticmethod
+    def mapping(
+        index: int = 0, role: str = "input", source: str = "a" * 32
+    ) -> LineageMapping:
+        return LineageMapping(
+            draft_index=index, source_role=role, source_artifact_id=source
         )
-        artifacts = {"derived": [draft_for_test]}
-        specs = {
-            "derived": OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"outputs": ["metrics"]},
-            )
-        }
-        lineage = {}  # No lineage
 
-        # Should raise - outputs lineage still needs mapping
-        with pytest.raises(LineageCompletenessError):
-            validate_lineage_completeness(artifacts, specs, lineage)
+    @staticmethod
+    def specs(*roles: str) -> dict[str, OutputSpec]:
+        return {"out": OutputSpec(derives_from={"inputs": list(roles)})}
 
+    def test_same_role_fan_in_and_repeated_inputs_are_valid(self, draft_artifact):
+        outputs = {"out": [draft_artifact]}
+        lineage = {"out": [self.mapping(), self.mapping(source="b" * 32)]}
+        specs = self.specs("input")
+        validate_lineage_integrity(
+            lineage, {"input": ["a" * 32, "a" * 32, "b" * 32]}, outputs, specs
+        )
+        validate_lineage_completeness(outputs, specs, lineage)
 
-class TestValidateLineageIntegrity:
-    """Tests for validate_lineage_integrity function."""
-
-    def test_valid_lineage_references(self, draft_artifact, finalized_artifact):
-        """Valid lineage references should pass."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                )
-            ]
-        }
-        input_artifacts = {"input_metrics": [finalized_artifact]}
-        output_artifacts = {"outputs": [draft_artifact]}
-
-        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_nonexistent_source_raises_error(self, draft_artifact):
-        """Reference to non-existent source should raise error."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id="deadbeefdeadbeefdeadbeefdeadbeef",
-                    source_role="input_metrics",
-                )
-            ]
-        }
-        input_artifacts = {}
-        output_artifacts = {"outputs": [draft_artifact]}
-
-        with pytest.raises(LineageIntegrityError, match="non-existent source"):
-            validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_malformed_source_id_raises_error(self, draft_artifact):
-        """A length-correct but non-hex source ID is invalid."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id="g" * 32,
-                    source_role="input_metrics",
-                )
-            ]
-        }
-
-        with pytest.raises(LineageIntegrityError, match="malformed source ID"):
+    @pytest.mark.parametrize("lineage", [{}, {"out": [], "extra": []}])
+    def test_role_coverage_is_exact_even_for_roots(self, draft_artifact, lineage):
+        with pytest.raises(LineageIntegrityError, match="exactly match artifact roles"):
             validate_lineage_integrity(
-                lineage,
-                {"input_metrics": []},
-                {"outputs": [draft_artifact]},
+                lineage, {}, {"out": [draft_artifact]}, self.specs()
             )
 
-    def test_source_id_must_exist_in_declared_role(
-        self, draft_artifact, finalized_artifact
-    ):
-        """An ID present only under another role cannot satisfy a mapping."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="secondary",
-                )
-            ]
-        }
-
-        with pytest.raises(LineageIntegrityError, match="role 'secondary'"):
+    @pytest.mark.parametrize(
+        "specs", [{}, {"out": OutputSpec(derives_from={"inputs": []})}]
+    )
+    def test_roots_require_empty_mapping_lists(self, draft_artifact, specs):
+        outputs = {"out": [draft_artifact]}
+        validate_lineage_integrity({"out": []}, {}, outputs, specs)
+        validate_lineage_completeness(outputs, specs, {"out": []})
+        with pytest.raises(LineageIntegrityError, match="Root output role"):
             validate_lineage_integrity(
-                lineage,
-                {"primary": [finalized_artifact], "secondary": []},
-                {"outputs": [draft_artifact]},
+                {"out": [self.mapping()]}, {"input": ["a" * 32]}, outputs, specs
             )
 
-    def test_nonexistent_draft_raises_error(self, finalized_artifact):
-        """Reference to non-existent draft should raise error."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="nonexistent",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                )
-            ]
-        }
-        input_artifacts = {"input_metrics": [finalized_artifact]}
-        output_artifacts = {"outputs": []}  # No outputs
-
-        with pytest.raises(LineageIntegrityError, match="non-existent output"):
-            validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_draft_name_must_exist_in_target_role(
-        self, draft_artifact, draft_artifact_2, finalized_artifact
-    ):
-        """A name present only in another output role cannot satisfy a target."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_002",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                )
-            ]
-        }
-
-        with pytest.raises(LineageIntegrityError, match="role 'outputs'"):
+    def test_artifact_result_requires_contract_even_for_empty_optional_role(self):
+        with pytest.raises(LineageIntegrityError, match="must declare derives_from"):
             validate_lineage_integrity(
-                lineage,
-                {"input_metrics": [finalized_artifact]},
-                {"outputs": [draft_artifact], "other": [draft_artifact_2]},
+                {"out": []}, {}, {"out": []}, {"out": OutputSpec(required=False)}
             )
 
-    def test_malformed_group_id_raises_error(self, draft_artifact, finalized_artifact):
-        """Explicit lineage rejects noncanonical group IDs."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                    group_id="not-a-content-hash",
-                )
-            ]
+    @pytest.mark.parametrize("present", [True, False])
+    def test_optional_derived_role_can_be_omitted_or_empty(self, present):
+        outputs = {"out": []} if present else {}
+        lineage = {"out": []} if present else {}
+        specs = {
+            "out": OutputSpec(required=False, derives_from={"inputs": ["optional"]})
         }
+        validate_artifacts_match_specs(outputs, specs)
+        validate_lineage_integrity(lineage, {}, outputs, specs)
+        validate_lineage_completeness(outputs, specs, lineage)
 
-        with pytest.raises(LineageIntegrityError, match="Invalid lineage group_id"):
+    def test_same_human_name_does_not_cover_another_occurrence(self, draft_artifact):
+        outputs = {"out": [draft_artifact, draft_artifact]}
+        lineage = {"out": [self.mapping()]}
+        specs = self.specs("input")
+        validate_lineage_integrity(lineage, {"input": ["a" * 32]}, outputs, specs)
+        with pytest.raises(LineageCompletenessError, match=r"'out'\[1\].*input"):
+            validate_lineage_completeness(outputs, specs, lineage)
+
+    def test_each_required_parent_role_is_needed(self, draft_artifact):
+        with pytest.raises(LineageCompletenessError, match="second"):
+            validate_lineage_completeness(
+                {"out": [draft_artifact]},
+                self.specs("input", "second"),
+                {"out": [self.mapping()]},
+            )
+
+    def test_missing_lineage_role_is_not_a_root(self, draft_artifact):
+        with pytest.raises(LineageCompletenessError, match="Missing lineage"):
+            validate_lineage_completeness({"out": [draft_artifact]}, self.specs(), {})
+
+    def test_reference_only_input_cannot_become_parent(self, draft_artifact):
+        with pytest.raises(LineageIntegrityError, match="forbidden source role"):
             validate_lineage_integrity(
-                lineage,
-                {"input_metrics": [finalized_artifact]},
-                {"outputs": [draft_artifact]},
+                {"out": [self.mapping(role="reference")]},
+                {"reference": ["a" * 32]},
+                {"out": [draft_artifact]},
+                self.specs("input"),
             )
 
-    def test_duplicate_mapping_raises_error(
-        self,
-        draft_artifact,
-        finalized_artifact,
-        finalized_artifact_2,
-    ):
-        """Duplicate mapping for same draft should raise error."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                ),
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact_2.artifact_id,
-                    source_role="input_metrics",
-                ),
-            ]
-        }
-        input_artifacts = {
-            "input_metrics": [
-                finalized_artifact,
-                finalized_artifact_2,
-            ]
-        }
-        output_artifacts = {"outputs": [draft_artifact]}
+    def test_input_id_must_exist_in_exact_source_role(self, draft_artifact):
+        with pytest.raises(LineageIntegrityError, match="non-existent input source"):
+            validate_lineage_integrity(
+                {"out": [self.mapping()]},
+                {"other": ["a" * 32]},
+                {"out": [draft_artifact]},
+                self.specs("input"),
+            )
 
-        with pytest.raises(LineageIntegrityError, match="Conflicting lineage mappings"):
-            validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
+    def test_target_index_out_of_range(self, draft_artifact):
+        with pytest.raises(
+            LineageIntegrityError, match=r"non-existent output 'out'\[1\]"
+        ):
+            validate_lineage_integrity(
+                {"out": [self.mapping(1)]},
+                {"input": ["a" * 32]},
+                {"out": [draft_artifact]},
+                self.specs("input"),
+            )
 
-    def test_output_to_output_lineage_valid(self):
-        """Output->output lineage should be valid when source is an output."""
-        draft_metric = MetricArtifact.draft(
-            content={"score": 0.95},
-            original_name="sample_001_metrics.json",
-            step_number=1,
-        )
-        finalized_output = draft_metric.finalize()
-
-        dependent_metric = MetricArtifact.draft(
-            content={"derived_score": 1.0},
-            original_name="derived_metrics.json",
-            step_number=1,
-        )
-
-        lineage = {
-            "derived": [
-                LineageMapping(
-                    draft_original_name="derived_metrics",
-                    source_artifact_id=finalized_output.artifact_id,
-                    source_role="metrics",
-                )
-            ]
-        }
-        input_artifacts = {}
-        output_artifacts = {
-            "metrics": [finalized_output],
-            "derived": [dependent_metric],
-        }
-
-        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_empty_lineage_passes(self):
-        """Empty lineage should pass validation."""
-        lineage = {}
-        input_artifacts = {}
-        output_artifacts = {}
-
-        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_multiple_roles_all_validated(
-        self,
-        draft_artifact,
-        finalized_artifact,
-    ):
-        """Lineage from multiple roles should all be validated."""
-        draft_derived = MetricArtifact.draft(
-            content={"derived": 1.0},
-            original_name="sample_001_derived.json",
-            step_number=1,
-        )
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                )
-            ],
-            "derived": [
-                LineageMapping(
-                    draft_original_name="sample_001_derived",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="input_metrics",
-                )
-            ],
-        }
-        input_artifacts = {"input_metrics": [finalized_artifact]}
-        output_artifacts = {
-            "outputs": [draft_artifact],
-            "derived": [draft_derived],
-        }
-
-        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_draft_without_artifact_id_valid_as_output(
-        self, draft_artifact, finalized_artifact
-    ):
-        """Draft artifacts (no artifact_id) are valid as output targets."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="inputs",
-                )
-            ]
-        }
-        input_artifacts = {"inputs": [finalized_artifact]}
-        output_artifacts = {"outputs": [draft_artifact]}  # Draft
-
-        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_source_original_name_valid_in_role(self):
-        """source_original_name resolving against an output in source_role passes."""
-        structure = MetricArtifact.draft(
-            content={"processed": True},
-            original_name="1abc_out.json",
-            step_number=1,
-        ).finalize()
-        metric = MetricArtifact.draft(
-            content={"energy": -100.0},
-            original_name="1abc_out_energy.json",
-            step_number=1,
-        ).finalize()
-
-        lineage = {
-            "metrics": [
-                LineageMapping(
-                    draft_original_name=metric.original_name,
-                    source_original_name=structure.original_name,
-                    source_role="structures",
-                )
-            ]
-        }
-        output_artifacts = {
-            "structures": [structure],
-            "metrics": [metric],
-        }
-
-        validate_lineage_integrity(lineage, {}, output_artifacts)
-
-    def test_source_original_name_missing_in_role_raises(self):
-        """Unknown source_original_name in declared role raises LineageIntegrityError."""
-        structure = MetricArtifact.draft(
-            content={"processed": True},
-            original_name="1abc_out.json",
-            step_number=1,
-        ).finalize()
-        metric = MetricArtifact.draft(
-            content={"energy": -100.0},
-            original_name="1abc_out_energy.json",
-            step_number=1,
-        ).finalize()
-
-        lineage = {
-            "metrics": [
-                LineageMapping(
-                    draft_original_name=metric.original_name,
-                    source_original_name="not_present",
-                    source_role="structures",
-                )
-            ]
-        }
-        output_artifacts = {
-            "structures": [structure],
-            "metrics": [metric],
-        }
-
-        with pytest.raises(LineageIntegrityError) as exc_info:
-            validate_lineage_integrity(lineage, {}, output_artifacts)
-        msg = str(exc_info.value)
-        assert "not_present" in msg
-        assert "structures" in msg
-
-    def test_source_original_name_role_does_not_exist_raises(self):
-        """Reference to a role with no outputs raises LineageIntegrityError."""
-        metric = MetricArtifact.draft(
-            content={"energy": -100.0},
-            original_name="1abc_out_energy.json",
-            step_number=1,
-        ).finalize()
-
-        lineage = {
-            "metrics": [
-                LineageMapping(
-                    draft_original_name=metric.original_name,
-                    source_original_name="1abc_out",
-                    source_role="structures",
-                )
-            ]
-        }
-        output_artifacts = {"metrics": [metric]}
-
-        with pytest.raises(LineageIntegrityError):
-            validate_lineage_integrity(lineage, {}, output_artifacts)
-
-    def test_duplicate_draft_rejected_with_source_original_name(self):
-        """Duplicate-draft rule still applies when both mappings use source_original_name."""
-        structure_a = MetricArtifact.draft(
-            content={"variant": "a"},
-            original_name="1abc_a.json",
-            step_number=1,
-        ).finalize()
-        structure_b = MetricArtifact.draft(
-            content={"variant": "b"},
-            original_name="1abc_b.json",
-            step_number=1,
-        ).finalize()
-        metric = MetricArtifact.draft(
-            content={"energy": -100.0},
-            original_name="1abc_energy.json",
-            step_number=1,
-        ).finalize()
-
-        lineage = {
-            "metrics": [
-                LineageMapping(
-                    draft_original_name=metric.original_name,
-                    source_original_name=structure_a.original_name,
-                    source_role="structures",
-                ),
-                LineageMapping(
-                    draft_original_name=metric.original_name,
-                    source_original_name=structure_b.original_name,
-                    source_role="structures",
-                ),
-            ]
-        }
-        output_artifacts = {
-            "structures": [structure_a, structure_b],
-            "metrics": [metric],
-        }
-
-        with pytest.raises(LineageIntegrityError) as exc_info:
-            validate_lineage_integrity(lineage, {}, output_artifacts)
-        assert "Conflicting lineage mappings" in str(exc_info.value)
-
-    def test_co_input_mappings_different_source_roles_pass(
-        self,
-        draft_artifact,
-        finalized_artifact,
-        finalized_artifact_2,
-    ):
-        """Two mappings for one draft pass when source_roles differ."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="primary",
-                ),
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact_2.artifact_id,
-                    source_role="co_input",
-                ),
-            ]
-        }
-        input_artifacts = {
-            "primary": [finalized_artifact],
-            "co_input": [finalized_artifact_2],
-        }
-        output_artifacts = {"outputs": [draft_artifact]}
-
-        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_co_input_with_source_original_name_passes(self):
-        """Co-input mapping mixing source_artifact_id and source_original_name passes."""
-        input_structure = MetricArtifact.draft(
-            content={"structure": True},
-            original_name="input_structure.json",
-            step_number=0,
-        ).finalize()
-        co_output = MetricArtifact.draft(
-            content={"co_produced": True},
-            original_name="co_output.json",
-            step_number=1,
-        ).finalize()
-        derived = MetricArtifact.draft(
-            content={"energy": -100.0},
-            original_name="derived_metric.json",
-            step_number=1,
-        ).finalize()
-
-        lineage = {
-            "metrics": [
-                LineageMapping(
-                    draft_original_name=derived.original_name,
-                    source_artifact_id=input_structure.artifact_id,
-                    source_role="structures",
-                ),
-                LineageMapping(
-                    draft_original_name=derived.original_name,
-                    source_original_name=co_output.original_name,
-                    source_role="co_outputs",
-                ),
-            ]
-        }
-        input_artifacts = {"structures": [input_structure]}
-        output_artifacts = {
-            "co_outputs": [co_output],
-            "metrics": [derived],
-        }
-
-        validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_duplicate_draft_same_role_different_source_raises(
-        self,
-        draft_artifact,
-        finalized_artifact,
-        finalized_artifact_2,
-    ):
-        """Same draft + same source_role + different sources is a modeling error."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="primary",
-                ),
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact_2.artifact_id,
-                    source_role="primary",
-                ),
-            ]
-        }
-        input_artifacts = {
-            "primary": [finalized_artifact, finalized_artifact_2],
-        }
-        output_artifacts = {"outputs": [draft_artifact]}
-
-        with pytest.raises(LineageIntegrityError, match="Conflicting lineage mappings"):
-            validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
-
-    def test_true_duplicate_same_draft_same_role_same_source_raises(
-        self,
-        draft_artifact,
-        finalized_artifact,
-    ):
-        """Literal duplicate mapping (same triple) is still rejected."""
-        lineage = {
-            "outputs": [
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="primary",
-                ),
-                LineageMapping(
-                    draft_original_name="sample_001",
-                    source_artifact_id=finalized_artifact.artifact_id,
-                    source_role="primary",
-                ),
-            ]
-        }
-        input_artifacts = {"primary": [finalized_artifact]}
-        output_artifacts = {"outputs": [draft_artifact]}
-
+    def test_identical_reference_is_a_duplicate(self, draft_artifact):
         with pytest.raises(LineageIntegrityError, match="Duplicate lineage mapping"):
-            validate_lineage_integrity(lineage, input_artifacts, output_artifacts)
+            validate_lineage_integrity(
+                {"out": [self.mapping(), self.mapping()]},
+                {"input": ["a" * 32]},
+                {"out": [draft_artifact]},
+                self.specs("input"),
+            )
+
+    @pytest.mark.parametrize("kind", ["inputs", "outputs"])
+    def test_same_role_name_cannot_cross_input_output_namespaces(
+        self, draft_artifact, kind
+    ):
+        mapping = LineageMapping(
+            draft_index=0,
+            source_role="data",
+            **(
+                {"source_output_index": 0}
+                if kind == "inputs"
+                else {"source_artifact_id": "a" * 32}
+            ),
+        )
+        specs = {
+            "data": OutputSpec(derives_from={"inputs": []}),
+            "out": OutputSpec(derives_from={kind: ["data"]}),
+        }
+        with pytest.raises(LineageIntegrityError, match="lineage requires source_"):
+            validate_lineage_integrity(
+                {"data": [], "out": [mapping]},
+                {"data": ["a" * 32]},
+                {"data": [draft_artifact], "out": [draft_artifact]},
+                specs,
+            )
+
+    def test_id_of_output_is_not_an_input_source(self, finalized_artifact):
+        lineage = {
+            "data": [],
+            "out": [self.mapping(role="data", source=finalized_artifact.artifact_id)],
+        }
+        specs = {"data": OutputSpec(derives_from={"inputs": []}), **self.specs("data")}
+        with pytest.raises(LineageIntegrityError, match="non-existent input source"):
+            validate_lineage_integrity(
+                lineage,
+                {},
+                {"data": [finalized_artifact], "out": [finalized_artifact]},
+                specs,
+            )
+
+    @pytest.mark.parametrize("index", [1, 2])
+    def test_invalid_sibling_indices_fail(self, draft_artifact, index):
+        lineage = {
+            "data": [],
+            "out": [
+                LineageMapping(
+                    draft_index=0, source_role="data", source_output_index=index
+                )
+            ],
+        }
+        specs = {
+            "data": OutputSpec(derives_from={"inputs": []}),
+            "out": OutputSpec(derives_from={"outputs": ["data"]}),
+        }
+        with pytest.raises(LineageIntegrityError, match="non-existent output source"):
+            validate_lineage_integrity(
+                lineage, {}, {"data": [draft_artifact], "out": [draft_artifact]}, specs
+            )
+
+    def test_distinct_sibling_occurrences_are_valid_even_when_equal(
+        self, draft_artifact
+    ):
+        lineage = {
+            "data": [],
+            "out": [
+                LineageMapping(draft_index=0, source_role="data", source_output_index=i)
+                for i in range(2)
+            ],
+        }
+        specs = {
+            "data": OutputSpec(derives_from={"inputs": []}),
+            "out": OutputSpec(derives_from={"outputs": ["data"]}),
+        }
+        outputs = {"data": [draft_artifact, draft_artifact], "out": [draft_artifact]}
+        validate_lineage_integrity(lineage, {}, outputs, specs)
+        validate_lineage_completeness(outputs, specs, lineage)
+        lineage["out"].append(lineage["out"][0])
+        with pytest.raises(LineageIntegrityError, match="Duplicate"):
+            validate_lineage_integrity(lineage, {}, outputs, specs)
+
+    def test_artifacts_without_original_name_are_supported(self):
+        from artisan.schemas.artifact.base import Artifact
+
+        class NamelessArtifact(Artifact):
+            artifact_type: str = "custom"
+
+        outputs = {"out": [NamelessArtifact()]}
+        lineage = {"out": [self.mapping()]}
+        specs = self.specs("input")
+        validate_artifacts_match_specs(outputs, specs)
+        validate_lineage_integrity(lineage, {"input": ["a" * 32]}, outputs, specs)
+        validate_lineage_completeness(outputs, specs, lineage)
 
 
 class TestExceptions:
