@@ -16,8 +16,15 @@ Every supported Delta root contains `_artisan/store.json` with the exact format
 contract:
 
 ```json
-{"store_format":5,"artifact_identity":1,"cache_identity":2}
+{"store_format":6,"artifact_identity":1,"cache_identity":2}
 ```
+
+Format 6 requires operation-declared lineage. Format-5 stores and their sealed
+staging are rejected before cache reuse or recovery; use a new root. There is
+no migration, fallback reader, or manifest-edit upgrade. Deploy updated workers
+and tool endpoints with the release. Within a format-6 store, cache reuse and
+replay preserve explicit edges; authors must still bump operation versions when
+changing lineage semantics.
 
 Writers publish this manifest only after initializing an empty root. Readers
 validate it before opening framework state. A missing, malformed, older, newer,

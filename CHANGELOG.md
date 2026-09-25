@@ -27,14 +27,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Breaking: explicit lineage is required.** Replace `infer_lineage_from` with
+  `derives_from` and return a lineage entry for every emitted artifact role.
+  `LineageMapping` uses `draft_index` and `source_output_index` instead of
+  output names; input parents still use `source_artifact_id`. The optional
+  `ArtifactResult.add_artifact(..., sources=...)` constructs the same mappings.
+  Automatic filename, dispatch, and config-content lineage inference is removed.
+  Config-producing operations explicitly preserve their referenced parents;
+  reference-to-path materialization is unchanged. Operations may call the public
+  `artisan.operations.lineage` matcher themselves. Joint parent groups contain
+  only declared parents. Downstream operations must migrate with this release;
+  no compatibility interfaces remain.
+
 - Require Polars 1.30.0 or newer for execution-seal Parquet metadata.
 - Ordinary reads use completion records for visibility and retain artifact checks
   on access. Historical effect verification is an explicit read-only store repair
   inspection; startup recovery validates only the work it must recover or clean.
-- **Breaking: store format 5.** The release uses typed artifact identity,
+- **Breaking: store format 6.** The release uses typed artifact identity,
   independent artifact locations, current-run cache-reuse relations,
   completion-gated logical commits, inventoried immutable execution seals,
-  batched recovery commits, and canonical command/replay evidence.
+  batched recovery commits, canonical command/replay evidence, and exclusively
+  operation-declared artifact lineage.
   Existing stores must use a new Delta root; there is no migration or
   compatibility reader. Artifact identity is version 1 and cache identity is
   version 2.

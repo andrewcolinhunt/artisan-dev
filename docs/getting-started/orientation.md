@@ -123,16 +123,17 @@ instances for cluster dispatch. Configure either per pipeline or per step.
 
 ### Provenance
 
-The framework captures **dual provenance** automatically:
+The framework records **dual provenance**:
 
 - **Execution provenance** records what computation happened — which operation
   ran, when, with what parameters, and whether it succeeded.
 - **Artifact provenance** records which input artifacts produced which output
   artifacts, forming a derivation graph across the entire pipeline.
 
-Operations declare parent roles through `infer_lineage_from`. The framework
-matches outputs to inputs using filename stems or dispatch pairing. Operations
-that rename outputs or need custom pairings can return explicit lineage mappings.
+Operations declare required parent roles through `derives_from` and supply
+exact parents for every derived output in `ArtifactResult.lineage`. Artisan
+validates and records those declarations. Root outputs explicitly have no
+parents. Optional matching helpers are called by operations, never executors.
 
 > **Deep dive:** [Provenance System](../concepts/provenance-system.md)
 

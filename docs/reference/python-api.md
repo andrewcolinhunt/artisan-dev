@@ -9,6 +9,8 @@ and exceptions. The guides explain how to use those interfaces together.
 | Task | Public package | Start with |
 | --- | --- | --- |
 | Run a pipeline or inspect its run history | `artisan.orchestration` | `PipelineManager`, `PipelineConfig`, `StepResult`, `list_runs` |
+| Declare artifact parents | `artisan.schemas` | `ArtifactResult.add_artifact`, `LineageMapping`, `OutputSpec` |
+| Match filenames inside an operation | `artisan.operations.lineage` | `match_outputs_to_inputs_by_stem` |
 | Define an operation | `artisan.operations.base` | `OperationDefinition`, `PerArtifact` |
 | Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
 | Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |

@@ -95,171 +95,125 @@ ability to distinguish separate executions in the provenance graph.
 
 ## How lineage is captured
 
-Lineage capture happens automatically for most operations. The framework uses
-filename stem matching -- the observation that operations naturally preserve
-filename stems through transformations. A file named `sample_001.csv` that
-gets transformed produces `sample_001_transformed.csv`. The shared stem
-connects them.
+Operations declare which artifacts produced each output. Artisan checks these
+declarations and records them while the execution context is available.
+It does not choose parents from filenames, input order, dispatch groups, or
+config contents. Execution participation is still recorded automatically.
 
-### The algorithm
-
-The stem matching algorithm strips extensions and probes prefixes:
-
-- Strip all extensions from output and input filenames
-  (`sample_001_transformed.csv` -> `sample_001_transformed`). Multi-part
-  extensions like `.tar.gz` are fully stripped.
-- Try exact match first -- if the output stem equals an input stem and there is
-  exactly one candidate, that is the match
-- If no exact match, try prefix matches longest-first: progressively shorten
-  the output stem, checking whether the prefix matches any input stem
-- Apply digit boundary protection at each prefix cut: the character being
-  dropped must not be a digit (`design_1` does **not** match `design_10`)
-- At every level, require exactly one candidate -- if multiple candidates share
-  the same stem or prefix, skip that level and keep shortening
-- If no level yields a unique match, the output has no lineage mapping. The
-  subsequent completeness validation then raises a `LineageCompletenessError`
-
-**Why the uniqueness requirement?** Better to fail loudly than record incorrect
-lineage. If two candidates match a single output, the framework cannot determine
-which is the true parent, so it rejects the result rather than guessing. This
-ensures that every edge in the provenance graph is trustworthy.
-
-### Digit boundary protection
-
-This rule prevents a common class of false matches when filenames contain
-numeric suffixes. When the algorithm shortens the output stem to test a prefix,
-it only considers a cut point if the character being dropped is not a digit:
-
-| Output stem | Candidate stem | Character at cut | Result |
-|-------------|----------------|------------------|--------|
-| `design_001_relaxed` | `design_001` | `_` (not a digit) | Match |
-| `design_10_relaxed` | `design_1` | `0` (a digit) | Skipped |
-| `report_cleaned` | `report` | `_` (not a digit) | Match |
-
-Without this protection, `design_1` would falsely match `design_10`,
-`design_100`, and `design_1000`. The digit boundary ensures that numeric
-identifiers are treated as indivisible tokens.
-
----
+For example, an operation transforms dataset X and computes a metric from the
+transformed output. It declares `X -> transformed -> metric`. An additional
+reference dataset used during execution appears in execution provenance and
+cache identity, but becomes an artifact parent only if the operation declares it.
 
 ## Explicit lineage
 
-While stem matching handles most cases automatically, operations can also
-declare explicit parent-child relationships. A `LineageMapping` specifies the
-parent for each output draft, bypassing stem inference entirely.
+Every successful `ArtifactResult` contains matching role keys in `artifacts` and
+`lineage`. Each derived output occurrence has mappings to all its required
+parent roles. Root roles explicitly contain an empty mapping list. The rule is
+the same for creators and artifact-producing curators.
 
-This is useful when:
+The result addresses outputs by their exact index within a role's list.
+A `LineageMapping` supplies a target `draft_index`, a `source_role`, and either
+an input `source_artifact_id` or a sibling `source_output_index`. Duplicate
+human names are legal; names never resolve a declaration. List positions must
+remain stable until finalization.
 
-- Output filenames do not share stems with their inputs (the operation renames
-  files entirely)
-- The operation has custom grouping logic that stem matching cannot express
-- Output-to-output edges need precise control
-- Output roles are conditional at runtime, so the static `infer_lineage_from`
-  declaration on `OutputSpec` cannot express the parent relationship
-
-A `LineageMapping` references its parent in one of two ways: by
-`source_artifact_id` when the parent is an input artifact (its ID is known at
-postprocess time), or by `source_original_name` when the parent is a
-co-produced output (resolved per-role against finalized outputs after
-postprocess returns). Exactly one of the two source fields must be set on
-each mapping.
-
-Explicit mappings use the same `group_id` mechanism as inferred edges, so
-co-input semantics (joint derivation) work identically in both paths. For
-step-by-step usage, see
-[Writing Creator Operations](../how-to-guides/writing-creator-operations.md#explicit-lineage).
-
----
+Authors can build these records manually or use the optional
+`ArtifactResult.add_artifact` method. The method appends a draft and its supplied
+parents together and returns its index. It chooses no parents. Both forms receive
+the same validation. See the [creator authoring guide](../how-to-guides/writing-creator-operations.md#explicit-lineage)
+for examples.
 
 ## Lineage declaration
 
-Operations control how lineage edges are created through the
-[`infer_lineage_from`](operations-model.md#output-specs) field on `OutputSpec`.
-This field tells the framework which artifacts to consider when matching output
-filenames -- input roles, other output roles, or no parents (generative).
+The [`derives_from`](operations-model.md#output-specs) field on `OutputSpec`
+constrains the mappings supplied for each output occurrence:
 
-Three declaration patterns are supported:
+| Pattern | Required declaration |
+| --- | --- |
+| `{"inputs": ["data"]}` | At least one parent from input role `data`, and no other roles |
+| `{"inputs": ["left", "right"]}` | At least one input parent from each role; multiple parents within a role are allowed |
+| `{"outputs": ["processed"]}` | At least one co-produced output addressed by its index in `processed` |
+| `{"inputs": []}` | A root role, with an explicit empty lineage list |
 
-| Pattern | Meaning | Example use |
-|---------|---------|-------------|
-| `{"inputs": ["data"]}` | Output derives from the named input role(s) | Transformer that processes input data |
-| `{"outputs": ["data"]}` | Output derives from another output of the same operation | Metric summarizing a generated structure |
-| `{"inputs": []}` | Generative -- no parents | Random data generator |
-
-`None` (no declaration) is valid for curator operations, which handle
-provenance through passthrough semantics.
-
-The framework validates these declarations at class definition time. Creator
-operations must declare lineage explicitly on every output. Combined
-`{"inputs": [...], "outputs": [...]}` is not supported -- use separate output
-roles instead.
+Every creator output needs a contract. `None` is permitted only for passthrough
+outputs; curators that emit drafts need contracts too. A curator with no static
+outputs may emit runtime-named root roles with explicit empty lineage lists.
+Mixed input/output parent kinds, empty dictionaries, and output-role cycles are
+rejected. A present optional output role with no drafts has an empty lineage
+list; an omitted role appears in neither result dictionary.
 
 ### Output-to-output edges
 
-When one output derives from another output of the same operation (for example,
-a metric artifact that summarizes a generated structure), the
-`infer_lineage_from` field references the output role. The framework matches
-the metric's filename stem against the structure output's filenames rather than
-the input filenames.
+A metric derived from a co-produced dataset declares that dataset's output
+index. Finalization resolves the index to an artifact ID without matching names.
+The operation can use the index returned by `add_artifact` or construct a
+`LineageMapping` itself.
 
----
+### Config ancestry
+
+A config containing `{"$artifact": X}` still resolves X to a tool-local path
+during materialization. Its producing operation separately declares `X -> config`
+using the ordinary input-role contract. Several referenced parents can share a
+role; an operation may call `get_artifact_references()` and deduplicate the IDs
+when constructing its declarations. The executor never scans config contents
+for missing edges. Config-producing operation tests should assert the intended
+parent set as well as the resolved file paths.
+
+`IngestPipelineStep` deliberately imports artifacts as new roots, including
+configs. That import boundary does not preserve foreign ancestry.
+
+### Optional filename matching
+
+An operation whose tool encodes parent identity in output filenames can call
+`match_outputs_to_inputs_by_stem` from `artisan.operations.lineage`. The operation
+supplies candidate names and IDs, chooses their role, and uses the returned IDs
+to declare parents. Executors never call this helper.
+
+(the-algorithm)=
+#### The algorithm
+
+The helper normalizes basenames and compound extensions, tries exact stems,
+then the longest eligible prefix. A prefix cannot split a numeric suffix:
+`design_1` does not match `design_10`. At the first matching level, several
+distinct IDs raise an ambiguity error; the helper never falls back to a shorter
+prefix. Missing matches also raise. Repeated identical candidates are harmless.
+
+This is useful only when the operation knows its naming convention is sufficient.
+Other tools can return an operation-specific manifest linking relative output
+paths to exact input IDs. The operation writes and reads that manifest; Artisan
+has no generic manifest or filename-to-parent discovery step.
 
 ## The lineage pipeline
 
-Lineage capture is not a single step -- it flows through a multi-stage pipeline
-that progressively refines raw metadata into fully typed provenance edges.
-
-```
-┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
-│     Capture      │     │      Build      │     │     Enrich      │
-│                  │     │                 │     │                 │
-│  Stem-match or   │──→  │  Resolve draft  │──→  │  Look up types  │
-│  explicit mapping│     │  IDs to final   │     │  and add exec   │
-│                  │     │  artifact IDs   │     │  context        │
-│  → LineageMapping│     │  → SourceTarget │     │  → ArtifactProv │
-│    (per role)    │     │    Pair         │     │    enanceEdge   │
-└─────────────────┘     └─────────────────┘     └─────────────────┘
+```text
+Operation declarations -> validate roles and exact references
+                       -> finalize drafts in their original order
+                       -> resolve indices to artifact IDs
+                       -> label declared parent sets and attach types
+                       -> stage provenance records
 ```
 
-**Capture** matches each output artifact to its source using stem matching or
-explicit declarations, producing `LineageMapping` entries keyed by output role.
-For multi-input operations with `group_by` pairing, co-input edges are created
-for all non-primary input roles at the matched index, all sharing the same
-`group_id`.
-
-**Build** resolves draft references. During capture, output artifacts do not yet
-have their final content-addressed IDs. The build stage maps draft
-`original_name` values to finalized `artifact_id` values, producing lightweight
-`SourceTargetPair` records.
-
-**Enrich** adds execution context and artifact types. Source and target artifact
-types are looked up (either from an in-memory dict or a bulk Delta Lake scan)
-and combined with the execution run ID to produce final `ArtifactProvenanceEdge`
-records ready for staging.
-
----
+Resolution uses input IDs and exact output indices. Type enrichment uses the
+already-loaded creator inputs or a bulk curator type lookup; unknown types fail.
+Neither phase reads names or source content to discover parents. The existing
+artifact edge table stores resolved IDs, types, roles, and execution context.
 
 ## Lineage validation
 
-The framework validates lineage at three levels, failing fast when something is
-wrong rather than staging incorrect provenance.
+Output validation checks roles, artifact types, and required outputs. Integrity
+validation checks role-key coverage, target and sibling indices, source-kind
+agreement with the static contract, input membership in the named role, and
+duplicate exact declarations. Two different parents in one role are valid.
 
-**Artifact validation** checks that output artifacts satisfy their declared
-specs: required roles are present, artifact types match, and no undeclared
-output roles exist.
+Completeness validation requires every derived output occurrence to have a
+parent from every listed role. Roots must have no mappings. These checks run
+before recording success or staging artifact edges. A perfectly matching filename
+cannot rescue an omitted declaration; an unrelated filename does not invalidate
+a correct one.
 
-**Completeness validation** verifies that every non-orphan output artifact has
-a lineage mapping. An orphan is an output whose `infer_lineage_from` is
-`{"inputs": []}` (generative). All other outputs must have at least one source
-edge, or the framework raises a `LineageCompletenessError`.
-
-**Integrity validation** checks that all lineage references point to real
-artifacts: source IDs must exist in the input or output artifact sets, draft
-names must correspond to actual outputs, and no duplicate mappings for the same
-draft are allowed. Violations raise a `LineageIntegrityError`.
-
-These validations run before any data is staged, so invalid lineage never
-reaches Delta Lake.
+Structural validation cannot decide whether the author selected the scientifically
+correct parents. That responsibility belongs to the operation and its tests.
 
 ---
 
@@ -279,11 +233,9 @@ Four edge patterns appear in practice:
 | Co-input -> Output | Joint derivation (shared `group_id`) | `{dataset_a, dataset_b}` -> `comparison_report` |
 | Config reference | Configuration referencing an artifact | `referenced_artifact` -> `execution_config` |
 
-The first two are independent edges -- each parent artifact is sufficient on its
-own to explain the derivation. Co-input edges are different (see below). Config
-reference edges connect artifacts referenced in execution configurations to the
-config artifact that contains the reference, enabling "what configs used this
-artifact?" queries.
+All parents declared for one output occurrence form one joint derivation.
+This applies equally to input parents, sibling outputs, and explicitly declared
+config parents. Config edges support “what configs used this artifact?” queries.
 
 ---
 
@@ -306,7 +258,10 @@ use co-input edges.
 | Join(left_table, right_table) | Requires both tables | Co-input |
 
 Co-input edges share a `group_id` -- a deterministic hash computed from the
-role, concrete type, and artifact ID of each aligned input. Multiple
+role, concrete type, and artifact ID of each unique declared parent.
+One unique parent has no group ID. Several parents share the hash of their
+sorted tuples, so declaration order does not change the label. Equivalent
+finalized sibling parents collapse before this choice. Multiple
 `ArtifactProvenanceEdge` records with the same
 `group_id` and `target_artifact_id` represent a single joint derivation. This
 allows queries like "what were ALL the inputs to this derivation?" without
@@ -316,9 +271,10 @@ requiring intermediate aggregate artifacts.
 
 Operations declare how inputs across roles should be
 [paired](operations-model.md#pairing-strategies) via a `group_by` class
-variable. The orchestrator pairs inputs before dispatch, and each pairing gets
-a deterministic `group_id` that flows through to the
-`ArtifactProvenanceEdge.group_id` field.
+variable. The orchestrator pairs inputs before dispatch. Its group identifiers
+serve batching and cache identity; artifact edge groups are calculated separately
+from the operation’s declared parent sets. For example, `S+A -> P` and `S+B -> P`
+retain distinct derivations even when P has the same semantic artifact ID.
 
 ---
 
@@ -440,9 +396,9 @@ derivation edge.
 | Decision | Rationale |
 |----------|-----------|
 | Dual provenance (execution + artifact) | Different questions require different data structures |
-| Lineage captured at execution time | Context needed for inference is lost after execution finishes |
-| Multi-stage lineage pipeline (capture -> build -> enrich) | Separates matching logic from ID resolution from type enrichment, keeping each stage testable |
-| Conservative stem matching (unique match or error) | Incorrect lineage is worse than missing lineage |
+| Operation-owned declarations | The operation knows the exact parents; the framework validates and records them |
+| Validate -> resolve -> enrich | Separate contract checks, exact reference resolution, and type lookup |
+| Optional operation-called matching | Reuse naming helpers without implicit executor behavior |
 | Digit boundary protection | Prevents false matches across numeric suffixes (`design_1` vs `design_10`) |
 | Distinct terminology (inputs/outputs vs source/target) | Avoids confusion between execution and artifact provenance contexts |
 | Denormalized artifact types on edges | Query performance on large provenance tables without joins |

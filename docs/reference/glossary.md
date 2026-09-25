@@ -284,12 +284,12 @@ variable keyed by [role](#glossary-role) name.
 (glossary-lineage-mapping)=
 ## LineageMapping
 
-An explicit declaration of a parent-child relationship between a source artifact
-and an output draft. Used in `ArtifactResult.lineage` when the default
-[stem matching](#glossary-stem-matching) inference is not appropriate. Each
-mapping specifies the draft's `draft_original_name`, a source reference (one
-of `source_artifact_id` for input parents or `source_original_name` for
-co-produced output parents), and the `source_role`.
+An operation-authored parent relationship in `ArtifactResult.lineage`.
+The dictionary key identifies the target role; `draft_index` addresses its
+output occurrence. `source_role` and either `source_artifact_id` (input) or
+`source_output_index` (sibling output) identify the exact parent. Every derived
+output requires these declarations. The optional `add_artifact` method builds
+the same mappings while appending a draft.
 
 ---
 
@@ -351,8 +351,8 @@ concrete artifact IDs when the downstream step executes.
 ## OutputSpec
 
 A declarative specification on an operation class that describes one named
-output: its artifact type, and lineage inference strategy
-(`infer_lineage_from`). Lineage can point to input roles
+output: its artifact type and required/allowed parent roles (`derives_from`).
+The operation supplies exact parents at runtime. The contract can name input roles
 (`{"inputs": ["data"]}`), output roles (`{"outputs": ["data"]}`), or declare
 no parents (`{"inputs": []}`). Defined in the operation's `outputs` class
 variable keyed by [role](#glossary-role) name.
@@ -453,15 +453,12 @@ verification polls for readable worker evidence before commit.
 (glossary-stem-matching)=
 ## Stem matching
 
-The default algorithm for inferring artifact [provenance](#glossary-provenance)
-(parent-child relationships). It strips file extensions from input and output
-filenames, then matches output stems to input stems using longest-prefix lookup.
-Digit boundary protection prevents `design_1` from matching `design_10`.
-Exactly one match is required per output; zero or multiple matches at every
-prefix level leave the output without a lineage mapping. A subsequent
-validation pass then raises a `LineageCompletenessError` for any unmapped
-output. For custom lineage, use explicit
-[LineageMapping](#glossary-lineage-mapping) declarations.
+An optional operation-author helper for matching output names to explicitly
+supplied candidate names and artifact IDs. Import
+`match_outputs_to_inputs_by_stem` from `artisan.operations.lineage`. It tries
+exact stems and longest eligible prefixes, protects numeric boundaries, and
+raises on ambiguity or no match. Operations choose when to call it and declare
+the returned IDs as parents. Executors never invoke it.
 
 ---
 

@@ -24,7 +24,7 @@ about the infrastructure running it.
 You write:   "Run this operation on these datasets"
                       │
 Framework handles:    resolve + verify + group inputs → check cache → dispatch
-                      → materialize inputs → run operation → capture lineage
+                      → materialize inputs → run operation → validate declared lineage
                       → stage results → complete a logical Delta Lake commit
 ```
 
@@ -215,7 +215,8 @@ For artifact types and the draft/finalize lifecycle, see
 ### Operations: pure computation with declared I/O
 
 An operation is a self-contained computation that declares its inputs, outputs,
-and parameters. It has no knowledge of orchestration, scheduling, or storage.
+parameters, and the exact parents of its outputs. It has no knowledge of
+orchestration or scheduling.
 The framework provides two types:
 
 **Creators** wrap heavy computation (external tools, ML inference, file
@@ -246,15 +247,14 @@ is the activity log.
 **Artifact provenance** records derivation chains — which specific input
 artifact produced which specific output artifact. This cannot be derived from
 execution provenance because operations process batches, and the individual
-correspondence requires context available only at execution time (filename
-matching, positional grouping, or explicit declaration).
+correspondence must be supplied explicitly by the operation during execution.
 
 The framework also includes a `provenance` package with graph traversal
 utilities — forward and backward BFS walks through provenance edges using
 DataFrame joins. These are used for metric discovery, lineage matching, and
 multi-input pairing.
 
-For lineage declaration, filename matching, and co-input edges, see
+For mandatory declarations, optional operation-called matching, and parent groups, see
 [Provenance System](provenance-system.md).
 
 ### Storage: Delta Lake and artifact locations
