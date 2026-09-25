@@ -130,7 +130,7 @@ class PostprocessInput(_InputArtifactsMixin):
             Could be a subprocess result, dict, library object, None, etc.
         input_artifacts: Full input context with metadata.
             Artifacts have materialized_path set for reference.
-            Use for output naming and lineage inference.
+            Use for output naming and explicit parent declarations.
         metadata: Escape hatch for additional data from the engine.
     """
 

@@ -1,7 +1,7 @@
 """Filename manipulation utilities.
 
 Provides functions for stripping extensions and suffixes from filenames,
-primarily used for lineage inference and file matching.
+used by materialization and operation-owned filename matching.
 """
 
 from __future__ import annotations

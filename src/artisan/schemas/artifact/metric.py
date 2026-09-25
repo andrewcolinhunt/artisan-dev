@@ -48,7 +48,7 @@ class MetricArtifact(JsonContentMixin, Artifact):
     )
     original_name: str | None = Field(
         default=None,
-        description="Key name for lineage inference (stem only, no extension)",
+        description="Key name for operation-owned naming and matching (stem only, no extension)",
     )
     extension: str | None = Field(
         default=None,
@@ -94,7 +94,7 @@ class MetricArtifact(JsonContentMixin, Artifact):
 
         Args:
             content: Metric key-value pairs (JSON-serializable).
-            original_name: Filename for lineage inference (extensions stripped).
+            original_name: Filename for operation-owned naming and matching (extensions stripped).
             step_number: Pipeline step number.
             metadata: Optional metadata dict.
 

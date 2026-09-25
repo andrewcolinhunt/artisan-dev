@@ -23,8 +23,8 @@ class InputRef(BaseModel):
 
     ``name`` is the input role; ``filename`` preserves the original file
     name across the wire — the worker materializes the file under it, so
-    ``execute_command`` and lineage stem-matching see the same basename as a
-    local run. Clients send inline bytes as multipart parts keyed by
+    ``execute_command`` and operation-owned filename matching see the same
+    basename as a local run. Clients send inline bytes as multipart parts keyed by
     ``name``; the endpoint repacks them into ``data`` for the worker hop.
     Authorized ``s3://`` refs use deployment credentials; authorized
     HTTP(S) refs are fetched as bare capabilities. Every URI carries the

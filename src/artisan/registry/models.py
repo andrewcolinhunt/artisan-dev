@@ -64,7 +64,7 @@ class OutputSpecMetadata(BaseModel):
     """Wire shape for a single ``OutputSpec``.
 
     Exposes only the fields needed to describe the output shape;
-    ``infer_lineage_from`` remains an execution-time concern.
+    ``derives_from`` remains an execution-time validation contract.
 
     Attributes:
         artifact_type: Artifact type this output produces.
