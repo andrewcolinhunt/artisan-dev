@@ -776,9 +776,9 @@ def test_name_grouping_creates_co_input_edges(pipeline_env: dict[str, str]):
       - Materialize co-input edges from BOTH input roles to each output.
       - Edges within a pair share a ``group_id``; group_ids differ across pairs.
 
-    This locks in the design's "no changes to capture.py" claim: with
-    aligned inputs + group_ids from the NAME pairing layer, the existing
-    lineage capture machinery materializes co-input edges automatically.
+    NAME grouping selects which inputs the operation receives together.
+    The operation explicitly declares both parents for each output; the
+    framework records that declared set with its own deterministic group ID.
     """
     delta_root = pipeline_env["delta_root"]
     pipeline = PipelineManager.create(
