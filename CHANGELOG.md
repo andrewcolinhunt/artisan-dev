@@ -92,6 +92,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Strict store validation accepts registered artifact schemas containing
+  `Float32` and nested `List` columns, matching their existing Delta representation.
 - Recovery batches finished executions from each source step through the ordinary
   commit writer. Completed work is skipped when no staging cleanup is needed;
   recovery no longer repeatedly verifies historical table effects.

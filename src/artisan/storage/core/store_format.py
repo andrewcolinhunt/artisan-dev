@@ -121,16 +121,24 @@ def _assert_table_schemas(
             raise _incompatible(detail)
 
 
-def _delta_type(dtype: object) -> str:
-    """Map supported Polars types to Delta schema JSON names."""
+def _delta_type(dtype: object) -> str | dict[str, Any]:
+    """Map supported Polars scalars and recursive lists to Delta schema JSON."""
     import polars as pl
 
+    if isinstance(dtype, pl.List):
+        return {
+            "type": "array",
+            "elementType": _delta_type(dtype.inner),
+            "containsNull": True,
+        }
     if dtype == pl.String:
         return "string"
     if dtype in {pl.Int32, pl.UInt32}:
         return "integer"
     if dtype == pl.Int64:
         return "long"
+    if dtype == pl.Float32:
+        return "float"
     if dtype == pl.Float64:
         return "double"
     if dtype == pl.Boolean:
