@@ -95,8 +95,9 @@ the computation behind a clean boundary, you can test it by constructing an
 Postprocess builds draft artifacts from whatever `execute_function` produced. It
 receives the files written to the execute directory and whatever value
 `execute_function` returned. This is where you create typed artifact drafts and
-assign `original_name` — the filename stem that drives the lineage matching
-algorithm.
+assign `original_name` for the artifact's human-readable name. Declare each
+output's exact parents in `ArtifactResult.lineage`; the framework never uses
+that name to select parents.
 
 **Why not return artifacts from `execute_function`?** Because artifact
 construction requires framework knowledge (draft types, role names, step numbers)
