@@ -20,6 +20,7 @@ _PUBLIC_MODULES = {
     "artisan.operations.base",
     "artisan.operations.curator",
     "artisan.operations.examples",
+    "artisan.operations.lineage",
     "artisan.orchestration",
     "artisan.orchestration.runner_api",
     "artisan.provenance",

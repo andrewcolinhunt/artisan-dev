@@ -64,7 +64,7 @@ class FileRefArtifact(Artifact):
     )
     original_name: str | None = Field(
         default=None,
-        description="Original filename stem for operation-owned naming and matching.",
+        description="Original human-readable filename stem.",
     )
     extension: str | None = Field(
         default=None,
@@ -170,7 +170,7 @@ class FileRefArtifact(Artifact):
             size_bytes: File size at submission time.
             step_number: Pipeline step number.
             metadata: Optional metadata dict.
-            original_name: Filename stem for operation-owned naming and matching.
+            original_name: Original human-readable filename stem.
             extension: File extension from original path.
 
         Returns:
