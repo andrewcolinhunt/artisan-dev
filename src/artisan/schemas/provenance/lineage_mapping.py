@@ -1,9 +1,4 @@
-"""Explicit artifact-to-artifact lineage declarations.
-
-``LineageMapping`` allows operations to declare explicit parent-child
-relationships between input artifacts and output drafts, enabling
-custom lineage beyond the default filename-matching inference.
-"""
+"""Operation-authored references between input artifacts and output occurrences."""
 
 from __future__ import annotations
 
@@ -11,89 +6,30 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class LineageMapping(BaseModel):
-    """Maps a draft artifact to its source artifact (1:1 mapping).
+    """Declare one parent of an output occurrence in an ``ArtifactResult``.
 
-    Used in ArtifactResult.lineage to declare explicit parent-child
-    relationships between input artifacts and output drafts. The source
-    can be referenced two ways; exactly one must be provided:
-
-    - ``source_artifact_id``: 32-char content-addressed ID. Use when the
-      source is an input artifact (its ID is known at postprocess time).
-    - ``source_original_name``: filename-derived name. Use when the source
-      is a co-produced output (its ID is not assigned until finalization).
-      Resolved against finalized outputs in the role named by
-      ``source_role``.
+    The lineage dictionary key names the target output role. Indices address
+    that result's artifact lists, independently of filenames or artifact IDs.
+    Exactly one source reference is required.
 
     Attributes:
-        draft_original_name: original_name of the draft artifact being created.
-            Must match an artifact in ArtifactResult.artifacts.
-        source_artifact_id: artifact_id of the source (parent) artifact.
-            Validated as exactly 32 characters; generated IDs are hexadecimal.
-            Mutually exclusive with ``source_original_name``.
-        source_original_name: original_name of the source (parent) artifact,
-            for referencing co-produced outputs whose IDs are not yet
-            assigned. Resolved against finalized outputs in
-            ``source_role``. Mutually exclusive with ``source_artifact_id``.
-        source_role: The role name where the source artifact came from
-            (e.g., "data", "reference", "score").
-        group_id: Deterministic hash linking jointly-necessary input edges.
-            When multiple source artifacts are co-inputs to a derivation,
-            all edges for the same output share the same group_id.
-            None for independent (single-input) derivation.
-
-    Example:
-        # Input source: known artifact_id
-        LineageMapping(
-            draft_original_name="sample_001_processed.dat",
-            source_artifact_id="0123456789abcdef0123456789abcdef",
-            source_role="data",
-        )
-
-        # Co-produced output source: filename reference
-        LineageMapping(
-            draft_original_name="1abc_out_energy",
-            source_original_name="1abc_out",
-            source_role="structures",
-        )
+        draft_index: Position in the target role's output list.
+        source_role: Input or sibling-output role containing the parent.
+        source_artifact_id: Exact input artifact ID in ``source_role``.
+        source_output_index: Position in the sibling output role's list.
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
-    draft_original_name: str = Field(
-        ...,
-        min_length=1,
-        description="original_name of the draft artifact",
-    )
-    source_artifact_id: str | None = Field(
-        default=None,
-        min_length=32,
-        max_length=32,
-        description="artifact_id of source artifact (for input sources)",
-    )
-    source_original_name: str | None = Field(
-        default=None,
-        min_length=1,
-        description=(
-            "original_name of source artifact (for co-produced output sources)"
-        ),
-    )
-    source_role: str = Field(
-        ...,
-        min_length=1,
-        description="role name of the source artifact",
-    )
-    group_id: str | None = Field(
-        default=None,
-        description="Deterministic hash linking jointly-necessary input edges. "
-        "None for independent (single-input) derivation.",
-    )
+    draft_index: int = Field(ge=0, strict=True)
+    source_role: str = Field(min_length=1)
+    source_artifact_id: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{32}$")
+    source_output_index: int | None = Field(default=None, ge=0, strict=True)
 
     @model_validator(mode="after")
     def _require_one_source_ref(self) -> LineageMapping:
-        """Require exactly one of source_artifact_id or source_original_name."""
-        has_id = self.source_artifact_id is not None
-        has_name = self.source_original_name is not None
-        if has_id == has_name:
-            msg = "Provide exactly one of source_artifact_id or source_original_name"
+        """Require exactly one input ID or sibling-output index."""
+        if (self.source_artifact_id is None) == (self.source_output_index is None):
+            msg = "Provide exactly one of source_artifact_id or source_output_index"
             raise ValueError(msg)
         return self

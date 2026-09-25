@@ -24,14 +24,16 @@ class OutputSpec(BaseModel):
         required: Whether the output role must be present with a nonempty
             artifact list. Execution validation fails if it is missing or
             empty. This does not specify an output count per input.
-        infer_lineage_from: Declares which artifacts this output derives from.
+        derives_from: Required and allowed parent roles for every output occurrence.
             Three patterns supported:
             - {"inputs": ["role"]}: Explicit input role(s) as parent
             - {"outputs": ["role"]}: Output role(s) as parent (output->output)
             - {"inputs": []}: Generative operation (no lineage - no parents)
 
-            None is valid for curator operations (passthrough).
-            Creator operations must set this explicitly.
+            None is valid only for passthrough outputs.
+            Artifact-producing operations must set this explicitly.
+            Operations still declare exact parents in ArtifactResult.lineage.
+            Multiple parents from each required role are allowed.
 
             IMPORTANT: Empty dict {} is INVALID and will raise ValidationError.
             Combined {"inputs": [...], "outputs": [...]} is NOT supported.
@@ -41,21 +43,21 @@ class OutputSpec(BaseModel):
         OutputSpec(
             artifact_type="data",
             description="Processed data files",
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         )
 
         # Metric derived from OUTPUT data (output->output edge)
         OutputSpec(
             artifact_type="metric",
             description="Score of output data",
-            infer_lineage_from={"outputs": ["data"]},
+            derives_from={"outputs": ["data"]},
         )
 
         # Generative operation (no input lineage - e.g., random data generator)
         OutputSpec(
             artifact_type="data",
             description="Randomly generated data",
-            infer_lineage_from={"inputs": []},  # Explicit: no parents
+            derives_from={"inputs": []},  # Explicit: no parents
         )
 
         # Passthrough output (FilterOp pattern — curator, ArtifactTypes.ANY)
@@ -65,12 +67,12 @@ class OutputSpec(BaseModel):
         )
     """
 
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(extra="forbid", frozen=True)
 
     artifact_type: str = ArtifactTypes.ANY
     description: str = ""
     required: bool = True
-    infer_lineage_from: dict[str, list[str]] | None = None
+    derives_from: dict[str, list[str]] | None = None
 
     @field_validator("artifact_type")
     @classmethod
@@ -78,12 +80,12 @@ class OutputSpec(BaseModel):
         """Reject unregistered artifact type strings."""
         return validate_artifact_type_str(v)
 
-    @field_validator("infer_lineage_from")
+    @field_validator("derives_from")
     @classmethod
     def _validate_lineage_config(
         cls, v: dict[str, list[str]] | None
     ) -> dict[str, list[str]] | None:
-        """Validate infer_lineage_from configuration.
+        """Validate derives_from configuration.
 
         Raises:
             ValueError: If value is an empty dict, contains invalid
@@ -105,7 +107,7 @@ class OutputSpec(BaseModel):
         invalid_keys = set(v.keys()) - valid_keys
         if invalid_keys:
             msg = (
-                f"Invalid keys in infer_lineage_from: {invalid_keys}. "
+                f"Invalid keys in derives_from: {invalid_keys}. "
                 f"Only 'inputs' and 'outputs' are allowed."
             )
             raise ValueError(msg)
@@ -123,7 +125,7 @@ class OutputSpec(BaseModel):
             msg = "Output lineage must reference at least one output role."
             raise ValueError(msg)
         if len(roles) != len(set(roles)):
-            msg = f"Duplicate roles are not allowed in infer_lineage_from: {roles!r}"
+            msg = f"Duplicate roles are not allowed in derives_from: {roles!r}"
             raise ValueError(msg)
 
         return v
@@ -131,9 +133,9 @@ class OutputSpec(BaseModel):
     def __hash__(self) -> int:
         """Make OutputSpec hashable for use in sets/dicts."""
         lineage_tuple = None
-        if self.infer_lineage_from:
+        if self.derives_from:
             lineage_tuple = tuple(
-                (k, tuple(v)) for k, v in sorted(self.infer_lineage_from.items())
+                (k, tuple(v)) for k, v in sorted(self.derives_from.items())
             )
         return hash(
             (

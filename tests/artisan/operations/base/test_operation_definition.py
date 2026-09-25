@@ -37,7 +37,7 @@ class SimpleOperation(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -64,7 +64,7 @@ class PositionalOperation(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -91,7 +91,7 @@ class ShellTool(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -123,7 +123,7 @@ class FlagOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -185,11 +185,11 @@ def _define_operation_with_lineage(
         outputs: ClassVar[dict[str, OutputSpec]] = {
             OutputRole.intermediate: OutputSpec(
                 artifact_type=ArtifactTypes.DATA,
-                infer_lineage_from={"inputs": ["source"]},
+                derives_from={"inputs": ["source"]},
             ),
             OutputRole.result: OutputSpec(
                 artifact_type=ArtifactTypes.DATA,
-                infer_lineage_from=lineage,
+                derives_from=lineage,
             ),
         }
 
@@ -519,7 +519,7 @@ class TestLineageRoleValidation:
             (
                 "_self_output_lineage",
                 {"outputs": ["result"]},
-                "cannot infer lineage from itself",
+                "cannot derive lineage from itself",
             ),
         ],
     )
@@ -696,7 +696,7 @@ class TestRoleEnumValidation:
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
                         artifact_type=ArtifactTypes.DATA,
-                        infer_lineage_from={"inputs": []},
+                        derives_from={"inputs": []},
                     ),
                 }
 
@@ -718,7 +718,7 @@ class TestRoleEnumValidation:
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
                         artifact_type=ArtifactTypes.DATA,
-                        infer_lineage_from={"inputs": ["data"]},
+                        derives_from={"inputs": ["data"]},
                     ),
                 }
 
@@ -741,7 +741,7 @@ class TestRoleEnumValidation:
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
                         artifact_type=ArtifactTypes.DATA,
-                        infer_lineage_from={"inputs": []},
+                        derives_from={"inputs": []},
                     ),
                 }
 
@@ -766,7 +766,7 @@ class TestRoleEnumValidation:
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
                         artifact_type=ArtifactTypes.DATA,
-                        infer_lineage_from={"inputs": ["data"]},
+                        derives_from={"inputs": ["data"]},
                     ),
                 }
 
@@ -1177,7 +1177,7 @@ class TestExecuteAsTool:
             outputs: ClassVar[dict[str, OutputSpec]] = {
                 OutputRole.result: OutputSpec(
                     artifact_type=ArtifactTypes.DATA,
-                    infer_lineage_from={"inputs": []},
+                    derives_from={"inputs": []},
                 ),
             }
             compute_provider: ComputeProvider = ComputeProvider(
@@ -1246,3 +1246,40 @@ def test_cacheable_is_class_only_and_does_not_change_computational_identity(
     assert "cacheable" not in SimpleOperation.to_metadata().params_schema["properties"]
     with pytest.raises(ValidationError, match="Extra inputs"):
         SimpleOperation(cacheable=True)
+
+
+@pytest.mark.parametrize("length", [2, 3])
+def test_indirect_output_lineage_cycles_rejected(length: int) -> None:
+    specs = {
+        f"role{i}": OutputSpec(derives_from={"outputs": [f"role{(i + 1) % length}"]})
+        for i in range(length)
+    }
+    with pytest.raises(TypeError, match="cycle in output lineage"):
+        type(
+            "CyclicLineage",
+            (OperationDefinition,),
+            {
+                "name": "_cyclic_lineage",
+                "outputs": specs,
+                "execute_curator": lambda self,
+                inputs,
+                step_number,
+                artifact_store: None,
+            },
+        )
+    assert "_cyclic_lineage" not in OperationDefinition._registry
+
+
+def test_curator_rejects_removed_output_contract_keyword() -> None:
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match="Extra inputs"):
+
+        class OldCurator(OperationDefinition):
+            name = "_removed_contract_curator"
+            outputs: ClassVar[dict[str, OutputSpec]] = {
+                "out": OutputSpec(infer_lineage_from={"inputs": []})
+            }
+
+            def execute_curator(self, inputs, step_number, artifact_store):
+                return None
