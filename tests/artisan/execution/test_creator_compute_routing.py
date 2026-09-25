@@ -23,6 +23,7 @@ from artisan.execution.executors.creator import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -83,7 +84,7 @@ class _SimpleOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type="metric",
-            infer_lineage_from={"inputs": ["source"]},
+            derives_from={"inputs": ["source"]},
         ),
     }
 
@@ -117,7 +118,17 @@ class _SimpleOp(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        source_ids = match_outputs_to_inputs_by_stem(
+            [draft.original_name for draft in drafts],
+            [
+                (a.materialized_path, a.artifact_id)
+                for a in inputs.input_artifacts["source"]
+            ],
+        )
+        result = ArtifactResult()
+        for draft, source_id in zip(drafts, source_ids, strict=True):
+            result.add_artifact("output", draft, sources={"source": [source_id]})
+        return result
 
 
 @pytest.fixture

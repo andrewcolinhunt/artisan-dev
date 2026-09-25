@@ -32,14 +32,12 @@ class TestMaterializeAsForwarded:
         mock_store = MagicMock()
 
         directory = str(tmp_path)
-        _, materialized_ids = materialize_inputs(
-            artifacts, specs, directory, mock_store
-        )
+        result = materialize_inputs(artifacts, specs, directory, mock_store)
 
         artifact.materialize_to.assert_called_once_with(
             directory, format=".csv", fs=ANY
         )
-        assert "a" * 32 in materialized_ids
+        assert result == artifacts
 
     def test_no_materialize_as_passes_none(self, tmp_path: Path):
         """Default spec passes format=None."""
@@ -54,12 +52,10 @@ class TestMaterializeAsForwarded:
         mock_store = MagicMock()
 
         directory = str(tmp_path)
-        _, materialized_ids = materialize_inputs(
-            artifacts, specs, directory, mock_store
-        )
+        result = materialize_inputs(artifacts, specs, directory, mock_store)
 
         artifact.materialize_to.assert_called_once_with(directory, format=None, fs=ANY)
-        assert "b" * 32 in materialized_ids
+        assert result == artifacts
 
     def test_config_referenced_artifacts_get_none_format(self, tmp_path: Path):
         """Artifacts resolved from config references get format=None."""
@@ -84,15 +80,13 @@ class TestMaterializeAsForwarded:
         artifacts = {"config": [config]}
 
         directory = str(tmp_path)
-        _, materialized_ids = materialize_inputs(
-            artifacts, specs, directory, mock_store
-        )
+        result = materialize_inputs(artifacts, specs, directory, mock_store)
 
         ref_artifact.materialize_to.assert_called_once_with(
             directory, format=None, fs=ANY
         )
-        assert config.artifact_id in materialized_ids
-        assert "c" * 32 in materialized_ids
+        assert result is artifacts
+        assert config.materialized_path is not None
 
     def test_missing_config_reference_fails_before_materialization(
         self, tmp_path: Path
@@ -163,7 +157,7 @@ class TestEndpointRoutedSkip:
         output_dir.mkdir()
 
         with patch.object(LargeFileArtifact, "verify_external_content") as verify:
-            _, materialized_ids = materialize_inputs(
+            result = materialize_inputs(
                 {"weights": [art]},
                 specs,
                 str(output_dir),
@@ -174,8 +168,7 @@ class TestEndpointRoutedSkip:
         verify.assert_called_once_with(fs=ANY)
         assert art.materialized_path == "s3://bucket/weights/model.bin"
         assert list(output_dir.iterdir()) == []  # nothing downloaded
-        # no local file entered the filesystem-passthrough match map
-        assert art.artifact_id not in materialized_ids
+        assert result == {"weights": [art]}
 
     def test_remote_file_ref_skipped_when_endpoint_routed(self, tmp_path: Path):
         art = FileRefArtifact.draft(
@@ -188,7 +181,7 @@ class TestEndpointRoutedSkip:
         ).finalize()
 
         with patch.object(FileRefArtifact, "verify_external_content") as verify:
-            _, materialized_ids = materialize_inputs(
+            result = materialize_inputs(
                 {"source": [art]},
                 {"source": InputSpec(artifact_type="file_ref")},
                 str(tmp_path),
@@ -198,7 +191,7 @@ class TestEndpointRoutedSkip:
 
         verify.assert_called_once_with(fs=ANY)
         assert art.materialized_path == "s3://bucket/inputs/source.bin"
-        assert art.artifact_id not in materialized_ids
+        assert result == {"source": [art]}
 
     def test_appendable_record_materializes_when_endpoint_routed(self, tmp_path: Path):
         art = AppendableArtifact.draft(
@@ -215,7 +208,7 @@ class TestEndpointRoutedSkip:
             "materialize_to",
             return_value=materialized,
         ) as write:
-            _, materialized_ids = materialize_inputs(
+            result = materialize_inputs(
                 {"record": [art]},
                 {"record": InputSpec(artifact_type="appendable")},
                 str(tmp_path),
@@ -224,7 +217,7 @@ class TestEndpointRoutedSkip:
             )
 
         write.assert_called_once_with(str(tmp_path), format=None, fs=ANY)
-        assert art.artifact_id in materialized_ids
+        assert result == {"record": [art]}
 
     def test_cloud_input_downloads_by_default(self, tmp_path: Path):
         # endpoint_routed defaults False — the cloud input materializes
@@ -238,12 +231,12 @@ class TestEndpointRoutedSkip:
         art.materialize_to.return_value = str(tmp_path / "model.bin")
         specs = {"weights": InputSpec(materialize=True)}
 
-        _, materialized_ids = materialize_inputs(
+        result = materialize_inputs(
             {"weights": [art]}, specs, str(tmp_path), MagicMock()
         )
 
         art.materialize_to.assert_called_once_with(str(tmp_path), format=None, fs=ANY)
-        assert "a" * 32 in materialized_ids
+        assert result == {"weights": [art]}
 
     def test_cloud_input_downloads_when_endpoint_routed_false(self, tmp_path: Path):
         art = MagicMock(spec=Artifact)
@@ -301,7 +294,7 @@ class TestEndpointRoutedSkip:
             ).finalize()
             specs = {"data": InputSpec(artifact_type="data")}
 
-            _, materialized_ids = materialize_inputs(
+            result = materialize_inputs(
                 {"data": [art]},
                 specs,
                 str(sub),
@@ -312,7 +305,7 @@ class TestEndpointRoutedSkip:
             assert art.materialized_path is not None
             assert Path(art.materialized_path).exists()
             assert Path(art.materialized_path).read_bytes() == b"a,b\n1,2\n"
-            assert art.artifact_id in materialized_ids
+            assert result == {"data": [art]}
 
     def test_config_artifact_unaffected_by_flag(self, tmp_path: Path):
         # config artifacts resolve through resolved_paths, not the skip —
@@ -324,7 +317,7 @@ class TestEndpointRoutedSkip:
         ).finalize()
         specs = {"config": InputSpec(materialize=True)}
 
-        _, materialized_ids = materialize_inputs(
+        result = materialize_inputs(
             {"config": [config]},
             specs,
             str(tmp_path),
@@ -332,7 +325,7 @@ class TestEndpointRoutedSkip:
             endpoint_routed=True,
         )
 
-        assert config.artifact_id in materialized_ids
+        assert result == {"config": [config]}
         assert config.materialized_path is not None
         assert Path(config.materialized_path).exists()
 
@@ -386,14 +379,14 @@ def test_non_materialized_endpoint_config_keeps_references(tmp_path: Path) -> No
     ).finalize()
     store = MagicMock()
     before = set(tmp_path.iterdir())
-    _, materialized = materialize_inputs(
+    result = materialize_inputs(
         {"config": [config]},
         {"config": InputSpec(materialize=False)},
         str(tmp_path),
         store,
         endpoint_routed=True,
     )
-    assert materialized == set()
+    assert result == {"config": [config]}
     assert config.materialized_path is None
     store.get_artifact.assert_not_called()
     assert set(tmp_path.iterdir()) == before
@@ -410,10 +403,10 @@ def test_local_config_substitutes_materialized_reference(tmp_path: Path) -> None
     ).finalize()
     store = MagicMock()
     store.get_artifact.return_value = artifact
-    _, materialized = materialize_inputs(
+    result = materialize_inputs(
         {"config": [config]}, {"config": InputSpec()}, str(tmp_path), store
     )
-    assert materialized == {artifact.artifact_id, config.artifact_id}
+    assert result == {"config": [config]}
     assert json.loads(Path(config.materialized_path).read_text()) == {
         "input": artifact.materialized_path
     }
@@ -428,9 +421,9 @@ def test_embedded_artifact_materializes_without_origin_metadata(
     artifact.finalize()
     shell = DataArtifact(artifact_id="a" * 32)
     assert artifact.origin_step_number is None
-    _, materialized = materialize_inputs(
+    result = materialize_inputs(
         {"data": [artifact, shell]}, {"data": InputSpec()}, str(tmp_path), MagicMock()
     )
-    assert materialized == {artifact.artifact_id}
+    assert result == {"data": [artifact, shell]}
     assert Path(artifact.materialized_path).read_bytes() == b"value\n1\n"
     assert shell.materialized_path is None

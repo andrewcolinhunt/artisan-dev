@@ -30,6 +30,7 @@ from artisan.execution.executors.creator_phases import (
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -78,7 +79,7 @@ class _SimpleOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type="metric",
-            infer_lineage_from={"inputs": ["source"]},
+            derives_from={"inputs": ["source"]},
         ),
     }
 
@@ -112,7 +113,17 @@ class _SimpleOp(OperationDefinition):
                         step_number=inputs.step_number,
                     )
                 )
-        return ArtifactResult(success=True, artifacts={"output": drafts})
+        source_ids = match_outputs_to_inputs_by_stem(
+            [draft.original_name for draft in drafts],
+            [
+                (a.materialized_path, a.artifact_id)
+                for a in inputs.input_artifacts["source"]
+            ],
+        )
+        result = ArtifactResult()
+        for draft, source_id in zip(drafts, source_ids, strict=True):
+            result.add_artifact("output", draft, sources={"source": [source_id]})
+        return result
 
 
 class _NoFanOutOp(_SimpleOp):
@@ -202,9 +213,7 @@ class TestReassembleResults:
     def test_all_none(self, tmp_path):
         d0 = tmp_path / "artifact_0"
         d0.mkdir()
-        memory, _files, _pair_map = _reassemble_results(
-            [None, None], [str(d0), str(d0)]
-        )
+        memory, _files = _reassemble_results([None, None], [str(d0), str(d0)])
         assert memory is None
 
     def test_dict_concatenates_lists(self, tmp_path):
@@ -217,7 +226,7 @@ class TestReassembleResults:
             {"created_files": ["a.txt"]},
             {"created_files": ["b.txt"]},
         ]
-        memory, _, _ = _reassemble_results(results, [str(d0), str(d1)])
+        memory, _ = _reassemble_results(results, [str(d0), str(d1)])
         assert memory == {"created_files": ["a.txt", "b.txt"]}
 
     def test_filters_exceptions(self, tmp_path):
@@ -230,14 +239,14 @@ class TestReassembleResults:
             RuntimeError("boom"),
             {"results": ["ok"]},
         ]
-        memory, _, _ = _reassemble_results(results, [str(d0), str(d1)])
+        memory, _ = _reassemble_results(results, [str(d0), str(d1)])
         assert memory == {"results": ["ok"]}
 
     def test_all_exceptions_returns_none(self, tmp_path):
         d0 = tmp_path / "artifact_0"
         d0.mkdir()
         results = [RuntimeError("a"), ValueError("b")]
-        memory, _, _ = _reassemble_results(results, [str(d0), str(d0)])
+        memory, _ = _reassemble_results(results, [str(d0), str(d0)])
         assert memory is None
 
     def test_collects_files_from_all_dirs(self, tmp_path):
@@ -249,7 +258,7 @@ class TestReassembleResults:
         d1.mkdir()
         (d1 / "out_1.csv").write_text("data1")
 
-        _, files, _ = _reassemble_results([None, None], [str(d0), str(d1)])
+        _, files = _reassemble_results([None, None], [str(d0), str(d1)])
         basenames = sorted(os.path.basename(f) for f in files)
         assert basenames == ["out_0.csv", "out_1.csv"]
 
@@ -257,40 +266,25 @@ class TestReassembleResults:
         d0 = tmp_path / "artifact_0"
         d0.mkdir()
         results = ["result_a", "result_b"]
-        memory, _, _ = _reassemble_results(results, [str(d0), str(d0)])
+        memory, _ = _reassemble_results(results, [str(d0), str(d0)])
         assert memory == ["result_a", "result_b"]
 
-    def test_output_pair_map_keyed_by_stem_to_slot(self, tmp_path):
-        """Each file's extension-stripped stem maps to its slot/pair index.
-
-        Stems (not raw basenames) so the keys match ``artifact.original_name``
-        after draft strips extensions.
-        ``capture_lineage_metadata`` uses this map to recover the correct
-        pair index for grouped multi-input batches with repeated primaries.
-        """
-        d0 = tmp_path / "artifact_0"
-        d0.mkdir()
-        (d0 / "out_0.bin").write_text("a")
-
-        d1 = tmp_path / "artifact_1"
-        d1.mkdir()
-        (d1 / "out_1.bin").write_text("b")
-
-        _, _, pair_map = _reassemble_results([None, None], [str(d0), str(d1)])
-        assert pair_map == {"out_0": [0], "out_1": [1]}
-
-    def test_output_pair_map_retains_duplicate_basename_occurrences(self, tmp_path):
-        """Equal basenames emitted by different slots retain both pair indices."""
+    def test_reassembly_preserves_duplicate_basenames_and_order(self, tmp_path):
+        """File discovery preserves both paths without building provenance metadata."""
         directories = []
+        expected = []
         for slot in range(2):
             directory = tmp_path / f"artifact_{slot}"
             directory.mkdir()
-            (directory / "result.bin").write_text(str(slot))
+            path = directory / "result.bin"
+            path.write_text(str(slot))
             directories.append(str(directory))
+            expected.append(str(path))
 
-        _, _, pair_map = _reassemble_results([None, None], directories)
+        memory, files = _reassemble_results([None, None], directories)
 
-        assert pair_map == {"result": [0, 1]}
+        assert memory is None
+        assert files == expected
 
 
 class TestPrepUnit:

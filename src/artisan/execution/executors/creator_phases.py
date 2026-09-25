@@ -2,7 +2,7 @@
 
 ``prep_unit()`` runs setup + preprocess (batched) and splits the preprocess
 output into per-artifact ``ExecuteInput`` objects.  ``post_unit()`` runs
-postprocess + lineage + name derivation (batched) after per-artifact execute
+postprocess + explicit lineage validation (batched) after per-artifact execute
 results are reassembled.
 
 The monolithic ``run_creator_lifecycle()`` delegates to these functions
@@ -28,13 +28,7 @@ from artisan.execution.context.sandbox import create_sandbox, output_snapshot
 from artisan.execution.inputs.instantiation import instantiate_inputs
 from artisan.execution.inputs.materialization import materialize_inputs
 from artisan.execution.lineage.builder import build_edges
-from artisan.execution.lineage.capture import capture_lineage_metadata
-from artisan.execution.lineage.enrich import build_artifact_edges_from_dict
-from artisan.execution.lineage.filesystem_match import (
-    augment_match_map_from_artifacts,
-    build_filesystem_match_map,
-)
-from artisan.execution.lineage.name_derivation import derive_human_names
+from artisan.execution.lineage.enrich import build_artifact_edges_from_types
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
     validate_lineage_completeness,
@@ -53,7 +47,6 @@ from artisan.schemas.specs.input_models import (
     PostprocessInput,
     PreprocessInput,
 )
-from artisan.utils.filename import strip_extensions
 from artisan.utils.path import shard_uri
 from artisan.utils.timing import phase_timer
 
@@ -77,7 +70,6 @@ class PreppedUnit:
         operation: The original operation instance.
         input_artifacts: Hydrated input artifacts keyed by role.
         associated: Associated artifacts from multi-role inputs.
-        materialized_artifact_ids: IDs of materialized input artifacts.
         timings: Phase timings accumulated during prep.
         artifact_execute_inputs: One input per dispatch slot, or a single
             input for generative and monolithic execution.
@@ -94,7 +86,6 @@ class PreppedUnit:
     operation: Any
     input_artifacts: dict[str, list[Artifact]]
     associated: dict[tuple[str, str], list[Artifact]]
-    materialized_artifact_ids: set[str]
     timings: dict[str, Any] = field(default_factory=dict)
     artifact_execute_inputs: list[ExecuteInput] = field(default_factory=list)
     artifact_execute_dirs: list[str] = field(default_factory=list)
@@ -203,7 +194,7 @@ def prep_unit(
         )
         if replay_builder is not None:
             replay_builder.record_associated(associated)
-        input_artifacts, materialized_artifact_ids = materialize_inputs(
+        input_artifacts = materialize_inputs(
             input_artifacts,
             input_specs,
             materialized_dir,
@@ -278,7 +269,6 @@ def prep_unit(
         operation=operation,
         input_artifacts=input_artifacts,
         associated=associated,
-        materialized_artifact_ids=materialized_artifact_ids,
         timings=timings,
         artifact_execute_inputs=artifact_execute_inputs,
         artifact_execute_dirs=artifact_execute_dirs,
@@ -316,12 +306,8 @@ def post_unit(
 
     # --- postprocess phase ---
     with phase_timer("postprocess", timings):
-        memory_outputs, file_outputs, output_pair_map = _reassemble_results(
+        memory_outputs, file_outputs = _reassemble_results(
             raw_results, prepped.artifact_execute_dirs
-        )
-
-        filesystem_match_map = build_filesystem_match_map(
-            prepped.materialized_artifact_ids, file_outputs
         )
 
         postprocess_input = PostprocessInput(
@@ -338,31 +324,23 @@ def post_unit(
             raise _PostprocessFailure(op_result.error or "Postprocess failed")
 
         flat_input_artifacts = _extract_artifacts_from_input(prepped.input_artifacts)
-        draft_names = {
-            role: [getattr(artifact, "original_name", None) for artifact in artifacts]
-            for role, artifacts in op_result.artifacts.items()
+        input_artifact_ids = {
+            role: [
+                artifact.artifact_id for artifact in artifacts if artifact.artifact_id
+            ]
+            for role, artifacts in flat_input_artifacts.items()
         }
-        derive_human_names(
+        validate_artifacts_match_specs(op_result.artifacts, operation_class.outputs)
+        validate_lineage_integrity(
+            op_result.lineage,
+            input_artifact_ids,
             op_result.artifacts,
-            flat_input_artifacts,
-            filesystem_match_map,
+            operation_class.outputs,
+        )
+        validate_lineage_completeness(
+            op_result.artifacts, operation_class.outputs, op_result.lineage
         )
         finalized_artifacts = finalize_artifacts(op_result.artifacts)
-        validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
-        # Lineage mappings use the postprocessor's occurrence names as structural
-        # keys. Keep that view separate because human-name derivation can collapse
-        # two distinct occurrences to the same display name.
-        lineage_artifacts = {
-            role: [
-                artifact.model_copy(update={"original_name": draft_name})
-                if draft_name is not None
-                else artifact
-                for artifact, draft_name in zip(
-                    artifacts, draft_names[role], strict=True
-                )
-            ]
-            for role, artifacts in finalized_artifacts.items()
-        }
 
         _upload_files_to_root(
             finalized_artifacts,
@@ -380,56 +358,24 @@ def post_unit(
                         fs=runtime_env.storage.filesystem()
                     )
 
-        augment_match_map_from_artifacts(
-            filesystem_match_map,
-            prepped.materialized_artifact_ids,
-            finalized_artifacts,
-        )
-
     # --- lineage phase ---
     with phase_timer("lineage", timings):
-        if op_result.lineage is None:
-            lineage = capture_lineage_metadata(
-                output_artifacts=lineage_artifacts,
-                input_artifacts=flat_input_artifacts,
-                output_specs=operation_class.outputs,
-                group_by=operation.group_by,
-                group_ids=prepped.unit.group_ids,
-                filesystem_match_map=filesystem_match_map,
-                output_pair_map=output_pair_map,
-            )
-        else:
-            validate_lineage_integrity(
-                op_result.lineage,
-                flat_input_artifacts,
-                lineage_artifacts,
-            )
-            lineage = op_result.lineage
-
+        artifact_types = {
+            artifact.artifact_id: artifact.artifact_type
+            for artifacts_by_role in (flat_input_artifacts, finalized_artifacts)
+            for artifacts in artifacts_by_role.values()
+            for artifact in artifacts
+            if artifact.artifact_id is not None
+        }
         edge_pairs = build_edges(
-            lineage=lineage,
-            finalized_artifacts=lineage_artifacts,
+            lineage=op_result.lineage,
+            finalized_artifacts=finalized_artifacts,
+            artifact_types=artifact_types,
         )
-
-        validate_lineage_completeness(
-            lineage_artifacts,
-            operation_class.outputs,
-            lineage,
-        )
-        built_artifacts: dict[str, Artifact] = {}
-        for artifact_list in finalized_artifacts.values():
-            for artifact in artifact_list:
-                if artifact.artifact_id is not None:
-                    built_artifacts[artifact.artifact_id] = artifact
-        for artifact_list in flat_input_artifacts.values():
-            for artifact in artifact_list:
-                if artifact.artifact_id is not None:
-                    built_artifacts[artifact.artifact_id] = artifact
-
-        artifact_edges = build_artifact_edges_from_dict(
+        artifact_edges = build_artifact_edges_from_types(
             edge_pairs,
             prepped.execution_run_id,
-            built_artifacts,
+            artifact_types,
         )
 
     # Capture the unit log before sandbox cleanup destroys it — the
@@ -621,43 +567,32 @@ def _split_prepared_inputs(
 def _reassemble_results(
     per_artifact_results: list[Any],
     artifact_execute_dirs: list[str],
-) -> tuple[Any, list[str], dict[str, list[int]]]:
+) -> tuple[Any, list[str]]:
     """Merge per-artifact execute results for batched postprocess.
 
     Reassembles memory_outputs and file_outputs so postprocess sees
     the same data shapes as when execute processes all artifacts at
-    once. Also returns a stem -> ordered slot-index map so lineage capture
-    can recover the per-output pair index for grouped multi-input ops
-    (fixing the ``primary_id_to_idx`` clobber for repeated primaries
-    under CROSS_PRODUCT + ``artifacts_per_unit > 1``).
+    once. Operations retain their own explicit source references in those
+    results or transported files.
 
     Args:
         per_artifact_results: One raw result per artifact.
             Exceptions at failed indices are filtered out.
         artifact_execute_dirs: Per-artifact execute sub-directory
-            paths. Index in this list is the pair index.
+            paths, in dispatch order.
 
     Returns:
-        Tuple of (merged_memory_outputs, file_outputs, output_pair_map).
-        ``output_pair_map`` keys are extension-stripped basenames of emitted
-        files (matching ``artifact.original_name`` after draft). Values retain
-        every source slot in file-output order so duplicate basenames remain
-        occurrence-aligned.
+        Tuple of (merged_memory_outputs, file_outputs).
     """
     file_outputs: list[str] = []
-    output_pair_map: dict[str, list[int]] = {}
-    for slot_idx, d in enumerate(artifact_execute_dirs):
-        slot_files = output_snapshot(d)
-        for fpath in slot_files:
-            stem = strip_extensions(os.path.basename(fpath))
-            output_pair_map.setdefault(stem, []).append(slot_idx)
-        file_outputs.extend(slot_files)
+    for directory in artifact_execute_dirs:
+        file_outputs.extend(output_snapshot(directory))
 
     # Filter exceptions, merge memory_outputs
     successes = [r for r in per_artifact_results if not isinstance(r, Exception)]
 
     if not successes or all(r is None for r in successes):
-        return None, file_outputs, output_pair_map
+        return None, file_outputs
 
     if all(isinstance(r, dict) for r in successes):
         merged: dict[str, Any] = {}
@@ -667,9 +602,9 @@ def _reassemble_results(
                 merged[key] = [item for v in values for item in v]
             else:
                 merged[key] = values
-        return merged, file_outputs, output_pair_map
+        return merged, file_outputs
 
-    return successes, file_outputs, output_pair_map
+    return successes, file_outputs
 
 
 def _extract_artifacts_from_input(

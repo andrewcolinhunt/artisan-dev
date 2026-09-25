@@ -26,7 +26,7 @@ def materialize_inputs(
     artifact_store: ArtifactStore,
     *,
     endpoint_routed: bool = False,
-) -> tuple[dict[str, list[Artifact]], set[str]]:
+) -> dict[str, list[Artifact]]:
     """Materialize input artifacts to disk with dependency-aware ordering.
 
     Non-config artifacts are materialized first so that config artifacts
@@ -43,8 +43,7 @@ def materialize_inputs(
             keeps the default (False), materializing every input as before.
 
     Returns:
-        Tuple of (artifacts dict, set of artifact_ids that were materialized).
-        The artifacts dict is the same input dict (files written as side effect).
+        The same artifacts dict, with materialized paths set on its artifacts.
 
     Raises:
         ValueError: If a materialized endpoint config contains artifact references,
@@ -94,7 +93,6 @@ def materialize_inputs(
     # Get fs from artifact_store for cloud-capable source reads
     fs = artifact_store._fs
 
-    materialized_ids: set[str] = set()
     resolved_paths: dict[str, str] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
@@ -119,11 +117,7 @@ def materialize_inputs(
         materialized = artifact.materialize_to(directory, format=fmt, fs=fs)
         if isinstance(materialized, str):
             resolved_paths[artifact.artifact_id] = materialized
-            materialized_ids.add(artifact.artifact_id)
 
     for config in configs:
         config.materialize_to(directory, resolved_paths=resolved_paths)
-        if config.artifact_id is not None:
-            materialized_ids.add(config.artifact_id)
-
-    return artifacts, materialized_ids
+    return artifacts

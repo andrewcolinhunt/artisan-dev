@@ -38,8 +38,8 @@ class ArtifactValidationError(ArtisanError):
 class LineageCompletenessError(ArtisanError):
     """Raised when artifacts are missing lineage mappings.
 
-    Non-orphan outputs (those without infer_lineage_from={"inputs": []})
-    must have lineage mappings declaring their source artifacts.
+    Derived outputs must explicitly declare every parent role required by
+    their ``derives_from`` contract for each output occurrence.
     """
 
     def __init__(self, message: str, **fields: Any) -> None:
@@ -56,11 +56,10 @@ class LineageIntegrityError(ArtisanError):
     """Raised when lineage references are invalid.
 
     This includes:
-    - Source artifact_id references a non-existent input or output artifact
-    - Draft original_name references a non-existent output artifact
-    - Multiple lineage mappings for the same draft within a single
-      source_role (whether identical sources, or distinct sources both
-      in that role — split into separate source_roles instead)
+    - An input ID is absent from the declared input role
+    - A target or sibling index references a non-existent output occurrence
+    - A source role or reference kind violates the output's contract
+    - The same source reference is declared twice for an output occurrence
     """
 
     def __init__(self, message: str, **fields: Any) -> None:

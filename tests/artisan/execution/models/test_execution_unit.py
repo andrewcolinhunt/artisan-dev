@@ -46,9 +46,8 @@ class MockOperation(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            include=["*"],
             description="Output files",
-            infer_lineage_from={"inputs": ["files"]},
+            derives_from={"inputs": ["files"]},
         ),
     }
 
@@ -93,8 +92,7 @@ class MultiInputOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            include=["*"],
-            infer_lineage_from={"inputs": ["data", "config"]},
+            derives_from={"inputs": ["data", "config"]},
         ),
     }
 
@@ -119,8 +117,7 @@ class GenerativeOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            include=["*"],
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -141,8 +138,7 @@ class UnionOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.merged: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            include=["*"],
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
