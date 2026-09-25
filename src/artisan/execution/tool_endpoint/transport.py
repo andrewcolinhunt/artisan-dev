@@ -153,7 +153,7 @@ class InlineTransport:
         os.makedirs(dest, exist_ok=True)
         paths: dict[str, str] = {}
         for ref in refs:
-            # original filename when carried — execute_command and lineage
+            # original filename when carried — execute_command and operation-owned
             # stem-matching must see the same basename as a local run
             role_dir = os.path.join(dest, _safe_role(ref.name))
             os.makedirs(role_dir)

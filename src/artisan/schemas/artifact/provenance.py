@@ -18,9 +18,10 @@ class ArtifactProvenanceEdge(BaseModel):
     queries such as "what are the sources of artifact X?" and "what
     metrics derive from artifact Y?".
 
-    For multi-input operations, edges sharing the same ``group_id``
-    and ``target_artifact_id`` were co-inputs to a single derivation.
-    Independent (single-input) derivations have ``group_id=None``.
+    Edges sharing the same ``group_id`` and ``target_artifact_id`` belong
+    to one explicitly declared parent set. The group hashes unique typed
+    parents and their roles; it never adds dispatch inputs. A single unique
+    parent has ``group_id=None``.
 
     Attributes:
         execution_run_id: Execution that established this edge.
@@ -30,7 +31,7 @@ class ArtifactProvenanceEdge(BaseModel):
         target_artifact_type: Type key of the target (denormalized).
         source_role: Role name of the source artifact.
         target_role: Role name of the target artifact.
-        group_id: Hash linking co-input edges. None for single-input.
+        group_id: Hash of declared typed parents and roles. None for one unique parent.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -56,12 +57,12 @@ class ArtifactProvenanceEdge(BaseModel):
     source_artifact_type: str = Field(
         ...,
         description="Artifact type of source (denormalized). Should match registered "
-        "artifact type keys (e.g. 'data', 'metric'); 'UNKNOWN' is acceptable as fallback.",
+        "artifact type keys (e.g. 'data', 'metric'); resolution must provide a known type.",
     )
     target_artifact_type: str = Field(
         ...,
         description="Artifact type of target (denormalized). Should match registered "
-        "artifact type keys (e.g. 'data', 'metric'); 'UNKNOWN' is acceptable as fallback.",
+        "artifact type keys (e.g. 'data', 'metric'); resolution must provide a known type.",
     )
     source_role: str = Field(
         ...,
@@ -73,9 +74,9 @@ class ArtifactProvenanceEdge(BaseModel):
     )
     group_id: str | None = Field(
         default=None,
-        description="Deterministic hash linking jointly-necessary input edges. "
+        description="Deterministic hash of explicitly declared, jointly necessary parents. "
         "Edges sharing the same group_id and target_artifact_id were co-inputs "
-        "to a single derivation. None for independent (single-input) derivation.",
+        "to a single derivation. None for a single unique parent.",
     )
     step_boundary: bool = Field(
         default=True,

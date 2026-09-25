@@ -126,9 +126,12 @@ def test_previous_manifest_rejected_even_with_current_tables(tmp_path) -> None:
         StagingManager(str(tmp_path / "staging"), fs),
         fs=fs,
     ).initialize_tables()
-    previous_manifest = {**STORE_MANIFEST, "store_format": 4}
+    previous_manifest = {**STORE_MANIFEST, "store_format": 5}
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "w") as stream:
         json.dump(previous_manifest, stream)
 
-    with pytest.raises(IncompatibleStoreError, match="found .*store_format.*4"):
+    with pytest.raises(IncompatibleStoreError, match="found .*store_format.*5"):
         assert_store_format(root, fs)
+    # Rejection must not rewrite an old manifest to bless inferred history.
+    with fs.open(f"{root}/{STORE_MANIFEST_PATH}") as stream:
+        assert json.load(stream) == previous_manifest

@@ -16,7 +16,7 @@ from artisan.storage.core.table_schemas import get_physical_schema_for_path
 from artisan.utils.path import uri_join
 
 STORE_MANIFEST = {
-    "store_format": 5,
+    "store_format": 6,
     "artifact_identity": 1,
     "cache_identity": 2,
 }

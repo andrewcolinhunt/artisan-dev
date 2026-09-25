@@ -70,9 +70,9 @@ EXECUTION_EDGES_SCHEMA = {
 # Terminology: Uses source/target (graph-centric) for artifact provenance,
 # distinct from inputs/outputs (operation-centric) in executions.
 #
-# Multi-input grouping: Edges sharing the same group_id and target_artifact_id
-# were co-inputs to a single derivation. group_id is null for independent
-# (single-input) derivation.
+# Declared parent sets: Edges sharing group_id and target_artifact_id belong
+# to one explicit derivation. group_id hashes unique typed parents and roles;
+# it is null for a single unique parent. Dispatch groups do not supply ancestry.
 
 ARTIFACT_EDGES_SCHEMA = {
     "execution_run_id": pl.String,  # Which execution established this edge
