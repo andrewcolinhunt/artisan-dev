@@ -199,7 +199,7 @@ Composites are **not** operations. Key differences:
 | Core method | `execute_function()` / `execute_command()` or `execute_curator()` | `compose()` |
 | Lifecycle hooks | `preprocess()`, `postprocess()` | None |
 | `tool` / `environments` | Supported | Not supported (set per-op in compose) |
-| `infer_lineage_from` on outputs | Required for creators | Not supported |
+| `derives_from` on outputs | Required for artifact-producing roles | Leave unset; child operations declare ancestry |
 | `runtime_defined_inputs` | Supported | Not supported |
 | `group_by` | Supported | Not supported |
 | Registry | `OperationDefinition._registry` | `CompositeDefinition._registry` |

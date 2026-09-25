@@ -58,7 +58,7 @@ calls are not a public helper to import.
   type or changing its schema; registration does not migrate an existing store.
 - **Drafts and identity:** A factory accepts payload, name where applicable,
   and step number, derives descriptors, and returns an unfinalized `cls`.
-  Operations return drafts for normal name derivation and finalization.
+  Operations choose names and declare exact parents, then return drafts for finalization.
   Inherit `finalize()`; never assign an ID or hash directly into `artifact_id`.
   Embedded `content` bytes use the default `_identity_payload()`. Additional
   independently meaningful fields must enter a deterministic type-owned
@@ -190,7 +190,8 @@ Exercise behavior appropriate to the changed representation:
   bytes or byte counts.
 - For a new type, use an importable temporary domain package and a minimal
   local pipeline with a fresh store. Its creator returns a draft and declares
-  `infer_lineage_from={"inputs": []}` for a generative output. Confirm the step
+  `derives_from={"inputs": []}` for a generative output, together with
+  an explicit empty lineage list for that output role. Confirm the step
   succeeds and pipeline `finalize()` reports `overall_success=True`.
   In a separate Python process, import the package before opening
   `ArtifactStore(delta_root)` from `artisan.storage`. Retrieve the committed ID

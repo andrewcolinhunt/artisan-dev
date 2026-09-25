@@ -128,10 +128,12 @@ The `passthrough` dict maps output role names to lists of artifact ID strings.
 ### `ArtifactResult` — create new artifacts
 
 New draft artifacts are created and returned. Used by ingest operations that
-bring external data into the pipeline.
+bring external data into the pipeline. In this fragment, `file_ref` is the
+input whose bytes were read into `file_bytes`; the output spec declares
+`derives_from={"inputs": ["file"]}`.
 
 ```python
-from artisan.schemas import ArtifactResult, DataArtifact
+from artisan.schemas import ArtifactResult, DataArtifact, LineageMapping
 
 drafts = [
     DataArtifact.draft(
@@ -140,7 +142,12 @@ drafts = [
         step_number=step_number,
     )
 ]
-return ArtifactResult(success=True, artifacts={"data": drafts})
+return ArtifactResult(
+    artifacts={"data": drafts},
+    lineage={"data": [LineageMapping(
+        draft_index=0, source_role="file", source_artifact_id=file_ref.artifact_id,
+    )]},
+)
 ```
 
 The `artifacts` dict maps output role names to lists of draft `Artifact`
@@ -174,8 +181,9 @@ match at class definition time.
 
 Curator operations skip several validations that apply to creators:
 
-- `infer_lineage_from` can be `None` on `OutputSpec` (creators must set it
-  explicitly)
+- `derives_from=None` is valid for passthrough outputs. When a curator returns
+  drafts in `ArtifactResult`, it must declare parent roles and exact parents,
+  using the same validation as creators.
 - `preprocess()` is not required, even when inputs are declared
 
 ### Method signature
@@ -322,14 +330,14 @@ class IngestCSV(IngestFiles):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.data: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["file"]},
+            derives_from={"inputs": ["file"]},
         ),
     }
 
     def convert_file(
-        self, file_ref: FileRefArtifact, step_number: int
+        self, file_ref: FileRefArtifact, step_number: int, *, fs=None
     ) -> DataArtifact:
-        content = file_ref.read_content()
+        content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
         return DataArtifact.draft(
             content=content,
@@ -346,7 +354,24 @@ pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b
 ```
 
 If `IngestFiles` does not fit your ingestion pattern, implement
-`execute_curator` directly and return an `ArtifactResult`.
+`execute_curator` directly and return an `ArtifactResult` with explicit lineage.
+`IngestFiles` declares each converted draft's exact `file` parent inside its
+conversion loop. Your subclass supplies the output contract and conversion.
+
+Config-producing curators follow the same rule: preserve the intended referenced
+parents by declaring them under input roles. Calling
+`config.get_artifact_references()` inside the operation can collect exact IDs;
+deduplicate repeated references before adding mappings. The executor does not
+scan config contents or hydrate source contents to discover parents. Reference
+materialization still substitutes paths normally. See
+[Config references and ancestry](writing-creator-operations.md#config-references-and-ancestry).
+
+For a genuinely generative role, set `derives_from={"inputs": []}` and return
+`lineage={"role": []}` alongside its artifact list. A curator with dynamic
+output types and `outputs={}` may emit only roots and must include an empty
+lineage list for every returned role. `IngestPipelineStep` uses this deliberately
+to import artifacts as new roots, including configs; it does not preserve
+source-pipeline ancestry or create edges to foreign IDs.
 
 ---
 
