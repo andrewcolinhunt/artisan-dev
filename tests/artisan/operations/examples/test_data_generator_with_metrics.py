@@ -47,11 +47,16 @@ class TestDataGeneratorWithMetrics:
         assert "metrics" in post_result.artifacts
         assert len(post_result.artifacts["datasets"]) == 2
         assert len(post_result.artifacts["metrics"]) == 2
+        assert post_result.lineage["datasets"] == []
+        assert [
+            (mapping.draft_index, mapping.source_role, mapping.source_output_index)
+            for mapping in post_result.lineage["metrics"]
+        ] == [(0, "datasets", 0), (1, "datasets", 1)]
 
     def test_output_to_output_lineage_spec(self):
         op = DataGeneratorWithMetrics()
-        assert op.outputs["metrics"].infer_lineage_from == {"outputs": ["datasets"]}
-        assert op.outputs["datasets"].infer_lineage_from == {"inputs": []}
+        assert op.outputs["metrics"].derives_from == {"outputs": ["datasets"]}
+        assert op.outputs["datasets"].derives_from == {"inputs": []}
 
     def test_metric_values_match_data(self, tmp_path: Path):
         _, files, post_result = self._run(tmp_path, count=1, rows=5, seed=42)

@@ -165,6 +165,7 @@ class IngestPipelineStep(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts=all_drafts,
+            lineage={role: [] for role in all_drafts},
             metadata={
                 "ingest_source": {
                     "pipeline_run_id": self.params.source_run_id,

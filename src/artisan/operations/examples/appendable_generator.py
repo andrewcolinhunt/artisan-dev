@@ -51,7 +51,7 @@ class AppendableGenerator(OperationDefinition):
         OutputRole.records: OutputSpec(
             artifact_type="appendable",
             description="Generated JSONL records",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -145,4 +145,5 @@ class AppendableGenerator(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts={"records": drafts},
+            lineage={"records": []},
         )

@@ -37,7 +37,7 @@ class Wait(OperationDefinition):
         OutputRole.output: OutputSpec(
             artifact_type="data",
             description="Marker file recording the actual wait duration",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
@@ -89,6 +89,7 @@ class Wait(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts={"output": drafts},
+            lineage={"output": []},
             metadata={
                 "operation": "wait",
                 "duration": self.params.duration,

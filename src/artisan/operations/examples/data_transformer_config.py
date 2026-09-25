@@ -11,7 +11,6 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -64,7 +63,7 @@ class DataTransformerConfig(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.config: OutputSpec(
             artifact_type=ArtifactTypes.CONFIG,
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
             description="Generated execution configs",
         ),
     }
@@ -120,6 +119,7 @@ class DataTransformerConfig(OperationDefinition):
                     configs.append(
                         {
                             "index": index,
+                            "source_artifact_id": artifact_id,
                             "original_name": f"{stem}_config_{index}.json",
                             "content": {
                                 "input": {"$artifact": artifact_id},
@@ -136,13 +136,15 @@ class DataTransformerConfig(OperationDefinition):
         """Build ExecutionConfigArtifact drafts from generated configs."""
         configs = inputs.memory_outputs["configs"]
 
-        drafts: list[Artifact] = [
-            ExecutionConfigArtifact.draft(
-                content=cfg["content"],
-                original_name=cfg["original_name"],
-                step_number=inputs.step_number,
+        result = ArtifactResult(artifacts={"config": []}, lineage={"config": []})
+        for cfg in configs:
+            result.add_artifact(
+                "config",
+                ExecutionConfigArtifact.draft(
+                    content=cfg["content"],
+                    original_name=cfg["original_name"],
+                    step_number=inputs.step_number,
+                ),
+                sources={"dataset": [cfg["source_artifact_id"]]},
             )
-            for cfg in configs
-        ]
-
-        return ArtifactResult(success=True, artifacts={"config": drafts})
+        return result

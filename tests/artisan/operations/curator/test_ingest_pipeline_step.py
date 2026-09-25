@@ -103,6 +103,7 @@ def test_ingest_selects_accepted_union_and_sorts_hydrated_ids(
     )
     imported = result.artifacts["data"]
     assert result.success
+    assert result.lineage == {role: [] for role in result.artifacts}
     assert len(imported) == expected
     source_ids = [
         artifact.metadata["imported_from"]["artifact_id"] for artifact in imported

@@ -11,7 +11,6 @@ from typing import Any, ClassVar
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -64,7 +63,7 @@ class MetricCalculator(OperationDefinition):
         OutputRole.metrics: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
             description="Computed metric values",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
@@ -79,10 +78,18 @@ class MetricCalculator(OperationDefinition):
     )
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
+        """Carry each dataset's path, identity, and human name together."""
         return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
+            "dataset": PerArtifact(
+                [
+                    {
+                        "path": artifact.materialized_path,
+                        "artifact_id": artifact.artifact_id,
+                        "original_name": artifact.original_name,
+                    }
+                    for artifact in inputs.input_artifacts["dataset"]
+                ]
+            )
         }
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
@@ -92,25 +99,21 @@ class MetricCalculator(OperationDefinition):
             msg = "No dataset input provided"
             raise ValueError(msg)
 
-        if isinstance(dataset_input, str):
-            input_files = [dataset_input]
-        else:
-            input_files = list(dataset_input)
-
         calculated_metrics = []
 
-        for input_path in input_files:
+        for dataset in dataset_input:
+            input_path = dataset["path"]
             if not os.path.exists(input_path):
                 msg = f"Input file not found: {input_path}"
                 raise FileNotFoundError(msg)
 
             metrics = _compute_csv_statistics(input_path)
-            stem = os.path.splitext(os.path.basename(input_path))[0]
-            metric_key = f"{stem}_metrics.json"
+            metric_key = f"{dataset['original_name']}_metrics.json"
 
             calculated_metrics.append(
                 {
                     "input": input_path,
+                    "source_artifact_id": dataset["artifact_id"],
                     "metric_key": metric_key,
                     **metrics,
                 }
@@ -123,10 +126,19 @@ class MetricCalculator(OperationDefinition):
         raw = inputs.memory_outputs
         calculated_metrics = raw.get("calculated_metrics", [])
 
-        drafts: dict[str, list[Artifact]] = {"metrics": []}
+        result = ArtifactResult(
+            artifacts={"metrics": []},
+            lineage={"metrics": []},
+            metadata={
+                "operation": "metric_calculator",
+                "n_datasets": len(calculated_metrics),
+                "calculated_metrics": calculated_metrics,
+            },
+        )
 
         for metric_data in calculated_metrics:
-            drafts["metrics"].append(
+            result.add_artifact(
+                "metrics",
                 MetricArtifact.draft(
                     content={
                         "distribution": metric_data["distribution"],
@@ -134,18 +146,11 @@ class MetricCalculator(OperationDefinition):
                     },
                     original_name=metric_data["metric_key"],
                     step_number=inputs.step_number,
-                )
+                ),
+                sources={"dataset": [metric_data["source_artifact_id"]]},
             )
 
-        return ArtifactResult(
-            success=True,
-            artifacts=drafts,
-            metadata={
-                "operation": "metric_calculator",
-                "n_datasets": len(calculated_metrics),
-                "calculated_metrics": calculated_metrics,
-            },
-        )
+        return result
 
 
 def _compute_csv_statistics(path: str) -> dict[str, dict[str, float]]:

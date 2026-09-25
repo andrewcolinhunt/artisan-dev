@@ -23,13 +23,13 @@ class TestMergeProvenance:
         spec = Merge.outputs["merged"]
         assert spec.artifact_type == ArtifactTypes.ANY
 
-    def test_no_infer_lineage_from(self):
+    def test_no_derives_from(self):
         """Test that Merge does not declare lineage.
 
-        The output spec requests no automatic artifact-lineage inference.
+        Passthrough outputs do not create new derivation relationships.
         """
         spec = Merge.outputs["merged"]
-        assert spec.infer_lineage_from is None
+        assert spec.derives_from is None
 
 
 class TestFilterProvenance:
@@ -44,13 +44,13 @@ class TestFilterProvenance:
         spec = Filter.outputs["passthrough"]
         assert spec.artifact_type == ArtifactTypes.ANY
 
-    def test_no_infer_lineage_from(self):
+    def test_no_derives_from(self):
         """Test that Filter does not declare lineage.
 
-        The output spec requests no automatic artifact-lineage inference.
+        Passthrough outputs do not create new derivation relationships.
         """
         spec = Filter.outputs["passthrough"]
-        assert spec.infer_lineage_from is None
+        assert spec.derives_from is None
 
     def test_fixed_inputs(self):
         """Test that Filter declares fixed passthrough input only."""

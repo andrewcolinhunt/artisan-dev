@@ -13,8 +13,8 @@ from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import (
@@ -38,8 +38,8 @@ class CsvHead(OperationDefinition):
 
     The flag's file-shaped contract in action: preprocess delivers
     ``PerArtifact`` paths, the body reads input files and writes
-    ``<stem>_head.csv`` to ``execute_dir`` (lineage stem matching ties
-    each output to its source), returns None, and keeps all per-run
+    ``<stem>_head.csv`` to ``execute_dir``. Postprocess explicitly calls a
+    matching helper and declares each parent. The body returns None and keeps all per-run
     config in the nested ``Params`` model.
     """
 
@@ -65,7 +65,7 @@ class CsvHead(OperationDefinition):
         OutputRole.dataset: OutputSpec(
             artifact_type="data",
             description="Truncated CSV dataset, one per input",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
@@ -112,17 +112,24 @@ class CsvHead(OperationDefinition):
             )
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build a DataArtifact per truncated CSV."""
-        drafts: list[Artifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.endswith("_head.csv"):
-                with open(file_path, "rb") as f:
-                    content = f.read()
-                drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(file_path),
-                        step_number=inputs.step_number,
-                    )
+        """Match output basenames and explicitly declare each dataset parent."""
+        outputs = [path for path in inputs.file_outputs if path.endswith("_head.csv")]
+        sources = inputs.input_artifacts["dataset"]
+        parent_ids = match_outputs_to_inputs_by_stem(
+            outputs,
+            [
+                (artifact.materialized_path, artifact.artifact_id)
+                for artifact in sources
+            ],
+        )
+        source_by_id = {artifact.artifact_id: artifact for artifact in sources}
+        result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
+        for file_path, parent_id in zip(outputs, parent_ids, strict=True):
+            with open(file_path, "rb") as f:
+                draft = DataArtifact.draft(
+                    content=f.read(),
+                    original_name=f"{source_by_id[parent_id].original_name}_head.csv",
+                    step_number=inputs.step_number,
                 )
-        return ArtifactResult(success=True, artifacts={"dataset": drafts})
+            result.add_artifact("dataset", draft, sources={"dataset": [parent_id]})
+        return result

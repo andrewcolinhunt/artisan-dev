@@ -58,7 +58,7 @@ class _GenBase(OperationDefinition):
         OutputRole.datasets: OutputSpec(
             artifact_type="data",
             description="generated dataset",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
     runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
@@ -83,7 +83,9 @@ class _GenBase(OperationDefinition):
                             step_number=inputs.step_number,
                         )
                     )
-        return ArtifactResult(success=True, artifacts={"datasets": drafts})
+        return ArtifactResult(
+            success=True, artifacts={"datasets": drafts}, lineage={"datasets": []}
+        )
 
 
 class FailPreprocess(_GenBase):

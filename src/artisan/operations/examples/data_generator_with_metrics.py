@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -31,7 +30,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
     each one (like MetricCalculator). The metric's lineage points to the
     co-produced dataset, not to any input.
 
-    Demonstrates ``infer_lineage_from={"outputs": ["datasets"]}``.
+    Demonstrates ``derives_from={"outputs": ["datasets"]}``.
 
     Output Roles:
         datasets (data) -- Generated CSV dataset files
@@ -51,12 +50,12 @@ class DataGeneratorWithMetrics(OperationDefinition):
         OutputRole.datasets: OutputSpec(
             artifact_type="data",
             description="Generated CSV dataset files",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
         OutputRole.metrics: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
             description="Statistics derived from co-produced datasets",
-            infer_lineage_from={"outputs": ["datasets"]},
+            derives_from={"outputs": ["datasets"]},
         ),
     }
 
@@ -125,6 +124,8 @@ class DataGeneratorWithMetrics(OperationDefinition):
             n = len(xs)
             calculated_metrics.append(
                 {
+                    "dataset_path": filepath,
+                    "dataset_name": filename,
                     "metric_key": f"dataset_{i:05d}_metrics.json",
                     "mean_x": statistics.mean(xs),
                     "mean_y": statistics.mean(ys),
@@ -144,22 +145,25 @@ class DataGeneratorWithMetrics(OperationDefinition):
         """Build DataArtifact and MetricArtifact drafts from execution output."""
         raw = inputs.memory_outputs
 
-        dataset_drafts: list[Artifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.endswith(".csv"):
-                with open(file_path, "rb") as f:
-                    content = f.read()
-                dataset_drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(file_path),
-                        step_number=inputs.step_number,
-                    )
-                )
-
-        metric_drafts: list[Artifact] = []
+        result = ArtifactResult(
+            artifacts={"datasets": [], "metrics": []},
+            lineage={"datasets": [], "metrics": []},
+            metadata={
+                "operation": "data_generator_with_metrics",
+                "count": self.params.count,
+                "seed": self.params.seed,
+            },
+        )
         for metric_data in raw.get("calculated_metrics", []):
-            metric_drafts.append(
+            with open(metric_data["dataset_path"], "rb") as f:
+                dataset = DataArtifact.draft(
+                    content=f.read(),
+                    original_name=metric_data["dataset_name"],
+                    step_number=inputs.step_number,
+                )
+            dataset_index = result.add_artifact("datasets", dataset, sources={})
+            result.add_artifact(
+                "metrics",
                 MetricArtifact.draft(
                     content={
                         "mean_x": metric_data["mean_x"],
@@ -171,18 +175,8 @@ class DataGeneratorWithMetrics(OperationDefinition):
                     },
                     original_name=metric_data["metric_key"],
                     step_number=inputs.step_number,
-                )
+                ),
+                sources={"datasets": [dataset_index]},
             )
 
-        return ArtifactResult(
-            success=True,
-            artifacts={
-                "datasets": dataset_drafts,
-                "metrics": metric_drafts,
-            },
-            metadata={
-                "operation": "data_generator_with_metrics",
-                "count": self.params.count,
-                "seed": self.params.seed,
-            },
-        )
+        return result

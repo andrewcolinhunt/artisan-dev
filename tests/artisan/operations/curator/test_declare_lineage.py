@@ -524,10 +524,10 @@ class TestDeclareLineageShape:
         spec = DeclareLineage.outputs["children"]
         assert spec.artifact_type == ArtifactTypes.ANY
 
-    def test_no_infer_lineage_from(self):
-        """Children output doesn't trigger framework lineage capture."""
+    def test_no_derives_from(self):
+        """Children are passed through without a new-output derivation contract."""
         spec = DeclareLineage.outputs["children"]
-        assert spec.infer_lineage_from is None
+        assert spec.derives_from is None
 
     def test_declared_input_roles(self):
         """Inputs are declared (not runtime-defined) with parents + children."""

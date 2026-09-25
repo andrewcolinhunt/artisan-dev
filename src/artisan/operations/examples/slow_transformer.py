@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import (
@@ -60,7 +59,7 @@ class SlowTransformer(OperationDefinition):
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
             description="Timing marker CSV recording sleep duration",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
@@ -80,10 +79,18 @@ class SlowTransformer(OperationDefinition):
     )
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
+        """Carry each dataset's path, identity, and human name together."""
         return {
-            role: PerArtifact([a.materialized_path for a in artifacts])
-            for role, artifacts in inputs.input_artifacts.items()
+            "dataset": PerArtifact(
+                [
+                    {
+                        "path": artifact.materialized_path,
+                        "artifact_id": artifact.artifact_id,
+                        "original_name": artifact.original_name,
+                    }
+                    for artifact in inputs.input_artifacts["dataset"]
+                ]
+            )
         }
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
@@ -96,12 +103,10 @@ class SlowTransformer(OperationDefinition):
             msg = "No dataset input provided"
             raise ValueError(msg)
 
-        input_files = (
-            [dataset_input] if isinstance(dataset_input, str) else list(dataset_input)
-        )
-
         created_files = []
-        for input_path in input_files:
+        outputs = []
+        for dataset in dataset_input:
+            input_path = dataset["path"]
             stem = os.path.splitext(os.path.basename(input_path))[0]
 
             start = time.perf_counter()
@@ -114,28 +119,30 @@ class SlowTransformer(OperationDefinition):
                     f"input,requested,actual\n{stem},{self.params.duration},{elapsed:.4f}\n"
                 )
             created_files.append(marker)
+            outputs.append(
+                {
+                    "path": marker,
+                    "original_name": f"{dataset['original_name']}_slow.csv",
+                    "source_artifact_id": dataset["artifact_id"],
+                }
+            )
 
-        return {"created_files": created_files}
+        return {"created_files": created_files, "outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from timing marker CSVs."""
-        drafts: list[Artifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.endswith(".csv"):
-                with open(file_path, "rb") as f:
-                    content = f.read()
-                drafts.append(
-                    DataArtifact.draft(
-                        content=content,
-                        original_name=os.path.basename(file_path),
-                        step_number=inputs.step_number,
-                    )
+        result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
+        for output in inputs.memory_outputs["outputs"]:
+            with open(output["path"], "rb") as f:
+                draft = DataArtifact.draft(
+                    content=f.read(),
+                    original_name=output["original_name"],
+                    step_number=inputs.step_number,
                 )
-
-        return ArtifactResult(
-            success=True,
-            artifacts={"dataset": drafts},
-        )
+            result.add_artifact(
+                "dataset", draft, sources={"dataset": [output["source_artifact_id"]]}
+            )
+        return result
 
 
 class SequentialSlowTransformer(SlowTransformer):

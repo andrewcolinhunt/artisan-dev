@@ -10,7 +10,6 @@ from typing import Any, ClassVar, cast
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -69,7 +68,7 @@ class DataTransformerScript(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["config"]},
+            derives_from={"inputs": ["config"]},
             description="Transformed dataset files",
         ),
     }
@@ -104,25 +103,28 @@ class DataTransformerScript(OperationDefinition):
                 {
                     "config_path": str(config.materialized_path),
                     "design_name": config.original_name,
+                    "source_artifact_id": config.artifact_id,
                 }
             )
 
         return {"items": PerArtifact(prepared_inputs)}
 
-    def execute_function(self, inputs: ExecuteInput) -> Any:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Invoke transform_data.py for each config in the batch."""
         execute_dir = inputs.execute_dir
         env = self.environments.current()
+        outputs = []
 
         for item in inputs.inputs["items"]:
             config_path = item["config_path"]
             design_name = item["design_name"]
+            output_basename = item["source_artifact_id"]
 
             args = format_args(
                 {
                     "config": config_path,
                     "output-dir": execute_dir,
-                    "output-basename": design_name,
+                    "output-basename": output_basename,
                 }
             )
             run_command(
@@ -130,22 +132,31 @@ class DataTransformerScript(OperationDefinition):
                 [*self.tool.parts(), *args],
                 cwd=execute_dir,
             )
+            outputs.append(
+                {
+                    "path": os.path.join(
+                        execute_dir, f"{output_basename}_variant_0.csv"
+                    ),
+                    "original_name": f"{design_name}_variant_0.csv",
+                    "source_artifact_id": item["source_artifact_id"],
+                }
+            )
 
-        return None
+        return {"outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from script-produced CSV files."""
-        drafts: list[Artifact] = []
-        for f in inputs.file_outputs:
-            if not f.endswith(".csv"):
-                continue
-            with open(f, "rb") as fh:
+        result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
+        for output in inputs.memory_outputs["outputs"]:
+            with open(output["path"], "rb") as fh:
                 content = fh.read()
             draft = DataArtifact.draft(
                 content=content,
-                original_name=os.path.basename(f),
+                original_name=output["original_name"],
                 step_number=inputs.step_number,
             )
-            drafts.append(draft)
+            result.add_artifact(
+                "dataset", draft, sources={"config": [output["source_artifact_id"]]}
+            )
 
-        return ArtifactResult(success=True, artifacts={"dataset": drafts})
+        return result
