@@ -5,7 +5,9 @@ from __future__ import annotations
 import contextlib
 import os
 import select
+import signal
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -17,6 +19,7 @@ from unittest.mock import Mock
 import pytest
 
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from artisan.utils import _command_supervisor as owner_runtime
 from artisan.utils import command_supervisor as client
 from artisan.utils._command_supervisor import encode, receive, send
 from artisan.utils.external_tools import run_command
@@ -595,12 +598,16 @@ def _closed_uncollected_command(
         merged=False,
         external=False,
     )
-    limit = time.monotonic() + 3
-    while command.state != "closed" and time.monotonic() < limit:
-        command.poll()
-        time.sleep(0.01)
-    assert command.state == "closed"
-    return command
+    try:
+        limit = time.monotonic() + 3
+        while command.state != "closed" and time.monotonic() < limit:
+            command.poll()
+            time.sleep(0.01)
+        assert command.state == "closed"
+        return command
+    except BaseException:
+        command.dispose()
+        raise
 
 
 @pytest.mark.parametrize("controller_event", ["cancel", "worker_lost"])
@@ -892,3 +899,140 @@ def test_interrupt_after_scope_completion_does_not_reopen_ownership(
     request.assert_not_called()
     assert invocation.owner is not None
     assert invocation.owner.process.returncode is not None
+
+
+@pytest.fixture
+def direct_owned_command() -> Iterator[owner_runtime.Command]:
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-c",
+            "import sys;print('ready',flush=True);sys.stdin.read();sys.exit(7)",
+        ],
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        process_group=0,
+    )
+    command = owner_runtime.Command(
+        "signal-evidence", 0, process=process, state="running"
+    )
+    try:
+        assert process.stdout is not None
+        assert select.select([process.stdout], [], [], 3)[0]
+        assert process.stdout.readline() == b"ready\n"
+        command.register_watch()
+        yield command
+    finally:
+        command._close_watch()
+        if process.returncode is None:
+            with contextlib.suppress(ProcessLookupError, PermissionError):
+                os.killpg(process.pid, signal.SIGKILL)
+            process.wait(timeout=3)
+        for stream in (process.stdin, process.stdout, process.stderr):
+            assert stream is not None
+            stream.close()
+
+
+def _await_command_state(command: owner_runtime.Command, state: str) -> None:
+    limit = time.monotonic() + 2
+    while command.state != state and time.monotonic() < limit:
+        command.tick({command.pid: command.request_id})
+        time.sleep(0.005)
+    assert command.state == state
+
+
+def test_denied_final_signal_allows_later_exact_reap_and_positive_absence(
+    direct_owned_command: owner_runtime.Command,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = direct_owned_command
+    process = command.process
+    assert process is not None
+    assert process.stdin is not None
+    process.stdin.close()
+    original = os.killpg
+    denied_signals = []
+
+    def deny_destructive_signal(pgid: int, sig: int) -> None:
+        if sig:
+            denied_signals.append(sig)
+            raise PermissionError
+        original(pgid, sig)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "killpg", deny_destructive_signal)
+        _await_command_state(command, "closed")
+    assert denied_signals == [signal.SIGKILL]
+    assert command.final_signal
+    assert command.reaped
+    assert process.returncode == 7
+    assert owner_runtime.group_absent(process.pid)
+    assert not command.observation_error
+
+
+def test_denied_signals_do_not_confirm_a_real_surviving_group(
+    direct_owned_command: owner_runtime.Command,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = direct_owned_command
+    original = os.killpg
+
+    def deny_destructive_signal(pgid: int, sig: int) -> None:
+        if sig:
+            raise PermissionError
+        original(pgid, sig)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "killpg", deny_destructive_signal)
+        command.stop(time.monotonic() + 0.05)
+        _await_command_state(command, "unknown")
+    assert command.final_signal
+    assert not command.reaped
+    assert not owner_runtime.group_absent(command.pid)
+
+
+@pytest.mark.parametrize("during_registration", [True, False])
+def test_production_watcher_denial_stays_unknown_after_positive_absence(
+    direct_owned_command: owner_runtime.Command,
+    monkeypatch: pytest.MonkeyPatch,
+    during_registration: bool,
+) -> None:
+    command = direct_owned_command
+
+    def deny_watch(*args: Any) -> None:
+        raise PermissionError
+
+    with monkeypatch.context() as patch:
+        if during_registration:
+            command._close_watch()
+            patch.setattr(owner_runtime, "ExitWatch", deny_watch)
+            command.register_watch()
+        else:
+            assert command.watch is not None
+            patch.setattr(command.watch, "exited", deny_watch)
+        _await_command_state(command, "unknown")
+    assert command.reaped
+    assert owner_runtime.group_absent(command.pid)
+    assert command.observation_error
+
+
+def test_denied_absence_probe_stays_unknown_after_exact_reap(
+    direct_owned_command: owner_runtime.Command,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    command = direct_owned_command
+    original = os.killpg
+
+    def deny_absence_probe(pgid: int, sig: int) -> None:
+        if not sig:
+            raise PermissionError
+        original(pgid, sig)
+
+    with monkeypatch.context() as patch:
+        patch.setattr(os, "killpg", deny_absence_probe)
+        command.stop(time.monotonic() + 0.05, immediate=True)
+        _await_command_state(command, "unknown")
+    assert command.reaped
+    assert not command.observation_error
+    assert owner_runtime.group_absent(command.pid)
