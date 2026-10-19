@@ -42,6 +42,57 @@ The transform has two execution units with two inputs each. `max_workers` caps
 concurrent worker tasks. Successful-item counts describe processed inputs (or
 source executions), so inspect accepted outputs when verifying artifact counts.
 
+## Load application definitions in every process
+
+For an installed package that registers custom artifact types or operations,
+select its trusted module when creating or resuming a pipeline. Replace
+`my_application` with your package's registration module:
+
+```python
+pipeline = PipelineManager.create(
+    name="application_run",
+    delta_root="runs/delta",
+    staging_root="runs/staging",
+    application_modules=("my_application",),
+)
+```
+
+`ARTISAN_LOAD_MODULES` accepts comma-separated module names. Factory calls and
+CLI store commands resolve environment names first, then explicit names, removing
+duplicates. The resolved selection travels unchanged to creator and curator
+workers. Direct `PipelineConfig` and `RuntimeEnvironment` instances contain an
+explicit selection and do not merge the environment again.
+
+For standalone Python inspection, load the same installed definitions before
+opening the store:
+
+```python
+from artisan.registry import bootstrap_applications
+from artisan.storage import ArtifactStore
+
+bootstrap_applications(("my_application",))
+store = ArtifactStore("runs/delta")
+```
+
+Store-reading CLI commands accept repeatable `--load-module` arguments:
+
+```bash
+artisan store repair --delta-root runs/delta --staging-root runs/staging \
+    --load-module my_application --json
+```
+
+An absent artifact definition produces a configuration error. It does not prove
+that the store is corrupt. Correct the installed package or selected module and
+retry in a fresh interpreter after a failed import. Repair and startup recovery
+check registration before changing selected evidence.
+
+Resume and replay require trusted configuration again. Recorded module names are
+audit context; they cannot authorize an import. Replay uses
+`RuntimeEnvironment.application_modules` and automatically resolves only builtin
+operations or operations within those authorized modules. An explicitly supplied,
+already imported `operation_class` still undergoes identity checks. Neither a
+stored module name nor `allow_code_change=True` grants import authority.
+
 ## Choose a step runner
 
 The native local runner uses a process pool. Set `batch_strategy.max_workers`

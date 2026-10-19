@@ -51,6 +51,7 @@ from artisan.execution.utils import (
     validate_passthrough_result,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.registry.discovery import bootstrap_applications
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import (
     ArtifactResult,
@@ -186,6 +187,7 @@ def run_curator_flow(
         Staged success or failure, or an unstaged failure if setup prevents
         recording.
     """
+    bootstrap_applications(runtime_env.application_modules, purpose="curator worker")
     with (
         capture_commands(unit.operation) as commands,
         capture_replay(unit, runtime_env),

@@ -148,7 +148,11 @@ def test_replay_freezes_associations_before_new_descendants(tmp_path: Path) -> N
         new_snapshot = ReplaySnapshot.model_validate_json(refreshed["replay_snapshot"])
         assert len(new_snapshot.associated[0].artifact_ids) == 2
 
-    result = replay_execution(source["execution_run_id"], runtime=runtime)
+    result = replay_execution(
+        source["execution_run_id"],
+        runtime=runtime,
+        operation_class=AssociatedMetricConsumer,
+    )
     replayed = _execution(runtime, result.step_result)
     frozen = ReplaySnapshot.model_validate_json(replayed["replay_snapshot"])
     assert frozen.associated == original.associated
@@ -216,7 +220,9 @@ def test_replay_retains_paired_groups_in_one_unit(tmp_path: Path) -> None:
     assert len(set(original.group_ids)) == 2
     assert len(original.inputs["primary"]) == len(original.inputs["secondary"]) == 2
 
-    result = replay_execution(source["execution_run_id"], runtime=runtime)
+    result = replay_execution(
+        source["execution_run_id"], runtime=runtime, operation_class=DualInputLineage
+    )
     replayed = _execution(runtime, result.step_result)
     snapshot = ReplaySnapshot.model_validate_json(replayed["replay_snapshot"])
     assert snapshot.inputs == original.inputs

@@ -4,8 +4,16 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, JsonValue, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    field_validator,
+    model_validator,
+)
 
+from artisan.utils.application_modules import validate_application_modules
 from artisan.utils.hashing import CacheInputIdentity
 
 
@@ -67,6 +75,12 @@ class ReplaySource(ReplayModel):
     runner: str
     execution_spec_id: str
     roots: dict[str, str | None]
+    application_modules: tuple[str, ...] | None = None
+
+    @field_validator("application_modules", mode="before")
+    @classmethod
+    def _validate_application_modules(cls, value: object) -> tuple[str, ...] | None:
+        return None if value is None else validate_application_modules(value)
 
 
 class ReplayAssociation(ReplayModel):

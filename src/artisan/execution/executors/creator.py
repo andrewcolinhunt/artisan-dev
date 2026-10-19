@@ -34,6 +34,7 @@ from artisan.execution.recording.replay_snapshot import (
 )
 from artisan.execution.tool_endpoint.client import EndpointCancellationError
 from artisan.execution.utils import generate_execution_run_id
+from artisan.registry.discovery import bootstrap_applications
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
@@ -220,6 +221,7 @@ def run_creator_flow(
         Staged success or failure, or an unstaged failure when setup or
         cancellation prevents recording.
     """
+    bootstrap_applications(runtime_env.application_modules, purpose="creator worker")
     with (
         capture_commands(unit.operation) as commands,
         capture_replay(unit, runtime_env),

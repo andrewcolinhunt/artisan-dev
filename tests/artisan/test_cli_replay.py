@@ -55,3 +55,33 @@ def test_replay_supply_rejects_values_without_slot_and_name(tmp_path, capsys, su
     )
     assert code == 1
     assert json.loads(capsys.readouterr().out)["code"] == "replay_configuration_invalid"
+
+
+def test_replay_rejected_application_prevents_store_reads(
+    tmp_path, capsys, monkeypatch
+):
+    import importlib
+    from unittest.mock import Mock
+
+    replay = importlib.import_module("artisan.orchestration.replay")
+    read = Mock(side_effect=AssertionError("read before bootstrap"))
+    monkeypatch.setattr(replay, "_source_snapshot", read)
+    code = main(
+        [
+            "execution",
+            "replay",
+            "id",
+            "--delta-root",
+            str(tmp_path / "delta"),
+            "--debug-root",
+            str(tmp_path / "debug"),
+            "--load-module",
+            "missing_cli_replay_application",
+            "--json",
+        ]
+    )
+    assert code == 1
+    assert (
+        json.loads(capsys.readouterr().out)["code"] == "application_registration_failed"
+    )
+    read.assert_not_called()

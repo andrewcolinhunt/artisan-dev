@@ -241,7 +241,11 @@ def test_replay_multicommand_failed_attempt_then_success(tmp_path):
     source = _read(runtime, TablePath.EXECUTIONS).row(0, named=True)
     assert len(json.loads(source["command_recording"])["commands"]) == 2
     (tmp_path / "allow").touch()
-    result = replay_execution(source["execution_run_id"], runtime=runtime)
+    result = replay_execution(
+        source["execution_run_id"],
+        runtime=runtime,
+        operation_class=MultiCommandGenerator,
+    )
     assert result.step_result.status == StepStatus.SUCCEEDED
     row = (
         _read(runtime, TablePath.EXECUTIONS)
@@ -307,7 +311,10 @@ def test_replay_secret_replacement_absent_from_diagnostic_framework_rows(
     source = _read(runtime, TablePath.EXECUTIONS)["execution_run_id"][0]
     monkeypatch.setenv("REPLAY_FRESH_TOKEN", "unique-new-replay-secret")
     result = replay_execution(
-        source, runtime=runtime, replacement_env={"/params/token": "REPLAY_FRESH_TOKEN"}
+        source,
+        runtime=runtime,
+        operation_class=SecretGenerator,
+        replacement_env={"/params/token": "REPLAY_FRESH_TOKEN"},
     )
     assert result.step_result.status == StepStatus.SUCCEEDED
     execution = _read(runtime, TablePath.EXECUTIONS).filter(

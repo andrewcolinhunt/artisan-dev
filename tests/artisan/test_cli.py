@@ -602,3 +602,30 @@ def test_store_repair_rejects_recovery_with_abandonment(tmp_path, monkeypatch, c
     )
     assert "separate actions" in capsys.readouterr().err
     repair_mock.assert_not_called()
+
+
+def test_store_repair_rejected_application_performs_no_repair(
+    tmp_path, monkeypatch, capsys
+):
+    repair = MagicMock(side_effect=AssertionError("repair before bootstrap"))
+    monkeypatch.setattr("artisan.storage.io.repair.repair_store", repair)
+    code = main(
+        [
+            "store",
+            "repair",
+            "--delta-root",
+            str(tmp_path / "delta"),
+            "--staging-root",
+            str(tmp_path / "staging"),
+            "--load-module",
+            "missing_cli_repair_application",
+            "--apply",
+            "--json",
+        ]
+    )
+    assert code == 1
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error_type"] == "config"
+    assert payload["code"] == "application_registration_failed"
+    assert "corrupt" not in json.dumps(payload)
+    repair.assert_not_called()

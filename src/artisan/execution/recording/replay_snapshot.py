@@ -219,6 +219,7 @@ def build_replay_snapshot(
                 step_number=unit.step_number,
                 step_run_id=unit.step_run_id,
                 runner=runtime.compute_backend_name,
+                application_modules=runtime.application_modules,
                 execution_spec_id=unit.execution_spec_id,
                 roots=redactor.sanitize_data(runtime_roots(runtime)),
             ),
