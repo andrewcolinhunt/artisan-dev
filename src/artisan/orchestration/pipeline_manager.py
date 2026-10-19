@@ -33,6 +33,10 @@ from artisan.errors import (
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.commands import CommandRecorder
+from artisan.execution.recording.durable import (
+    configuration_recorder,
+    sanitize_metadata,
+)
 from artisan.execution.tool_endpoint.spec import validate_deployment_overrides
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
@@ -142,10 +146,11 @@ def _extract_source_steps(inputs: Any) -> set[int]:
     return steps
 
 
-def _serialize_input_refs(inputs: Any) -> str:
+def _serialize_input_refs(inputs: Any, redactor: CommandRecorder | None = None) -> str:
     """Serialize input references to a JSON string for delta persistence."""
     if inputs is None:
         return "null"
+    redactor = redactor or CommandRecorder()
     if isinstance(inputs, dict):
         serialized = {}
         for key, value in inputs.items():
@@ -157,7 +162,10 @@ def _serialize_input_refs(inputs: Any) -> str:
                     "artifact_type": value.artifact_type,
                 }
             else:
-                serialized[key] = {"type": "literal", "value": value}
+                serialized[key] = {
+                    "type": "literal",
+                    "value": redactor.sanitize_json(value),
+                }
         return json.dumps(serialized)
     if isinstance(inputs, list):
         serialized_list = []
@@ -172,9 +180,11 @@ def _serialize_input_refs(inputs: Any) -> str:
                     }
                 )
             else:
-                serialized_list.append({"type": "literal", "value": item})
+                serialized_list.append(
+                    {"type": "literal", "value": redactor.sanitize_json(item)}
+                )
         return json.dumps(serialized_list)
-    return json.dumps(str(inputs))
+    return json.dumps(redactor.sanitize(str(inputs)))
 
 
 def _extract_name_from_run_id(run_id: str) -> str:
@@ -997,6 +1007,7 @@ class PipelineManager:
         self._prev_sigterm: Any = None
         self._active_futures: dict[int, StepFuture] = {}
         self._step_start_records: dict[int, StepStartRecord] = {}
+        self._step_recorders: dict[int, CommandRecorder] = {}
         self._step_status_readers: dict[int, _StepStatusReader] = {}
         self._executor: ThreadPoolExecutor | None = ThreadPoolExecutor(
             max_workers=1, thread_name_prefix="pipeline-step"
@@ -1345,6 +1356,7 @@ class PipelineManager:
     ) -> StepResult:
         """Fail an attempt through the authoritative tracker transition API."""
         record = self._step_start_records_by_id(step_run_id)
+        error = self._step_recorders[record.step_number].sanitize(error)
         current = self._step_tracker.current_state(step_run_id)
         existing = self._publish_existing_terminal(
             current,
@@ -1833,16 +1845,11 @@ class PipelineManager:
             step_spec_id=spec,
             step_run_id=step_run_id,
             resolved_runner=self._default_step_runner,
+            redactor=redactor,
         )
         record = record.model_copy(
             update={
                 "replay_of_execution_run_id": unit.replay_of_execution_run_id,
-                "params_json": json.dumps(
-                    redactor.sanitize_data(json.loads(record.params_json))
-                ),
-                "compute_options_json": json.dumps(
-                    redactor.sanitize_data(json.loads(record.compute_options_json))
-                ),
             }
         )
         self._step_start_records[step_number] = record
@@ -1862,7 +1869,7 @@ class PipelineManager:
             clean = result.model_copy(
                 update={
                     "error": redactor.sanitize_data(result.error),
-                    "metadata": redactor.sanitize_data(result.metadata),
+                    "metadata": sanitize_metadata(redactor, result.metadata),
                 }
             )
             return self._commit_execution_result(
@@ -2146,6 +2153,11 @@ class PipelineManager:
             # Prepare once after running is durable: input resolution, path
             # promotion, cache lookup, and dispatch are operational work.
             prepared_operation = instantiate_operation(operation, ov)
+            configuration_recorder(
+                prepared_operation,
+                params=ov.params,
+                recorder=self._step_recorders[step_number],
+            )
             validate_deployment_overrides(prepared_operation)
             already_verified: set[str] = set()
             if _is_file_path_input(inputs):
@@ -2503,12 +2515,21 @@ class PipelineManager:
         step_spec_id: str | None,
         step_run_id: str,
         resolved_runner: RunnerBase | str,
+        redactor: CommandRecorder | None = None,
     ) -> StepStartRecord:
         """Build common persisted metadata for executed and cached steps."""
         # Keep the internal resources/execution keys stable across their public
         # API renames; StepOverrides has already canonicalized the value shapes.
-        compute_options_data = {
-            "application_modules": self._config.application_modules,
+        redactor = configuration_recorder(
+            operation,
+            params=ov.params,
+            environment=ov.environment,
+            tool=ov.tool,
+            compute_provider=ov.compute_provider,
+            recorder=redactor,
+        )
+        self._step_recorders[step_number] = redactor
+        user_options = {
             "resources": ov.runner_resources or {},
             "execution": ov.batch_strategy or {},
             "environment": ov.environment if ov.environment is not None else {},
@@ -2517,6 +2538,16 @@ class PipelineManager:
                 ov.compute_provider if ov.compute_provider is not None else {}
             ),
             "compute_resources": ov.compute_resources or {},
+        }
+        for key in ("resources", "execution", "compute_resources"):
+            redactor._learn_json(user_options[key])
+            redactor._learn_json(redactor.json_data(user_options[key]))
+        compute_options_data = {
+            **{
+                key: redactor.sanitize_json(value)
+                for key, value in user_options.items()
+            },
+            "application_modules": self._config.application_modules,
             "group_by": (ov.group_by.value if ov.group_by is not None else None),
             "cache_policy": self._resolve_cache_policy(ov).value,
             "dynamic_output_roles": is_curator_operation(operation)
@@ -2529,8 +2560,8 @@ class PipelineManager:
             step_number=step_number,
             step_name=step_name,
             operation_class=_qualified_name(operation),
-            params_json=json.dumps(ov.params or {}, default=_set_default),
-            input_refs_json=_serialize_input_refs(inputs),
+            params_json=json.dumps(redactor.sanitize_json(ov.params or {})),
+            input_refs_json=_serialize_input_refs(inputs, redactor),
             compute_backend=(
                 resolved_runner.name
                 if isinstance(resolved_runner, RunnerBase)
@@ -2690,11 +2721,15 @@ class PipelineManager:
         if step_run_id is None:
             msg = "Persistence-bearing step result has no step_run_id"
             raise PersistenceIntegrityError(msg)
+        redactor = self._step_recorders[result.step_number]
+        metadata = sanitize_metadata(redactor, result.metadata)
         finalized = result.model_copy(
             update={
                 "step_name": step_name,
                 "duration_seconds": time.perf_counter() - attempt_started_at,
                 "step_run_id": step_run_id,
+                "metadata": metadata,
+                "error": redactor.sanitize_data(result.error),
             }
         )
         if finalized.cancellation_status is not None:
@@ -2913,7 +2948,9 @@ class PipelineManager:
 
             except Exception as e:
                 elapsed = time.perf_counter() - start
-                error_msg = f"{type(e).__name__}: {e}"
+                error_msg = self._step_recorders[step_number].sanitize(
+                    f"{type(e).__name__}: {e}"
+                )
                 logger.error(
                     "Step %d (%s) failed after %.1fs: %s",
                     step_number,

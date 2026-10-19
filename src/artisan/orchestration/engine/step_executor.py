@@ -31,6 +31,7 @@ from artisan.execution.executors.curator import (
 )
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.commands import capture_commands
+from artisan.execution.recording.durable import configuration_recorder
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import record_execution_failure
 from artisan.execution.recording.replay_snapshot import build_replay_snapshot
@@ -1162,6 +1163,9 @@ def _synthesize_failure_record(
             step_run_id=step_run_id,
         )
         with capture_commands(unit.operation) as commands:
+            configuration_recorder(
+                unit.operation, params=user_overrides, recorder=commands
+            )
             commands.add_environment(
                 {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
             )

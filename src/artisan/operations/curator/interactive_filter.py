@@ -16,6 +16,11 @@ from typing import TYPE_CHECKING, Any
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.execution.recording.commands import CommandRecorder
+from artisan.execution.recording.durable import (
+    configuration_recorder,
+    sanitize_metadata,
+)
 from artisan.operations.curator.filter import (
     Criterion,
     _assemble_diagnostics,
@@ -624,6 +629,8 @@ class InteractiveFilter:
         step_run_id = uuid.uuid4().hex
         execution_spec_id = digest_utf8(f"filter|{sorted_input_ids}|{criteria_json}")
         execution_run_id = digest_utf8(f"{execution_spec_id}|{timestamp_str}")
+        params = {"criteria": [c.model_dump() for c in self._criteria]}
+        redactor = configuration_recorder(params=params)
 
         # Build and record step start
         start_record = StepStartRecord(
@@ -632,9 +639,7 @@ class InteractiveFilter:
             step_number=step_number,
             step_name=step_name,
             operation_class="artisan.operations.curator.filter.Filter",
-            params_json=json.dumps(
-                {"criteria": [c.model_dump() for c in self._criteria]}
-            ),
+            params_json=json.dumps(redactor.sanitize_json(params)),
             input_refs_json="{}",
             compute_backend="local",
             compute_options_json="{}",
@@ -669,12 +674,13 @@ class InteractiveFilter:
                 execution_run_id=execution_run_id,
                 filtered=filtered,
                 now=now,
+                redactor=redactor,
             )
         except Exception as exc:
             current = tracker.current_state(step_run_id)
             if current.status != StepStatus.RUNNING:
                 raise
-            error = f"{type(exc).__name__}: {exc}"
+            error = redactor.sanitize(f"{type(exc).__name__}: {exc}")
             failed = StepResult(
                 step_name=step_name,
                 step_number=step_number,
@@ -703,6 +709,7 @@ class InteractiveFilter:
         execution_run_id: str,
         filtered: list[str],
         now: datetime,
+        redactor: CommandRecorder,
     ) -> StepResult:
         """Commit one interactive selection and its terminal snapshot."""
         from artisan.execution.recording.recorder import record_passthrough
@@ -715,7 +722,7 @@ class InteractiveFilter:
         )
         from artisan.storage.io.staging import StagingManager
 
-        diagnostics = self._build_diagnostics(filtered)
+        diagnostics = sanitize_metadata(redactor, self._build_diagnostics(filtered))
         operation = Filter()
         staging_root = uri_join(self._delta_root, "_staging")
         execution_context = ExecutionContext(

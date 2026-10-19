@@ -19,6 +19,10 @@ import polars as pl
 
 from artisan.errors import StoreIntegrityError
 from artisan.execution.recording.commands import sanitize_diagnostic
+from artisan.execution.recording.durable import (
+    configuration_recorder,
+    sanitize_error_envelope,
+)
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
@@ -206,6 +210,7 @@ def record_execution_success(
         replay_of_execution_run_id=replay_of_execution_run_id,
         execution_run_id=execution_context.execution_run_id,
         execution_spec_id=execution_context.execution_spec_id,
+        operation=execution_context.operation,
         operation_name=execution_context.operation_name,
         step_number=execution_context.step_number,
         execution_edges=execution_edges,
@@ -303,6 +308,7 @@ def record_passthrough(
         replay_of_execution_run_id=replay_of_execution_run_id,
         execution_run_id=execution_context.execution_run_id,
         execution_spec_id=execution_context.execution_spec_id,
+        operation=execution_context.operation,
         operation_name=execution_context.operation_name,
         step_number=execution_context.step_number,
         execution_edges=execution_edges,
@@ -433,6 +439,15 @@ def record_execution_failure(
         _stage_execution,
     )
 
+    redactor = configuration_recorder(
+        execution_context.operation, params=user_overrides
+    )
+    redactor._learn_json(params)
+    redactor._learn_json(error_envelope)
+    error = redactor.sanitize(error)
+    tool_output = redactor.sanitize_data(tool_output)
+    error_envelope = sanitize_error_envelope(redactor, error_envelope)
+
     if execution_is_sealed(execution_context):
         msg = f"Execution {execution_context.execution_run_id} is already sealed"
         raise StoreIntegrityError(msg)
@@ -456,6 +471,7 @@ def record_execution_failure(
             replay_of_execution_run_id=replay_of_execution_run_id,
             execution_run_id=execution_context.execution_run_id,
             execution_spec_id=execution_context.execution_spec_id,
+            operation=execution_context.operation,
             operation_name=execution_context.operation_name,
             step_number=execution_context.step_number,
             execution_edges=execution_edges,
@@ -471,7 +487,7 @@ def record_execution_failure(
             user_overrides=user_overrides,
             tool_output=sanitize_diagnostic(tool_output),
             step_run_id=execution_context.step_run_id,
-            error_envelope=sanitize_diagnostic(error_envelope),
+            error_envelope=error_envelope,
         )
         _write_failure_log(
             failure_logs_root=failure_logs_root,

@@ -145,6 +145,7 @@ def _stage_execution(
     worker_log: str | None = None,
     step_run_id: str | None = None,
     error_envelope: dict[str, Any] | None = None,
+    operation: Any = None,
 ) -> None:
     """Stage edges, flush local payloads, and publish the execution seal last."""
     ensure_unsealed(staging_path, fs)
@@ -172,6 +173,7 @@ def _stage_execution(
         worker_log=worker_log,
         step_run_id=step_run_id,
         error_envelope=error_envelope,
+        operation=operation,
     )
 
 
@@ -308,16 +310,26 @@ def _write_execution_record(
     worker_log: str | None = None,
     step_run_id: str | None = None,
     error_envelope: dict[str, Any] | None = None,
+    operation: Any = None,
 ) -> None:
     """Serialize one execution record row to ``executions.parquet``."""
-    from artisan.execution.recording.commands import sanitize_diagnostic
+    from artisan.execution.recording.durable import (
+        configuration_recorder,
+        sanitize_error_envelope,
+        sanitize_metadata,
+        sanitize_replay_snapshot,
+    )
 
-    if replay_of_execution_run_id is not None:
-        params = sanitize_diagnostic(params)
-        user_overrides = sanitize_diagnostic(user_overrides)
-        result_metadata = sanitize_diagnostic(result_metadata)
-        error = sanitize_diagnostic(error)
-        error_envelope = sanitize_diagnostic(error_envelope)
+    redactor = configuration_recorder(operation, params=user_overrides)
+    redactor._learn_json(params)
+    redactor._learn_json(error_envelope)
+    result_metadata = sanitize_metadata(redactor, result_metadata)
+    params = redactor.sanitize_json(params)
+    user_overrides = redactor.sanitize_json(user_overrides)
+    error = redactor.sanitize_data(error)
+    error_envelope = sanitize_error_envelope(redactor, error_envelope)
+    command_recording = redactor.sanitize_recording(command_recording)
+    replay_snapshot = sanitize_replay_snapshot(redactor, replay_snapshot)
     row = {
         "replay_snapshot": ReplaySnapshot.model_validate_json(
             replay_snapshot.model_dump_json()

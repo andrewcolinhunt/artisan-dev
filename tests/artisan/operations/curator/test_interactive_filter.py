@@ -2064,3 +2064,26 @@ def test_unqualified_cached_metric_detects_multiple_current_steps(
         filt.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5}])
     assert 'step 0 ("current_data")' in str(caught.value)
     assert 'step 5 ("current_metric_cached")' in str(caught.value)
+
+
+def test_interactive_commit_sanitizes_criteria_and_diagnostics_copies(
+    mixed_type_delta_root: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("ARTISAN_TEST_TOKEN", "good")
+    filt = InteractiveFilter(mixed_type_delta_root)
+    filt.load()
+    filt.set_criteria([{"metric": "label", "operator": "eq", "value": "good"}])
+    result = filt.commit()
+    assert result.status is StepStatus.SUCCEEDED
+    assert result.metadata["diagnostics"]["criteria"][0]["value"] == "<redacted>"
+    assert filt.criteria[0].value == "good"
+    steps = pl.read_delta(mixed_type_delta_root / "orchestration" / "steps").filter(
+        pl.col("step_run_id") == result.step_run_id
+    )
+    executions = pl.read_delta(
+        mixed_type_delta_root / TablePath.EXECUTIONS.value
+    ).filter(pl.col("step_run_id") == result.step_run_id)
+    assert "good" not in str(steps.to_dicts())
+    assert "good" not in str(executions.to_dicts())
+    assert "label" in steps["params_json"][0]
