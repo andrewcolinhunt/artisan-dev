@@ -164,13 +164,20 @@ class Command:
             self.events.append("observation_failed")
             self.stop(time.monotonic() + CLEANUP_SECONDS, immediate=True)
 
-    def stop(self, deadline: float, *, immediate: bool = False) -> None:
+    def stop(
+        self,
+        deadline: float,
+        *,
+        immediate: bool = False,
+        accepted_at: float | None = None,
+    ) -> None:
         if self.state in {"closed", "unknown", "launch_failed"}:
             return
         self.deadline = min(self.deadline or deadline, deadline)
+        accepted_at = time.monotonic() if accepted_at is None else accepted_at
         self.kill_at = min(
             self.kill_at or deadline,
-            time.monotonic() + (0 if immediate else TERM_SECONDS),
+            accepted_at + (0 if immediate else TERM_SECONDS),
             deadline,
         )
         if self.state != "stopping":
@@ -268,6 +275,7 @@ class Command:
             "state": self.state,
             "returncode": self.process.returncode if self.process else None,
             "deadline": self.deadline,
+            "kill_at": self.kill_at,
             "events": self.events,
         }
 
@@ -372,20 +380,23 @@ class Supervisor:
             self.close_scope(time.monotonic() + CLEANUP_SECONDS)
             self.shutting_down = True
         else:
+            accepted_at = time.monotonic()
             for command in self.commands.values():
                 if command.client == descriptor:
                     command.stop(
                         min(
                             self.deadline or float("inf"),
-                            time.monotonic() + CLEANUP_SECONDS,
-                        )
+                            accepted_at + CLEANUP_SECONDS,
+                        ),
+                        accepted_at=accepted_at,
                     )
 
     def close_scope(self, deadline: float) -> None:
         self.admission = False
         self.deadline = min(self.deadline or deadline, deadline)
+        accepted_at = time.monotonic()
         for command in self.commands.values():
-            command.stop(self.deadline)
+            command.stop(self.deadline, accepted_at=accepted_at)
 
     def message(self, channel: Channel, message: Any) -> None:
         if not isinstance(message, dict):
