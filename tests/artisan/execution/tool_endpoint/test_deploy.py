@@ -841,7 +841,7 @@ class TestCancellationRoute:
         web = endpoint_fn()
         return next(route.endpoint for route in web.routes if route.path == "/cancel")
 
-    def test_pending_call_returns_confirmed_for_same_call_id(
+    def test_accepted_cancellation_does_not_prove_container_termination(
         self, cancel_endpoint, monkeypatch
     ):
         function_call = MagicMock()
@@ -852,9 +852,59 @@ class TestCancellationRoute:
         response = CancelResponse(**cancel_endpoint(call_id="fc-1"))
 
         assert response.call_id == "fc-1"
-        assert response.status is CancellationStatus.CONFIRMED
+        assert response.status is CancellationStatus.UNKNOWN
+        assert response.message == (
+            "Cancellation requested; worker-container termination could not be verified"
+        )
         assert lookup.call_args_list == [call("fc-1"), call("fc-1")]
         function_call.cancel.assert_called_once_with(terminate_containers=True)
+
+    @pytest.mark.parametrize(
+        "failure",
+        [
+            modal.exception.OutputExpiredError(),
+            modal.exception.FunctionTimeoutError(),
+            modal.exception.RemoteError("provider failure"),
+        ],
+    )
+    def test_unavailable_retained_result_does_not_reject_cancellation(
+        self, cancel_endpoint, monkeypatch, failure
+    ):
+        function_call = MagicMock()
+        function_call.get.side_effect = failure
+        monkeypatch.setattr(
+            modal.FunctionCall, "from_id", lambda _call_id: function_call
+        )
+
+        response = CancelResponse(**cancel_endpoint(call_id="fc-unavailable"))
+
+        assert response.call_id == "fc-unavailable"
+        assert response.status is CancellationStatus.UNKNOWN
+        function_call.cancel.assert_called_once_with(terminate_containers=True)
+
+    def test_repeated_cancellation_keeps_termination_uncertainty(
+        self, cancel_endpoint, monkeypatch
+    ):
+        function_call = MagicMock()
+        function_call.get.side_effect = [
+            modal.exception.TimeoutError(),
+            modal.exception.RemoteError("input terminated"),
+        ]
+        monkeypatch.setattr(
+            modal.FunctionCall, "from_id", lambda _call_id: function_call
+        )
+
+        responses = [
+            CancelResponse(**cancel_endpoint(call_id="fc-repeated")) for _ in range(2)
+        ]
+
+        assert [response.call_id for response in responses] == ["fc-repeated"] * 2
+        assert [response.status for response in responses] == [
+            CancellationStatus.UNKNOWN
+        ] * 2
+        assert (
+            function_call.cancel.call_args_list == [call(terminate_containers=True)] * 2
+        )
 
     def test_completed_call_returns_rejected_without_cancelling(
         self, cancel_endpoint, monkeypatch

@@ -429,7 +429,7 @@ def build_app(
         def cancel(call_id: str) -> dict[str, Any]:
             """Cancel one named job and report the outcome actually observed."""
             retained = _retained(call_id)
-            if retained != "pending":
+            if isinstance(retained, dict):
                 return {
                     "call_id": call_id,
                     "status": "rejected",
@@ -445,8 +445,9 @@ def build_app(
                 }
             return {
                 "call_id": call_id,
-                "status": "confirmed",
-                "message": "Named worker call was terminated",
+                "status": "unknown",
+                "message": "Cancellation requested; worker-container termination "
+                "could not be verified",
             }
 
         return web
