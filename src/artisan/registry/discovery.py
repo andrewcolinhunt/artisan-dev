@@ -36,6 +36,7 @@ from artisan.utils.application_modules import (
 _BUILTIN_MODULES = ("artisan.operations.curator",)
 _ENV_VAR = "ARTISAN_LOAD_MODULES"
 _failed_imports: dict[str, str] = {}
+_import_collisions: dict[str, list[tuple[str, str, str]]] = {}
 
 
 def discover(
@@ -136,6 +137,11 @@ def _import_and_attribute(
         )
         return None
 
+    # Transitive registrations belong to the trusted import that triggered them,
+    # even when their defining module is outside that application's namespace.
+    new_collisions = OperationDefinition._name_collisions[len(collisions_before) :]
+    if new_collisions:
+        _import_collisions.setdefault(module_path, []).extend(new_collisions)
     new_registrations = [
         name
         for name, cls in OperationDefinition._registry.items()
@@ -177,6 +183,13 @@ def bootstrap_applications(modules: Sequence[str], *, purpose: str = "runtime") 
         failure = report.errors[0]
         msg = f"Application {failure.module} failed to load for {purpose} ({failure.error_type}); restart the interpreter"
         raise ApplicationRegistrationError(msg) from None
+    if any(
+        module_is_within(imported, name) or module_is_within(name, imported)
+        for imported in _import_collisions
+        for name in selected
+    ):
+        msg = f"Conflicting operation registrations in authorized applications prevent {purpose}"
+        raise ApplicationRegistrationError(msg)
     for _, _, rejected_module in OperationDefinition._name_collisions:
         if any(module_is_within(rejected_module, name) for name in selected):
             msg = f"Conflicting operation registrations in authorized applications prevent {purpose}"
