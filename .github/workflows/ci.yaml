@@ -186,6 +186,7 @@ jobs:
             tests/artisan/utils/test_managed_command_runtime.py \
             tests/artisan/utils/test_command_owner_failures.py \
             tests/artisan/utils/test_command_diagnostics.py \
+            tests/artisan/utils/test_docker_command_ownership.py \
             tests/artisan/utils/test_external_tools.py \
             tests/artisan/execution/test_command_ownership.py \
             tests/artisan/execution/tool_endpoint/test_request_ownership.py \
@@ -208,6 +209,66 @@ jobs:
         with:
           name: command-supervisor-proof-${{ matrix.platform }}
           path: ${{ env.PROOF_RESULTS }}
+          if-no-files-found: error
+
+  docker-cancellation:
+    name: Docker cancellation (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PIXI_LOCKED: "true"
+      DOCKER_PROOF_IMAGE: docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.66.0
+          environments: dev
+          locked: true
+
+      - name: Prepare isolated container test image
+        run: |
+          mkdir -p docker-cancellation-results
+          git rev-parse HEAD > docker-cancellation-results/commit.txt
+          docker version > docker-cancellation-results/docker-version.txt
+          docker pull "$DOCKER_PROOF_IMAGE"
+          docker build --network=none --build-arg BASE="$DOCKER_PROOF_IMAGE" \
+            --iidfile docker-cancellation-results/image-id.txt - <<'DOCKERFILE'
+          ARG BASE
+          FROM ${BASE}
+          WORKDIR /image-default
+          DOCKERFILE
+          echo "ARTISAN_DOCKER_CWD_TEST_IMAGE=$(cat docker-cancellation-results/image-id.txt)" >> "$GITHUB_ENV"
+
+      - name: Verify owned container cancellation and working directory
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
+            tests/integration/test_docker_cancellation.py \
+            tests/integration/test_docker_working_directory.py \
+            -q -ra --junitxml=docker-cancellation-results/junit.xml \
+            2>&1 | tee docker-cancellation-results/pytest.log
+          ~/.pixi/bin/pixi run --locked -e dev python - <<'PY'
+          from xml.etree import ElementTree
+
+          suites = ElementTree.parse("docker-cancellation-results/junit.xml").getroot()
+          assert suites.findall(".//testcase"), "No Docker qualification tests executed"
+          assert not suites.findall(".//skipped"), "Docker qualification must not skip"
+          PY
+
+      - name: Preserve container qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-cancellation-${{ matrix.runner }}
+          path: docker-cancellation-results
           if-no-files-found: error
 
   build:

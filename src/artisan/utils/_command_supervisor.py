@@ -204,6 +204,41 @@ class Command:
         assert self.process is not None
         return self.process.pid
 
+    def owned_commands(self) -> tuple[Command, ...]:
+        """Return exact native children whose unreaped identities stay reserved."""
+        return (self,)
+
+    def launch(
+        self, argv: list[str], env: dict[str, str], cwd: str | None, fds: list[int]
+    ) -> None:
+        """Launch one native child without retaining its sensitive arguments."""
+        started = time.perf_counter()
+        try:
+            self.process = subprocess.Popen(
+                argv,
+                cwd=cwd,
+                env=env,
+                stdin=fds[0],
+                stdout=fds[1],
+                stderr=fds[2],
+                process_group=0,
+                close_fds=True,
+            )
+        except (OSError, ValueError) as exc:
+            self.state = "launch_failed"
+            self.launch_error = (
+                "missing"
+                if isinstance(exc, FileNotFoundError)
+                else "invalid"
+                if isinstance(exc, ValueError)
+                else "os"
+            )
+        else:
+            self.process.args = ()
+            self.launch_seconds = time.perf_counter() - started
+            self.state = "running"
+            self.register_watch()
+
     def register_watch(self) -> None:
         try:
             self.watch = ExitWatch(self.pid)
@@ -860,6 +895,14 @@ class Supervisor:
         ):
             msg = "Invalid command launch payload"
             raise ValueError(msg)
+        docker_create = request.get("docker_create")
+        if docker_create is not None and (
+            not isinstance(docker_create, list)
+            or docker_create[:2] != ["docker", "create"]
+            or not all(isinstance(arg, str) for arg in docker_create)
+        ):
+            msg = "Invalid managed Docker command"
+            raise ValueError(msg)
         command = Command(
             request_id,
             channel.connection.fileno(),
@@ -868,11 +911,13 @@ class Supervisor:
             external=bool(request.get("external", True)),
             client_channel=channel,
         )
-        self.commands[request_id] = command
-        self.external |= command.external
         for key in ATTACHMENT_ENV:
             env.pop(key, None)
-        if not command.external:
+        if docker_create is not None:
+            from artisan.utils._docker_supervisor import DockerCommand
+
+            command = DockerCommand(command, argv, docker_create, env, cwd, channel.fds)
+        elif not command.external:
             env.update(
                 dict(
                     zip(
@@ -887,32 +932,13 @@ class Supervisor:
                     )
                 )
             )
-        started = time.perf_counter()
-        try:
-            command.process = subprocess.Popen(
-                argv,
-                cwd=cwd,
-                env=env,
-                stdin=channel.fds[0],
-                stdout=channel.fds[1],
-                stderr=channel.fds[2],
-                process_group=0,
-                close_fds=True,
-            )
-        except (OSError, ValueError) as exc:
-            command.state = "launch_failed"
-            command.launch_error = (
-                "missing"
-                if isinstance(exc, FileNotFoundError)
-                else "invalid"
-                if isinstance(exc, ValueError)
-                else "os"
-            )
+        self.commands[request_id] = command
+        self.external |= command.external
+        if docker_create is not None:
+            assert isinstance(command, DockerCommand)
+            command.begin()
         else:
-            command.process.args = ()
-            command.launch_seconds = time.perf_counter() - started
-            command.state = "running"
-            command.register_watch()
+            command.launch(argv, env, cwd, channel.fds)
         self.reply(channel, self.command_snapshot(command))
 
     def run(self) -> None:
@@ -923,13 +949,15 @@ class Supervisor:
                 else:
                     self.service(key.data, mask)
             reserved = {
-                c.pid: c.request_id
+                child.pid: child.request_id
                 for c in self.commands.values()
-                if c.process is not None and not c.reaped
+                for child in c.owned_commands()
+                if child.process is not None and not child.reaped
             }
             for command in list(self.commands.values()):
                 previous = command.state
                 command.tick(reserved)
+                self.external |= command.external
                 command.settle_collection()
                 if previous == "running" and command.state != "running":
                     self.stop_command(
