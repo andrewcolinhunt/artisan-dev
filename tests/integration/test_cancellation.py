@@ -204,12 +204,13 @@ def test_cancelled_creator_retains_sealed_work_until_verified_commit(
     recover_staging,
 ):
     """Cancel at a real worker's seal boundary, then prove optional reuse."""
+    import threading
     from pathlib import Path
 
     import polars as pl
     from fsspec.implementations.local import LocalFileSystem
 
-    from artisan.orchestration.engine import step_executor
+    from artisan.orchestration.runners.local import _NativePoolOwnership
     from artisan.schemas.enums import TablePath
     from artisan.schemas.orchestration.step_lifecycle import StepDisposition
     from artisan.storage.core.committed_scan import read_committed
@@ -221,22 +222,46 @@ def test_cancelled_creator_retains_sealed_work_until_verified_commit(
         recover_staging=False,
         preserve_staging=preserve_staging,
     )
-    original_capture = step_executor.persist_worker_logs
+    original_finish = _NativePoolOwnership.finish
+    original_request_cancel = _NativePoolOwnership.request_cancel
+    cancellation_accepted = threading.Event()
     snapshots = {}
 
-    def cancel_after_worker_sealed(*args, **kwargs):
-        original_capture(*args, **kwargs)
-        root = Path(pipeline_env["staging_root"])
-        snapshots.update({path: path.read_bytes() for path in root.rglob("*.parquet")})
-        assert any(path.name == "executions.parquet" for path in snapshots)
-        pipeline.cancel()
+    def observe_cancellation(ownership: _NativePoolOwnership, deadline: float) -> bool:
+        accepted = original_request_cancel(ownership, deadline)
+        if accepted:
+            cancellation_accepted.set()
+        return accepted
 
-    monkeypatch.setattr(
-        step_executor, "persist_worker_logs", cancel_after_worker_sealed
-    )
-    cancelled = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
-    pipeline.finalize()
-    monkeypatch.setattr(step_executor, "persist_worker_logs", original_capture)
+    def cancel_after_worker_sealed(
+        ownership: _NativePoolOwnership,
+        *,
+        failed: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        try:
+            root = Path(pipeline_env["staging_root"])
+            snapshots.update(
+                {path: path.read_bytes() for path in root.rglob("*.parquet")}
+            )
+            assert any(path.name == "executions.parquet" for path in snapshots)
+            pipeline.cancel()
+            assert cancellation_accepted.wait(5.0), "Router did not accept cancellation"
+        finally:
+            closed = original_finish(
+                ownership, failed=failed, cancel_event=cancel_event
+            )
+        return closed
+
+    with monkeypatch.context() as cancellation_patch:
+        cancellation_patch.setattr(
+            _NativePoolOwnership, "request_cancel", observe_cancellation
+        )
+        cancellation_patch.setattr(
+            _NativePoolOwnership, "finish", cancel_after_worker_sealed
+        )
+        cancelled = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
+        pipeline.finalize()
 
     fs = LocalFileSystem()
     root = pipeline_env["delta_root"]
@@ -279,6 +304,40 @@ def test_cancelled_creator_retains_sealed_work_until_verified_commit(
         assert {path: path.read_bytes() for path in snapshots} == snapshots
     else:
         assert not any(path.exists() for path in snapshots)
+
+
+def test_cancel_after_native_closure_preserves_completed_result(
+    pipeline_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A closed native scope rejects cancellation before result publication."""
+    from typing import Any
+
+    from fsspec.implementations.local import LocalFileSystem
+
+    from artisan.orchestration.engine import step_executor
+    from artisan.schemas.enums import TablePath
+    from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
+    from artisan.storage.core.committed_scan import read_committed
+
+    pipeline = PipelineManager.create(name="test_late_cancel", **pipeline_env)
+    original_capture = step_executor.persist_worker_logs
+
+    def cancel_after_native_closure(*args: Any, **kwargs: Any) -> None:
+        original_capture(*args, **kwargs)
+        pipeline.cancel()
+
+    monkeypatch.setattr(
+        step_executor, "persist_worker_logs", cancel_after_native_closure
+    )
+    result = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
+    pipeline.finalize()
+
+    assert result.status is StepStatus.SUCCEEDED
+    assert result.cancellation_status is CancellationStatus.REJECTED
+    executions = read_committed(
+        pipeline_env["delta_root"], TablePath.EXECUTIONS, fs=LocalFileSystem()
+    )
+    assert executions["step_run_id"].to_list() == [result.step_run_id]
 
 
 def test_finalize_terminalizes_running_and_queued_cancellations(
