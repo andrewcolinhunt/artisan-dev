@@ -112,3 +112,51 @@ def test_missing_package_is_a_configuration_error() -> None:
         bootstrap_applications(("missing_application_for_bootstrap",))
     assert caught.value.error_type == "config"
     assert caught.value.envelope.recovery_hint == "CHECK_INPUT"
+
+
+@pytest.mark.parametrize(
+    "mode", ["strict", "report_then_strict", "parent_then_child", "unrelated"]
+)
+def test_transitive_collisions_keep_import_attribution_in_fresh_process(tmp_path, mode):
+    import os
+    import subprocess
+    import textwrap
+
+    package = tmp_path / "review_facade"
+    package.mkdir()
+    (package / "__init__.py").write_text("import review_shared_ops\n")
+    (package / "child.py").write_text("pass\n")
+    (tmp_path / "review_unrelated.py").write_text("pass\n")
+    (tmp_path / "review_shared_ops.py").write_text(
+        "from artisan.operations.examples.data_generator import DataGenerator\n"
+        "class ConflictingGenerator(DataGenerator):\n"
+        "    name = DataGenerator.name\n"
+    )
+    script = textwrap.dedent("""
+        import sys
+        from artisan.errors import ApplicationRegistrationError
+        from artisan.registry import bootstrap_applications, discover
+        mode = sys.argv[1]
+        if mode != "strict":
+            report = discover(["review_facade"], include_environment=False)
+            assert len(report.name_collisions) == 1
+        if mode == "unrelated":
+            bootstrap_applications(("review_unrelated",))
+        else:
+            try:
+                module = "review_facade.child" if mode == "parent_then_child" else "review_facade"
+                bootstrap_applications((module,))
+            except ApplicationRegistrationError as exc:
+                assert "Conflicting" in str(exc)
+            else:
+                raise AssertionError("transitive collision was accepted")
+    """)
+    result = subprocess.run(
+        [sys.executable, "-c", script, mode],
+        env={**os.environ, "PYTHONPATH": os.pathsep.join([str(tmp_path), *sys.path])},
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=False,
+    )
+    assert result.returncode == 0, result.stderr
