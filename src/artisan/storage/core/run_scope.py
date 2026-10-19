@@ -432,12 +432,17 @@ def validate_staged_executions(
         per_execution_artifact_ids=per_execution_artifact_ids,
         committed_frames=committed_frames,
     )
+    from artisan.schemas.artifact.types import ArtifactTypes
+    from artisan.storage.core.curator_result import dynamic_output_roles
+
     output_types = json.loads(source_step["output_types_json"])
+    dynamic = dynamic_output_roles(source_step["compute_options_json"])
     for row in edges.filter(pl.col("direction") == "output").iter_rows(named=True):
-        if row["role"] not in output_types or output_types[row["role"]] not in {
-            None,
-            types[row["artifact_id"]],
-        }:
+        if not dynamic and (
+            row["role"] not in output_types
+            or output_types[row["role"]]
+            not in {None, ArtifactTypes.ANY, types[row["artifact_id"]]}
+        ):
             msg = "Recovery output edges disagree with source role declarations"
             raise StoreIntegrityError(msg)
     for row in provenance.iter_rows(named=True):

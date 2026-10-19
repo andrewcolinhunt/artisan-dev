@@ -259,6 +259,12 @@ def _run_curator_flow(
                     error_envelope=error_envelope_dict(exc),
                 )
 
+        # Reject collisions before adding framework execution timings.
+        reserved = {"timings", "skip_reason", "status", "cancelled", "skipped"}
+        if reserved.intersection(result.metadata):
+            msg = "Curator metadata uses reserved framework keys"
+            raise ValueError(msg)
+
         # --- record phase ---
         with phase_timer("record", timings):
             timestamp_end = datetime.now(UTC)
