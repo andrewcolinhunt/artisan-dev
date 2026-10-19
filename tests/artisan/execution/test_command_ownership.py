@@ -232,7 +232,7 @@ def test_curator_caught_owner_loss_forbids_both_success_handlers(
 
 
 @pytest.mark.parametrize("result_kind", ["artifact", "passthrough"])
-def test_curator_rechecks_ownership_immediately_before_success_record(
+def test_curator_completed_ownership_survives_later_owner_loss(
     runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, result_kind: str
 ) -> None:
     if result_kind == "passthrough":
@@ -250,19 +250,24 @@ def test_curator_rechecks_ownership_immediately_before_success_record(
 
     def lose_owner_during_result_processing(*args: Any, **kwargs: Any) -> Any:
         result = original(*args, **kwargs)
+        invocation = command_supervisor._current
+        assert invocation is not None
+        assert invocation.closed
+        assert not invocation.uncertain
         _lose_owner()
         return result
 
     monkeypatch.setattr(curator, hook_name, lose_owner_during_result_processing)
-    monkeypatch.setattr(curator, "record_execution_success", _forbid_publication)
-    monkeypatch.setattr(curator, "record_passthrough", _forbid_publication)
 
     result = curator.run_curator_flow(
         ExecutionUnit(operation=_OwnedCurator(), inputs={}, step_number=1), runtime
     )
 
-    row = _assert_failed_record(result)
-    assert "cleanup could not be confirmed" in row["error"]
+    assert result.success, result.error
+    row = pl.read_parquet(Path(result.staging_path) / "executions.parquet").row(
+        0, named=True
+    )
+    assert row["success"] is True
 
 
 @pytest.mark.parametrize("joined_threads", [False, True])
