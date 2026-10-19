@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import logging
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, ClassVar
@@ -48,6 +50,19 @@ from artisan.utils.hashing import (
     compute_step_spec_id,
     effective_config_payload,
 )
+
+
+@pytest.fixture(autouse=True)
+def _restore_artisan_logging() -> Iterator[None]:
+    logger = logging.getLogger("artisan")
+    handlers, level, propagate = logger.handlers[:], logger.level, logger.propagate
+    yield
+    for handler in logger.handlers[:]:
+        if handler not in handlers:
+            handler.close()
+    logger.handlers[:] = handlers
+    logger.setLevel(level)
+    logger.propagate = propagate
 
 
 class CredentialContractTool(PlainTool):
