@@ -31,7 +31,7 @@ class Environments(BaseModel):
         pixi: Pixi execution config, or None if not configured.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     active: str = "local"
     local: LocalEnvironmentSpec = Field(default_factory=LocalEnvironmentSpec)

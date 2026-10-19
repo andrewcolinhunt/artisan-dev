@@ -13,6 +13,7 @@ from artisan.schemas.operation_config.endpoint_policy import (
     _normalize_http_root,
     _parse_endpoint_uri,
 )
+from artisan.utils.configuration_secrets import validate_public_env
 
 ARTISAN_WORKER_IMAGE = "ghcr.io/dexterity-systems/artisan-worker:latest"
 
@@ -83,6 +84,8 @@ class ModalComputeConfig(ComputeConfig):
             itself needs must live in the image's Dockerfile ``ENV``,
             or a plain ``docker run`` of the same image diverges from
             the Modal deploy.
+        public_env: Explicit nonsecret env names retained in replay and diagnostics.
+            This annotation grants no deployment override or secret access.
         local_python_sources: Dev-mode source overlay: top-level Python
             package names shipped live from the deploy machine via
             ``modal.Image.add_local_python_source``, shadowing whatever
@@ -142,6 +145,7 @@ class ModalComputeConfig(ComputeConfig):
     secrets: list[str] = Field(default_factory=list)
     volumes: dict[str, str] = Field(default_factory=dict)
     env: dict[str, str] = Field(default_factory=dict)
+    public_env: tuple[str, ...] = ()
     local_python_sources: list[str] = Field(default_factory=list)
     endpoint_url: str | None = None
     auth_secret: str | None = None
@@ -149,6 +153,12 @@ class ModalComputeConfig(ComputeConfig):
     max_concurrent_calls: int = Field(default=64, gt=0)
     output_store: str | None = None
     data_policy: ToolEndpointDataPolicy = Field(default_factory=ToolEndpointDataPolicy)
+
+    @model_validator(mode="after")
+    def _validate_public_env(self) -> ModalComputeConfig:
+        """Reject ambiguous or recognized-sensitive public env declarations."""
+        validate_public_env(self.env, self.public_env)
+        return self
 
     @field_validator("endpoint_url")
     @classmethod

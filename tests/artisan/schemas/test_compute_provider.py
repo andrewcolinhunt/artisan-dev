@@ -330,3 +330,57 @@ class TestComputeWithModal:
         restored = ComputeProvider.model_validate(data)
         assert restored == compute_provider
         assert isinstance(restored.modal, ModalComputeConfig)
+
+
+@pytest.mark.parametrize(
+    "public_env", [("",), ("ROOT", "ROOT"), ("MISSING",), (17,), "ROOT"]
+)
+def test_modal_public_env_rejects_invalid_names_safely(public_env):
+    with pytest.raises(ValueError) as caught:
+        ModalComputeConfig(env={"ROOT": "hidden-modal-value"}, public_env=public_env)
+    assert "hidden-modal-value" not in str(caught.value)
+    assert "hidden-modal-value" not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("TOKEN", "hidden-modal-value"),
+        ("ROOT", "https://user:hidden-modal-value@host/path"),
+        ("ROOT", "https://:hidden-modal-value@host/path"),
+    ],
+)
+def test_modal_public_env_rejects_credentials_safely(name, value):
+    with pytest.raises(ValueError) as caught:
+        ComputeProvider(modal={"env": {name: value}, "public_env": (name,)})
+    assert "hidden-modal-value" not in repr(caught.value)
+
+
+def test_modal_public_env_and_secret_references_roundtrip():
+    config = ModalComputeConfig(
+        env={"ROOT": "/opt/application"},
+        public_env=("ROOT",),
+        secrets=["named-secret"],
+        image_registry_secret="registry-name",
+        auth_secret="PREFIX",
+    )
+    assert ModalComputeConfig.model_validate_json(config.model_dump_json()) == config
+    assert ModalComputeConfig().public_env == ()
+
+
+def test_copied_modal_annotation_is_revalidated_before_recording():
+    from artisan.execution.recording.commands import CommandRecorder
+    from artisan.operations.examples.data_generator import DataGenerator
+
+    operation = DataGenerator(
+        compute_provider=ComputeProvider(
+            active="modal",
+            modal=ModalComputeConfig(env={"TOKEN": "copied-modal-sensitive"}),
+        )
+    )
+    operation.compute_provider.modal = operation.compute_provider.modal.model_copy(
+        update={"public_env": ("TOKEN",)}
+    )
+    with pytest.raises(ValueError) as caught:
+        CommandRecorder(operation)
+    assert "copied-modal-sensitive" not in repr(caught.value)

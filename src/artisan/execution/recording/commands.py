@@ -12,7 +12,8 @@ from contextvars import ContextVar
 from typing import Any, cast
 from urllib.parse import urlsplit
 
-from pydantic_core import to_json
+from pydantic import BaseModel, SecretBytes, SecretStr
+from pydantic_core import PydanticSerializationError, to_json
 
 from artisan.schemas.execution.command_record import (
     MAX_COMMAND_RECORDING_BYTES,
@@ -22,10 +23,14 @@ from artisan.schemas.execution.command_record import (
     MissingReason,
 )
 from artisan.schemas.operation_config.endpoint_policy import safe_uri_display
+from artisan.utils.configuration_secrets import (
+    credential_name,
+    credential_url,
+    sensitive_environment,
+)
 from artisan.utils.env_file import env_or_dotenv
 from artisan.utils.external_tools import CommandAttempt, command_observer, redact_values
 
-_CREDENTIAL = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|API_KEY", re.I)
 _FLAGS = {
     "--token",
     "--secret",
@@ -43,14 +48,6 @@ _current: ContextVar[CommandRecorder | None] = ContextVar(
 )
 _invocation: ContextVar[int | None] = ContextVar("command_invocation", default=None)
 _tool: ContextVar[Any] = ContextVar("command_tool", default=None)
-
-
-def credential_name(name: str) -> bool:
-    """Recognize the documented credential variable/key names."""
-    return (
-        bool(_CREDENTIAL.search(name.replace("-", "_")))
-        or name.upper() == "AWS_ACCESS_KEY_ID"
-    )
 
 
 class CommandRecorder:
@@ -106,13 +103,27 @@ class CommandRecorder:
             return
         environments = getattr(operation, "environments", None)
         environment = getattr(environments, getattr(environments, "active", ""), None)
-        self.add_environment(getattr(environment, "env", {}))
+        self.add_environment(
+            sensitive_environment(
+                getattr(environment, "env", {}), getattr(environment, "public_env", ())
+            )
+        )
         provider = getattr(operation, "compute_provider", None)
         selected = (
             "modal" if self.location == "endpoint" else getattr(provider, "active", "")
         )
         config = getattr(provider, selected, None)
-        self.add_environment(getattr(config, "env", {}))
+        self.add_environment(
+            sensitive_environment(
+                getattr(config, "env", {}), getattr(config, "public_env", ())
+            )
+        )
+        self._learn_model_fields(operation, {"environments", "compute_provider"})
+        self._learn_model_fields(environment, {"env", "public_env"})
+        self._learn_model_fields(
+            config,
+            {"env", "public_env", "auth_secret", "secrets", "image_registry_secret"},
+        )
         if not hasattr(config, "auth_secret"):
             return
         prefix = getattr(config, "auth_secret", None) or "MODAL_PROXY"
@@ -140,7 +151,7 @@ class CommandRecorder:
                 parts = urlsplit(uri)
             except ValueError:
                 return "<redacted>"
-            if parts.username or parts.query or parts.fragment:
+            if parts.username or parts.password or parts.query or parts.fragment:
                 return (
                     safe_uri_display(uri)
                     if match.span() == (0, len(text))
@@ -235,15 +246,53 @@ class CommandRecorder:
                 continue
             self._learn_json(parsed)
 
+    def _learn_model_fields(self, model: Any, excluded: set[str]) -> None:
+        """Observe field serializers and concrete typed secrets without secret I/O."""
+        if not isinstance(model, BaseModel):
+            return
+        try:
+            serialized = model.model_dump(
+                mode="json", exclude=excluded, warnings="error"
+            )
+        except (PydanticSerializationError, TypeError, ValueError):
+            msg = "Concrete configuration cannot be classified safely"
+            raise ValueError(msg) from None
+        self._learn_json(serialized)
+        self._learn_json(
+            {
+                name: getattr(model, name)
+                for name in type(model).model_fields
+                if name not in excluded
+            }
+        )
+
     def _learn_json(self, item: Any, *, credential: bool = False) -> None:
-        if isinstance(item, dict):
+        if isinstance(item, (SecretStr, SecretBytes)):
+            raw = item.get_secret_value()
+            self.add_sensitive_data(
+                raw.decode(errors="replace") if isinstance(raw, bytes) else raw
+            )
+        elif isinstance(item, BaseModel):
+            self._learn_json(
+                {name: getattr(item, name) for name in type(item).model_fields},
+                credential=credential,
+            )
+        elif isinstance(item, dict):
             for name, value in item.items():
-                self._learn_json(value, credential=credential or credential_name(name))
-        elif isinstance(item, list):
+                self._learn_json(
+                    value, credential=credential or credential_name(str(name))
+                )
+        elif isinstance(item, (list, tuple)):
             for value in item:
                 self._learn_json(value, credential=credential)
-        elif credential and isinstance(item, str) and item:
-            self._values.add(item)
+        elif credential or credential_url(item):
+            try:
+                serialized = json.loads(to_json(item))
+            except PydanticSerializationError:
+                # The owning-model pass covers custom field serializers; this
+                # concrete pass additionally observes typed, unmasked secrets.
+                return
+            self.add_sensitive_data(serialized)
 
     def prepare(
         self,
@@ -253,7 +302,12 @@ class CommandRecorder:
     ) -> None:
         """Register values before wrapper preparation, without allocating evidence."""
         with self._lock:
-            self.add_environment(getattr(environment, "env", {}))
+            self.add_environment(
+                sensitive_environment(
+                    getattr(environment, "env", {}),
+                    getattr(environment, "public_env", ()),
+                )
+            )
             self._values.update(value for value in sensitive_values if value)
             self._learn_arguments(requested)
 

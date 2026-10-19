@@ -440,3 +440,49 @@ def test_snapshot_application_evidence_distinguishes_empty_from_historical_absen
     payload = snapshot.model_dump(mode="json")
     del payload["source"]["application_modules"]
     assert ReplaySnapshot.model_validate(payload).source.application_modules is None
+
+
+@pytest.mark.parametrize("allow_code_change", [False, True])
+def test_historical_ready_snapshot_missing_public_env_cannot_add_defaults(
+    tmp_path, allow_code_change
+):
+    snapshot, _ = _snapshot(tmp_path)
+    payload = snapshot.model_dump(mode="json")
+    del payload["operation"]["configuration"]["environments"]["local"]["public_env"]
+    changed = ReplaySnapshot.model_validate(payload)
+    with pytest.raises(ArtisanError, match="defaults"):
+        replay._restore_operation(changed, None, {}, allow_code_change)
+
+
+def test_invalid_public_env_replacement_has_sanitized_nested_error_before_attempt(
+    tmp_path, monkeypatch
+):
+    operation = DataGenerator(
+        environments=Environments(
+            local=LocalEnvironmentSpec(
+                env={"ROOT": "initial-sensitive-alias"}, public_env=("ROOT",)
+            )
+        )
+    )
+    snapshot, runtime = _snapshot(tmp_path, operation)
+    payload = snapshot.model_dump(mode="json")
+    payload["operation"]["configuration"]["environments"]["local"]["env"]["ROOT"] = None
+    pointer = "/environments/local/env/ROOT"
+    payload["required_replacements"] = [
+        {"pointer": pointer, "suggested_environment": None}
+    ]
+    changed = ReplaySnapshot.model_validate(payload)
+    monkeypatch.setenv("REPLAY_VALUE", "https://user:nested-sensitive-value@host/path")
+    monkeypatch.setattr(replay, "_source_snapshot", lambda *args: changed)
+    manager = Mock(side_effect=AssertionError("preflight created an attempt"))
+    monkeypatch.setattr(replay, "PipelineManager", manager)
+    with pytest.raises(ArtisanError) as caught:
+        replay.replay_execution(
+            "source-id", runtime=runtime, replacement_env={pointer: "REPLAY_VALUE"}
+        )
+    assert caught.value.code == "replay_configuration_invalid"
+    assert "nested-sensitive-value" not in str(caught.value)
+    assert "nested-sensitive-value" not in repr(caught.value)
+    assert "nested-sensitive-value" not in json.dumps(caught.value.to_dict())
+    assert caught.value.__cause__ is None
+    manager.assert_not_called()
