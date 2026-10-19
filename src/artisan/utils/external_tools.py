@@ -291,6 +291,15 @@ def run_command(
         if observer is not None:
             observer.prepare(environment, cmd, sensitive_values)
         wrapped = environment.wrap_command(cmd, cwd)
+        from artisan.schemas.operation_config.environment_spec import (
+            DockerEnvironmentSpec,
+        )
+
+        docker_create = (
+            environment._managed_container_command(wrapped)
+            if type(environment) is DockerEnvironmentSpec
+            else None
+        )
         env = environment.prepare_env()
         observation = _CommandObservation(
             environment, cmd, wrapped, cwd, sensitive_values
@@ -306,6 +315,7 @@ def run_command(
             streaming=stream_output,
             external=getattr(environment, "cancellation_scope", "external")
             != "process_group",
+            docker_create=docker_create,
         )
         if result.returncode != 0:
             attempt = observation.attempt
@@ -332,6 +342,7 @@ def _run_managed(
     *,
     streaming: bool,
     external: bool,
+    docker_create: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drain worker-owned pipes while the dedicated owner retains command identity."""
     from contextlib import nullcontext
@@ -341,7 +352,13 @@ def _run_managed(
         attempt = observation.begin()
         try:
             command = ManagedCommand(
-                attachment, argv, env, cwd, merged=streaming, external=external
+                attachment,
+                argv,
+                env,
+                cwd,
+                merged=streaming,
+                external=external,
+                docker_create=docker_create,
             )
             attempt.launch_seconds = command.launch_seconds
         except BaseException:

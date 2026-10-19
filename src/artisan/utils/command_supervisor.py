@@ -765,6 +765,7 @@ class ManagedCommand:
         *,
         merged: bool,
         external: bool,
+        docker_create: list[str] | None = None,
     ) -> None:
         self.connection = _Connection(attachment)
         self.identity = uuid.uuid4().hex
@@ -794,6 +795,7 @@ class ManagedCommand:
                 cwd=cwd,
                 parent=attachment["parent"] or None,
                 external=external,
+                docker_create=docker_create,
                 fds=(0, stdout_write, stderr_write),
             )
             self._update(response)

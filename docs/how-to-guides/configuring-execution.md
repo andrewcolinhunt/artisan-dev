@@ -310,9 +310,42 @@ Cancellation evidence depends on the selected environment:
 | Environment | What local command ownership can establish |
 | --- | --- |
 | Local | Closure of the host process group and registered nested commands |
-| Docker, Apptainer, Pixi | Host command closure; external workload termination remains unconfirmed |
+| Built-in Docker with a local Unix daemon endpoint | Host command closure and removal of the exact owned container |
+| Docker with other endpoints, custom Docker wrappers, Apptainer, Pixi | Host command closure; external workload termination remains unconfirmed |
 
-These environments still permit ordinary execution. Once an external environment
+For built-in Docker, Artisan creates a stopped container and records its full ID
+before starting the workload. Cancellation stops that exact container, then
+requires successful removal before confirming cleanup. Killing the Docker client
+alone is insufficient. The daemon endpoint is fixed when the command starts, so
+changing your active Docker context cannot redirect cleanup. Unavailable daemon
+evidence or a lost container ID produces `unknown` and retains the execution
+workspace. Command arguments, environment configuration, cache identity, and
+replay snapshots keep their existing public forms.
+
+Real Docker Engine qualification is available on Linux. Docker Desktop on macOS
+requires the same live container checks; passing the macOS native process tests
+alone does not qualify Docker cancellation.
+
+To run those checks from this repository with your local Docker engine, build
+the isolated test image and select its immutable local ID. The tests create and
+remove their own containers; pytest does not pull images or deploy services.
+
+```bash
+docker build --pull --network=none --iidfile /tmp/artisan-docker-proof-image - <<'DOCKERFILE'
+FROM docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+WORKDIR /image-default
+DOCKERFILE
+ARTISAN_DOCKER_CWD_TEST_IMAGE="$(cat /tmp/artisan-docker-proof-image)" \
+  ~/.pixi/bin/pixi run --locked -e dev pytest \
+  tests/integration/test_docker_cancellation.py \
+  tests/integration/test_docker_working_directory.py \
+  -q -ra --junitxml=/tmp/artisan-docker-qualification.xml
+```
+
+Require every selected test to pass without skips. Keep the JUnit report with
+the tested commit and `docker version` output when qualifying a release host.
+
+External environments still permit ordinary execution. Once an external environment
 has launched work, native cancellation remains `unknown` without separate
 evidence that the external work stopped, even if its host command finished
 earlier. Pixi keeps this conservative behavior until its locked wrapper passes

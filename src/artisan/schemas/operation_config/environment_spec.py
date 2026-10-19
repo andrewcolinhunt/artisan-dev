@@ -146,6 +146,10 @@ class DockerEnvironmentSpec(EnvironmentSpec):
     gpu: bool = False
     binds: list[tuple[str, str] | tuple[str, str, str]] = Field(default_factory=list)
 
+    def _managed_container_command(self, wrapped: list[str]) -> list[str]:
+        """Build the stopped-container admission used only by the private owner."""
+        return ["docker", "create", *wrapped[3:]]
+
     def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
             prefix=["docker", "run", "--rm", *(["--workdir", cwd] if cwd else [])],
