@@ -125,7 +125,7 @@ class DockerEnvironmentSpec(EnvironmentSpec):
 
     def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
-            prefix=["docker", "run", "--rm"],
+            prefix=["docker", "run", "--rm", *(["--workdir", cwd] if cwd else [])],
             gpu_args=["--gpus", "all"],
             bind_flag="--volume",
             binds=self.binds,
