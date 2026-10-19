@@ -21,11 +21,10 @@ class TestCapabilities:
 
 
 class TestListOperations:
-    def test_lists_examples_when_loaded(self, make_app, invoke) -> None:
-        page = invoke(make_app(), "artisan_list_operations")
-        names = [item["name"] for item in page["items"]]
-        assert "data_transformer" in names  # from artisan.operations.examples
-        assert "filter" in names  # curator builtin
+    @pytest.mark.parametrize("name", ["data_transformer", "filter"])
+    def test_lists_examples_when_loaded(self, make_app, invoke, name) -> None:
+        page = invoke(make_app(), "artisan_list_operations", {"query": name})
+        assert name in [item["name"] for item in page["items"]]
 
     def test_load_modules_attributed_in_discovery(self, make_app, invoke) -> None:
         # The op registry is a process-global side effect, so a bare
