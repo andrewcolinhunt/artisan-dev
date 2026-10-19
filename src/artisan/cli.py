@@ -234,6 +234,13 @@ def _add_store_args(parser: argparse.ArgumentParser) -> None:
         help="Delta Lake root (falls back to ARTISAN_DELTA_ROOT)",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON")
+    parser.add_argument(
+        "--load-module",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help="Load an installed trusted application before reading the store (repeatable)",
+    )
 
 
 def _resolve_op_cls(operation: str) -> type[OperationDefinition] | None:
@@ -260,6 +267,12 @@ def _emit(args: argparse.Namespace, payload_fn: Callable[[], Any]) -> int:
     from artisan.errors import ArtisanError, ErrorCode
 
     try:
+        if hasattr(args, "load_module"):
+            from artisan.registry.discovery import bootstrap_applications
+            from artisan.utils.application_modules import resolve_application_modules
+
+            args.application_modules = resolve_application_modules(args.load_module)
+            bootstrap_applications(args.application_modules, purpose="CLI store access")
         payload = payload_fn()
     except FileNotFoundError as exc:
         err = ArtisanError(
@@ -432,6 +445,7 @@ def _execution_replay(args: argparse.Namespace) -> int:
         debug = Path(args.debug_root).resolve()
         runtime = RuntimeEnvironment(  # type: ignore[call-arg]  # Pydantic runtime defaults
             delta_root=root,
+            application_modules=args.application_modules,
             staging_root=args.staging_root or str(debug / "staging"),
             files_root=args.files_root or str(debug / "files"),
             working_root=str(debug / "work"),

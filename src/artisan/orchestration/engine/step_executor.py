@@ -556,6 +556,7 @@ def _create_runtime_environment(
 
     return RuntimeEnvironment(
         delta_root=config.delta_root,
+        application_modules=config.application_modules,
         staging_root=config.staging_root,
         working_root=None if is_curator else config.working_root,
         files_root=config.files_root,

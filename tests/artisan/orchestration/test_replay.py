@@ -381,3 +381,62 @@ def test_complete_association_evidence_requires_explicit_empty_owner(tmp_path):
         {"primary_id": "a" * 32, "artifact_type": "metric", "artifact_ids": []}
     ]
     assert ReplaySnapshot.model_validate(payload).associated_complete
+
+
+@pytest.mark.parametrize("allow_code_change", [False, True])
+@pytest.mark.parametrize("module", ["untrusted.module", "trusted_application_evil.ops"])
+def test_recorded_operation_module_never_authorizes_import(
+    tmp_path, monkeypatch, module, allow_code_change
+):
+    from artisan.errors import ApplicationRegistrationError
+
+    snapshot, _ = _snapshot(tmp_path)
+    payload = snapshot.model_dump(mode="json")
+    payload["operation"]["identity"]["module"] = module
+    changed = ReplaySnapshot.model_validate(payload)
+    resolver = Mock(side_effect=AssertionError("untrusted import"))
+    monkeypatch.setattr(replay, "resolve_operation", resolver)
+    with pytest.raises(ApplicationRegistrationError, match="not authorized"):
+        replay._restore_operation(
+            changed, None, {}, allow_code_change, ("trusted_application",)
+        )
+    resolver.assert_not_called()
+
+
+def test_explicit_operation_class_does_not_import_recorded_module(
+    tmp_path, monkeypatch
+):
+    snapshot, _ = _snapshot(tmp_path)
+    resolver = Mock(side_effect=AssertionError("unexpected import"))
+    monkeypatch.setattr(replay, "resolve_operation", resolver)
+    operation, _ = replay._restore_operation(snapshot, DataGenerator, {}, False)
+    assert operation == DataGenerator()
+    resolver.assert_not_called()
+
+
+def test_replay_requirements_checked_without_importing_store_names(
+    tmp_path, monkeypatch
+):
+    from artisan.errors import ApplicationRegistrationError
+
+    snapshot, runtime = _snapshot(tmp_path)
+    source = snapshot.source.model_copy(
+        update={"application_modules": ("untrusted_requirement",)}
+    )
+    snapshot = snapshot.model_copy(update={"source": source})
+    monkeypatch.setattr(replay, "_source_snapshot", lambda *_: snapshot)
+    restore = Mock(side_effect=AssertionError("restoration before requirements"))
+    monkeypatch.setattr(replay, "_restore_operation", restore)
+    with pytest.raises(ApplicationRegistrationError, match="untrusted_requirement"):
+        replay.replay_execution("id", runtime=runtime, operation_class=DataGenerator)
+    restore.assert_not_called()
+
+
+def test_snapshot_application_evidence_distinguishes_empty_from_historical_absence(
+    tmp_path,
+):
+    snapshot, _ = _snapshot(tmp_path)
+    assert snapshot.source.application_modules == ()
+    payload = snapshot.model_dump(mode="json")
+    del payload["source"]["application_modules"]
+    assert ReplaySnapshot.model_validate(payload).source.application_modules is None

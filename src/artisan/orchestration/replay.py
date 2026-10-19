@@ -14,6 +14,7 @@ import polars as pl
 from pydantic import ValidationError
 
 from artisan.errors import (
+    ApplicationRegistrationError,
     ArtifactIntegrityError,
     ArtisanError,
     CommitError,
@@ -35,6 +36,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.runners import resolve_runner
 from artisan.orchestration.runners.base import RunnerBase
+from artisan.registry.discovery import bootstrap_applications
 from artisan.registry.resolve import operation_identity, resolve_operation
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
@@ -45,6 +47,10 @@ from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.replay_result import ReplayResult
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.committed_scan import read_committed
+from artisan.utils.application_modules import (
+    module_is_within,
+    require_application_modules,
+)
 from artisan.utils.hashing import (
     compute_execution_spec_id,
     effective_config_payload,
@@ -129,12 +135,22 @@ def _restore_operation(
     operation_class: type[OperationDefinition] | None,
     replacement_env: dict[str, str],
     allow_code_change: bool,
+    application_modules: tuple[str, ...] = (),
 ) -> tuple[OperationDefinition, CommandRecorder]:
     """Validate recorded configuration and restore caller-supplied secret slots."""
     assert snapshot.operation is not None
     evidence = snapshot.operation
     source = evidence.identity
     if operation_class is None:
+        if not any(
+            module_is_within(source.module, parent)
+            for parent in ("artisan.operations", *application_modules)
+        ):
+            msg = (
+                "Recorded operation module is not authorized; configure application_modules "
+                "or supply an already imported operation_class"
+            )
+            raise ApplicationRegistrationError(msg)
         try:
             operation_class = resolve_operation(f"{source.module}:{source.qualname}")
         except (ImportError, AttributeError, TypeError, ValueError):
@@ -388,9 +404,18 @@ def replay_execution(
         StoreIntegrityError: Recorded evidence or its ownership is inconsistent.
         CommitError: Diagnostic persistence fails; the exception retains repair paths.
     """
+    bootstrap_applications(runtime.application_modules, purpose="replay")
     snapshot = _source_snapshot(execution_run_id, runtime)
+    if snapshot.source is not None and snapshot.source.application_modules is not None:
+        require_application_modules(
+            snapshot.source.application_modules, runtime.application_modules
+        )
     operation, redactor = _restore_operation(
-        snapshot, operation_class, replacement_env or {}, allow_code_change
+        snapshot,
+        operation_class,
+        replacement_env or {},
+        allow_code_change,
+        runtime.application_modules,
     )
     _verify_artifacts(snapshot, operation, runtime)
     assert snapshot.source is not None
@@ -477,6 +502,7 @@ def replay_execution(
         files_root=diagnostic_runtime.files_root,
         storage=runtime.storage,
         default_step_runner=runner.name,
+        application_modules=runtime.application_modules,
         skip_cache=True,
         preserve_staging=True,
         recover_staging=False,

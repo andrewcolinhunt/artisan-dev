@@ -14,7 +14,7 @@ import signal
 import threading
 import time
 import weakref
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from concurrent.futures import CancelledError, Future, ThreadPoolExecutor
 from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass
@@ -25,7 +25,11 @@ from uuid import uuid4
 
 import polars as pl
 
-from artisan.errors import PersistenceIntegrityError, StoreIntegrityError
+from artisan.errors import (
+    ApplicationRegistrationError,
+    PersistenceIntegrityError,
+    StoreIntegrityError,
+)
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.commands import CommandRecorder
@@ -41,6 +45,7 @@ from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.runners import Runner, RunnerBase, resolve_runner
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
+from artisan.registry.discovery import bootstrap_applications
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -65,6 +70,10 @@ from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.orchestration.step_state import StepState
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.application_modules import (
+    require_application_modules,
+    resolve_application_modules,
+)
 from artisan.utils.hashing import (
     compute_step_spec_id,
     compute_stream_digest,
@@ -915,6 +924,7 @@ class PipelineManager:
                 ``config.default_step_runner``. Required when the stored name
                 belongs to an external provider that core cannot reconstruct.
         """
+        bootstrap_applications(config.application_modules, purpose="pipeline startup")
         self._log_session: _RunLogSession | None = None
         self._default_step_runner = _resolve_runtime_default_runner(
             config.default_step_runner,
@@ -938,6 +948,10 @@ class PipelineManager:
             fs=fs,
             storage_options=storage_options,
         )
+        if fs.exists(uri_join(config.delta_root, "_artisan", "store.json")):
+            from artisan.storage.io.repair import _preflight_registration
+
+            _preflight_registration(committer)
         committer.initialize_tables()
         if config.recover_staging:
             from artisan.storage.io.repair import repair_store
@@ -1550,6 +1564,7 @@ class PipelineManager:
         preserve_working: bool = False,
         skip_cache: bool = False,
         recover_staging: bool = True,
+        application_modules: Sequence[str] | None = None,
     ) -> PipelineManager:
         """Factory method to create a PipelineManager.
 
@@ -1570,6 +1585,7 @@ class PipelineManager:
                 staging is always retained, including on cancellation.
             preserve_working: Debug flag to preserve sandbox after execution.
             skip_cache: Bypass all cache lookups for every step.
+            application_modules: Trusted installed modules, merged after ARTISAN_LOAD_MODULES.
             recover_staging: Recover completed staged work before cache lookup.
                 Requires exclusive orchestrator/repair write access to the store.
 
@@ -1590,6 +1606,7 @@ class PipelineManager:
             default_step_runner=resolved.name,
             preserve_staging=preserve_staging,
             recover_staging=recover_staging,
+            application_modules=resolve_application_modules(application_modules),
             preserve_working=preserve_working,
             skip_cache=skip_cache,
         )
@@ -1626,6 +1643,7 @@ class PipelineManager:
         skip_cache: bool = False,
         storage: StorageConfig | None = None,
         recover_staging: bool = True,
+        application_modules: Sequence[str] | None = None,
     ) -> PipelineManager:
         """Resume a pipeline from persisted step state.
 
@@ -1649,6 +1667,8 @@ class PipelineManager:
             preserve_working: Preserve worker sandboxes after execution.
             skip_cache: Bypass cache lookups for subsequent steps.
             storage: Filesystem and Delta storage configuration.
+            application_modules: Trusted installed modules, merged after ARTISAN_LOAD_MODULES.
+                Recorded requirements are checked without importing them.
             recover_staging: Recover completed staged work before restoring
                 accepted results. Requires exclusive orchestrator/repair write
                 access; unfinished source steps retain their original status.
@@ -1659,6 +1679,8 @@ class PipelineManager:
         Raises:
             ValueError: If no pipeline run found to resume.
         """
+        applications = resolve_application_modules(application_modules)
+        bootstrap_applications(applications, purpose="pipeline resume")
         storage = storage or StorageConfig()
         tracker = StepTracker(
             delta_root,
@@ -1674,6 +1696,20 @@ class PipelineManager:
             raise ValueError(msg)
 
         run_id = pipeline_run_id or current_steps[0].pipeline_run_id
+        for state in tracker.load_all_current_states():
+            if state.pipeline_run_id == run_id:
+                try:
+                    options = json.loads(state.compute_options_json)
+                except (TypeError, ValueError):
+                    msg = "Invalid recorded application configuration"
+                    raise ApplicationRegistrationError(msg) from None
+                if not isinstance(options, dict):
+                    msg = "Invalid recorded application configuration"
+                    raise ApplicationRegistrationError(msg)
+                if "application_modules" in options:
+                    require_application_modules(
+                        options["application_modules"], applications
+                    )
 
         runtime_runner: RunnerBase | None
         requested_runner_name: str | None
@@ -1687,6 +1723,7 @@ class PipelineManager:
         stored_runner_name = stored_runner.name
         config_kwargs: dict[str, Any] = {
             "name": name or _extract_name_from_run_id(run_id),
+            "application_modules": applications,
             "pipeline_run_id": run_id,
             "delta_root": delta_root,
             "staging_root": staging_root,
@@ -2471,6 +2508,7 @@ class PipelineManager:
         # Keep the internal resources/execution keys stable across their public
         # API renames; StepOverrides has already canonicalized the value shapes.
         compute_options_data = {
+            "application_modules": self._config.application_modules,
             "resources": ov.runner_resources or {},
             "execution": ov.batch_strategy or {},
             "environment": ov.environment if ov.environment is not None else {},
