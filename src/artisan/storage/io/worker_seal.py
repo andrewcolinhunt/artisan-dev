@@ -9,7 +9,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
-from artisan.errors import StoreIntegrityError
+from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import get_schema
@@ -49,9 +49,17 @@ class _StagingInventory(BaseModel):
         if self.version != 1 or names != sorted(set(names)):
             msg = "Invalid worker inventory version or repeated/unsorted filenames"
             raise ValueError(msg)
-        if not set(names) <= _payload_filenames():
-            msg = "Worker inventory contains an unregistered payload filename"
-            raise ValueError(msg)
+        for name in set(names) - _payload_filenames():
+            if (
+                not name.endswith(".parquet")
+                or name == EXECUTION_SEAL_FILENAME
+                or posixpath.basename(name) != name
+                or not name.removesuffix(".parquet").replace("-", "_").isidentifier()
+            ):
+                msg = "Worker inventory contains an invalid payload filename"
+                raise ValueError(msg)
+            msg = f"Worker payload {name!r} has no installed artifact registration"
+            raise ApplicationRegistrationError(msg)
         return self
 
 

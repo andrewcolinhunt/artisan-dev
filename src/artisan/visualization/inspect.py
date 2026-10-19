@@ -659,10 +659,7 @@ def inspect_step(
         art_type = group_row["artifact_type"]
         art_ids = set(group_row["artifact_id"])
 
-        try:
-            table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path(art_type))
-        except KeyError:
-            continue
+        table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path(art_type))
 
         if not fs.exists(table_path):
             continue

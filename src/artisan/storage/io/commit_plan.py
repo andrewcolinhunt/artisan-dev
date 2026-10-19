@@ -14,11 +14,12 @@ import polars as pl
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel, ConfigDict, model_validator
 
-from artisan.errors import StoreIntegrityError
+from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
     get_natural_key,
+    get_physical_schema_for_path,
     get_schema,
     is_global_artifact_table,
 )
@@ -95,9 +96,6 @@ class PlannedTable(BaseModel):
 
     @model_validator(mode="after")
     def _validate_effect(self) -> PlannedTable:
-        if self.table_path not in set(_staging_table_paths().values()):
-            msg = f"Unknown planned table {self.table_path!r}"
-            raise ValueError(msg)
         if self.natural_key != get_natural_key(self.table_path):
             msg = f"Invalid natural key for planned table {self.table_path!r}"
             raise ValueError(msg)
@@ -123,6 +121,10 @@ class PlannedTable(BaseModel):
             raise ValueError(msg)
         if not _is_content_digest(self.table_plan_key):
             msg = f"Invalid table plan key for {self.table_path!r}"
+            raise ValueError(msg)
+        if self.table_path not in set(_staging_table_paths().values()):
+            get_physical_schema_for_path(self.table_path)
+            msg = f"Unknown planned table {self.table_path!r}"
             raise ValueError(msg)
         return self
 
@@ -396,7 +398,7 @@ def read_commit_plan(
             msg = f"Commit plan path does not match {commit_kind}:{step_run_id}"
             raise StoreIntegrityError(msg)
         return plan
-    except StoreIntegrityError:
+    except (StoreIntegrityError, ApplicationRegistrationError):
         raise
     except Exception as exc:
         msg = f"Unreadable commit plan {commit_kind}:{step_run_id} at {_safe(path)}"

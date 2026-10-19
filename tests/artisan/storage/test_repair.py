@@ -9,7 +9,7 @@ import pytest
 from deltalake import DeltaTable
 from fixtures.store_format import publish_test_store
 
-from artisan.errors import StoreIntegrityError
+from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
@@ -1256,9 +1256,13 @@ def test_recovery_reports_invalid_artifact_type_before_publication(
     with fs.open(path, "wb") as stream:
         index.write_parquet(stream)
     _reseal_inventory(fs, directory)
-    report = _repair(repair_env, recover_staging=True, apply=True)
-    assert report.blocking
-    assert "Unknown staged artifact type" in report.blocking_items[0].detail
+    if artifact_type is None:
+        report = _repair(repair_env, recover_staging=True, apply=True)
+        assert report.blocking
+        assert "Invalid staged artifact type" in report.blocking_items[0].detail
+    else:
+        with pytest.raises(ApplicationRegistrationError, match="Unknown artifact type"):
+            _repair(repair_env, recover_staging=True, apply=True)
     assert read_logical_commits(delta_root, fs=fs, storage_options=options).is_empty()
 
 
@@ -1337,3 +1341,69 @@ def test_recovery_does_not_validate_unrelated_source_history(repair_env):
     report = _repair(repair_env, recover_staging=True, apply=True)
     assert not report.blocking
     assert [item.classification for item in report.items] == ["complete"]
+
+
+@pytest.mark.parametrize("action", ["report", "apply", "abandon"])
+def test_missing_plan_registration_prevents_every_repair_write(repair_env, action):
+    committer, fs, _, delta_root, staging_root = repair_env
+    first = _plan(committer)
+    second = _plan(committer, "b" * 32)
+    path = commit_plan_path(delta_root, second.step_run_id, second.commit_kind)
+    payload = second.model_dump(mode="json")
+    payload["tables"][0]["table_path"] = "artifacts/missing_domain"
+    from artisan.storage.io.commit_plan import _plan_digest
+
+    payload["plan_digest"] = _plan_digest(
+        {key: value for key, value in payload.items() if key != "plan_digest"}
+    )
+    with fs.open(path, "w") as stream:
+        json.dump(payload, stream)
+    before = {
+        path: fs.cat_file(path)
+        for root in (delta_root, staging_root)
+        for path in fs.find(root)
+    }
+    kwargs = (
+        {"apply": True}
+        if action == "apply"
+        else {"abandon": first.logical_commit_id, "reason": "test"}
+        if action == "abandon"
+        else {}
+    )
+    with pytest.raises(ApplicationRegistrationError, match="missing_domain"):
+        _repair(repair_env, **kwargs)
+    after = {
+        path: fs.cat_file(path)
+        for root in (delta_root, staging_root)
+        for path in fs.find(root)
+    }
+    assert after == before
+
+
+def test_missing_worker_registration_preflights_before_applying_existing_plan(
+    repair_env,
+):
+    committer, fs, _, delta_root, staging_root = repair_env
+    _plan(committer)
+    _, directory, _ = _worker_candidate(repair_env)
+    index_path = f"{directory}/index.parquet"
+    with fs.open(index_path, "rb") as stream:
+        index = pl.read_parquet(stream).with_columns(
+            pl.lit("missing_worker_domain").alias("artifact_type")
+        )
+    with fs.open(index_path, "wb") as stream:
+        index.write_parquet(stream)
+    _reseal_inventory(fs, directory)
+    before = {
+        path: fs.cat_file(path)
+        for root in (delta_root, staging_root)
+        for path in fs.find(root)
+    }
+    with pytest.raises(ApplicationRegistrationError, match="missing_worker_domain"):
+        _repair(repair_env, apply=True, recover_staging=True)
+    after = {
+        path: fs.cat_file(path)
+        for root in (delta_root, staging_root)
+        for path in fs.find(root)
+    }
+    assert after == before

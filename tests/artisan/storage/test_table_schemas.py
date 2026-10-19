@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
@@ -494,3 +495,10 @@ class TestTablePathEnum:
         """All TablePath enum values are unique."""
         values = [str(t) for t in TablePath]
         assert len(values) == len(set(values))
+
+
+def test_unknown_domain_table_is_configuration_error():
+    from artisan.errors import ApplicationRegistrationError
+
+    with pytest.raises(ApplicationRegistrationError, match="missing_domain"):
+        get_physical_schema_for_path("artifacts/missing_domain")
