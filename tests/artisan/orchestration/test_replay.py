@@ -8,23 +8,101 @@ from unittest.mock import Mock
 
 import polars as pl
 import pytest
+from fixtures.reference_ops import ReferenceConsumer
+from fixtures.run_outputs import commit_outputs
 from pydantic import ValidationError
 
-from artisan.errors import ArtisanError, StoreIntegrityError
+from artisan.errors import ArtifactIntegrityError, ArtisanError, StoreIntegrityError
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.replay_snapshot import build_replay_snapshot
 from artisan.operations.examples.data_generator import DataGenerator
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.utils.hashing import (
+    CacheInputIdentity,
+    compute_content_digest,
     compute_execution_spec_id,
     effective_config_payload,
     serialize_params,
 )
 
 replay = importlib.import_module("artisan.orchestration.replay")
+
+
+def test_reference_delivery_behavior_requires_replay_compatibility(
+    tmp_path, monkeypatch
+):
+    snapshot, _ = _snapshot(tmp_path, ReferenceConsumer())
+    specs = {
+        "config": ReferenceConsumer.inputs["config"].model_copy(
+            update={"resolve_references": False}
+        )
+    }
+    monkeypatch.setattr(ReferenceConsumer, "inputs", specs)
+    with pytest.raises(ArtisanError) as caught:
+        replay._restore_operation(snapshot, ReferenceConsumer, {}, False)
+    assert caught.value.code == "replay_code_changed"
+
+
+def test_reference_operation_version_changes_cache_identity(monkeypatch):
+    operation = ReferenceConsumer()
+    before = compute_execution_spec_id(
+        operation.name, {}, {}, effective_config_payload(operation)
+    )
+    monkeypatch.setattr(ReferenceConsumer, "version", "2")
+    after = compute_execution_spec_id(
+        operation.name, {}, {}, effective_config_payload(operation)
+    )
+    assert before != after
+
+
+@pytest.mark.parametrize("reference", ["a" * 32, "malformed", "corrupt"])
+def test_replay_rejects_unavailable_typed_reference_before_attempt(
+    tmp_path, monkeypatch, reference
+):
+    dependencies = []
+    if reference == "corrupt":
+        path = tmp_path / "source.txt"
+        path.write_bytes(b"original")
+        dependency = FileRefArtifact.draft(
+            path=str(path),
+            content_hash=compute_content_digest(b"original"),
+            size_bytes=8,
+            step_number=0,
+        )
+        dependency.finalize()
+        dependencies.append(dependency)
+        reference = dependency.artifact_id
+    config = ExecutionConfigArtifact.draft(
+        {"source": {"$artifact": reference}}, "config.json", step_number=0
+    )
+    config.finalize()
+    snapshot, runtime = _snapshot(tmp_path, ReferenceConsumer())
+    commit_outputs(runtime.delta_root, artifacts=[config, *dependencies])
+    if dependencies:
+        path.write_bytes(b"modified")
+    snapshot = snapshot.model_copy(
+        update={
+            "inputs": {
+                "config": [
+                    CacheInputIdentity("config", None, 0, "config", config.artifact_id)
+                ]
+            }
+        }
+    )
+    monkeypatch.setattr(replay, "_source_snapshot", lambda *args: snapshot)
+    manager = Mock(side_effect=AssertionError("preflight created an attempt"))
+    monkeypatch.setattr(replay, "PipelineManager", manager)
+    with pytest.raises(ArtifactIntegrityError):
+        replay.replay_execution(
+            "source", runtime=runtime, operation_class=ReferenceConsumer
+        )
+    manager.assert_not_called()
+    assert not (tmp_path / "debug").exists()
 
 
 def _snapshot(tmp_path, operation=None):

@@ -7,13 +7,130 @@ from unittest.mock import ANY, MagicMock, patch
 
 import pytest
 
-from artisan.execution.inputs.materialization import _is_remote, materialize_inputs
+from artisan.errors import ArtifactIntegrityError
+from artisan.execution.inputs.materialization import (
+    _is_remote,
+    materialize_inputs,
+    resolve_input_references,
+)
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.specs.input_spec import InputSpec
+
+
+def _typed_spec() -> InputSpec:
+    return InputSpec(artifact_type="config", materialize=False, resolve_references=True)
+
+
+def test_typed_references_preserve_occurrences_and_config_scoped_dependencies(
+    tmp_path: Path,
+) -> None:
+    first = DataArtifact.draft(b"value\n1\n", "same.csv", 0).finalize()
+    second = DataArtifact.draft(b"value\n2\n", "same.csv", 0).finalize()
+    payload = {
+        "nested": [{"$artifact": first.artifact_id}, {"$artifact": first.artifact_id}],
+        "other": {"source": {"$artifact": second.artifact_id}},
+    }
+    config = ExecutionConfigArtifact.draft(payload, "first.json", 1).finalize()
+    other = ExecutionConfigArtifact.draft(
+        {"source": {"$artifact": first.artifact_id}}, "second.json", 1
+    ).finalize()
+    lookup = {first.artifact_id: first, second.artifact_id: second}
+    store = MagicMock()
+    store.get_artifact.side_effect = lambda artifact_id, **_: lookup[artifact_id]
+
+    references = resolve_input_references(
+        {"config": [config, other]}, {"config": _typed_spec()}, str(tmp_path), store
+    )
+
+    assert store.get_artifact.call_count == 2
+    assert references[config.artifact_id] == lookup
+    assert references[other.artifact_id] == {first.artifact_id: first}
+    assert config.values == payload
+    assert config.materialized_path is None
+    assert config.get_artifact_references().count(first.artifact_id) == 2
+    assert Path(first.materialized_path).read_bytes() == first.content
+    assert Path(second.materialized_path).read_bytes() == second.content
+    assert Path(first.materialized_path).parent.name == first.artifact_id
+    assert Path(second.materialized_path).parent.name == second.artifact_id
+
+
+@pytest.mark.parametrize("reference", [None, 17, {}, [], "invalid"])
+def test_typed_references_reject_invalid_ids_before_store_lookup(
+    tmp_path: Path, reference: object
+) -> None:
+    before = set(tmp_path.iterdir())
+    config = ExecutionConfigArtifact.draft(
+        {"source": {"$artifact": reference}}, "config.json", 0
+    ).finalize()
+    store = MagicMock()
+    with pytest.raises(ValueError, match="hexadecimal artifact IDs"):
+        resolve_input_references(
+            {"config": [config]}, {"config": _typed_spec()}, str(tmp_path), store
+        )
+    store.get_artifact.assert_not_called()
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_typed_references_reject_config_targets(tmp_path: Path) -> None:
+    before = set(tmp_path.iterdir())
+    target = ExecutionConfigArtifact.draft({}, "target.json", 0).finalize()
+    config = ExecutionConfigArtifact.draft(
+        {"source": {"$artifact": target.artifact_id}}, "config.json", 1
+    ).finalize()
+    store = MagicMock()
+    store.get_artifact.return_value = target
+    with pytest.raises(ValueError, match="cannot target another config"):
+        resolve_input_references(
+            {"config": [config]}, {"config": _typed_spec()}, str(tmp_path), store
+        )
+    assert set(tmp_path.iterdir()) == before
+
+
+@pytest.mark.parametrize("corrupt", [False, True])
+def test_typed_references_fail_before_writing_partial_inputs(
+    tmp_path: Path, corrupt: bool
+) -> None:
+    before = set(tmp_path.iterdir())
+    valid = DataArtifact.draft(b"value\n1\n", "valid.csv", 0).finalize()
+    config = ExecutionConfigArtifact.draft(
+        [{"$artifact": valid.artifact_id}, {"$artifact": "a" * 32}],
+        "config.json",
+        1,
+    ).finalize()
+    store = MagicMock()
+    store.get_artifact.side_effect = [
+        valid,
+        ArtifactIntegrityError("Invalid referenced content") if corrupt else None,
+    ]
+    with pytest.raises((ValueError, ArtifactIntegrityError)):
+        resolve_input_references(
+            {"config": [config]}, {"config": _typed_spec()}, str(tmp_path), store
+        )
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_typed_references_default_does_not_load_or_materialize(tmp_path: Path) -> None:
+    before = set(tmp_path.iterdir())
+    config = ExecutionConfigArtifact.draft(
+        {"source": {"$artifact": "a" * 32}}, "config.json", 0
+    ).finalize()
+    store = MagicMock()
+    assert (
+        resolve_input_references(
+            {"config": [config]},
+            {"config": InputSpec(artifact_type="config", materialize=False)},
+            str(tmp_path),
+            store,
+        )
+        == {}
+    )
+    store.get_artifact.assert_not_called()
+    assert set(tmp_path.iterdir()) == before
 
 
 class TestMaterializeAsForwarded:

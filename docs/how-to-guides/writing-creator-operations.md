@@ -471,6 +471,44 @@ input roles, and declare them. The executor never scans config content for
 parents. See `DataTransformerConfig` in `artisan.operations.examples` for a
 parameter sweep that preserves every config's dataset ancestry.
 
+### Read typed config dependencies
+
+When preprocessing needs the referenced artifact objects, declare the config
+input with reference resolution enabled:
+
+```python
+inputs = {
+    "config": InputSpec(
+        artifact_type="config", materialize=False, resolve_references=True
+    )
+}
+```
+
+Inside `preprocess` or `postprocess`, call
+`inputs.referenced_artifacts(config)` for a config in
+`inputs.input_artifacts["config"]`. The returned read-only mapping contains its
+direct dependencies, keyed by artifact ID. Each dependency is hydrated and has
+a local `materialized_path`; repeated references share the same object. Config
+markers stay unchanged, and dependencies remain available through postprocessing.
+Malformed IDs, missing or corrupt artifacts, and references to other configs fail
+before preprocessing. Reference resolution requires hydration and disables config
+file materialization.
+
+For endpoint execution, use these dependencies to prepare portable files under
+`inputs.preprocess_dir`, then return those files as declared execute inputs. Write
+required values or bytes into them; paths inside file contents are not rewritten
+when files move to a worker. The typed objects stay with the lifecycle worker.
+Check your preparation by moving the prepared files to another directory before
+execution and verifying that the result is unchanged.
+
+Declare each output's config parent explicitly. Resolving dependencies does not
+add lineage edges. Replay reloads the same referenced IDs and verifies their
+content, so the source store and external content must remain available after
+working-directory cleanup.
+When adopting a different input or output contract, increment the operation's
+`version` to invalidate existing execution caches. Replay also checks the recorded
+reference-resolution setting against the current input declaration.
+
 ### Command operations (external tools)
 
 A command operation declares `ToolSpec` and implements `execute_command`.

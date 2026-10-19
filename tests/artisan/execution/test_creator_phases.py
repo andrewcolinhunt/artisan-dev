@@ -4,12 +4,16 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
+from dataclasses import replace
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
 
 import polars as pl
 import pytest
+from fixtures.reference_ops import ReferenceConsumer
+from fixtures.run_outputs import commit_outputs
 from fixtures.store_format import commit_test_tables
 from fsspec.implementations.local import LocalFileSystem
 
@@ -31,6 +35,7 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -167,6 +172,69 @@ def delta_env(tmp_path: Path):
         staging_root=str(staging),
     )
     return runtime_env, ids
+
+
+def test_typed_references_survive_portable_execute_and_postprocess(tmp_path):
+    dependencies = [
+        MetricArtifact.draft({"value": i}, "same.json", step_number=0) for i in range(2)
+    ]
+    for artifact in dependencies:
+        artifact.finalize()
+    configs = [
+        ExecutionConfigArtifact.draft(
+            {"source": {"$artifact": artifact.artifact_id}},
+            f"config_{i}.json",
+            step_number=0,
+        )
+        for i, artifact in enumerate(dependencies)
+    ]
+    for config in configs:
+        config.finalize()
+    runtime = RuntimeEnvironment(
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "work"),
+    )
+    commit_outputs(runtime.delta_root, artifacts=[*dependencies, *configs])
+    unit = ExecutionUnit(
+        operation=ReferenceConsumer(),
+        inputs={"config": [config.artifact_id for config in configs]},
+        execution_spec_id="a" * 32,
+        step_number=1,
+    )
+    prepped = prep_unit(unit, runtime)
+    remote = tmp_path / "relocated"
+    remote.mkdir()
+    raw_results = []
+    for i, execute_input in enumerate(prepped.artifact_execute_inputs):
+        prepared = Path(execute_input.inputs["config"][0])
+        moved = remote / prepared.name
+        shutil.move(prepared, moved)
+        assert str(tmp_path) not in moved.read_text()
+        execute_dir = remote / str(i)
+        execute_dir.mkdir()
+        remote_input = replace(
+            execute_input,
+            inputs={"config": [str(moved)]},
+            execute_dir=str(execute_dir),
+        )
+        raw_results.extend(
+            LocalExecuteRouter().route_execute(
+                prepped.operation, [remote_input], str(remote)
+            )
+        )
+        for output in execute_dir.iterdir():
+            shutil.move(output, prepped.artifact_execute_dirs[i])
+    assert all(
+        Path(artifact.materialized_path).is_file()
+        for references in prepped.references.values()
+        for artifact in references.values()
+    )
+    result = post_unit(prepped, raw_results, runtime)
+    assert len(result.artifacts["metrics"]) == 2
+    assert {edge.source_artifact_id for edge in result.edges} == {
+        config.artifact_id for config in configs
+    }
 
 
 class TestSplitPreparedInputs:

@@ -124,3 +124,24 @@ class TestArtifactTypeValidator:
         assert "totally_made_up" in msg
         assert "metric" in msg
         assert "ArtifactTypeDef" in msg
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"artifact_type": "data"}, {"hydrate": False}, {"materialize": True}],
+)
+def test_resolve_references_rejects_invalid_delivery_mode(overrides: dict) -> None:
+    values = {"artifact_type": "config", "materialize": False, **overrides}
+    with pytest.raises(ValidationError, match="resolve_references requires"):
+        InputSpec(resolve_references=True, **values)
+
+
+def test_resolve_references_enters_schema_equality_and_hash() -> None:
+    plain = InputSpec(artifact_type="config", materialize=False)
+    resolved = InputSpec(
+        artifact_type="config", materialize=False, resolve_references=True
+    )
+    assert not plain.resolve_references
+    assert resolved != plain
+    assert hash(resolved) != hash(plain)
+    assert resolved.model_dump(mode="json")["resolve_references"] is True

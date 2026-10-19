@@ -35,6 +35,7 @@ from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.runners import resolve_runner
 from artisan.orchestration.runners.base import RunnerBase
 from artisan.registry.resolve import operation_identity, resolve_operation
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.replay import ReplayDiagnostic, ReplaySnapshot
@@ -222,6 +223,8 @@ def _verify_artifacts(
     runtime: RuntimeEnvironment,
 ) -> None:
     """Verify recorded inputs and associations before allocating an attempt."""
+    from artisan.execution.inputs.materialization import resolve_config_references
+
     assert snapshot.source is not None
     store = ArtifactStore(
         runtime.delta_root,
@@ -248,12 +251,26 @@ def _verify_artifacts(
         for aid in item.artifact_ids
     )
     checked: set[str] = set()
+    typed_configs = {
+        entry.artifact_id
+        for role, entries in snapshot.inputs.items()
+        if role in operation.inputs and operation.inputs[role].resolve_references
+        for entry in entries
+    }
+    resolved: dict[str, Artifact] = {}
     for artifact_id, artifact_type in identities:
         artifact = store.get_artifact(artifact_id, artifact_type=artifact_type)
         if artifact is None:
             msg = f"Recorded artifact {artifact_id} is missing"
             raise ArtifactIntegrityError(msg)
         if isinstance(artifact, ExecutionConfigArtifact):
+            if artifact_id in typed_configs:
+                try:
+                    resolve_config_references(artifact, store, resolved, typed=True)
+                except ValueError as exc:
+                    raise ArtifactIntegrityError(str(exc)) from exc
+                checked.update(resolved)
+                continue
             for reference in artifact.get_artifact_references():
                 if reference not in checked and store.get_artifact(reference) is None:
                     msg = f"Configuration reference {reference} is missing"

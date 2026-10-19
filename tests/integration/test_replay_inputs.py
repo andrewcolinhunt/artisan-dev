@@ -7,11 +7,13 @@ from typing import Any
 
 import polars as pl
 import pytest
+from fixtures.reference_ops import ReferenceConsumer
 
 from artisan.operations.curator import Merge
 from artisan.operations.examples import (
     DataGenerator,
     DataGeneratorWithMetrics,
+    DataTransformerConfig,
     LargeFileGenerator,
     MetricCalculator,
 )
@@ -75,6 +77,42 @@ def _outputs(runtime: RuntimeEnvironment, execution_id: str) -> list[str]:
             (pl.col("execution_run_id") == execution_id)
             & (pl.col("direction") == "output")
         )["artifact_id"].to_list()
+    )
+
+
+def test_replay_rebuilds_typed_references_after_source_cleanup(tmp_path: Path) -> None:
+    import shutil
+
+    runtime = _runtime(tmp_path)
+    with _manager(tmp_path) as manager:
+        generated = manager.run(
+            DataGenerator, params={"count": 2, "seed": 43}, compact=False
+        )
+        configured = manager.run(
+            DataTransformerConfig,
+            inputs={"dataset": generated.output("datasets")},
+            compact=False,
+        )
+        consumed = manager.run(
+            ReferenceConsumer,
+            inputs={"config": configured.output("config")},
+            batch_strategy={"artifacts_per_unit": 2},
+            compact=False,
+        )
+        source = _execution(runtime, consumed)
+    original = ReplaySnapshot.model_validate_json(source["replay_snapshot"])
+    assert original.operation.behavior["inputs"]["config"]["resolve_references"]
+    shutil.rmtree(tmp_path / "work")
+    result = replay_execution(
+        source["execution_run_id"], runtime=runtime, operation_class=ReferenceConsumer
+    )
+    replayed = _execution(runtime, result.step_result)
+    assert _outputs(runtime, replayed["execution_run_id"]) == _outputs(
+        runtime, source["execution_run_id"]
+    )
+    assert (
+        ReplaySnapshot.model_validate_json(replayed["replay_snapshot"]).inputs
+        == original.inputs
     )
 
 
