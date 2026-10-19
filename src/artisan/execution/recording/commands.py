@@ -9,11 +9,18 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
-from typing import Any, cast
+from typing import Any, cast, get_args, get_origin
 from urllib.parse import urlsplit
 
-from pydantic import BaseModel, SecretBytes, SecretStr
-from pydantic_core import PydanticSerializationError, to_json
+from pydantic import (
+    AliasChoices,
+    AliasPath,
+    BaseModel,
+    SecretBytes,
+    SecretStr,
+    TypeAdapter,
+)
+from pydantic_core import PydanticSerializationError, PydanticUndefined, to_json
 
 from artisan.schemas.execution.command_record import (
     MAX_COMMAND_RECORDING_BYTES,
@@ -48,6 +55,7 @@ _current: ContextVar[CommandRecorder | None] = ContextVar(
 )
 _invocation: ContextVar[int | None] = ContextVar("command_invocation", default=None)
 _tool: ContextVar[Any] = ContextVar("command_tool", default=None)
+_json_value = TypeAdapter(Any)
 
 
 class CommandRecorder:
@@ -90,6 +98,83 @@ class CommandRecorder:
         elif value is not None:
             with self._lock:
                 self._values.add(value if isinstance(value, str) else json.dumps(value))
+
+    def add_schema_data(self, annotation: Any, value: Any) -> None:
+        """Learn raw typed secrets and declared defaults without running validators."""
+        self._learn_json(value)
+        if value is None:
+            return
+        if annotation in (SecretStr, SecretBytes):
+            if isinstance(value, bytes):
+                value = value.decode(errors="replace")
+            if value is not PydanticUndefined:
+                self.add_sensitive_data(self.json_data(value))
+        elif isinstance(annotation, type) and issubclass(annotation, BaseModel):
+            if isinstance(value, BaseModel):
+                self._learn_model_fields(value, set())
+                return
+            supplied = value if isinstance(value, dict) else {}
+            for name, field in annotation.model_fields.items():
+                aliases = [name, field.alias, field.validation_alias]
+                for alias in aliases:
+                    choices = (
+                        alias.choices if isinstance(alias, AliasChoices) else [alias]
+                    )
+                    for choice in choices:
+                        item = (
+                            choice.search_dict_for_path(supplied)
+                            if isinstance(choice, AliasPath)
+                            else supplied.get(choice, PydanticUndefined)
+                        )
+                        if item is not PydanticUndefined:
+                            self._learn_json({name: item})
+                            self.add_schema_data(field.annotation, item)
+                if field.default is not PydanticUndefined:
+                    self._learn_json({name: field.default})
+                    self.add_schema_data(field.annotation, field.default)
+        elif get_origin(annotation) is not None and not get_args(annotation):
+            return
+        elif get_origin(annotation) is dict and isinstance(value, dict):
+            key_type, value_type = get_args(annotation)
+            for key, item in value.items():
+                self.add_schema_data(key_type, key)
+                self.add_schema_data(value_type, item)
+        elif get_origin(annotation) is tuple and isinstance(value, (list, tuple)):
+            arguments = get_args(annotation)
+            if len(arguments) == 2 and arguments[1] is Ellipsis:
+                for item in value:
+                    self.add_schema_data(arguments[0], item)
+            else:
+                for argument, item in zip(arguments, value, strict=False):
+                    self.add_schema_data(argument, item)
+        elif get_origin(annotation) in (list, tuple, set) and isinstance(
+            value, (list, tuple, set)
+        ):
+            for item in value:
+                for argument in get_args(annotation):
+                    self.add_schema_data(argument, item)
+        else:
+            for argument in get_args(annotation):
+                self.add_schema_data(argument, value)
+
+    @staticmethod
+    def json_data(value: Any) -> Any:
+        """Copy a user diagnostic through its supported JSON representation."""
+
+        def default(item: Any) -> Any:
+            if isinstance(item, set):
+                return sorted(item)
+            return _json_value.dump_python(item, mode="json", warnings=False)
+
+        try:
+            return json.loads(json.dumps(value, default=default))
+        except (PydanticSerializationError, TypeError, ValueError):
+            msg = "Diagnostic configuration cannot be serialized safely"
+            raise ValueError(msg) from None
+
+    def sanitize_json(self, value: Any) -> Any:
+        """Sanitize a JSON-owned user subtree, including its mapping keys."""
+        return self.sanitize_data(self.json_data(value), sanitize_keys=True)
 
     @property
     def sensitive_values(self) -> tuple[str, ...]:
@@ -164,7 +249,7 @@ class CommandRecorder:
         with self._lock:
             return redact_values(text, tuple(self._values))
 
-    def sanitize_data(self, value: Any) -> Any:
+    def sanitize_data(self, value: Any, *, sanitize_keys: bool = False) -> Any:
         """Sanitize diagnostic scalar leaves while retaining container structure."""
         if isinstance(value, str):
             return self.sanitize(value)
@@ -173,9 +258,16 @@ class CommandRecorder:
                 if json.dumps(value) in self._values:
                     return "<redacted>"
         if isinstance(value, list):
-            return [self.sanitize_data(item) for item in value]
+            return [
+                self.sanitize_data(item, sanitize_keys=sanitize_keys) for item in value
+            ]
         if isinstance(value, dict):
-            return {key: self.sanitize_data(item) for key, item in value.items()}
+            return {
+                self.sanitize(key) if sanitize_keys else key: self.sanitize_data(
+                    item, sanitize_keys=sanitize_keys
+                )
+                for key, item in value.items()
+            }
         return value
 
     def _argument(self, value: str) -> str:
@@ -480,6 +572,36 @@ class CommandRecorder:
         with self._lock:
             self._add(MissingInvocation(invocation=invocation, reason=reason))
 
+    def _redact_command(self, command: CommandRecord) -> dict[str, Any]:
+        """Copy user command fields while preserving execution observations."""
+        original = command.model_dump(mode="json")
+        clean = dict(original)
+        for name in (
+            "requested_argv",
+            "argv",
+            "cwd",
+            "tool",
+            "environment",
+            "redacted_fields",
+            "required_environment",
+        ):
+            clean[name] = self.sanitize_data(original[name])
+        clean["requested_argv"] = self._argv(original["requested_argv"])
+        clean["argv"] = self._argv(original["argv"])
+        redacted_paths = _changed_paths(original, clean)
+        clean["required_environment"] = sorted(
+            set(clean["required_environment"])
+            | {
+                self.sanitize(name)
+                for name, value in self._environment.items()
+                if _contains_value(original, value)
+            }
+        )
+        clean["redacted_fields"] = sorted(
+            set(clean["redacted_fields"] + redacted_paths)
+        )
+        return clean
+
     def merge(self, recording: CommandRecording, invocation: int) -> None:
         """Redact and remap worker evidence before the client handles its result."""
         with self._lock:
@@ -493,32 +615,7 @@ class CommandRecorder:
                 msg = "endpoint request must use one invocation"
                 raise ValueError(msg)
             for command in recording.commands:
-                original = command.model_dump(mode="json")
-                clean = dict(original)
-                for name in (
-                    "requested_argv",
-                    "argv",
-                    "cwd",
-                    "tool",
-                    "environment",
-                    "redacted_fields",
-                    "required_environment",
-                ):
-                    clean[name] = self.sanitize_data(original[name])
-                clean["requested_argv"] = self._argv(original["requested_argv"])
-                clean["argv"] = self._argv(original["argv"])
-                redacted_paths = _changed_paths(original, clean)
-                clean["required_environment"] = sorted(
-                    set(clean["required_environment"])
-                    | {
-                        self.sanitize(name)
-                        for name, value in self._environment.items()
-                        if _contains_value(original, value)
-                    }
-                )
-                clean["redacted_fields"] = sorted(
-                    set(clean["redacted_fields"] + redacted_paths)
-                )
+                clean = self._redact_command(command)
                 clean.update(invocation=invocation, location="endpoint")
                 self._add(CommandRecord.model_validate(clean))
             for marker in recording.missing_invocations:
@@ -538,6 +635,19 @@ class CommandRecorder:
                 )
                 self._drop_suffix(cutoff)
             self._trim()
+
+    def sanitize_recording(self, recording: CommandRecording) -> CommandRecording:
+        """Apply final known sensitivity to copied evidence under the same byte cap."""
+        if recording.unavailable_reason is not None:
+            return recording
+        result = CommandRecorder(location=self.location)
+        result._omitted_commands = recording.omitted_commands
+        result._omitted_missing = recording.omitted_missing_invocations
+        for command in recording.commands:
+            result._add(CommandRecord.model_validate(self._redact_command(command)))
+        for marker in recording.missing_invocations:
+            result._add(marker)
+        return result.snapshot()
 
     def snapshot(self) -> CommandRecording:
         """Return a validated compact recording, including explicit omissions."""

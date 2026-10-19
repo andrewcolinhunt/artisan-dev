@@ -15,6 +15,7 @@ from pydantic import BaseModel, SecretBytes, SecretStr
 
 from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.recording.commands import CommandRecorder
+from artisan.execution.recording.durable import configuration_recorder
 from artisan.registry.resolve import operation_identity, resolve_operation
 from artisan.schemas.execution.replay import (
     RemoteObservation,
@@ -218,8 +219,10 @@ def build_replay_snapshot(
         if computed != unit.execution_spec_id:
             msg = "Unverified execution cache preimage"
             raise ValueError(msg)
+        redactor = configuration_recorder(unit.operation, params=unit.user_overrides)
+        redactor.add_sensitive_data(unit.replay_sensitive_values)
         configuration, replacements = _configuration(
-            unit.operation, unit.replay_sensitive_values
+            unit.operation, redactor.sensitive_values
         )
         identity = operation_identity(type(unit.operation))
         importable = False
@@ -227,8 +230,6 @@ def build_replay_snapshot(
             importable = resolve_operation(
                 f"{identity.module}:{identity.qualname}"
             ) is type(unit.operation)
-        redactor = CommandRecorder(unit.operation)
-        redactor.add_sensitive_data(unit.replay_sensitive_values)
         return ReplaySnapshot(
             status="ready" if importable else "requires_operation_class",
             unavailable_reason=None,

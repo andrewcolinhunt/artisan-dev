@@ -29,7 +29,13 @@ def redact_values(text: str, sensitive_values: tuple[str, ...]) -> str:
     values = sorted(set(sensitive_values) - {""}, key=len, reverse=True)
     if not values:
         return text
-    return re.sub("|".join(re.escape(value) for value in values), "<redacted>", text)
+    # Repeated persistence/transport boundaries must preserve prior markers.
+    values = sorted({*values, "<redacted>"}, key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(value) for value in values))
+    clean = pattern.sub("<redacted>", text)
+    # A replacement can compose another credential across a marker boundary.
+    # Drop that diagnostic instead of repeatedly rescanning adversarial text.
+    return "<redacted>" if pattern.sub("<redacted>", clean) != clean else clean
 
 
 @dataclass

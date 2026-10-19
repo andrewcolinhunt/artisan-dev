@@ -588,17 +588,8 @@ def test_ordinary_native_evidence_protects_public_aliases_of_parameter_secrets(
     row = _read(runtime, TablePath.EXECUTIONS).row(0, named=True)
     assert len(json.loads(row["command_recording"])["commands"]) == 1
     for value in env.values():
-        assert value not in str(
-            {
-                key: row[key]
-                for key in (
-                    "command_recording",
-                    "replay_snapshot",
-                    "error",
-                    "error_envelope",
-                )
-            }
-        )
+        assert value not in str(row)
+        assert value not in str(_read(runtime, TablePath.STEPS).to_dicts())
     snapshot = json.loads(row["replay_snapshot"])
     assert {slot["pointer"] for slot in snapshot["required_replacements"]} == {
         "/params/token",

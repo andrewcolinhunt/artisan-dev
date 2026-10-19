@@ -32,6 +32,7 @@ from artisan.execution.recording.commands import (
     command_snapshot,
     sanitize_diagnostic,
 )
+from artisan.execution.recording.durable import configuration_recorder
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import (
     error_envelope_dict,
@@ -192,6 +193,9 @@ def run_curator_flow(
         capture_commands(unit.operation) as commands,
         capture_replay(unit, runtime_env),
     ):
+        configuration_recorder(
+            unit.operation, params=unit.user_overrides, recorder=commands
+        )
         commands.add_environment(
             {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
         )
