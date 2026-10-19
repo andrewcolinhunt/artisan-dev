@@ -11,7 +11,7 @@ from typing import Any
 
 import polars as pl
 import pytest
-from pydantic import Field
+from pydantic import Field, SecretStr
 
 from artisan.errors import ArtifactIntegrityError, CommitError
 from artisan.operations.curator.ingest_data import IngestData
@@ -68,6 +68,32 @@ class SecretGenerator(DataGenerator):
         token: str = Field(description="Credential used by the declared operation.")
 
     params: Params
+
+
+class PublicAliasCommandGenerator(DataGenerator):
+    """Known configuration secrets remain protected in positional commands."""
+
+    name = "public_alias_command_generator"
+
+    class Params(DataGenerator.Params):
+        token: str = Field(description="Credential with a recognized field name.")
+        value: SecretStr = Field(description="Typed secret with an ordinary name.")
+
+    params: Params
+
+    def execute_function(self, inputs: Any) -> Any:
+        run_command(
+            self.environments.current(),
+            [
+                sys.executable,
+                "-c",
+                "pass",
+                self.params.token,
+                self.params.value.get_secret_value(),
+            ],
+            log_path=inputs.log_path,
+        )
+        return super().execute_function(inputs)
 
 
 pytestmark = pytest.mark.integration
@@ -471,3 +497,112 @@ def test_replay_worker_code_must_match_selected_driver_even_with_override(
         .row(0, named=True)
     )
     assert json.loads(row["error_envelope"])["code"] == "replay_code_changed"
+
+
+@pytest.mark.parametrize("with_secret", [False, True])
+def test_public_env_native_replay_preserves_values_and_explicit_identity(
+    tmp_path, monkeypatch, with_secret
+):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.schemas.operation_config.environments import Environments
+
+    environment = LocalEnvironmentSpec(
+        env={
+            "ROOT": "/opt/application",
+            **({"TOKEN": "historical-env-secret"} if with_secret else {}),
+        },
+        public_env=("ROOT",),
+    )
+    manager = PipelineManager.create(
+        "public-env-source",
+        str(tmp_path / "delta"),
+        str(tmp_path / "staging"),
+        working_root=str(tmp_path / "work"),
+    )
+    step = manager.run(
+        DataGenerator,
+        params={"seed": 7},
+        environment=Environments(active="local", local=environment),
+        compact=False,
+    )
+    manager.finalize()
+    assert step.status == StepStatus.SUCCEEDED
+    runtime = _runtime(tmp_path)
+    source = _read(runtime, TablePath.EXECUTIONS).row(0, named=True)
+    snapshot = json.loads(source["replay_snapshot"])
+    assert (
+        snapshot["operation"]["configuration"]["environments"]["local"]["env"]["ROOT"]
+        == "/opt/application"
+    )
+    pointer = "/environments/local/env/TOKEN"
+    monkeypatch.setenv("PUBLIC_ENV_REPLAY_TOKEN", "fresh-env-replacement")
+    result = replay_execution(
+        source["execution_run_id"],
+        runtime=runtime,
+        replacement_env={pointer: "PUBLIC_ENV_REPLAY_TOKEN"} if with_secret else {},
+    )
+    assert result.step_result.status == StepStatus.SUCCEEDED
+    row = (
+        _read(runtime, TablePath.EXECUTIONS)
+        .filter(pl.col("execution_run_id") == result.execution_run_id)
+        .row(0, named=True)
+    )
+    fresh = json.loads(row["replay_snapshot"])
+    assert (
+        fresh["operation"]["configuration"]["environments"]["local"]["env"]["ROOT"]
+        == "/opt/application"
+    )
+    assert (row["execution_spec_id"] != source["execution_spec_id"]) == with_secret
+    assert row["replay_of_execution_run_id"] == source["execution_run_id"]
+    assert "fresh-env-replacement" not in str(row)
+    assert "historical-env-secret" not in str(row)
+    assert {slot["pointer"] for slot in fresh["required_replacements"]} == (
+        {pointer} if with_secret else set()
+    )
+
+
+def test_ordinary_native_evidence_protects_public_aliases_of_parameter_secrets(
+    tmp_path,
+):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.schemas.operation_config.environments import Environments
+
+    manager = PipelineManager.create(
+        "known-aliases",
+        str(tmp_path / "delta"),
+        str(tmp_path / "staging"),
+        working_root=str(tmp_path / "work"),
+    )
+    env = {"ROOT": "native-credential-alias", "LABEL": "native-typed-alias"}
+    step = manager.run(
+        PublicAliasCommandGenerator,
+        params={"token": env["ROOT"], "value": env["LABEL"], "seed": 7},
+        environment=Environments(
+            active="local", local=LocalEnvironmentSpec(env=env, public_env=tuple(env))
+        ),
+        compact=False,
+    )
+    manager.finalize()
+    assert step.status == StepStatus.SUCCEEDED
+    runtime = _runtime(tmp_path)
+    row = _read(runtime, TablePath.EXECUTIONS).row(0, named=True)
+    assert len(json.loads(row["command_recording"])["commands"]) == 1
+    for value in env.values():
+        assert value not in str(
+            {
+                key: row[key]
+                for key in (
+                    "command_recording",
+                    "replay_snapshot",
+                    "error",
+                    "error_envelope",
+                )
+            }
+        )
+    snapshot = json.loads(row["replay_snapshot"])
+    assert {slot["pointer"] for slot in snapshot["required_replacements"]} == {
+        "/params/token",
+        "/params/value",
+        "/environments/local/env/ROOT",
+        "/environments/local/env/LABEL",
+    }

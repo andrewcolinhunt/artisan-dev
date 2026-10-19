@@ -150,9 +150,17 @@ def effective_config_payload(operation: Any) -> dict[str, Any]:
     group_by = operation.group_by
     payload = {
         "version": type(operation).version,
-        "environments": operation.environments.model_dump(mode="json"),
+        "environments": operation.environments.model_dump(
+            mode="json",
+            exclude={
+                name: {"public_env"}
+                for name in ("local", "docker", "apptainer", "pixi")
+            },
+        ),
         "tool": tool.model_dump(mode="json") if tool is not None else None,
-        "compute_provider": operation.compute_provider.model_dump(mode="json"),
+        "compute_provider": operation.compute_provider.model_dump(
+            mode="json", exclude={"modal": {"public_env"}}
+        ),
         "compute_resources": operation.compute_resources.model_dump(mode="json"),
         "group_by": group_by.value if group_by is not None else None,
     }

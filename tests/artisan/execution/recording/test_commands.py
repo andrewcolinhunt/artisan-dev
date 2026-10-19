@@ -516,3 +516,189 @@ def test_remote_environment_hints_allow_duplicates_and_parent_augmentation():
     assert retained.required_environment == ["PARENT", "REMOTE"]
     assert retained.argv == ["<redacted>"]
     assert retained.redacted_fields == ["$.argv[0]", "$.requested_argv[0]"]
+
+
+def test_public_environment_survives_operation_and_both_prepare_passes():
+    from artisan.operations.examples.data_generator import DataGenerator
+    from artisan.schemas.operation_config.environments import Environments
+
+    environment = DockerEnvironmentSpec(
+        image="tool:fixed",
+        env={"ROOT": "/opt/application", "MODE": "private-mode"},
+        public_env=("ROOT",),
+    )
+    operation = DataGenerator(
+        environments=Environments(active="docker", docker=environment)
+    )
+    recorder = CommandRecorder(operation)
+    assert recorder.sanitize("/opt/application") == "/opt/application"
+    recorder.prepare(environment, ["tool", "/opt/application"], ())
+    recorder.begin(
+        environment,
+        ["tool", "/opt/application"],
+        environment.wrap_command(["tool", "/opt/application"]),
+        None,
+        (),
+    )
+    assert recorder.sanitize("/opt/application") == "/opt/application"
+    assert recorder.sanitize("private-mode") == "<redacted>"
+
+
+@pytest.mark.parametrize(
+    "source", ["explicit", "ambient", "flag", "environment", "proxy"]
+)
+def test_known_secret_alias_dominates_public_environment(monkeypatch, source):
+    from artisan.operations.examples.data_generator import DataGenerator
+    from artisan.schemas.operation_config.compute import (
+        ComputeProvider,
+        ModalComputeConfig,
+    )
+    from artisan.schemas.operation_config.environments import Environments
+
+    value = "recognized-sensitive-alias"
+    environment = LocalEnvironmentSpec(env={"ROOT": value}, public_env=("ROOT",))
+    if source == "ambient":
+        monkeypatch.setenv("APPLICATION_TOKEN", value)
+    if source == "proxy":
+        monkeypatch.setenv("TEST_PROXY_TOKEN_SECRET", value)
+    operation = DataGenerator(
+        environments=Environments(local=environment),
+        compute_provider=ComputeProvider(
+            active="modal", modal=ModalComputeConfig(auth_secret="TEST_PROXY")
+        ),
+    )
+    recorder = CommandRecorder(operation)
+    if source == "environment":
+        recorder.add_environment({"TOKEN": value})
+    recorder.prepare(
+        environment,
+        ["tool", "--token", value] if source == "flag" else ["tool"],
+        (value,) if source == "explicit" else (),
+    )
+    assert recorder.sanitize(value) == "<redacted>"
+
+
+def test_typed_and_credential_parameter_aliases_remain_sensitive():
+    from pydantic import BaseModel, Field, SecretStr
+
+    from artisan.operations.examples.data_generator import DataGenerator
+    from artisan.schemas.operation_config.environments import Environments
+
+    class ParameterAliases(DataGenerator):
+        name = "recording_parameter_aliases"
+
+        class Params(BaseModel):
+            value: SecretStr = Field(description="Typed sensitive value.")
+            token: int = Field(description="Numeric credential.")
+            auth: bool = Field(description="Boolean credential.")
+
+        params: Params
+
+    env = {
+        "ROOT": "typed-config-value",
+        "NUMBER": "839271",
+        "FLAG": "false",
+        "PUBLIC": "/opt/application",
+    }
+    environment = LocalEnvironmentSpec(env=env, public_env=tuple(env))
+    operation = ParameterAliases(
+        params={"value": env["ROOT"], "token": 839271, "auth": False},
+        environments=Environments(local=environment),
+    )
+    recorder = CommandRecorder(operation)
+    recorder.prepare(environment, ["tool", *env.values()], ())
+    for key in ("ROOT", "NUMBER", "FLAG"):
+        assert recorder.sanitize(env[key]) == "<redacted>"
+    assert recorder.sanitize_data([839271, False]) == ["<redacted>", "<redacted>"]
+    assert recorder.sanitize(env["PUBLIC"]) == env["PUBLIC"]
+
+
+def test_password_only_uri_is_safe_without_prior_environment_registration():
+    value = "https://:password-only-sensitive@host/path"
+    recorder = CommandRecorder()
+    assert "password-only-sensitive" not in recorder.sanitize(value)
+    recorder.prepare(LocalEnvironmentSpec(), ["tool", value], ())
+    assert "password-only-sensitive" not in recorder.sanitize(value)
+
+
+def test_credential_parameter_path_uses_its_supported_json_value():
+    from pathlib import Path
+
+    from pydantic import BaseModel, Field
+
+    from artisan.operations.examples.data_generator import DataGenerator
+    from artisan.schemas.operation_config.environments import Environments
+
+    class PathParameter(DataGenerator):
+        name = "recording_path_parameter"
+
+        class Params(BaseModel):
+            tokenizer_path: Path = Field(
+                description="Path matching the credential-name predicate."
+            )
+
+        params: Params
+
+    value = "/private/tokenizer"
+    operation = PathParameter(
+        params={"tokenizer_path": Path(value)},
+        environments=Environments(
+            local=LocalEnvironmentSpec(env={"ROOT": value}, public_env=("ROOT",))
+        ),
+    )
+    recorder = CommandRecorder(operation)
+    assert recorder.sanitize(value) == "<redacted>"
+
+
+def test_credential_parameter_uses_owning_model_field_serializer():
+    from pydantic import BaseModel, ConfigDict, Field, field_serializer, field_validator
+    from pydantic_core import PydanticSerializationError, to_json
+
+    from artisan.operations.examples.data_generator import DataGenerator
+    from artisan.schemas.operation_config.environments import Environments
+
+    class TokenValue:
+        __hash__ = None
+
+        def __init__(self, value):
+            self.value = value
+
+        def __eq__(self, other):
+            return isinstance(other, TokenValue) and self.value == other.value
+
+    class SerializedParameter(DataGenerator):
+        name = "recording_serialized_parameter"
+
+        class Params(BaseModel):
+            model_config = ConfigDict(arbitrary_types_allowed=True)
+            token: TokenValue = Field(
+                description="Credential serialized by its owning model."
+            )
+
+            @field_validator("token", mode="before")
+            @classmethod
+            def restore_token(cls, value):
+                return TokenValue(value) if isinstance(value, str) else value
+
+            @field_serializer("token")
+            def serialize_token(self, value):
+                return value.value
+
+        params: Params
+
+    value = "serialized-credential-alias"
+    operation = SerializedParameter(
+        params={"token": value},
+        environments=Environments(
+            local=LocalEnvironmentSpec(env={"ROOT": value}, public_env=("ROOT",))
+        ),
+    )
+    assert (
+        SerializedParameter.model_validate_json(operation.model_dump_json())
+        == operation
+    )
+    with pytest.raises(PydanticSerializationError):
+        to_json(operation.params.token)
+    recorder = CommandRecorder(operation)
+    recorder.prepare(operation.environments.local, ["tool", value], ())
+    assert recorder.sanitize(value) == "<redacted>"

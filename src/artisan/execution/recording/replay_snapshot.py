@@ -10,12 +10,11 @@ from contextlib import contextmanager, suppress
 from contextvars import ContextVar
 from importlib.metadata import version
 from typing import TYPE_CHECKING, Any
-from urllib.parse import urlsplit
 
 from pydantic import BaseModel, SecretBytes, SecretStr
 
 from artisan.errors import ArtisanError, ErrorCode
-from artisan.execution.recording.commands import CommandRecorder, credential_name
+from artisan.execution.recording.commands import CommandRecorder
 from artisan.registry.resolve import operation_identity, resolve_operation
 from artisan.schemas.execution.replay import (
     RemoteObservation,
@@ -24,6 +23,13 @@ from artisan.schemas.execution.replay import (
     ReplayReplacement,
     ReplaySnapshot,
     ReplaySource,
+)
+from artisan.schemas.operation_config.compute import ModalComputeConfig
+from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
+from artisan.utils.configuration_secrets import (
+    credential_name,
+    credential_url,
+    sensitive_environment,
 )
 from artisan.utils.hashing import (
     CacheInputIdentity,
@@ -93,23 +99,20 @@ def set_pointer(payload: dict[str, Any], pointer: str, value: Any) -> None:
 
 def _configuration(
     operation: OperationDefinition,
+    sensitive_values: tuple[str, ...] = (),
 ) -> tuple[dict[str, Any], list[ReplayReplacement]]:
-    payload = operation.model_dump(mode="json", round_trip=True)
     slots: list[ReplayReplacement] = []
     values: dict[str, Any] = {}
 
-    def visit(value: Any, path: str, key: str = "", environment: bool = False) -> None:
+    def visit(
+        value: Any,
+        path: str,
+        key: str = "",
+        environment: bool = False,
+        provider_reference: bool = False,
+    ) -> None:
         secret = isinstance(value, (SecretStr, SecretBytes))
         raw = value.get_secret_value() if secret else value
-        credential_url = False
-        if isinstance(raw, str) and "://" in raw:
-            parsed = urlsplit(raw)
-            credential_url = bool(parsed.username or parsed.query or parsed.fragment)
-        provider_reference = path.startswith("/compute_provider/") and key in {
-            "auth_secret",
-            "secrets",
-            "image_registry_secret",
-        }
         if (
             path
             and raw is not None
@@ -117,7 +120,7 @@ def _configuration(
                 secret
                 or environment
                 or (credential_name(key) and not provider_reference)
-                or credential_url
+                or credential_url(raw)
             )
         ):
             slots.append(
@@ -127,8 +130,29 @@ def _configuration(
             )
             values[path] = raw.decode() if isinstance(raw, bytes) else raw
         elif isinstance(value, BaseModel):
+            env_owner = isinstance(value, (EnvironmentSpec, ModalComputeConfig))
+            sensitive_env = (
+                sensitive_environment(value.env, value.public_env) if env_owner else {}
+            )
             for name in type(value).model_fields:
-                visit(getattr(value, name), _pointer(path, name), name)
+                child_path = _pointer(path, name)
+                if env_owner and name == "env":
+                    for env_name, item in value.env.items():
+                        visit(
+                            item,
+                            _pointer(child_path, env_name),
+                            env_name,
+                            env_name in sensitive_env,
+                        )
+                else:
+                    visit(
+                        getattr(value, name),
+                        child_path,
+                        name,
+                        provider_reference=isinstance(value, ModalComputeConfig)
+                        and path == "/compute_provider/modal"
+                        and name in {"auth_secret", "secrets", "image_registry_secret"},
+                    )
         elif isinstance(value, dict):
             for name, item in value.items():
                 visit(item, _pointer(path, name), str(name), key == "env")
@@ -137,6 +161,7 @@ def _configuration(
                 visit(item, _pointer(path, index))
 
     visit(operation, "")
+    payload = operation.model_dump(mode="json", round_trip=True)
     restored = json.loads(json.dumps(payload, allow_nan=False))
     for pointer, value in values.items():
         set_pointer(restored, pointer, value)
@@ -144,6 +169,7 @@ def _configuration(
         msg = "Concrete operation does not roundtrip through JSON"
         raise ValueError(msg)
     redactor = CommandRecorder(operation)
+    redactor.add_sensitive_data(sensitive_values)
     redactor.add_sensitive_data(values)
 
     def redact_references(value: Any, path: str) -> None:
@@ -192,7 +218,9 @@ def build_replay_snapshot(
         if computed != unit.execution_spec_id:
             msg = "Unverified execution cache preimage"
             raise ValueError(msg)
-        configuration, replacements = _configuration(unit.operation)
+        configuration, replacements = _configuration(
+            unit.operation, unit.replay_sensitive_values
+        )
         identity = operation_identity(type(unit.operation))
         importable = False
         with suppress(ImportError, AttributeError, ValueError, TypeError):
@@ -200,6 +228,7 @@ def build_replay_snapshot(
                 f"{identity.module}:{identity.qualname}"
             ) is type(unit.operation)
         redactor = CommandRecorder(unit.operation)
+        redactor.add_sensitive_data(unit.replay_sensitive_values)
         return ReplaySnapshot(
             status="ready" if importable else "requires_operation_class",
             unavailable_reason=None,

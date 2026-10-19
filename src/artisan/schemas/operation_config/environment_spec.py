@@ -11,7 +11,9 @@ import os
 import shutil
 import socket
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+from artisan.utils.configuration_secrets import validate_public_env
 
 
 def _find_free_port() -> int:
@@ -27,11 +29,19 @@ class EnvironmentSpec(BaseModel):
 
     Attributes:
         env: Extra environment variables merged into the subprocess env.
+        public_env: Names whose nonsecret values may be recorded in diagnostics.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     env: dict[str, str] = Field(default_factory=dict)
+    public_env: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def _validate_public_env(self) -> EnvironmentSpec:
+        """Reject ambiguous or recognized-sensitive public env declarations."""
+        validate_public_env(self.env, self.public_env)
+        return self
 
     def wrap_command(self, cmd: list[str], _cwd: str | None = None) -> list[str]:
         """Wrap a command for this environment. Base returns unchanged."""

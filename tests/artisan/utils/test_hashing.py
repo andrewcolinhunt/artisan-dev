@@ -23,6 +23,7 @@ from artisan.utils.hashing import (
     compute_step_spec_id,
     compute_stream_digest,
     effective_config_payload,
+    serialize_params,
 )
 
 
@@ -708,3 +709,78 @@ class TestComputeStepSpecId:
         )
         assert spec1 == spec2
         assert len(spec1) == 32
+
+
+def test_public_env_annotations_preserve_effective_identity_but_values_do_not():
+    from artisan.operations.examples.data_generator import DataGenerator
+    from artisan.schemas.operation_config.compute import (
+        ComputeProvider,
+        ModalComputeConfig,
+    )
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.schemas.operation_config.environments import Environments
+
+    plain = DataGenerator(
+        environments=Environments(
+            local=LocalEnvironmentSpec(env={"ROOT": "/opt/application", "MODE": "fast"})
+        ),
+        compute_provider=ComputeProvider(
+            modal=ModalComputeConfig(env={"ROOT": "/opt/application"})
+        ),
+    )
+    annotated = plain.model_copy(deep=True)
+    annotated.environments.local.public_env = ("ROOT", "MODE")
+    annotated.compute_provider.modal.public_env = ("ROOT",)
+    assert effective_config_payload(plain) == effective_config_payload(annotated)
+    annotated.environments.local.public_env = ("MODE", "ROOT")
+    assert effective_config_payload(plain) == effective_config_payload(annotated)
+    annotated.environments.local.env["ROOT"] = "/other/application"
+    assert effective_config_payload(plain) != effective_config_payload(annotated)
+    annotated = plain.model_copy(deep=True)
+    annotated.compute_provider.modal.env["ROOT"] = "/other/application"
+    assert effective_config_payload(plain) != effective_config_payload(annotated)
+    annotated = plain.model_copy(deep=True)
+    annotated.environments.local.env["TOKEN"] = "actual-credential"
+    assert effective_config_payload(plain) != effective_config_payload(annotated)
+
+
+def test_public_env_named_parameter_remains_cache_affecting():
+    from pydantic import Field
+
+    from artisan.operations.examples.data_generator import DataGenerator
+
+    class AnnotationParameter(DataGenerator):
+        name = "hash_annotation_parameter"
+
+        class Params(DataGenerator.Params):
+            public_env: str = Field(
+                default="first",
+                description="An execution parameter, not an annotation.",
+            )
+
+        params: Params = Params()
+
+    one = AnnotationParameter()
+    two = AnnotationParameter(params={"public_env": "second"})
+    assert serialize_params(one)["public_env"] == "first"
+    assert compute_execution_spec_id(
+        one.name, {}, serialize_params(one), effective_config_payload(one)
+    ) != compute_execution_spec_id(
+        two.name, {}, serialize_params(two), effective_config_payload(two)
+    )
+
+
+def test_default_public_annotation_preserves_local_hash_preimage():
+    payload = effective_config_payload(_BareOp())
+    assert payload["environments"] == {
+        "active": "local",
+        "local": {"env": {}, "venv_path": None},
+        "docker": None,
+        "apptainer": None,
+        "pixi": None,
+    }
+    assert payload["compute_provider"] == {
+        "active": "local",
+        "local": {},
+        "modal": None,
+    }

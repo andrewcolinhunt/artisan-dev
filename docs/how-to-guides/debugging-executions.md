@@ -85,8 +85,8 @@ still clean up their temporary directories.
 
 ## Step 3: Supply omitted configuration explicitly
 
-Replay snapshots omit explicit environment values, credential parameters, secret
-fields, and credential-bearing URLs. Map each reported JSON pointer to a current
+Replay snapshots omit unclassified environment values, credential parameters,
+secret fields, and credential-bearing URLs. Map each reported JSON pointer to a current
 environment variable name:
 
 ```bash
@@ -106,6 +106,44 @@ Known replacement values are omitted from new framework diagnostic rows and
 error envelopes. Raw tool output and operation-produced files can contain what
 the operation writes; preserved files are outside that filtering guarantee.
 
+### Declare ordinary environment configuration
+
+Declare an environment value public only when it is ordinary configuration that
+may appear in persisted replay evidence and diagnostics:
+
+```python
+from artisan.schemas import DockerEnvironmentSpec
+
+environment = DockerEnvironmentSpec(
+    image="example/tool:fixed",
+    env={"APPLICATION_ROOT": "/opt/application"},
+    public_env=("APPLICATION_ROOT",),
+)
+```
+
+`public_env` names entries in the same object's `env` mapping. It is available
+on local, Docker, Apptainer, Pixi, and Modal compute configurations. Public values
+remain unchanged in replay configuration, including aliases in mount keys, and
+need no replacement. Environment values still affect cache identity; the
+annotation itself and its ordering do not.
+
+The default empty tuple protects every explicit env value. Credential names and
+credential-bearing URLs cannot be declared public. Typed secrets, known secret
+aliases, ambient credentials, and explicit replay replacements remain protected.
+A sensitive value inside a dictionary key still makes capture unavailable.
+Command flags can reveal sensitivity later, immediately before execution; they
+cannot retroactively protect an opaque credential incorrectly declared public
+in an earlier snapshot. Public declarations require trusted configuration authors.
+
+Modal `secrets`, `image_registry_secret`, and `auth_secret` remain provider object
+names or variable prefixes. Replay preserves these references and requires current
+runtime access; it never stores their resolved credentials. Rotation behind an
+unchanged reference is an external reproducibility limitation.
+
+Fresh replay snapshots retain replacement sensitivity even when a replacement
+also appears in a public field. Explicit replacements compute a new effective
+execution identity and run a fresh diagnostic attempt with cache skipping.
+
 ## Step 4: Handle changed code and dependencies
 
 Install the recorded operation and dependencies. Replay checks the concrete
@@ -114,6 +152,12 @@ Use `allow_code_change=True` or `--allow-code-change` to acknowledge detected
 code differences. Notebook classes can be supplied through
 `operation_class=MyOperation`; unverifiable code also needs explicit allowance.
 The worker checks against the selected driver code, even with this allowance.
+
+An unavailable historical snapshot stays unavailable. Older ready snapshots
+that lack the new `public_env` fields fail exact configuration validation;
+`allow_code_change` does not authorize silently adding defaults. Keep such
+evidence paired with its historical environment, or create a new ordinary
+execution under the current configuration. Existing stores are not rewritten.
 
 An external lifecycle runner requires its configured Python `RunnerBase`
 instance. Pass `step_runner="local"` or `--local-runner` to move that lifecycle

@@ -356,3 +356,47 @@ class TestMasterPortInjection:
         joined = " ".join(result)
         assert "MASTER_PORT" not in joined
         assert "MASTER_ADDR" not in joined
+
+
+@pytest.mark.parametrize(
+    "public_env", [("",), ("ROOT", "ROOT"), ("MISSING",), (17,), "ROOT"]
+)
+def test_public_env_rejects_invalid_names_without_input_values(public_env):
+    with pytest.raises(ValueError) as caught:
+        LocalEnvironmentSpec(env={"ROOT": "hidden-input-value"}, public_env=public_env)
+    assert "hidden-input-value" not in str(caught.value)
+    assert "hidden-input-value" not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("API_KEY", "hidden-credential"),
+        ("ROOT", "https://user:hidden-credential@host/path"),
+        ("ROOT", "https://:hidden-credential@host/path"),
+        ("ROOT", "https://host/path?token=hidden-credential"),
+    ],
+)
+def test_public_env_rejects_known_credentials_safely(name, value):
+    with pytest.raises(ValueError) as caught:
+        LocalEnvironmentSpec(env={name: value}, public_env=(name,))
+    assert "hidden-credential" not in str(caught.value)
+    assert "hidden-credential" not in repr(caught.value)
+
+
+def test_public_env_does_not_change_subprocess_values():
+    spec = LocalEnvironmentSpec(env={"ROOT": "/opt/application"}, public_env=("ROOT",))
+    assert spec.prepare_env()["ROOT"] == "/opt/application"
+    assert LocalEnvironmentSpec().public_env == ()
+    assert LocalEnvironmentSpec.model_validate_json(spec.model_dump_json()) == spec
+
+
+def test_copied_public_env_is_revalidated_before_command_preparation():
+    from artisan.execution.recording.commands import CommandRecorder
+
+    spec = LocalEnvironmentSpec(env={"TOKEN": "copy-sensitive"}).model_copy(
+        update={"public_env": ("TOKEN",)}
+    )
+    with pytest.raises(ValueError) as caught:
+        CommandRecorder().prepare(spec, ["tool"], ())
+    assert "copy-sensitive" not in repr(caught.value)
