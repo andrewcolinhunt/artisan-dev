@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import multiprocessing
+import os
 import threading
 import time
 import warnings
 from concurrent.futures import Future, ProcessPoolExecutor
 from concurrent.futures.process import BrokenProcessPool
 from contextlib import suppress
+from multiprocessing.connection import wait
 from typing import Any
 
 from artisan.execution.compute.routing import routes_to_endpoint
@@ -248,30 +250,47 @@ class LocalLifecycleRouter(LifecycleRouter):
 def _terminate_process_pool(executor: ProcessPoolExecutor) -> bool:
     """Terminate owned workers and report whether every process exited."""
     processes_by_pid = getattr(executor, "_processes", None)
-    processes = () if processes_by_pid is None else tuple(processes_by_pid.values())
-    terminate_workers = getattr(type(executor), "terminate_workers", None)
-    if callable(terminate_workers):
-        terminate_workers(executor)
-    else:
-        # Python 3.12 has no public termination API. These are the exact processes
-        # owned by this executor; shutdown alone cannot stop an in-flight call.
-        try:
-            for process in processes:
-                try:
-                    if process.is_alive():
-                        process.terminate()
-                except (ProcessLookupError, ValueError):
-                    pass
-        finally:
-            executor.shutdown(wait=False, cancel_futures=True)
-
-    for process in processes:
-        with suppress(AssertionError, ProcessLookupError, ValueError):
-            process.join(timeout=1.0)
-    try:
-        return all(not process.is_alive() for process in processes)
-    except (AssertionError, ProcessLookupError, ValueError):
+    if processes_by_pid is None:
         return False
+    processes = tuple(processes_by_pid.values())
+    manager = getattr(executor, "_executor_manager_thread", None)
+    sentinels: list[int] = []
+    try:
+        for process in processes:
+            with suppress(OSError, ValueError):
+                sentinels.append(os.dup(process.sentinel))
+        terminate_workers = getattr(type(executor), "terminate_workers", None)
+        if callable(terminate_workers):
+            terminate_workers(executor)
+        else:
+            # Python 3.12 has no public termination API. Only signal workers
+            # owned by this executor; its manager remains responsible for reaping.
+            try:
+                for process in processes:
+                    with suppress(ProcessLookupError, ValueError):
+                        process.terminate()
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+
+        if len(sentinels) != len(processes):
+            return False
+        # Concurrent Process.join()/is_alive() can miss another thread's waitpid
+        # result before it publishes exitcode. Sentinel readiness cannot be reaped.
+        pending = set(sentinels)
+        deadline = time.monotonic() + 1.0
+        while pending:
+            ready = wait(pending, timeout=max(0.0, deadline - time.monotonic()))
+            if not ready:
+                return False
+            pending.difference_update(ready)
+        if manager is not None:
+            manager.join(timeout=max(0.0, deadline - time.monotonic()))
+        return True
+    except (OSError, ValueError):
+        return False
+    finally:
+        for sentinel in sentinels:
+            os.close(sentinel)
 
 
 def _collect_batch_futures(

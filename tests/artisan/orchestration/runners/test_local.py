@@ -209,12 +209,13 @@ class TestLocalRunnerValidateOperation:
 
 
 class TestLocalLifecycleRouter:
-    def test_cancel_confirms_only_after_owned_process_exits(self) -> None:
+    @patch("artisan.orchestration.runners.local._terminate_process_pool")
+    def test_cancel_confirms_only_after_owned_process_exits(
+        self, terminate_pool: MagicMock
+    ) -> None:
         handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
         executor = MagicMock()
-        process = MagicMock()
-        process.is_alive.side_effect = [True, False]
-        executor._processes = {123: process}
+        terminate_pool.return_value = True
         handle._dispatch_started = True
         handle._executor = executor
 
@@ -226,15 +227,15 @@ class TestLocalLifecycleRouter:
         confirmed = handle.cancel()
 
         assert confirmed.status == CancellationStatus.CONFIRMED
-        process.terminate.assert_called_once_with()
-        process.join.assert_called_once()
+        terminate_pool.assert_called_once_with(executor)
 
-    def test_cancel_is_unknown_when_owned_process_remains_alive(self) -> None:
+    @patch("artisan.orchestration.runners.local._terminate_process_pool")
+    def test_cancel_is_unknown_when_owned_process_remains_alive(
+        self, terminate_pool: MagicMock
+    ) -> None:
         handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
         executor = MagicMock()
-        process = MagicMock()
-        process.is_alive.return_value = True
-        executor._processes = {123: process}
+        terminate_pool.return_value = False
         handle._dispatch_started = True
         handle._executor = executor
 
@@ -246,12 +247,13 @@ class TestLocalLifecycleRouter:
 
         assert outcome.status == CancellationStatus.UNKNOWN
 
-    def test_local_exit_without_remote_acknowledgement_is_unknown(self) -> None:
+    @patch("artisan.orchestration.runners.local._terminate_process_pool")
+    def test_local_exit_without_remote_acknowledgement_is_unknown(
+        self, terminate_pool: MagicMock
+    ) -> None:
         handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
         executor = MagicMock()
-        process = MagicMock()
-        process.is_alive.side_effect = [True, False]
-        executor._processes = {123: process}
+        terminate_pool.return_value = True
         handle._dispatch_started = True
         handle._executor = executor
         handle._requires_remote_cancellation_evidence = True
