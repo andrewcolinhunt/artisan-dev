@@ -22,7 +22,10 @@ def test_docker_working_directory(tmp_path: Path) -> None:
     if not image or shutil.which("docker") is None:
         pytest.skip("Set ARTISAN_DOCKER_CWD_TEST_IMAGE to an existing image with sh")
     inspected = subprocess.run(
-        ["docker", "image", "inspect", image], capture_output=True, text=True, check=True
+        ["docker", "image", "inspect", image],
+        capture_output=True,
+        text=True,
+        check=True,
     )
     declaration = json.loads(inspected.stdout)[0]
     assert declaration["Config"]["WorkingDir"], "Use an image with a declared WORKDIR"
