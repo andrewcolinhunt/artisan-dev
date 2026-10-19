@@ -9,8 +9,6 @@ from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 from unittest.mock import MagicMock, patch
 
-import pytest
-
 from artisan.orchestration.runners.local import (
     LocalLifecycleRouter,
     _terminate_process_pool,
@@ -53,15 +51,15 @@ class TestLocalLifecycleRouterCancel:
 
         requested = handle.cancel()
         assert handle._done.wait(timeout=2)
-        rejected = handle.cancel()
+        confirmed = handle.cancel()
         results = handle.collect()
 
         assert requested.status == CancellationStatus.REQUESTED
-        assert rejected.status == CancellationStatus.REJECTED
+        assert confirmed.status == CancellationStatus.CONFIRMED
         assert len(results) == 1
         assert results[0].success is False
         assert "CancelledError" in results[0].error
-        executor.shutdown.assert_called_once_with(wait=True, cancel_futures=True)
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_cancel_terminates_in_flight_worker(
@@ -76,27 +74,22 @@ class TestLocalLifecycleRouterCancel:
         handle.dispatch([MagicMock()], MagicMock())
         _wait_until(lambda: executor.submit.called)
 
-        with (
-            patch(
-                "artisan.orchestration.runners.local.time.monotonic",
-                side_effect=[0.0, 2.0],
-            ),
-            patch(
-                "artisan.orchestration.runners.local._terminate_process_pool",
-                return_value=True,
-            ) as terminate_pool,
-        ):
-            requested = handle.cancel()
-            confirmed = handle.cancel()
-        assert running.cancelled() is False
-        terminate_pool.assert_called_once_with(executor)
-        assert requested.status == CancellationStatus.REQUESTED
-        assert confirmed.status == CancellationStatus.CONFIRMED
-        running.set_exception(BrokenProcessPool("worker terminated"))
-        assert handle._done.wait(timeout=2)
+        def terminate(*args, **kwargs):
+            running.set_exception(BrokenProcessPool("worker terminated"))
+            return True
 
-        with pytest.raises(BrokenProcessPool, match="worker terminated"):
-            handle.collect()
+        with patch(
+            "artisan.orchestration.runners.local._terminate_process_pool",
+            side_effect=terminate,
+        ) as terminate_pool:
+            requested = handle.cancel()
+            assert requested.status == CancellationStatus.REQUESTED
+            assert running.cancelled() is False
+            assert handle._done.wait(timeout=3)
+            confirmed = handle.cancel()
+        terminate_pool.assert_called_once()
+        assert confirmed.status == CancellationStatus.CONFIRMED
+        assert handle.collect()[0].success is False
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_run_observes_delayed_cancel_event(
@@ -111,7 +104,7 @@ class TestLocalLifecycleRouterCancel:
         cancel_event = threading.Event()
 
         def _cancel_then_finish() -> None:
-            time.sleep(0.05)
+            _wait_until(lambda: executor.submit.called)
             cancel_event.set()
             time.sleep(0.15)
             running.set_result([_success()])

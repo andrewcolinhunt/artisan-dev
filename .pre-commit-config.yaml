@@ -84,7 +84,7 @@ repos:
           - httpx
           - modal==1.4.1
           - pytest
-          - pydantic
+          - pydantic==2.12.5
           - polars>=1.30.0
           - pydantic-settings
           - python-dotenv

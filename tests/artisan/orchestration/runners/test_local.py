@@ -209,85 +209,62 @@ class TestLocalRunnerValidateOperation:
 
 
 class TestLocalLifecycleRouter:
-    @patch("artisan.orchestration.runners.local._terminate_process_pool")
-    def test_cancel_confirms_only_after_owned_process_exits(
-        self, terminate_pool: MagicMock
-    ) -> None:
+    def test_cancel_confirms_only_after_worker_and_owner_proof(self) -> None:
         handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
-        executor = MagicMock()
-        terminate_pool.return_value = True
+        ownership = MagicMock(closed=True)
+        ownership.request_cancel.return_value = True
+        ownership.acknowledgement.return_value = CancellationAcknowledgement(
+            CancellationStatus.CONFIRMED, "Native workers and managed commands stopped"
+        )
         handle._dispatch_started = True
-        handle._executor = executor
+        handle._scope_expected = True
+        handle._ownership = ownership
+        assert handle.cancel().status == CancellationStatus.REQUESTED
+        handle._done.set()
+        assert handle.cancel().status == CancellationStatus.CONFIRMED
+        ownership.request_cancel.assert_called_once()
 
-        requested = handle.cancel()
-        assert requested.status == CancellationStatus.REQUESTED
-        assert handle._cancel_requested_at is not None
-        handle._cancel_requested_at = time.monotonic() - 2
-
-        confirmed = handle.cancel()
-
-        assert confirmed.status == CancellationStatus.CONFIRMED
-        terminate_pool.assert_called_once_with(executor)
-
-    @patch("artisan.orchestration.runners.local._terminate_process_pool")
-    def test_cancel_is_unknown_when_owned_process_remains_alive(
-        self, terminate_pool: MagicMock
-    ) -> None:
+    def test_cancel_is_unknown_when_either_ownership_proof_is_missing(self) -> None:
         handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
-        executor = MagicMock()
-        terminate_pool.return_value = False
         handle._dispatch_started = True
-        handle._executor = executor
+        handle._scope_expected = True
+        handle._ownership = MagicMock(
+            closed=False, reason="Native worker remains alive"
+        )
+        assert handle.cancel().status == CancellationStatus.REQUESTED
+        handle._done.set()
+        assert handle.cancel().status == CancellationStatus.UNKNOWN
 
-        handle.cancel()
-        assert handle._cancel_requested_at is not None
-        handle._cancel_requested_at = time.monotonic() - 2
-
+    def test_local_exit_without_remote_acknowledgement_is_unknown(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        handle._dispatch_started = True
+        handle._scope_expected = True
+        handle._ownership = MagicMock(closed=True)
+        handle._remote_indices = [0]
+        handle._results = [UnitResult(False, "cancelled", 1, [])]
+        assert handle.cancel().status == CancellationStatus.REQUESTED
+        handle._done.set()
         outcome = handle.cancel()
-
         assert outcome.status == CancellationStatus.UNKNOWN
-
-    @patch("artisan.orchestration.runners.local._terminate_process_pool")
-    def test_local_exit_without_remote_acknowledgement_is_unknown(
-        self, terminate_pool: MagicMock
-    ) -> None:
-        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
-        executor = MagicMock()
-        terminate_pool.return_value = True
-        handle._dispatch_started = True
-        handle._executor = executor
-        handle._requires_remote_cancellation_evidence = True
-
-        handle.cancel()
-        assert handle._cancel_requested_at is not None
-        handle._cancel_requested_at = time.monotonic() - 2
-
-        outcome = handle.cancel()
-
-        assert outcome.status == CancellationStatus.UNKNOWN
-        assert outcome.message is not None
         assert "remote cancellation evidence" in outcome.message
 
     def test_remote_acknowledgement_survives_local_completion_race(self) -> None:
         acknowledgement = CancellationAcknowledgement(
-            CancellationStatus.CONFIRMED,
-            "named endpoint call stopped",
+            CancellationStatus.CONFIRMED, "named endpoint call stopped"
         )
         handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
         handle._dispatch_started = True
+        handle._scope_expected = True
         handle._cancel_requested = True
-        handle._requires_remote_cancellation_evidence = True
+        handle._ownership = MagicMock(closed=True)
+        handle._ownership.acknowledgement.return_value = acknowledgement
+        handle._remote_indices = [0]
         handle._results = [
             UnitResult(
-                success=False,
-                error="cancelled",
-                item_count=1,
-                execution_run_ids=[],
-                cancellation_acknowledgement=acknowledgement,
+                False, "cancelled", 1, [], cancellation_acknowledgement=acknowledgement
             )
         ]
         handle._done.set()
-
         assert handle.cancel() == acknowledgement
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
@@ -345,7 +322,7 @@ class TestLocalLifecycleRouter:
             units[:2],
             units[2:],
         ]
-        executor.shutdown.assert_called_once_with(wait=True, cancel_futures=False)
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=False)
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_partial_submission_failure_preserves_completed_prefix(
@@ -459,3 +436,257 @@ class TestLocalLifecycleRouter:
             assert handle.run([], MagicMock()) == []
 
         mock_executor_class.assert_not_called()
+
+
+def test_pending_owner_report_does_not_drop_later_cancellation_deadline():
+    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.utils.command_supervisor import OwnershipOutcome
+
+    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+        ownership = _NativePoolOwnership()
+    ownership._command_outcome = OwnershipOutcome("pending")
+    ownership.deadline = time.monotonic() + 10
+    deadline = time.monotonic() + 0.2
+    assert ownership.request_cancel(deadline)
+    start.return_value.request_close.assert_called_once_with(deadline)
+
+
+def test_cancellation_shortens_deadline_during_ordinary_owner_finish():
+    import threading
+
+    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.utils.command_supervisor import OwnershipOutcome
+
+    finishing = threading.Event()
+    release = threading.Event()
+    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+        owner = _NativePoolOwnership()
+    supervisor = start.return_value
+    supervisor.request_finish.side_effect = lambda deadline: finishing.set()
+    supervisor.poll.side_effect = lambda: OwnershipOutcome(
+        "closed" if release.is_set() else "pending"
+    )
+    supervisor.finish.return_value = OwnershipOutcome("closed")
+    results = []
+    thread = threading.Thread(target=lambda: results.append(owner.finish()))
+    thread.start()
+    try:
+        assert finishing.wait(2)
+        deadline = time.monotonic() + 0.5
+        assert owner.request_cancel(deadline)
+        supervisor.request_close.assert_called_once_with(deadline)
+        release.set()
+        thread.join(2)
+        assert not thread.is_alive()
+    finally:
+        release.set()
+        thread.join(2)
+    assert results == [True]
+    assert owner.deadline == deadline
+    supervisor.finish.assert_called_once_with(deadline)
+    assert owner.acknowledgement().status == CancellationStatus.CONFIRMED
+
+
+def test_final_unknown_keeps_sealed_sibling_results_but_blocks_step_acceptance():
+    completed = UnitResult(True, None, 1, ["already-sealed-run"])
+    future = Future()
+    future.set_result([completed])
+    with (
+        patch(
+            "artisan.orchestration.runners.local._NativePoolOwnership"
+        ) as owner_class,
+        patch(
+            "artisan.orchestration.runners.local.ProcessPoolExecutor"
+        ) as executor_class,
+    ):
+        owner = owner_class.return_value
+        owner.finish.return_value = False
+        owner.reason = "command ownership unknown"
+        executor_class.return_value.submit.return_value = future
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        results = handle.run([MagicMock()], MagicMock())
+    assert results == [completed]
+    assert handle.cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
+
+
+def test_already_failed_pool_future_still_triggers_owner_cleanup():
+    from concurrent.futures.process import BrokenProcessPool
+
+    from artisan.orchestration.runners.local import _collect_batch_futures
+
+    future = Future()
+    future.set_exception(BrokenProcessPool("worker lost"))
+    owner = MagicMock()
+    owner.supervisor.attachment = {"secret": "private-test-capability"}
+    result = _collect_batch_futures([[MagicMock()]], [future], owner)
+    owner.request_failure_cleanup.assert_called_once()
+    assert result[0].success is False
+
+
+def test_bootstrap_future_error_cannot_persist_owner_capability():
+    from artisan.orchestration.runners.local import _collect_batch_futures
+
+    future = Future()
+    future.set_exception(ValueError("private-test-capability"))
+    owner = MagicMock()
+    owner.supervisor.attachment = {"secret": "private-test-capability"}
+    result = _collect_batch_futures([[MagicMock()]], [future], owner)
+    assert "private-test-capability" not in result[0].error
+    assert "<redacted>" in result[0].error
+
+
+def test_submission_failure_starts_cleanup_of_prior_work():
+    handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+    handle._executor = MagicMock()
+    handle._ownership = MagicMock()
+    handle._ownership.supervisor.attachment = {"secret": "private-test-capability"}
+    running = Future()
+    running.set_running_or_notify_cancel()
+    handle._executor.submit.side_effect = [running, OSError("cannot submit")]
+    futures = handle._submit_batches([[MagicMock()], [MagicMock()]], MagicMock())
+    handle._ownership.request_failure_cleanup.assert_called_once()
+    assert len(futures) == 2
+    assert futures[0] is running
+    assert futures[1].result()[0].success is False
+
+
+def test_cancellation_reaches_owner_during_blocked_serialization():
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+    handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+    handle._dispatch_started = True
+    handle._scope_expected = True
+    handle._executor = MagicMock()
+    handle._ownership = MagicMock()
+    handle._ownership.supervisor.attachment = {"secret": "private-test-capability"}
+
+    def serialize(*args):
+        entered.set()
+        assert release.wait(3)
+
+    with patch(
+        "artisan.orchestration.runners.local.serialize_process_call",
+        side_effect=serialize,
+    ):
+        thread = threading.Thread(
+            target=handle._submit_batches, args=([[MagicMock()]], MagicMock())
+        )
+        thread.start()
+        try:
+            assert entered.wait(2)
+            started = time.monotonic()
+            assert handle.cancel().status == CancellationStatus.REQUESTED
+            assert time.monotonic() - started < 0.2
+            handle._ownership.request_cancel.assert_called_once()
+        finally:
+            release.set()
+            thread.join(3)
+        assert not thread.is_alive()
+    handle._executor.submit.assert_not_called()
+
+
+def test_pending_dispatch_cannot_confirm_empty_workers_or_block_on_shutdown():
+    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.utils.command_supervisor import OwnershipOutcome
+
+    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+        owner = _NativePoolOwnership()
+    start.return_value.poll.return_value = OwnershipOutcome("closed")
+    start.return_value.finish.return_value = OwnershipOutcome("closed")
+    assert owner.begin_dispatch()
+    owner.executor = MagicMock()
+    owner.executor._processes = {}
+    assert not owner._workers_exited()
+    deadline = time.monotonic() + 0.05
+    owner.request_cancel(deadline)
+    assert owner.finish(failed=True) is False
+    assert time.monotonic() - deadline < 0.15
+    owner.executor.shutdown.assert_not_called()
+    assert owner.acknowledgement().status == CancellationStatus.UNKNOWN
+    owner.end_dispatch()
+    owner.executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+    assert owner.acknowledgement().status == CancellationStatus.UNKNOWN
+    assert owner.begin_dispatch() is False
+
+
+def test_cancellation_reaches_owner_during_blocked_pool_construction():
+    import threading
+
+    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.utils.command_supervisor import OwnershipOutcome
+
+    entered = threading.Event()
+    release = threading.Event()
+    handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+    handle._dispatch_started = True
+    handle._scope_expected = True
+    executor = MagicMock()
+    executor._processes = {}
+
+    def construct(**kwargs):
+        entered.set()
+        assert release.wait(3)
+        return executor
+
+    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+        owner = _NativePoolOwnership()
+    start.return_value.poll.return_value = OwnershipOutcome("closed")
+    start.return_value.finish.return_value = OwnershipOutcome("closed")
+    with (
+        patch(
+            "artisan.orchestration.runners.local._NativePoolOwnership",
+            return_value=owner,
+        ),
+        patch(
+            "artisan.orchestration.runners.local.ProcessPoolExecutor",
+            side_effect=construct,
+        ),
+    ):
+        thread = threading.Thread(
+            target=handle._execute_batches, args=([[MagicMock()]], MagicMock())
+        )
+        thread.start()
+        try:
+            assert entered.wait(2)
+            started = time.monotonic()
+            assert handle.cancel().status == CancellationStatus.REQUESTED
+            assert time.monotonic() - started < 0.2
+            start.return_value.request_close.assert_called_once()
+            assert not owner._workers_exited()
+        finally:
+            release.set()
+            thread.join(3)
+        assert not thread.is_alive()
+    executor.submit.assert_not_called()
+    assert owner.acknowledgement().status == CancellationStatus.CONFIRMED
+
+
+def test_late_worker_dispatch_keeps_original_deadline_and_exact_handles():
+    import os
+
+    from artisan.orchestration.runners.local import _NativePoolOwnership
+
+    with patch("artisan.orchestration.runners.local.CommandSupervisor.start"):
+        owner = _NativePoolOwnership()
+    assert owner.begin_dispatch()
+    owner.deadline = time.monotonic() - 1
+    owner._finished = True
+    read_fd, write_fd = os.pipe()
+    worker = MagicMock(sentinel=read_fd)
+    owner.executor = MagicMock()
+    owner.executor._processes = {123: worker}
+    try:
+        with patch(
+            "artisan.orchestration.runners.local._terminate_process_pool"
+        ) as terminate:
+            owner.end_dispatch()
+        assert terminate.call_args.kwargs["deadline"] == owner.deadline
+        assert terminate.call_args.kwargs["processes"] == (worker,)
+        assert len(terminate.call_args.kwargs["sentinels"]) == 1
+        assert owner._sentinels == {}
+        assert not owner.closed
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)

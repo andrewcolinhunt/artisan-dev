@@ -97,6 +97,14 @@ class LifecycleRouter(ABC):
         ``collect()`` must join any provider-owned collection thread.
         """
 
+    def _set_cancellation_deadline(self, deadline: float) -> None:
+        """Supply the absolute cancellation budget to native owners.
+
+        External providers retain their existing cancellation contract. Native
+        owners override this hook and may shorten, but never extend, a deadline.
+        """
+        return
+
     # ------------------------------------------------------------------
     # Concrete — shared across all handles
     # ------------------------------------------------------------------
@@ -150,50 +158,48 @@ class LifecycleRouter(ABC):
         ``cancel()``.
         """
         self.dispatch(units, runtime_env)
-        cancellation_started: float | None = None
+        cancellation_deadline: float | None = None
         cancellation_resolved = False
-        while not self.is_done():
+        while True:
+            # Observe completion before cancellation so a final polling boundary
+            # cannot discard a request that the provider must reconcile.
+            done = self.is_done()
             if (
                 cancel_event is not None
                 and cancel_event.is_set()
                 and not cancellation_resolved
             ):
-                if cancellation_started is None:
+                if cancellation_deadline is None:
+                    cancellation_deadline = (
+                        time.monotonic() + cancellation_confirmation_timeout
+                    )
+                    self._set_cancellation_deadline(cancellation_deadline)
                     self._write_cancel_sentinel(units, runtime_env)
-                    cancellation_started = time.monotonic()
                 acknowledgement = self._validated_cancellation_evidence(self.cancel())
                 self._cancellation_acknowledgement = acknowledgement
                 if acknowledgement.status == CancellationStatus.REQUESTED:
-                    assert cancellation_started is not None
-                    if (
-                        time.monotonic() - cancellation_started
-                        >= cancellation_confirmation_timeout
-                    ):
-                        self._cancellation_acknowledgement = (
-                            CancellationAcknowledgement(
-                                CancellationStatus.UNKNOWN,
-                                "Cancellation confirmation timed out",
-                            )
+                    if done or time.monotonic() >= cancellation_deadline:
+                        self._cancellation_acknowledgement = CancellationAcknowledgement(
+                            CancellationStatus.UNKNOWN,
+                            (
+                                "Lifecycle work completed without final cancellation evidence"
+                                if done
+                                else "Cancellation confirmation timed out"
+                            ),
                         )
                         break
                 elif acknowledgement.status == CancellationStatus.UNKNOWN:
                     break
                 else:
                     cancellation_resolved = True
-            time.sleep(0.1)
-        if (
-            self._cancellation_acknowledgement is not None
-            and self._cancellation_acknowledgement.status
-            == CancellationStatus.REQUESTED
-            and self.is_done()
-        ):
-            final_evidence = self._validated_cancellation_evidence(self.cancel())
-            if final_evidence.status == CancellationStatus.REQUESTED:
-                final_evidence = CancellationAcknowledgement(
-                    CancellationStatus.UNKNOWN,
-                    "Lifecycle work completed without final cancellation evidence",
-                )
-            self._cancellation_acknowledgement = final_evidence
+            if done:
+                break
+            remaining = (
+                max(0.0, cancellation_deadline - time.monotonic())
+                if cancellation_deadline is not None and not cancellation_resolved
+                else 0.1
+            )
+            time.sleep(min(0.1, remaining))
         if (
             self._cancellation_acknowledgement is not None
             and self._cancellation_acknowledgement.status == CancellationStatus.UNKNOWN

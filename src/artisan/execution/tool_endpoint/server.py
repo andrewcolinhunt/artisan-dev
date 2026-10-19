@@ -56,6 +56,13 @@ from artisan.registry.resolve import operation_identity
 from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.specs.input_models import ExecuteInput
+from artisan.utils.command_supervisor import (
+    CommandOwnershipError,
+    attachment_sensitive_values,
+    check_command_scope,
+    close_command_scope,
+    request_lease,
+)
 
 _INPUT_RESOLUTION_ERRORS: tuple[type[BaseException], ...] = (
     ValueError,
@@ -93,8 +100,10 @@ def run_tool_request(
     input files and the tool log; the manifest carries a sanitized log tail.
 
     Opt-in diagnostics capture inputs, outputs, and the full log separately,
-    including on failure. Clean up the workspace after delivery or capture,
-    and attach fresh request-wide command evidence to ordinary outcomes.
+    including on failure. Require managed command closure before reading or
+    delivering outputs and deleting the workspace. Retain the workspace and
+    return metadata only when cleanup is uncertain. Attach fresh request-wide
+    command evidence to ordinary outcomes.
 
     Args:
         op_cls: Resolved operation class to execute.
@@ -111,9 +120,15 @@ def run_tool_request(
         EndpointTransportError: Even the minimal failure manifest exceeds
             the control payload limit.
     """
-    with capture_commands(location="endpoint"), invocation_scope():
+    # A rejected overlapping request must not replace the active scope's observer.
+    with (
+        capture_commands(location="endpoint", bind_scope=False) as commands,
+        invocation_scope(),
+    ):
         try:
-            result = _run_tool_request(op_cls, request, data_policy)
+            with request_lease():
+                commands.add_sensitive_data(attachment_sensitive_values())
+                result = _run_tool_request(op_cls, request, data_policy)
         except Exception as exc:
             result = _error_result(
                 op_cls,
@@ -160,6 +175,7 @@ def _run_tool_request(
         recorder = current_recorder()
         assert recorder is not None
         recorder.add_operation(op)
+        check_command_scope()
     except ValidationError:
         # Direct callers bypass /submit, and custom validators can reject
         # schema-valid values. No workspace exists yet to clean up.
@@ -194,6 +210,7 @@ def _run_tool_request(
             "io",
             "RETRY_LATER",
         )
+    quiescent = False
     try:
         try:
             result = _execute_job(op, request, policy, job_root, actual_contract)
@@ -205,13 +222,27 @@ def _run_tool_request(
                 "compute",
                 "REPORT_TO_USER",
             )
+        try:
+            quiescent = close_command_scope()
+        except CommandOwnershipError:
+            quiescent = False
+        if not quiescent:
+            result = _cleanup_unknown(
+                op_cls, result.manifest.error.message if result.manifest.error else None
+            )
+            if request.debug_capture:
+                result.manifest.debug_capture = DebugCaptureManifest(
+                    status="unavailable",
+                    error="managed command cleanup is unknown; workspace retained",
+                )
         result.manifest.command_contract = actual_contract
         result.manifest.operation_identity = actual_contract.operation_identity
-        if request.debug_capture:
+        if quiescent and request.debug_capture:
             result = _capture_debug(result, request, policy, job_root)
         return result
     finally:
-        shutil.rmtree(job_root, ignore_errors=True)
+        if quiescent:
+            shutil.rmtree(job_root, ignore_errors=True)
 
 
 def _execute_job(
@@ -295,6 +326,8 @@ def _execute_job(
             stream_output=True,
         )
     except Exception as exc:
+        if not close_command_scope(exc):
+            return _cleanup_unknown(op_cls, str(exc))
         return _error_result(
             op_cls,
             ErrorCode.OP_EXECUTE_FAILED,
@@ -304,6 +337,8 @@ def _execute_job(
             log_tail=_log_tail(log_path),
         )
 
+    if not close_command_scope():
+        return _cleanup_unknown(op_cls)
     names: list[str] = []
     try:
         names = _list_outputs(outputs_dir)
@@ -383,6 +418,23 @@ def _execute_job(
         )
 
     return WorkerResult(manifest=manifest, output_tar=output_tar)
+
+
+def _cleanup_unknown(
+    op_cls: type[OperationDefinition], primary_error: str | None = None
+) -> WorkerResult:
+    """Return metadata only when request-owned files may still be changing."""
+    note = "Could not prove managed command cleanup; workspace retained"
+    message = primary_error or note
+    if not message.endswith(note):
+        message = f"{message}\n{note}"
+    return _error_result(
+        op_cls,
+        ErrorCode.OP_EXECUTE_FAILED,
+        message,
+        "compute",
+        "REPORT_TO_USER",
+    )
 
 
 def _control_size(manifest: ToolManifest) -> int:

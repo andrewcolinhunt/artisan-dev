@@ -82,7 +82,7 @@ jobs:
   command-supervisor-proof:
     name: Command ownership proof (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 20
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
@@ -167,6 +167,28 @@ jobs:
             tests/artisan/utils/test_command_supervisor.py -q -ra \
             --junitxml="$PROOF_RESULTS/junit.xml" \
             --basetemp="$PROOF_RESULTS/traces" 2>&1 | tee "$PROOF_RESULTS/pytest.log"
+
+      - name: Verify production command ownership and cancellation
+        timeout-minutes: 10
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
+            tests/artisan/utils/test_managed_command_runtime.py \
+            tests/artisan/utils/test_command_owner_failures.py \
+            tests/artisan/utils/test_command_diagnostics.py \
+            tests/artisan/utils/test_external_tools.py \
+            tests/artisan/execution/test_command_ownership.py \
+            tests/artisan/execution/tool_endpoint/test_request_ownership.py \
+            tests/artisan/execution/recording/test_commands.py \
+            tests/artisan/orchestration/runners/test_local.py \
+            tests/artisan/orchestration/runners/test_local_process_exit.py \
+            tests/artisan/orchestration/runners/test_lifecycle_router_cancel.py \
+            tests/artisan/orchestration/engine/test_lifecycle_router.py \
+            tests/artisan/orchestration/engine/test_curator_cancellation.py \
+            tests/artisan/orchestration/test_cancellation_persistence.py \
+            tests/integration/test_managed_command_cancellation.py \
+            -q -ra --junitxml="$PROOF_RESULTS/production-junit.xml" \
+            --basetemp="$PROOF_RESULTS/production-traces" \
+            2>&1 | tee "$PROOF_RESULTS/production-pytest.log"
 
       - name: Preserve native proof evidence
         if: always()

@@ -468,6 +468,9 @@ signal.pause()
         worker.stdin.flush()
         assert read_until(worker.stdout.fileno(), newline=True) == b"ready\n"
         worker.kill()
+        # This worker has no descendants; retire its exact identity after the
+        # deliberate kill instead of issuing a second group signal at teardown.
+        assert worker.wait(timeout=3) == -signal.SIGKILL
         if before_launch:
             assert proof.control()["commands"] == []
         else:

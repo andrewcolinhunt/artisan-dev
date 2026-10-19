@@ -10,10 +10,14 @@ from __future__ import annotations
 import os
 import shutil
 import socket
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from artisan.utils.configuration_secrets import validate_public_env
+from artisan.utils.configuration_secrets import (
+    strip_command_attachment,
+    validate_public_env,
+)
 
 
 def _find_free_port() -> int:
@@ -32,10 +36,17 @@ class EnvironmentSpec(BaseModel):
         public_env: Names whose nonsecret values may be recorded in diagnostics.
     """
 
+    cancellation_scope: ClassVar[Literal["process_group", "external"]] = "external"
+
     model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
     env: dict[str, str] = Field(default_factory=dict)
     public_env: tuple[str, ...] = ()
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _exclude_command_attachment(cls, value: Any) -> Any:
+        return strip_command_attachment(value)
 
     @model_validator(mode="after")
     def _validate_public_env(self) -> EnvironmentSpec:
@@ -66,6 +77,8 @@ class LocalEnvironmentSpec(EnvironmentSpec):
         venv_path: Path to a virtualenv root. When set, the venv's bin/
             directory is prepended to PATH.
     """
+
+    cancellation_scope: ClassVar[Literal["process_group", "external"]] = "process_group"
 
     venv_path: str | None = None
 

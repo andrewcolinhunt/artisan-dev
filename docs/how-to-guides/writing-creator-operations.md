@@ -63,11 +63,18 @@ class ScaleData(OperationDefinition):
     params: Params = Params()
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {"datasets": PerArtifact([
-            {"path": a.materialized_path, "source_id": a.artifact_id,
-             "name": a.original_name}
-            for a in inputs.input_artifacts["dataset"]
-        ])}
+        return {
+            "datasets": PerArtifact(
+                [
+                    {
+                        "path": a.materialized_path,
+                        "source_id": a.artifact_id,
+                        "name": a.original_name,
+                    }
+                    for a in inputs.input_artifacts["dataset"]
+                ]
+            )
+        }
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         outputs = []
@@ -82,8 +89,13 @@ class ScaleData(OperationDefinition):
                 scaled.append(",".join(parts))
             out = Path(inputs.execute_dir) / path.name
             out.write_text(header + "\n" + "\n".join(scaled) + "\n")
-            outputs.append({"path": str(out), "source_id": item["source_id"],
-                            "name": f"{item['name']}_scaled.csv"})
+            outputs.append(
+                {
+                    "path": str(out),
+                    "source_id": item["source_id"],
+                    "name": f"{item['name']}_scaled.csv",
+                }
+            )
         return {"outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
@@ -94,8 +106,9 @@ class ScaleData(OperationDefinition):
                 original_name=item["name"],
                 step_number=inputs.step_number,
             )
-            result.add_artifact("dataset", draft,
-                                sources={"dataset": [item["source_id"]]})
+            result.add_artifact(
+                "dataset", draft, sources={"dataset": [item["source_id"]]}
+            )
         return result
 ```
 
@@ -253,11 +266,18 @@ alongside each file path, as in `ScaleData`:
 
 ```python
 def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-    return {"datasets": PerArtifact([
-        {"path": a.materialized_path, "source_id": a.artifact_id,
-         "name": a.original_name}
-        for a in inputs.input_artifacts["dataset"]
-    ])}
+    return {
+        "datasets": PerArtifact(
+            [
+                {
+                    "path": a.materialized_path,
+                    "source_id": a.artifact_id,
+                    "name": a.original_name,
+                }
+                for a in inputs.input_artifacts["dataset"]
+            ]
+        )
+    }
 ```
 
 `inputs.input_artifacts` is a `dict[str, list[Artifact]]` keyed by role name.
@@ -310,8 +330,13 @@ def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         transformed = do_something(path.read_text())  # Your transformation.
         out = Path(inputs.execute_dir) / path.name
         out.write_text(transformed)
-        outputs.append({"path": str(out), "source_id": item["source_id"],
-                        "name": f"{item['name']}_processed.csv"})
+        outputs.append(
+            {
+                "path": str(out),
+                "source_id": item["source_id"],
+                "name": f"{item['name']}_processed.csv",
+            }
+        )
     return {"outputs": outputs}
 ```
 
@@ -423,9 +448,15 @@ from artisan.schemas import ArtifactResult, ExecutionConfigArtifact, LineageMapp
 def manual_config(dataset_id: str, config: ExecutionConfigArtifact) -> ArtifactResult:
     return ArtifactResult(
         artifacts={"config": [config]},
-        lineage={"config": [LineageMapping(
-            draft_index=0, source_role="dataset", source_artifact_id=dataset_id,
-        )]},
+        lineage={
+            "config": [
+                LineageMapping(
+                    draft_index=0,
+                    source_role="dataset",
+                    source_artifact_id=dataset_id,
+                )
+            ]
+        },
     )
 
 
@@ -448,7 +479,8 @@ from one role are valid. For an output jointly derived from `data` and
 
 ```python
 result.add_artifact(
-    "aligned", aligned,
+    "aligned",
+    aligned,
     sources={"data": [data.artifact_id], "reference": [reference.artifact_id]},
 )
 ```
@@ -792,12 +824,16 @@ with TemporaryDirectory() as tmp:
     test_csv = Path(tmp) / "test.csv"
     test_csv.write_text("id,value\n1,10\n2,20\n")
 
-    source = DataArtifact.draft(content=test_csv.read_bytes(),
-                                original_name="test.csv", step_number=0).finalize()
+    source = DataArtifact.draft(
+        content=test_csv.read_bytes(), original_name="test.csv", step_number=0
+    ).finalize()
     source.materialized_path = str(test_csv)
-    prepared = op.preprocess(PreprocessInput(
-        preprocess_dir=str(Path(tmp) / "pre"), input_artifacts={"dataset": [source]},
-    ))
+    prepared = op.preprocess(
+        PreprocessInput(
+            preprocess_dir=str(Path(tmp) / "pre"),
+            input_artifacts={"dataset": [source]},
+        )
+    )
     execute_input = ExecuteInput(execute_dir=str(execute_dir), inputs=prepared)
     result = op.execute_function(execute_input)
 
@@ -811,7 +847,9 @@ with TemporaryDirectory() as tmp:
     artifact_result = op.postprocess(post_input)
 
     assert artifact_result.success
-    assert artifact_result.lineage["dataset"][0].source_artifact_id == source.artifact_id
+    assert (
+        artifact_result.lineage["dataset"][0].source_artifact_id == source.artifact_id
+    )
     assert len(artifact_result.artifacts["dataset"]) == 1
     assert (
         artifact_result.artifacts["dataset"][0].content == b"id,value\n1,30.0\n2,60.0\n"

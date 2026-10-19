@@ -3,8 +3,28 @@
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 from urllib.parse import urlsplit
+
+COMMAND_ATTACHMENT_ENV = (
+    "_ARTISAN_COMMAND_SOCKET",
+    "_ARTISAN_COMMAND_SECRET",
+    "_ARTISAN_COMMAND_SCOPE",
+    "_ARTISAN_PARENT_COMMAND",
+)
+
+
+def strip_command_attachment(value: Any) -> Any:
+    """Exclude transient command metadata from an authored environment mapping."""
+    if isinstance(value, Mapping):
+        return {
+            key: item
+            for key, item in value.items()
+            if key not in COMMAND_ATTACHMENT_ENV
+        }
+    return value
+
 
 _CREDENTIAL = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY", re.I)
 _AUTHENTICATION = re.compile(

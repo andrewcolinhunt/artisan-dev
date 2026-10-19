@@ -43,6 +43,11 @@ from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
 )
+from artisan.utils.command_supervisor import (
+    check_command_scope,
+    close_command_scope,
+    managed_invocation,
+)
 from artisan.utils.hashing import serialize_params
 from artisan.utils.path import cancel_sentinel_path
 from artisan.utils.timing import phase_timer
@@ -139,11 +144,14 @@ def run_creator_lifecycle(
                 prepped.sandbox_path,
             )
         except Exception as exc:
+            commands_closed = close_command_scope(exc)
             error = sanitize_diagnostic(format_error(exc))
             if hasattr(exc, "stdout") and exc.stdout:
                 tail = "\n".join(exc.stdout.splitlines()[-30:])
                 error += f"\n--- tool stdout (last 30 lines) ---\n{tail}"
-            tool_output = _read_tool_output(prepped.log_path)
+            tool_output = (
+                _read_tool_output(prepped.log_path) if commands_closed else None
+            )
             raise _ExecuteFailure(error, tool_output=tool_output) from exc
         # Per-artifact failures land as exception entries (the batch
         # contract); surface them here — downstream _reassemble_results
@@ -166,6 +174,7 @@ def run_creator_lifecycle(
             raise unknown or cancellation_failures[0]
         failures = [r for r in raw_results if isinstance(r, Exception)]
         if failures:
+            commands_closed = close_command_scope(failures[0])
             msg = (
                 f"{len(failures)}/{len(raw_results)} artifact executions "
                 f"failed; first: {format_error(failures[0])}"
@@ -174,7 +183,10 @@ def run_creator_lifecycle(
             # (the endpoint batch contract returns it as a raw_results entry)
             # survives as __cause__ for error_envelope_dict to persist.
             raise _ExecuteFailure(
-                msg, tool_output=_read_tool_output(prepped.log_path)
+                msg,
+                tool_output=(
+                    _read_tool_output(prepped.log_path) if commands_closed else None
+                ),
             ) from failures[0]
 
     result = post_unit(prepped, raw_results, runtime_env)
@@ -222,18 +234,21 @@ def run_creator_flow(
         Staged success or failure, or an unstaged failure when setup or
         cancellation prevents recording.
     """
-    bootstrap_applications(runtime_env.application_modules, purpose="creator worker")
     with (
+        managed_invocation(),
         capture_commands(unit.operation) as commands,
-        capture_replay(unit, runtime_env),
     ):
+        bootstrap_applications(
+            runtime_env.application_modules, purpose="creator worker"
+        )
         configuration_recorder(
             unit.operation, params=unit.user_overrides, recorder=commands
         )
         commands.add_environment(
             {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
         )
-        return _run_creator_flow(unit, runtime_env, execute_router)
+        with capture_replay(unit, runtime_env):
+            return _run_creator_flow(unit, runtime_env, execute_router)
 
 
 def _run_creator_flow(
@@ -258,6 +273,7 @@ def _run_creator_flow(
     execution_context = None
     params_dict = None
     try:
+        check_command_scope()
         verify_replay_worker(unit)
         # Run the lifecycle (setup → lineage)
         lifecycle_result = run_creator_lifecycle(
@@ -280,6 +296,7 @@ def _run_creator_flow(
 
         # --- record phase ---
         with phase_timer("record", timings):
+            close_command_scope()
             staging_result = record_execution_success(
                 **replay_recording_fields(),
                 command_recording=command_snapshot(),
@@ -300,6 +317,7 @@ def _run_creator_flow(
                 ),
             )
     except EndpointCancellationError as exc:
+        commands_closed = close_command_scope(exc)
         staging_result = StagingResult(
             success=False,
             error=sanitize_diagnostic(str(exc)),
@@ -307,13 +325,23 @@ def _run_creator_flow(
             artifact_ids=[],
             cancellation_acknowledgement=replace(
                 exc.acknowledgement,
-                message=sanitize_diagnostic(exc.acknowledgement.message),
+                status=(
+                    exc.acknowledgement.status
+                    if commands_closed
+                    else CancellationStatus.UNKNOWN
+                ),
+                message=(
+                    sanitize_diagnostic(exc.acknowledgement.message)
+                    if commands_closed
+                    else "Local command cleanup could not be confirmed"
+                ),
             ),
         )
     except (_PostprocessFailure, _ExecuteFailure) as exc:
+        close_command_scope(exc)
         # Lifecycle failures with clean error messages
         tool_output = exc.tool_output if isinstance(exc, _ExecuteFailure) else None
-        error = str(exc)
+        error = "\n".join([str(exc), *getattr(exc, "__notes__", ())])
         execution_context = _build_execution_context(
             execution_run_id,
             unit,
@@ -336,6 +364,7 @@ def _run_creator_flow(
             error_envelope=error_envelope_dict(exc),
         )
     except Exception as exc:
+        close_command_scope(exc)
         if execution_context is not None and execution_is_sealed(execution_context):
             raise
         error = sanitize_diagnostic(format_error(exc))

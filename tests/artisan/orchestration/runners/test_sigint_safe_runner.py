@@ -10,7 +10,7 @@ from artisan.orchestration.runners.local import LocalLifecycleRouter, LocalRunne
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.operation_config.runner_resources import RunnerResources
-from artisan.utils.spawn import ignore_sigint
+from artisan.utils.command_supervisor import initialize_native_worker
 
 
 class TestNativeProcessPool:
@@ -29,7 +29,8 @@ class TestNativeProcessPool:
         kwargs = mock_executor_class.call_args.kwargs
         assert kwargs["max_workers"] == 2
         assert kwargs["mp_context"].get_start_method() == "spawn"
-        assert kwargs["initializer"] is ignore_sigint
+        assert kwargs["initializer"] is initialize_native_worker
+        assert set(kwargs["initargs"][0]) == {"socket", "secret", "scope", "parent"}
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_suppresses_main_reimport_for_pool_lifetime(

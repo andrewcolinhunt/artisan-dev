@@ -11,7 +11,11 @@ import pytest
 
 from artisan.orchestration.engine.inputs import PreparedInputs
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.orchestration.step_lifecycle import CancellationStatus, StepStatus
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+    StepStatus,
+)
 from artisan.utils.hashing import CacheInputIdentity
 
 
@@ -226,7 +230,7 @@ class TestCuratorCancelAwareWait:
     """Curator cancellation returns typed process-exit evidence."""
 
     @patch("artisan.orchestration.engine.step_executor.ProcessPoolExecutor")
-    def test_cancel_event_interrupts_wait(self, mock_ppe_cls):
+    def test_cancel_event_interrupts_wait(self, mock_ppe_cls, mock_native_ownership):
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
@@ -242,20 +246,28 @@ class TestCuratorCancelAwareWait:
         event = threading.Event()
         event.set()
 
-        with patch(
-            "artisan.orchestration.engine.step_executor._terminate_process_pool",
-            return_value=True,
-        ):
-            result = _run_curator_in_subprocess(
-                unit=MagicMock(), runtime_env=MagicMock(), cancel_event=event
-            )
+        mock_native_ownership.cancelled = True
+        mock_native_ownership.advance.return_value = True
+        mock_native_ownership.acknowledgement.return_value = (
+            CancellationAcknowledgement(CancellationStatus.CONFIRMED)
+        )
+        result = _run_curator_in_subprocess(
+            unit=MagicMock(),
+            runtime_env=MagicMock(),
+            cancel_event=event,
+            ownership=mock_native_ownership,
+        )
         assert (
             result.cancellation_acknowledgement.status is CancellationStatus.CONFIRMED
         )
-        mock_pool.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+        mock_native_ownership.request_cancel.assert_called_once()
+        mock_native_ownership.finish.assert_called_once_with(
+            failed=True, cancel_event=event
+        )
+        mock_future.result.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.ProcessPoolExecutor")
-    def test_returns_result_when_no_cancel(self, mock_ppe_cls):
+    def test_returns_result_when_no_cancel(self, mock_ppe_cls, mock_native_ownership):
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
@@ -274,6 +286,7 @@ class TestCuratorCancelAwareWait:
             unit=MagicMock(),
             runtime_env=MagicMock(),
             cancel_event=None,
+            ownership=mock_native_ownership,
         )
 
         assert result is mock_result

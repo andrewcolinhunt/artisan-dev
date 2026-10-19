@@ -50,6 +50,7 @@ from artisan.schemas.specs.input_models import (
     PostprocessInput,
     PreprocessInput,
 )
+from artisan.utils.command_supervisor import check_command_scope, close_command_scope
 from artisan.utils.path import shard_uri
 from artisan.utils.timing import phase_timer
 
@@ -119,6 +120,7 @@ def prep_unit(
     Raises:
         ValueError: If working_root is not set.
     """
+    check_command_scope()
     timings: dict[str, Any] = {}
     operation = unit.operation
     operation_class = type(operation)
@@ -220,6 +222,7 @@ def prep_unit(
             _references=references,
         )
         prepared_inputs = operation.preprocess(preprocess_input)
+    check_command_scope()
 
     # --- build ExecuteInputs ---
     artifact_execute_inputs: list[ExecuteInput] = []
@@ -313,6 +316,7 @@ def post_unit(
     operation = prepped.operation
     operation_class = type(operation)
     timings = prepped.timings
+    check_command_scope()
 
     # --- postprocess phase ---
     with phase_timer("postprocess", timings):
@@ -334,6 +338,7 @@ def post_unit(
         if not op_result.success:
             raise _PostprocessFailure(op_result.error or "Postprocess failed")
 
+        close_command_scope()
         flat_input_artifacts = _extract_artifacts_from_input(prepped.input_artifacts)
         input_artifact_ids = {
             role: [

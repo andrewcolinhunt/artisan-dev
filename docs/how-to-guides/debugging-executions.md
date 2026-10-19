@@ -78,10 +78,12 @@ root or original sandbox.
 
 Local lifecycle workers enable DEBUG logging and tool streaming. Driver logging
 remains caller-owned. Endpoint workers retain their server logging configuration;
-the returned diagnostic copy contains their full tool log and job-owned input and
-output files. Remote copies appear beneath `remote-debug/artifact_<index>/` in
-the local sandbox, before a remote tool failure is raised. Endpoint containers
-still clean up their temporary directories.
+after managed command closure is confirmed, the returned diagnostic copy contains
+their full tool log and job-owned input and output files. Remote copies appear
+beneath `remote-debug/artifact_<index>/` in the local sandbox, before a remote tool
+failure is raised. If cleanup is uncertain, the endpoint reports diagnostic
+capture unavailable and retains its workspace without reading, uploading, or
+deleting its files.
 
 ## Step 3: Supply omitted configuration explicitly
 
@@ -206,6 +208,15 @@ useful files. Cancellation retains uncommitted staging and may return
 staging is excluded from ordinary startup recovery and cache reuse. Commit
 failures raise a structured persistence error with diagnostic context.
 
+An error stating that command cleanup could not be confirmed means that Artisan
+could not prove the managed work stopped or that a command finished collecting
+its result. It preserves the original error or interruption, skips unsafe output
+collection, and retains the workspace. Missing logs or diagnostic archives in
+this case do not establish that no command ran.
+Check the affected tool or external provider before reusing its files. A local
+command owner does not prove that a Docker, Apptainer, Pixi, or remote workload
+stopped; see [managed command limits](configuring-execution.md#keep-managed-commands-in-the-foreground).
+
 Curators read the current committed store. Explicit run-scoping parameters are
 retained, but arbitrary store queries, external files, network reads, randomness,
 and mutable images are not historical snapshots. Replay verifies tracked
@@ -254,8 +265,9 @@ Read `invocation` as input dispatch order and `sequence` as command order within
 that invocation. Endpoint calls can run concurrently; their positions do not
 represent a shared clock or completion order. Recording covers `run_command`
 and Artisan's invocation helpers, including preprocessing and postprocessing.
-Direct `subprocess` calls and user-created threads without propagated context
-are outside this capture scope.
+Commands from operation threads share the invocation's recording; join those
+threads before returning from the phase. Direct `subprocess` calls are outside
+this capture scope.
 
 ### Check whether evidence is complete
 
@@ -289,6 +301,9 @@ result = run_command(
 
 Recording removes explicit environment values, inherited credential values,
 recognized credential arguments, and URL capabilities from diagnostic copies.
+Ephemeral command-owner authentication values are also protected, including
+aliases and values otherwise declared public. They are never restored from a
+replay snapshot.
 `redacted_fields` identifies affected fields; `required_environment` lists known
 variable names that may require fresh credentials. Subprocess arguments and
 successful return values keep their original values. Raw tool output files and

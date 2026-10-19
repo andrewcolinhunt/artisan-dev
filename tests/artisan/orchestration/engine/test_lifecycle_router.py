@@ -112,6 +112,95 @@ class TestLifecycleRouterStateMachine:
 
 
 class TestRunTemplateMethod:
+    @pytest.mark.parametrize(
+        ("provider_status", "expected"),
+        [
+            (CancellationStatus.REJECTED, CancellationStatus.REJECTED),
+            (CancellationStatus.CONFIRMED, CancellationStatus.CONFIRMED),
+            (CancellationStatus.UNKNOWN, CancellationStatus.UNKNOWN),
+            (CancellationStatus.REQUESTED, CancellationStatus.UNKNOWN),
+        ],
+    )
+    def test_run_reconciles_cancellation_at_completion_boundary(
+        self,
+        provider_status: CancellationStatus,
+        expected: CancellationStatus,
+    ) -> None:
+        event = threading.Event()
+
+        class BoundaryHandle(_StubHandle):
+            def is_done(self) -> bool:
+                done = super().is_done()
+                if done:
+                    event.set()
+                return done
+
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                return CancellationAcknowledgement(provider_status)
+
+        handle = BoundaryHandle()
+        handle.run([object()], None, cancel_event=event)
+
+        assert handle.cancel_count == 1
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == expected
+
+    def test_run_supplies_one_absolute_deadline_before_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from artisan.orchestration.engine import lifecycle_router
+
+        monkeypatch.setattr(lifecycle_router.time, "monotonic", lambda: 12.0)
+        monkeypatch.setattr(lifecycle_router.time, "sleep", lambda _: None)
+        deadlines: list[float] = []
+
+        class DeadlineHandle(_SlowStubHandle):
+            def _set_cancellation_deadline(self, deadline: float) -> None:
+                deadlines.append(deadline)
+
+            def cancel(self) -> CancellationAcknowledgement:
+                assert deadlines == [12.75]
+                self.cancel_count += 1
+                if self.cancel_count == 2:
+                    self.complete([_result(success=False)])
+                    return CancellationAcknowledgement(CancellationStatus.CONFIRMED)
+                return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+
+        handle = DeadlineHandle()
+        event = threading.Event()
+        event.set()
+        handle.run([object()], None, event, cancellation_confirmation_timeout=0.75)
+
+        assert deadlines == [12.75]
+        assert handle.cancel_count == 2
+
+    def test_run_polling_does_not_extend_cancellation_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from artisan.orchestration.engine import lifecycle_router
+
+        now = 0.0
+
+        def advance(seconds: float) -> None:
+            nonlocal now
+            now += seconds
+
+        monkeypatch.setattr(lifecycle_router.time, "monotonic", lambda: now)
+        monkeypatch.setattr(lifecycle_router.time, "sleep", advance)
+        handle = _SlowStubHandle()
+        event = threading.Event()
+        event.set()
+
+        results = handle.run(
+            [object()], None, event, cancellation_confirmation_timeout=0.025
+        )
+
+        assert now == 0.025
+        assert results[0].success is False
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
+
     def test_run_calls_dispatch_and_collect(self) -> None:
         handle = _StubHandle(results=[_result(item_count=5)])
         results = handle.run([object()], None)
