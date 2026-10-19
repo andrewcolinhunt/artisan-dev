@@ -185,6 +185,7 @@ jobs:
             tests/artisan/orchestration/engine/test_lifecycle_router.py \
             tests/artisan/orchestration/engine/test_curator_cancellation.py \
             tests/artisan/orchestration/test_cancellation_persistence.py \
+            tests/integration/test_cancellation.py \
             tests/integration/test_managed_command_cancellation.py \
             -q -ra --junitxml="$PROOF_RESULTS/production-junit.xml" \
             --basetemp="$PROOF_RESULTS/production-traces" \
