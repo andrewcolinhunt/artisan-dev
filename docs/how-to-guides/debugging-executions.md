@@ -149,6 +149,11 @@ are not rewritten. Declare credentials through typed secret fields, recognized
 credential names, or protected environment entries before submission; public
 declarations require trusted configuration authors.
 
+Historical dynamic-curator cache entries with unredacted result metadata can
+fail reuse with `terminal metadata differs from curator execution`. Run the
+affected operation with `skip_cache=True` to create a protected result before
+reusing it. The original records remain unchanged.
+
 Modal `secrets`, `image_registry_secret`, and `auth_secret` remain provider object
 names or variable prefixes. Replay preserves these references and requires current
 runtime access; it never stores their resolved credentials. Rotation behind an
