@@ -38,6 +38,26 @@ older run. A run-scoped query at step 2 shows those three datasets. Their
 queries artifacts across runs, and a step filter means their first origin step.
 Pass the run ID explicitly when comparing a step's status with its outputs.
 
+Run-scoped queries select the newest attempt at each step. A failed, cancelled,
+skipped, or unfinished retry has no accepted outputs; an earlier success is not
+used as a fallback. Partial results include only accepted successful outputs.
+An older execution contributes only when the selected attempt explicitly reuses it.
+
+To inspect a particular attempt, retain its `StepResult.step_run_id` and pass it
+as `step_run_id` to `inspect_step`, `inspect_metrics`, or `inspect_data`. For example,
+given a saved `previous_result` from step 0:
+
+```python
+historical_metrics = inspect_metrics(
+    delta_root, step_run_id=previous_result.step_run_id
+)
+```
+
+This selector includes historical attempts. Any supplied run or step must match
+the selected attempt; unknown or inconsistent selectors raise `ValueError`.
+Omitting both run and attempt selectors retains the origin-wide view described
+above.
+
 The inspection helpers read accepted, integrity-checked results. Raw Delta
 queries inspect physical rows and can include incomplete writes; see
 [Storage and Delta Lake](../concepts/storage-and-delta-lake.md).

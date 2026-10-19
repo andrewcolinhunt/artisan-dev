@@ -12,10 +12,13 @@ import pytest
 from fixtures.cache_isolation_store import build_cache_isolation_store
 from fixtures.execution_records import executions_df
 from fixtures.logical_commit_store import commit_test_inputs, commit_test_step
+from fixtures.run_outputs import commit_outputs
 from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtisanError, ErrorCode
+from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
     CACHE_REUSE_SCHEMA,
@@ -68,6 +71,68 @@ METRICS_SCHEMA = {
 @pytest.fixture(autouse=True)
 def _format_root(tmp_path: Path) -> None:
     publish_test_store(str(tmp_path / "delta"), LocalFileSystem())
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["succeeded", "partial", "pending", "running", "failed", "cancelled", "skipped"],
+)
+def test_inspection_distinguishes_current_history_and_origin(tmp_path, status):
+    root = str(tmp_path / "delta")
+    data = DataArtifact.draft(b"value\n1\n", "old.csv", 0).finalize()
+    metric = MetricArtifact.draft({"value": 1}, "old.json", 0).finalize()
+    previous, _ = commit_outputs(root, artifacts=[data, metric])
+    new_data = DataArtifact.draft(b"value\n2\n", "new.csv", 0).finalize()
+    new_metric = MetricArtifact.draft({"value": 2}, "new.json", 0).finalize()
+    usable = status in {"succeeded", "partial"}
+    current, _ = commit_outputs(
+        root,
+        status=status,
+        artifacts=[new_data, new_metric] if usable else (),
+        execution_success=usable,
+        failed_output_ids=[data.artifact_id] if status == "partial" else (),
+    )
+    assert inspect_step(root, 0, step_run_id=previous).height == 2
+    assert inspect_metrics(root, step_run_id=previous)["value"].to_list() == [1]
+    assert inspect_data(root, step_run_id=previous)["value"].to_list() == [1]
+    current_step = inspect_step(root, 0, pipeline_run_id="source-run")
+    current_metrics = inspect_metrics(root, pipeline_run_id="source-run")
+    assert current_step.height == (2 if usable else 0)
+    assert current_metrics.height == (1 if usable else 0)
+    assert (
+        inspect_step(root, 0, step_run_id=current)
+        .sort("artifact_type")
+        .equals(current_step.sort("artifact_type"))
+    )
+    if usable:
+        assert current_metrics["value"].to_list() == [2]
+        assert inspect_data(root, pipeline_run_id="source-run")["value"].to_list() == [
+            2
+        ]
+    else:
+        with pytest.raises(ValueError, match="No matching"):
+            inspect_data(root, pipeline_run_id="source-run")
+        with pytest.raises(ValueError, match="No matching"):
+            inspect_data(root, step_run_id=current)
+    assert inspect_step(root, 0).height == (4 if usable else 2)
+    assert inspect_metrics(root)["value"].to_list() == ([2, 1] if usable else [1])
+    assert sorted(inspect_data(root)["value"].to_list()) == ([1, 2] if usable else [1])
+
+
+@pytest.mark.parametrize("reader", [inspect_step, inspect_metrics, inspect_data])
+@pytest.mark.parametrize("selection", ["unknown", "wrong_run", "wrong_step"])
+def test_inspection_rejects_inconsistent_explicit_attempt(tmp_path, reader, selection):
+    root = str(tmp_path / "delta")
+    attempt, _ = commit_outputs(root)
+    kwargs = {"step_number": 0, "step_run_id": attempt}
+    if selection == "unknown":
+        kwargs["step_run_id"] = "a" * 32
+    elif selection == "wrong_run":
+        kwargs["pipeline_run_id"] = "other"
+    else:
+        kwargs["step_number"] = 1
+    with pytest.raises(ValueError, match="attempt"):
+        reader(root, **kwargs)
 
 
 def _write_delta(

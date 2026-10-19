@@ -20,6 +20,7 @@ from artisan.errors import (
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.run_scope import (
+    load_accepted_outputs,
     load_execution_membership,
     validate_cached_executions,
 )
@@ -252,6 +253,54 @@ def test_membership_unknown_run_is_empty_and_typed(store) -> None:
 
     assert result.is_empty()
     assert result.schema["cache_hit"] == pl.Boolean
+
+
+@pytest.mark.parametrize(
+    "status",
+    ["succeeded", "partial", "pending", "running", "failed", "cancelled", "skipped"],
+)
+def test_current_outputs_select_newest_attempt_before_membership(store, status):
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    old = _artifact(b"old")
+    previous, _ = commit_outputs(root, artifacts=[old])
+    other = _artifact(b"other")
+    other_attempt, _ = commit_outputs(root, run_id="other", artifacts=[other])
+    usable = status in {"succeeded", "partial"}
+    current_artifact = _artifact(b"current")
+    current, _ = commit_outputs(
+        root,
+        status=status,
+        artifacts=[current_artifact] if usable else (),
+        execution_success=usable,
+        failed_output_ids=[old.artifact_id] if status == "partial" else (),
+    )
+    outputs = load_accepted_outputs(root, fs=fs, pipeline_run_id="source-run")
+    assert set(outputs["artifact_id"]) == (
+        {current_artifact.artifact_id} if usable else set()
+    )
+    assert set(outputs["current_step_run_id"]) == ({current} if usable else set())
+    historical = load_accepted_outputs(root, fs=fs, step_run_id=previous)
+    assert historical["artifact_id"].to_list() == [old.artifact_id]
+    all_runs = load_accepted_outputs(root, fs=fs)
+    assert set(all_runs["current_step_run_id"]) == (
+        {current, other_attempt} if usable else {other_attempt}
+    )
+
+
+def test_current_outputs_reuse_old_execution_only_with_explicit_relation(store):
+    from fixtures.run_outputs import commit_outputs
+
+    root, fs, _ = store
+    old = _artifact(b"old")
+    previous, execution = commit_outputs(root, artifacts=[old])
+    current, _ = commit_outputs(root, reused_execution_id=execution)
+    outputs = load_accepted_outputs(root, fs=fs, pipeline_run_id="source-run")
+    assert outputs.select(
+        "current_step_run_id", "execution_run_id", "cache_hit"
+    ).rows() == [(current, execution, True)]
+    assert previous not in outputs["current_step_run_id"]
 
 
 def test_membership_fails_closed_on_dangling_cached_execution(store) -> None:
