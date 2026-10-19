@@ -34,7 +34,12 @@ repos:
       - id: mixed-line-ending # Replaces or checks mixed line ending.
       - id: name-tests-test # verifies that test files are named correctly.
         args: ["--pytest-test-first"] # ensure tests match test_.*\.py
-        exclude: ^tests/fixtures/ # importable fixture helpers, not tests
+        # Fixture helpers and explicit qualification commands are not test modules.
+        exclude: |
+          (?x)^(
+            tests/fixtures/|
+            tests/qualification/modal/(managed_cancellation_probe|local_smoke|prepare_snapshot|run_qualification|deploy_probe)\.py$
+          )
       - id: trailing-whitespace # Trims trailing whitespace.
         exclude: ^docs/tutorials/[^/]+/runs/ # Delta Lake fixture subtree
 

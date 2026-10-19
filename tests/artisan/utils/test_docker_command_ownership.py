@@ -278,7 +278,7 @@ def test_control_launch_immediately_reserves_identity_before_later_group_probe(
     def forbidden_wait(*args):
         pytest.fail("Old group probe must not reap a newly reserved CLI child")
 
-    monkeypatch.setattr(native.os, "waitid", forbidden_wait)
+    monkeypatch.setattr(native.os, "waitid", forbidden_wait, raising=False)
     try:
         command._job("inspect", ["docker", "inspect"])
         earlier = native.Command(
