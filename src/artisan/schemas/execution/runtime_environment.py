@@ -6,9 +6,10 @@ flags), separate from WHAT executes (ExecutionUnit).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.utils.application_modules import validate_application_modules
 
 
 class RuntimeEnvironment(BaseModel):
@@ -37,6 +38,16 @@ class RuntimeEnvironment(BaseModel):
         ...     working_root="/tmp",
         ... )
     """
+
+    application_modules: tuple[str, ...] = Field(
+        default=(),
+        description="Resolved trusted application modules; no worker environment merge.",
+    )
+
+    @field_validator("application_modules", mode="before")
+    @classmethod
+    def _validate_application_modules(cls, value: object) -> tuple[str, ...]:
+        return validate_application_modules(value)
 
     delta_root: str = Field(
         ...,

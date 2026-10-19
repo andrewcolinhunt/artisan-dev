@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from artisan.registry.api import describe, examples, list_operations
 from artisan.registry.capabilities import CapabilitiesPayload, capabilities
-from artisan.registry.discovery import discover
+from artisan.registry.discovery import bootstrap_applications, discover
 from artisan.registry.models import (
     DiscoveryError,
     DiscoveryReport,
@@ -34,6 +34,7 @@ __all__ = [
     "OperationMetadata",
     "OperationSummary",
     "OutputSpecMetadata",
+    "bootstrap_applications",
     "capabilities",
     "describe",
     "discover",

@@ -155,6 +155,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "OperationMetadata",
         "OperationSummary",
         "OutputSpecMetadata",
+        "bootstrap_applications",
         "capabilities",
         "describe",
         "discover",
