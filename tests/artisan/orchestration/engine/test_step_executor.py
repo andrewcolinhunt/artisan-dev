@@ -51,6 +51,11 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import CacheInputIdentity, compute_step_spec_id
 
 
+def _empty_curator_summary(*args, **kwargs):
+    """Routing mocks omit seals; durable summary coverage lives in dynamic result tests."""
+    return {}, {}
+
+
 class TestExecuteStepPassesCancelEvent:
     """execute_step uses and forwards the already-prepared operation."""
 
@@ -1171,6 +1176,10 @@ class TestCreatorStepPairing:
 class TestCuratorStepPairing:
     """Tests for prepared grouping in _execute_curator_step()."""
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_curator_with_group_by_uses_prepared_groups(
@@ -1215,6 +1224,10 @@ class TestCuratorStepPairing:
         unit = mock_curator_flow.call_args[0][0]
         assert unit.group_ids == gids
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_curator_without_group_by_preserves_no_groups(
@@ -1254,6 +1267,10 @@ class TestCuratorStepPairing:
         unit = mock_curator_flow.call_args[0][0]
         assert unit.group_ids is None
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_curator_group_ids_set_on_execution_unit(
@@ -1417,6 +1434,10 @@ class TestStepTimingIntegration:
         )
         assert timings["total"] >= phase_sum - 0.001  # small tolerance for rounding
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_curator_step_returns_timings(
@@ -1508,6 +1529,10 @@ class TestEmptyInputHandling:
         assert result.succeeded_count == 0
         assert result.failed_count == 0
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     def test_curator_step_skips_on_empty_inputs(
         self,
@@ -2149,6 +2174,10 @@ class TestStagingTimeoutHandling:
 class TestFilterStepLogging:
     """Verify filter step logs correct pass/total counts."""
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_filter_log_counts_only_passthrough_role(
@@ -2219,6 +2248,10 @@ class TestFilterStepLogging:
         assert "2/3 artifacts passed" in log_msg
         assert "1 filtered out" in log_msg
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_filter_log_zero_pass(
@@ -2281,6 +2314,10 @@ class TestFilterStepLogging:
 class TestExecutionCacheReuseCapture:
     """Cache hits become durable membership only for their current attempt."""
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     def test_curator_cache_hit_stages_validated_relation(self, tmp_path):
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.execution.cache_result import CacheHit
@@ -2545,6 +2582,10 @@ class TestExecutionCacheReuseCapture:
 class TestCuratorExecutionCacheIdentity:
     """Tests for concrete execution-cache lookup in curator execution."""
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_concrete_inputs_drive_cache_lookup(
@@ -2741,6 +2782,10 @@ class TestCuratorSubprocessIsolation:
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._format_subprocess_kill_error")
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_curator_subprocess_death_records_failure(
@@ -2827,6 +2872,10 @@ class TestCuratorSubprocessIsolation:
         assert "System memory:" in msg
         assert "Consider reducing input size" in msg
 
+    @patch(
+        "artisan.orchestration.engine.step_executor._curator_summary",
+        new=_empty_curator_summary,
+    )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_regular_exception_not_caught_by_broken_executor(

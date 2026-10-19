@@ -1407,3 +1407,23 @@ def test_missing_worker_registration_preflights_before_applying_existing_plan(
         for path in fs.find(root)
     }
     assert after == before
+
+
+@pytest.mark.parametrize("status", ["running", "failed", "cancelled"])
+def test_recovery_accepts_marked_dynamic_curator_roles(repair_env, status):
+    _, fs, options, delta_root, _ = repair_env
+    tracker, _, artifact_id = _worker_candidate(repair_env, status=status)
+    path = f"{delta_root}/{TablePath.STEPS.value}"
+    rows = pl.read_delta(path, storage_options=options).with_columns(
+        pl.lit('{"dynamic_output_roles": true}').alias("compute_options_json"),
+        pl.lit("[]").alias("output_roles_json"),
+        pl.lit("{}").alias("output_types_json"),
+    )
+    rows.write_delta(path, mode="overwrite", storage_options=options)
+    original = tracker.current_state("c" * 32)
+    report = _repair(repair_env, recover_staging=True, apply=True)
+    assert [item.classification for item in report.items] == ["complete"]
+    assert tracker.current_state("c" * 32) == original
+    assert read_committed(
+        delta_root, TablePath.ARTIFACT_INDEX, fs=fs, storage_options=options
+    )["artifact_id"].to_list() == [artifact_id]

@@ -497,3 +497,73 @@ def test_legacy_completed_status_is_rejected(tmp_path) -> None:
     rows.write_delta(str(tmp_path / "orchestration/steps"), mode="overwrite")
     with pytest.raises(PersistenceIntegrityError, match="legacy status"):
         tracker.load_current_states("run")
+
+
+@pytest.mark.parametrize("marker", [1, 0, "true", None, [], {}])
+def test_dynamic_output_marker_requires_boolean(tmp_path, marker) -> None:
+    import json
+
+    tracker = StepTracker(str(tmp_path), "run")
+    record = _record().model_copy(
+        update={
+            "compute_options_json": json.dumps({"dynamic_output_roles": marker}),
+            "output_roles_json": "[]",
+            "output_types_json": "{}",
+        }
+    )
+    with pytest.raises(PersistenceIntegrityError, match="Boolean"):
+        tracker.create_attempt(record)
+
+
+def test_dynamic_output_marker_rejects_static_declaration(tmp_path) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    record = _record().model_copy(
+        update={
+            "compute_options_json": '{"dynamic_output_roles": true}',
+        }
+    )
+    with pytest.raises(PersistenceIntegrityError, match="contradicts declared outputs"):
+        tracker.create_attempt(record)
+
+
+@pytest.mark.parametrize("new_marker", [False, True])
+def test_dynamic_output_marker_cannot_change_during_attempt(
+    tmp_path, new_marker
+) -> None:
+    import json
+
+    tracker = StepTracker(str(tmp_path), "run")
+    record = _record().model_copy(
+        update={
+            "compute_options_json": json.dumps(
+                {"dynamic_output_roles": not new_marker}
+            ),
+            "output_roles_json": "[]",
+            "output_types_json": "{}",
+        }
+    )
+    tracker.create_attempt(record)
+    tracker.transition(record.step_run_id, StepStatus.PENDING, StepStatus.RUNNING)
+    path = str(tmp_path / "orchestration/steps")
+    pl.read_delta(path).with_columns(
+        pl.when(pl.col("status") == "running")
+        .then(pl.lit(json.dumps({"dynamic_output_roles": new_marker})))
+        .otherwise(pl.col("compute_options_json"))
+        .alias("compute_options_json")
+    ).write_delta(path, mode="overwrite")
+    with pytest.raises(PersistenceIntegrityError, match="changed owner metadata"):
+        tracker.current_state(record.step_run_id)
+
+
+def test_unmarked_empty_declaration_retains_static_history_contract(tmp_path) -> None:
+    tracker = StepTracker(str(tmp_path), "run")
+    record = _record().model_copy(
+        update={
+            "output_roles_json": "[]",
+            "output_types_json": "{}",
+        }
+    )
+    tracker.create_attempt(record)
+    tracker.transition(record.step_run_id, StepStatus.PENDING, StepStatus.RUNNING)
+    with pytest.raises(PersistenceIntegrityError, match="changed output contract"):
+        _commit_terminal(tracker, tmp_path, _result())

@@ -32,6 +32,11 @@ from artisan.storage.core.committed_scan import (
     filter_committed_rows,
     read_logical_commits,
 )
+from artisan.storage.core.curator_result import (
+    dynamic_output_roles,
+    read_result_evidence,
+    validate_dynamic_result,
+)
 from artisan.storage.core.run_scope import load_execution_membership
 from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import STEPS_SCHEMA, get_physical_schema
@@ -83,6 +88,7 @@ class StepTracker:
                 msg = f"Conflicting create_attempt retry for {record.step_run_id}"
                 raise PersistenceIntegrityError(msg)
             row = self._base_row(record, StepStatus.PENDING, state_sequence=0)
+            self._validate_history([row])
             self._write_row(row)
             return self._row_to_state(row)
 
@@ -408,12 +414,25 @@ class StepTracker:
         """Validate all attempts and return one current state per attempt."""
         if rows.is_empty():
             return []
+        evidence = None
+        if any(
+            dynamic_output_roles(value)
+            for value in rows["compute_options_json"].unique()
+        ):
+            evidence = read_result_evidence(
+                self._delta_root, fs=self._fs, storage_options=self._storage_options
+            )
         return [
-            self._validate_attempt_rows(group)
+            self._validate_attempt_rows(group, result_evidence=evidence)
             for group in rows.partition_by("step_run_id", maintain_order=True)
         ]
 
-    def _validate_attempt_rows(self, rows: pl.DataFrame) -> StepState:
+    def _validate_attempt_rows(
+        self,
+        rows: pl.DataFrame,
+        *,
+        result_evidence: dict[str, pl.DataFrame] | None = None,
+    ) -> StepState:
         """Validate sequence/history invariants and select the current row."""
         physical_sequences = sorted(set(rows["state_sequence"].to_list()))
         if physical_sequences != list(range(physical_sequences[-1] + 1)):
@@ -454,6 +473,17 @@ class StepTracker:
                 raise PersistenceIntegrityError(msg)
             snapshots.append(unique.row(0, named=True))
         self._validate_history(snapshots)
+        if dynamic_output_roles(snapshots[0]["compute_options_json"]):
+            for row in snapshots:
+                if row["status"] not in {"succeeded", "partial"}:
+                    continue
+                if result_evidence is None:
+                    result_evidence = read_result_evidence(
+                        self._delta_root,
+                        fs=self._fs,
+                        storage_options=self._storage_options,
+                    )
+                validate_dynamic_result(row, result_evidence)
         states = [self._validated_snapshot(row) for row in snapshots]
         return states[-1]
 
@@ -485,6 +515,13 @@ class StepTracker:
     def _validate_history(rows: list[dict[str, Any]]) -> None:
         """Validate owner stability and every lifecycle/ack edge."""
         first = rows[0]
+        dynamic = dynamic_output_roles(first["compute_options_json"])
+        if dynamic and (
+            json.loads(first["output_roles_json"]) != []
+            or json.loads(first["output_types_json"]) != {}
+        ):
+            msg = "Dynamic output marker contradicts declared outputs"
+            raise PersistenceIntegrityError(msg)
         if StepStatus(first["status"]) != StepStatus.PENDING:
             msg = "Step lifecycle must start at pending"
             raise PersistenceIntegrityError(msg)
@@ -505,16 +542,24 @@ class StepTracker:
                 raise PersistenceIntegrityError(msg)
             try:
                 current_status = StepStatus(current["status"])
-                if current_status in {
-                    StepStatus.PENDING,
-                    StepStatus.RUNNING,
-                    StepStatus.SUCCEEDED,
-                    StepStatus.PARTIAL,
-                } and (
-                    json.loads(current["output_roles_json"])
-                    != json.loads(first["output_roles_json"])
-                    or json.loads(current["output_types_json"])
-                    != json.loads(first["output_types_json"])
+                if (
+                    current_status
+                    in {
+                        StepStatus.PENDING,
+                        StepStatus.RUNNING,
+                        StepStatus.SUCCEEDED,
+                        StepStatus.PARTIAL,
+                    }
+                    and not (
+                        dynamic
+                        and current_status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+                    )
+                    and (
+                        json.loads(current["output_roles_json"])
+                        != json.loads(first["output_roles_json"])
+                        or json.loads(current["output_types_json"])
+                        != json.loads(first["output_types_json"])
+                    )
                 ):
                     msg = f"Step attempt {first['step_run_id']} changed output contract"
                     raise PersistenceIntegrityError(msg)

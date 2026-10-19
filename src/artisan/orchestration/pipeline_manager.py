@@ -2519,6 +2519,8 @@ class PipelineManager:
             "compute_resources": ov.compute_resources or {},
             "group_by": (ov.group_by.value if ov.group_by is not None else None),
             "cache_policy": self._resolve_cache_policy(ov).value,
+            "dynamic_output_roles": is_curator_operation(operation)
+            and not operation.outputs,
             **self._default_runner_metadata(),
         }
         return StepStartRecord(

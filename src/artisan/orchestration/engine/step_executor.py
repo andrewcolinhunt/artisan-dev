@@ -254,6 +254,7 @@ def build_step_result(
     status: StepStatus | None = None,
     cancellation_status: CancellationStatus | None = None,
     error: str | None = None,
+    actual_output_types: dict[str, str] | None = None,
 ) -> StepResult:
     """Build StepResult after step execution completes.
 
@@ -269,6 +270,7 @@ def build_step_result(
         status: Explicit terminal status; otherwise classify counts by policy.
         cancellation_status: Evidence associated with a cancellation request.
         error: Failure or cancellation diagnostic.
+        actual_output_types: Verified output types for an empty-declaration curator.
 
     Returns:
         StepResult with execution metadata.
@@ -284,6 +286,8 @@ def build_step_result(
     if classified in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
         for role, spec in operation.outputs.items():
             output_roles[role] = spec.artifact_type
+        if is_curator_operation(operation) and not operation.outputs:
+            output_roles.update(actual_output_types or {})
 
     builder = StepResultBuilder(
         step_name=operation.name,
@@ -832,6 +836,9 @@ def _execute_curator_step(
                         step_number=step_number,
                         operation_name=operation.name,
                     )
+                    cached_types, cached_metadata = _curator_summary(
+                        config, cache_result.execution_run_id
+                    )
                     _finalize_timings(timings, total_start, step_number, "Curator")
                     result = build_step_result(
                         operation=operation,
@@ -840,7 +847,8 @@ def _execute_curator_step(
                         failed_count=0,
                         failure_policy=failure_policy,
                         disposition=StepDisposition.CACHE_HIT,
-                        metadata={"timings": timings},
+                        metadata={**cached_metadata, "timings": timings},
+                        actual_output_types=cached_types,
                         step_run_id=step_run_id,
                     )
                     return _persist_result(result, [], persist_result)
@@ -871,6 +879,8 @@ def _execute_curator_step(
 
     # --- execute phase ---
     dispatch_error: str | None = None
+    actual_types: dict[str, str] = {}
+    metadata: dict[str, Any] = {}
     with phase_timer("execute", timings):
         runtime_env = prepared_runtime or _create_runtime_environment(config, operation)
 
@@ -973,6 +983,13 @@ def _execute_curator_step(
         infrastructure_error=dispatch_error is not None,
     )
 
+    if status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+        actual_types, metadata = _curator_summary(
+            config,
+            staging_result.execution_run_id,
+            staging_path=staging_result.staging_path,
+        )
+
     result = build_step_result(
         operation=operation,
         step_number=step_number,
@@ -982,13 +999,50 @@ def _execute_curator_step(
         status=status,
         disposition=StepDisposition.EXECUTED,
         error=_result_error(results, dispatch_error),
-        metadata={"timings": timings},
+        metadata={**metadata, "timings": timings},
+        actual_output_types=actual_types,
         step_run_id=step_run_id,
     )
     execution_ids = extract_execution_run_ids(results)
     if persist_result is not None:
         execution_ids = _require_recorded_execution_ids(results)
     return _persist_result(result, execution_ids, persist_result)
+
+
+def _curator_summary(
+    config: PipelineConfig,
+    execution_run_id: str | None,
+    *,
+    staging_path: str | None = None,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Read the successful curator's sealed or committed result evidence."""
+    from artisan.storage.core.curator_result import (
+        curator_result_summary,
+        read_result_evidence,
+    )
+    from artisan.storage.io.worker_seal import read_worker_files
+
+    staged = None
+    if staging_path is not None:
+        files = read_worker_files(staging_path, config.storage.filesystem())
+        staged = {
+            table.value: files[f"{table.table_name}.parquet"][1]
+            for table in (
+                TablePath.EXECUTIONS,
+                TablePath.EXECUTION_EDGES,
+                TablePath.ARTIFACT_INDEX,
+            )
+            if f"{table.table_name}.parquet" in files
+        }
+    frames = read_result_evidence(
+        config.delta_root,
+        fs=config.storage.filesystem(),
+        storage_options=config.storage.delta_storage_options(),
+        staged=staged,
+    )
+    return curator_result_summary(
+        frames, {execution_run_id} if execution_run_id else set()
+    )
 
 
 def _run_curator_in_subprocess(

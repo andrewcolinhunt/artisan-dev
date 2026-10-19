@@ -19,7 +19,8 @@ class StepStartRecord(BaseModel):
         input_refs_json: JSON-encoded input references.
         compute_backend: Resolved step-runner name.
         compute_options_json: JSON-encoded execution options and pipeline runner
-            metadata.
+            metadata. The framework-owned Boolean ``dynamic_output_roles`` permits
+            empty-declaration curators to publish their actual terminal roles.
         output_roles_json: JSON-encoded output role names.
         output_types_json: JSON-encoded output role-to-type mapping.
     """

@@ -117,9 +117,54 @@ class DeltaCommitter:
             )
         else:
             self._reject_terminal_attempt(plan, source_rows=source_rows)
+            self._validate_dynamic_result(staged, source_rows=source_rows)
         prepared = PreparedCommitEvidence(staged, self.delta_base_path, object())
         self._prepared[prepared.token] = prepared
         return prepared
+
+    def _validate_dynamic_result(
+        self, staged: StagedPlanEvidence, *, source_rows: pl.DataFrame | None
+    ) -> None:
+        """Verify the immutable contract and summary before publishing effects."""
+        from artisan.orchestration.engine.step_tracker import StepTracker
+        from artisan.storage.core.curator_result import (
+            dynamic_output_roles,
+            read_result_evidence,
+            validate_dynamic_result,
+        )
+
+        candidates = staged.frames.get(TablePath.STEPS.value)
+        if candidates is None:
+            return
+        row = candidates.row(0, named=True)
+        if source_rows is None:
+            source_rows = read_committed(
+                self.delta_base_path,
+                TablePath.STEPS,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+        history = (
+            source_rows.filter(pl.col("step_run_id") == row["step_run_id"])
+            .unique()
+            .sort("state_sequence")
+            .to_dicts()
+        )
+        history.append(row)
+        if not any(
+            dynamic_output_roles(item["compute_options_json"]) for item in history
+        ):
+            return
+        StepTracker._validate_history(history)
+        if row["status"] not in {"succeeded", "partial"}:
+            return
+        frames = read_result_evidence(
+            self.delta_base_path,
+            fs=self._fs,
+            storage_options=self._storage_options,
+            staged=staged.frames,
+        )
+        validate_dynamic_result(row, frames)
 
     def commit_logical(
         self,

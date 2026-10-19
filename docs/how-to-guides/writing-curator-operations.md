@@ -154,6 +154,29 @@ The `artifacts` dict maps output role names to lists of draft `Artifact`
 objects. Drafts are finalized automatically by the framework after
 `execute_curator` returns.
 
+### Preserve result roles and metadata
+
+A curator with an empty `outputs` declaration may return dynamic artifact roles.
+After commitment, its `StepResult.output_roles` and `output_types` describe the
+roles that contain accepted artifacts. A role containing one type reports that
+type; a role containing several types reports `ArtifactTypes.ANY`. Empty dynamic
+results have no output roles. Use the completed result's `output(role)` to
+reference a dynamic role; asynchronous handles expose the declared contract.
+Curators with declared outputs retain those
+descriptors, including optional roles with no artifacts.
+
+Operation-authored `ArtifactResult.metadata` and `PassthroughResult.metadata`
+are available at the top level of `StepResult.metadata`. They survive cache reuse
+and pipeline reopening. Reserve `timings`, `skip_reason`, `status`, `cancelled`,
+and `skipped` for the framework; returning any of those keys fails the execution.
+Step timings describe the current attempt, while execution timings remain on the
+execution record.
+
+For example, `IngestPipelineStep` publishes its actual imported roles and retains
+`metadata["ingest_source"]`, including the exact source attempt IDs. Reopening
+reads the committed result; it does not repeat the import. `IngestPipelineStep`
+remains non-cacheable and performs a fresh source read each time it runs.
+
 ---
 
 ## Define the operation class
