@@ -183,6 +183,7 @@ class ErrorCode:
     STORE_INTEGRITY_FAILED = "store_integrity_failed"
     COMMIT_FAILED = "commit_failed"
     INCOMPATIBLE_STORE = "incompatible_store"
+    APPLICATION_REGISTRATION_FAILED = "application_registration_failed"
 
     # io — worker-side input resolution / output delivery (tool-endpoint wire)
     INPUT_RESOLUTION_FAILED = "input_resolution_failed"
@@ -193,6 +194,20 @@ class ErrorCode:
     LINEAGE_INCOMPLETE = "lineage_incomplete"
     LINEAGE_INTEGRITY_FAILED = "lineage_integrity_failed"
     PASSTHROUGH_VALIDATION_FAILED = "passthrough_validation_failed"
+
+
+class ApplicationRegistrationError(ArtisanError):
+    """Trusted application configuration cannot interpret or execute the request."""
+
+    def __init__(self, message: str) -> None:
+        """Report missing definitions or rejected startup without secret causes."""
+        super().__init__(
+            ErrorCode.APPLICATION_REGISTRATION_FAILED,
+            message,
+            error_type="config",
+            recovery_hint="CHECK_INPUT",
+            hint="Install the matching application package and configure application_modules or --load-module.",
+        )
 
 
 class CommitError(ArtisanError):

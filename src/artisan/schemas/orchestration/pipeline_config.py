@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import tempfile
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from artisan.schemas.enums import CachePolicy, FailurePolicy
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.utils.application_modules import validate_application_modules
 from artisan.utils.path import uri_join, uri_parent
 
 
@@ -17,6 +18,16 @@ class PipelineConfig(BaseModel):
     This is the orchestrator-level configuration, set once per pipeline.
     Values are propagated to workers via RuntimeEnvironment.
     """
+
+    application_modules: tuple[str, ...] = Field(
+        default=(),
+        description="Resolved trusted application modules; no worker environment merge.",
+    )
+
+    @field_validator("application_modules", mode="before")
+    @classmethod
+    def _validate_application_modules(cls, value: object) -> tuple[str, ...]:
+        return validate_application_modules(value)
 
     name: str = Field(..., description="Pipeline identifier.")
     pipeline_run_id: str = Field(
