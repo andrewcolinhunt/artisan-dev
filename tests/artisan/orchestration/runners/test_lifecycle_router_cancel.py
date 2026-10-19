@@ -69,9 +69,6 @@ class TestLocalLifecycleRouterCancel:
         mock_executor_class: MagicMock,
     ) -> None:
         executor = mock_executor_class.return_value
-        process = MagicMock()
-        process.is_alive.side_effect = [True, False]
-        executor._processes = {123: process}
         running: Future[list[UnitResult]] = Future()
         running.set_running_or_notify_cancel()
         executor.submit.return_value = running
@@ -79,14 +76,20 @@ class TestLocalLifecycleRouterCancel:
         handle.dispatch([MagicMock()], MagicMock())
         _wait_until(lambda: executor.submit.called)
 
-        with patch(
-            "artisan.orchestration.runners.local.time.monotonic",
-            side_effect=[0.0, 2.0],
+        with (
+            patch(
+                "artisan.orchestration.runners.local.time.monotonic",
+                side_effect=[0.0, 2.0],
+            ),
+            patch(
+                "artisan.orchestration.runners.local._terminate_process_pool",
+                return_value=True,
+            ) as terminate_pool,
         ):
             requested = handle.cancel()
             confirmed = handle.cancel()
         assert running.cancelled() is False
-        process.terminate.assert_called_once_with()
+        terminate_pool.assert_called_once_with(executor)
         assert requested.status == CancellationStatus.REQUESTED
         assert confirmed.status == CancellationStatus.CONFIRMED
         running.set_exception(BrokenProcessPool("worker terminated"))
@@ -94,7 +97,6 @@ class TestLocalLifecycleRouterCancel:
 
         with pytest.raises(BrokenProcessPool, match="worker terminated"):
             handle.collect()
-        executor.shutdown.assert_any_call(wait=False, cancel_futures=True)
 
     @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
     def test_run_observes_delayed_cancel_event(

@@ -380,7 +380,7 @@ class TestPreparedOperationSnapshot:
 
     @patch("artisan.orchestration.pipeline_manager.execute_step")
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
-    def test_submit_recursively_merges_selected_environment_and_provider(
+    def test_submit_recursively_merges_environment_and_client_routing(
         self, mock_tracker_cls, mock_execute, tmp_path
     ) -> None:
         tracker = MagicMock()
@@ -402,10 +402,10 @@ class TestPreparedOperationSnapshot:
             },
             compute_provider={
                 "active": "modal",
-                "modal": {"env": {"CHANGE": "new"}},
+                "modal": {"endpoint_url": "https://changed.invalid"},
             },
         )
-        future.result()
+        assert future.result().status == StepStatus.SUCCEEDED
 
         operation = mock_execute.call_args.kwargs["operation"]
         assert operation.environments.active == "docker"
@@ -415,10 +415,13 @@ class TestPreparedOperationSnapshot:
             "CHANGE": "new",
         }
         assert operation.compute_provider.active == "modal"
+        assert (
+            operation.compute_provider.modal.endpoint_url == "https://changed.invalid"
+        )
         assert operation.compute_provider.modal.retries == 5
         assert operation.compute_provider.modal.env == {
             "KEEP": "yes",
-            "CHANGE": "new",
+            "CHANGE": "old",
         }
 
 

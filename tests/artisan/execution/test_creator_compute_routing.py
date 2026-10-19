@@ -221,7 +221,7 @@ class TestRunCreatorFlowRouterForwarding:
         )
         unit.operation = _SimpleOp()
         unit.user_overrides = None
-        runtime_env = MagicMock()
+        runtime_env = MagicMock(application_modules=())
         router = MagicMock()
 
         run_creator_flow(unit, runtime_env, execute_router=router)
@@ -246,7 +246,7 @@ class TestRunCreatorFlowRouterForwarding:
         )
         unit.operation = _SimpleOp()
         unit.user_overrides = None
-        runtime_env = MagicMock()
+        runtime_env = MagicMock(application_modules=())
 
         run_creator_flow(unit, runtime_env)
 
