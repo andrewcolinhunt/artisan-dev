@@ -31,6 +31,8 @@ def main() -> int:
                 str(root / "test_modal_cancellation.py"),
                 "-v",
                 "--tb=short",
+                "-o",
+                "markers=modal: requires an explicitly owned live Modal deployment",
                 f"--junitxml={root / 'qualification.xml'}",
             ],
             env=env,

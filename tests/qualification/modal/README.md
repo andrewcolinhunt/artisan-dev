@@ -28,6 +28,11 @@ The harness retains exact call/task IDs, source digests, provider terminal input
 and task records, acknowledgement/termination timings, JUnit, and cleanup
 status. `TaskGetInfo` is deliberately test-only. Neither a passing timing sample
 nor stopped logs establishes a general synchronous cancellation guarantee.
+The public cancellation response must remain `unknown`; positive provider
+termination is a separate qualification observation. For queued calls, the
+harness releases its occupied workers before requiring a terminal input record.
+A natural-completion race may finish successfully after an accepted cancellation
+request; that outcome does not change the client's `unknown` acknowledgement.
 
 ## Local preparation (does not require deployment permission)
 

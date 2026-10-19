@@ -7,7 +7,7 @@ import json
 import sys
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import AsyncMock, Mock
 
 import modal
 import pytest
@@ -110,6 +110,24 @@ def test_schema_failure_closes_client(
             tmp_path / "evidence.json",
         )
     client.close.assert_called_once_with()
+
+
+def test_provider_observation_uses_required_retained_output_cursor(
+    monkeypatch, qualification_modules
+) -> None:
+    _, _, qualification = qualification_modules
+
+    async def outputs(request):
+        assert request.last_entry_id == "0-0"
+        assert request.clear_on_success is False
+        return qualification.api_pb2.FunctionGetOutputsResponse()
+
+    client = SimpleNamespace(stub=SimpleNamespace(FunctionGetOutputs=outputs))
+    monkeypatch.setattr(
+        qualification._Client, "from_env", AsyncMock(return_value=client)
+    )
+    observed = qualification.provider_observation("fc-owned-test")
+    assert observed["call_statuses"] == []
 
 
 def test_snapshot_copies_only_framework_sources_and_reviewed_harness(
