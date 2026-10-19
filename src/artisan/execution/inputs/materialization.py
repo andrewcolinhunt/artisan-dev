@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import os
 from typing import TYPE_CHECKING
 
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
@@ -79,45 +81,126 @@ def materialize_inputs(
             else:
                 non_configs.append((artifact, spec.materialize_as))
 
+    loaded = {
+        artifact.artifact_id: artifact
+        for artifact, _ in non_configs
+        if artifact.artifact_id is not None
+    }
+    loaded.update(
+        {config.artifact_id: config for config in configs if config.artifact_id}
+    )
     for config in configs:
-        for ref_id in config.get_artifact_references():
+        for ref_id, ref_artifact in resolve_config_references(
+            config, artifact_store, loaded
+        ).items():
             if ref_id in seen_ids:
                 continue
             seen_ids.add(ref_id)
-            ref_artifact = artifact_store.get_artifact(ref_id, hydrate=True)
-            if ref_artifact is None:
-                msg = f"Referenced artifact {ref_id!r} could not be loaded"
-                raise ValueError(msg)
             non_configs.append((ref_artifact, None))
-
-    # Get fs from artifact_store for cloud-capable source reads
-    fs = artifact_store._fs
 
     resolved_paths: dict[str, str] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
             continue
-        # Only complete-file artifact families can cross by URI. Appendable
-        # records and embedded artifacts must materialize their selected bytes
-        # locally. The client and worker separately enforce policy and carry
-        # the already-verified complete-file integrity contract.
-        locator = (
-            getattr(artifact, next(iter(artifact.LOCATOR_FIELDS)))
-            if artifact.EXTERNALLY_BACKED
-            else None
+        materialized = _materialize_artifact(
+            artifact, directory, artifact_store, fmt, endpoint_routed=endpoint_routed
         )
-        if (
-            endpoint_routed
-            and isinstance(artifact, (FileRefArtifact, LargeFileArtifact))
-            and _is_remote(locator)
-        ):
-            artifact.verify_external_content(fs=fs)
-            artifact.materialized_path = locator
-            continue
-        materialized = artifact.materialize_to(directory, format=fmt, fs=fs)
         if isinstance(materialized, str):
             resolved_paths[artifact.artifact_id] = materialized
 
     for config in configs:
         config.materialize_to(directory, resolved_paths=resolved_paths)
     return artifacts
+
+
+def resolve_config_references(
+    config: ExecutionConfigArtifact,
+    artifact_store: ArtifactStore,
+    loaded: dict[str, Artifact],
+    *,
+    typed: bool = False,
+) -> dict[str, Artifact]:
+    """Load direct references once through normal store integrity verification.
+
+    Typed delivery validates reference IDs and excludes config-to-config graphs.
+    The caller owns the per-preparation cache; nothing is persisted here.
+    """
+    references = config.get_artifact_references()
+    if typed and any(not is_hex_id(ref_id) for ref_id in references):
+        msg = "Config references must be 32-character hexadecimal artifact IDs"
+        raise ValueError(msg)
+    result: dict[str, Artifact] = {}
+    for ref_id in references:
+        if ref_id not in loaded:
+            artifact = artifact_store.get_artifact(ref_id, hydrate=True)
+            if artifact is None:
+                msg = f"Referenced artifact {ref_id!r} could not be loaded"
+                raise ValueError(msg)
+            loaded[ref_id] = artifact
+        artifact = loaded[ref_id]
+        if typed and isinstance(artifact, ExecutionConfigArtifact):
+            msg = "Typed config references cannot target another config"
+            raise ValueError(msg)
+        result[ref_id] = artifact
+    return result
+
+
+def resolve_input_references(
+    artifacts: dict[str, list[Artifact]],
+    input_specs: dict[str, InputSpec],
+    directory: str,
+    artifact_store: ArtifactStore,
+) -> dict[str, dict[str, Artifact]]:
+    """Prepare opt-in typed dependencies while leaving config markers intact.
+
+    Dependency files are local preparation inputs even for endpoint execution.
+    Operations package the consumed files into their declared portable inputs.
+    """
+    loaded: dict[str, Artifact] = {}
+    result: dict[str, dict[str, Artifact]] = {}
+    for role, artifact_list in artifacts.items():
+        spec = input_specs.get(role)
+        if spec is None or not spec.resolve_references:
+            continue
+        for config in artifact_list:
+            if (
+                not isinstance(config, ExecutionConfigArtifact)
+                or not config.is_hydrated
+                or config.artifact_id is None
+            ):
+                msg = "Reference resolution requires a hydrated, finalized config"
+                raise ValueError(msg)
+            result[config.artifact_id] = resolve_config_references(
+                config, artifact_store, loaded, typed=True
+            )
+    for ref_id, artifact in loaded.items():
+        target = os.path.join(directory, "references", ref_id)
+        os.makedirs(target, exist_ok=True)
+        _materialize_artifact(artifact, target, artifact_store)
+    return result
+
+
+def _materialize_artifact(
+    artifact: Artifact,
+    directory: str,
+    artifact_store: ArtifactStore,
+    fmt: str | None = None,
+    *,
+    endpoint_routed: bool = False,
+) -> str | None:
+    """Share native materialization and the complete-file URI transport boundary."""
+    fs = artifact_store._fs
+    locator = (
+        getattr(artifact, next(iter(artifact.LOCATOR_FIELDS)))
+        if artifact.EXTERNALLY_BACKED
+        else None
+    )
+    if (
+        endpoint_routed
+        and isinstance(artifact, (FileRefArtifact, LargeFileArtifact))
+        and _is_remote(locator)
+    ):
+        artifact.verify_external_content(fs=fs)
+        artifact.materialized_path = locator
+        return None
+    return artifact.materialize_to(directory, format=fmt, fs=fs)

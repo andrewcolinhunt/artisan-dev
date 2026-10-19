@@ -7,11 +7,13 @@ of the preprocess/execute/postprocess lifecycle.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
+from types import MappingProxyType
 from typing import Any
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 
 
 class _InputArtifactsMixin:
@@ -19,6 +21,30 @@ class _InputArtifactsMixin:
 
     input_artifacts: dict[str, list[Artifact]]
     _associated: dict[tuple[str, str], list[Artifact]]
+    _references: dict[str, dict[str, Artifact]]
+
+    def referenced_artifacts(
+        self, config: ExecutionConfigArtifact
+    ) -> Mapping[str, Artifact]:
+        """Return the prepared direct dependencies of one declared config.
+
+        Args:
+            config: Declared config input whose spec enables reference resolution.
+
+        Returns:
+            Read-only artifact-ID mapping. No additional store lookup occurs.
+
+        Raises:
+            ValueError: If the config is not a resolved, finalized input.
+        """
+        if (
+            not isinstance(config, ExecutionConfigArtifact)
+            or config.artifact_id is None
+            or config.artifact_id not in self._references
+        ):
+            msg = "Config is not a declared input with resolved references"
+            raise ValueError(msg)
+        return MappingProxyType(self._references[config.artifact_id])
 
     def associated_artifacts(
         self, artifact: Artifact, assoc_type: str
@@ -74,6 +100,9 @@ class PreprocessInput(_InputArtifactsMixin):
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     _associated: dict[tuple[str, str], list[Artifact]] = field(
+        default_factory=dict, repr=False
+    )
+    _references: dict[str, dict[str, Artifact]] = field(
         default_factory=dict, repr=False
     )
 
@@ -141,5 +170,8 @@ class PostprocessInput(_InputArtifactsMixin):
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     _associated: dict[tuple[str, str], list[Artifact]] = field(
+        default_factory=dict, repr=False
+    )
+    _references: dict[str, dict[str, Artifact]] = field(
         default_factory=dict, repr=False
     )

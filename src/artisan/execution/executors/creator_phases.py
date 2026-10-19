@@ -26,7 +26,10 @@ from artisan.execution.compute.routing import routes_to_endpoint
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.context.sandbox import create_sandbox, output_snapshot
 from artisan.execution.inputs.instantiation import instantiate_inputs
-from artisan.execution.inputs.materialization import materialize_inputs
+from artisan.execution.inputs.materialization import (
+    materialize_inputs,
+    resolve_input_references,
+)
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.enrich import build_artifact_edges_from_types
 from artisan.execution.lineage.validation import (
@@ -70,6 +73,7 @@ class PreppedUnit:
         operation: The original operation instance.
         input_artifacts: Hydrated input artifacts keyed by role.
         associated: Associated artifacts from multi-role inputs.
+        references: Typed direct dependencies of opted-in config inputs.
         timings: Phase timings accumulated during prep.
         artifact_execute_inputs: One input per dispatch slot, or a single
             input for generative and monolithic execution.
@@ -86,6 +90,7 @@ class PreppedUnit:
     operation: Any
     input_artifacts: dict[str, list[Artifact]]
     associated: dict[tuple[str, str], list[Artifact]]
+    references: dict[str, dict[str, Artifact]] = field(default_factory=dict)
     timings: dict[str, Any] = field(default_factory=dict)
     artifact_execute_inputs: list[ExecuteInput] = field(default_factory=list)
     artifact_execute_dirs: list[str] = field(default_factory=list)
@@ -201,6 +206,9 @@ def prep_unit(
             artifact_store,
             endpoint_routed=routes_to_endpoint(operation),
         )
+        references = resolve_input_references(
+            input_artifacts, input_specs, materialized_dir, artifact_store
+        )
         external_integrity = _external_integrity_metadata(input_artifacts)
 
     # --- preprocess phase ---
@@ -209,6 +217,7 @@ def prep_unit(
             preprocess_dir=preprocess_dir,
             input_artifacts=input_artifacts,
             _associated=associated,
+            _references=references,
         )
         prepared_inputs = operation.preprocess(preprocess_input)
 
@@ -269,6 +278,7 @@ def prep_unit(
         operation=operation,
         input_artifacts=input_artifacts,
         associated=associated,
+        references=references,
         timings=timings,
         artifact_execute_inputs=artifact_execute_inputs,
         artifact_execute_dirs=artifact_execute_dirs,
@@ -317,6 +327,7 @@ def post_unit(
             step_number=prepped.unit.step_number,
             postprocess_dir=prepped.postprocess_dir,
             _associated=prepped.associated,
+            _references=prepped.references,
         )
         op_result = operation.postprocess(postprocess_input)
 

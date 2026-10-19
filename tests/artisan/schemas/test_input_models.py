@@ -10,7 +10,35 @@ import pytest
 
 from artisan.schemas import ExecuteInput, PostprocessInput, PreprocessInput
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
+
+
+@pytest.mark.parametrize("phase", [PreprocessInput, PostprocessInput])
+def test_referenced_artifacts_is_read_only_and_config_scoped(phase, tmp_path) -> None:
+    source = MetricArtifact.draft({"score": 1}, "score.json", 0).finalize()
+    config = ExecutionConfigArtifact.draft(
+        {"source": {"$artifact": source.artifact_id}}, "config.json", 1
+    ).finalize()
+    unrelated = ExecutionConfigArtifact.draft({}, "other.json", 1).finalize()
+    kwargs = (
+        {"preprocess_dir": str(tmp_path)}
+        if phase is PreprocessInput
+        else {"postprocess_dir": str(tmp_path), "step_number": 2}
+    )
+    inputs = phase(
+        **kwargs,
+        input_artifacts={"config": [config, unrelated]},
+        _references={config.artifact_id: {source.artifact_id: source}},
+    )
+    references = inputs.referenced_artifacts(config)
+    assert references == {source.artifact_id: source}
+    with pytest.raises(TypeError):
+        references["unknown"] = source
+    with pytest.raises(KeyError):
+        references["unknown"]
+    with pytest.raises(ValueError, match="not a declared input"):
+        inputs.referenced_artifacts(unrelated)
 
 
 class TestPreprocessInput:

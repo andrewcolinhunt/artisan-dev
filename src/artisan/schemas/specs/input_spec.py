@@ -53,6 +53,12 @@ class InputSpec(BaseModel):
     required: bool = True
     description: str = ""
     materialize: bool = True
+    resolve_references: bool = False
+    """Resolve direct config references for both preparation and postprocessing.
+
+    Requires a hydrated, non-materialized config input. The config keeps its
+    reference markers; operations explicitly prepare any portable tool files.
+    """
 
     # Hydration control
     hydrate: bool = True
@@ -94,6 +100,21 @@ class InputSpec(BaseModel):
             raise ValueError(msg)
         return self
 
+    @model_validator(mode="after")
+    def _validate_resolve_references(self) -> InputSpec:
+        """Keep typed reference delivery separate from config path substitution."""
+        if self.resolve_references and (
+            self.artifact_type != ArtifactTypes.CONFIG
+            or not self.hydrate
+            or self.materialize
+        ):
+            msg = (
+                "resolve_references requires artifact_type='config', "
+                "hydrate=True, and materialize=False"
+            )
+            raise ValueError(msg)
+        return self
+
     def __hash__(self) -> int:
         """Make InputSpec hashable for use in sets/dicts."""
         return hash(
@@ -105,6 +126,7 @@ class InputSpec(BaseModel):
                 self.hydrate,
                 self.materialize_as,
                 self.with_associated,
+                self.resolve_references,
             )
         )
 
