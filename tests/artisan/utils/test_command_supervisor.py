@@ -349,9 +349,12 @@ def test_owner_closes_multiple_groups_with_one_deadline(proof: Proof) -> None:
         read_until(launched.stdout, newline=True)
     deadline = time.monotonic() + 5
     proof.control("cancel", deadline=deadline)
+    grace_ends = set()
     for request_id in ("first", "second", "third"):
         assert_closed(record := proof.outcome(request_id))
         assert record["deadline"] == deadline
+        grace_ends.add(record["kill_at"])
+    assert len(grace_ends) == 1
     assert time.monotonic() < deadline
 
 
