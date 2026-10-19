@@ -6,11 +6,12 @@ import csv
 import os
 import statistics
 from enum import StrEnum, auto
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -87,7 +88,9 @@ class MetricCalculator(OperationDefinition):
                         "artifact_id": artifact.artifact_id,
                         "original_name": artifact.original_name,
                     }
-                    for artifact in inputs.input_artifacts["dataset"]
+                    for artifact in cast(
+                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                    )
                 ]
             )
         }

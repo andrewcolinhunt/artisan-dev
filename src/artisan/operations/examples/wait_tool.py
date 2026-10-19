@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from enum import StrEnum, auto
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, Field
 
@@ -118,11 +118,12 @@ class WaitTool(OperationDefinition):
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Match marker basenames and explicitly declare each dataset parent."""
         outputs = [path for path in inputs.file_outputs if path.endswith(".csv")]
-        sources = inputs.input_artifacts["dataset"]
+        # The input spec supplies finalized, materialized DataArtifacts.
+        sources = cast(list[DataArtifact], inputs.input_artifacts["dataset"])
         parent_ids = match_outputs_to_inputs_by_stem(
             outputs,
             [
-                (artifact.materialized_path, artifact.artifact_id)
+                (cast(str, artifact.materialized_path), cast(str, artifact.artifact_id))
                 for artifact in sources
             ],
         )

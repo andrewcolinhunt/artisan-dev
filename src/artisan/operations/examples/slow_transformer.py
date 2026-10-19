@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import time
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, Field
 
@@ -88,7 +88,9 @@ class SlowTransformer(OperationDefinition):
                         "artifact_id": artifact.artifact_id,
                         "original_name": artifact.original_name,
                     }
-                    for artifact in inputs.input_artifacts["dataset"]
+                    for artifact in cast(
+                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                    )
                 ]
             )
         }

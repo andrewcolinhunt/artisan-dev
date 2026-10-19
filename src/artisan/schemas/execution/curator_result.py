@@ -9,7 +9,7 @@ The ``CuratorResult`` union captures both for typing and validation.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -74,10 +74,11 @@ class ArtifactResult(BaseModel):
             ValueError: If a role, source list, or reference is invalid.
             TypeError: If the artifact is not an Artifact.
         """
-        if not isinstance(role, str) or not role:
+        # Untyped callers still need the public boundary's runtime validation.
+        if not isinstance(cast(object, role), str) or not role:
             msg = "Output role must be a nonempty string"
             raise ValueError(msg)
-        if not isinstance(artifact, Artifact):
+        if not isinstance(cast(object, artifact), Artifact):
             msg = "artifact must be an Artifact"
             raise TypeError(msg)
         index = len(self.artifacts.get(role, []))

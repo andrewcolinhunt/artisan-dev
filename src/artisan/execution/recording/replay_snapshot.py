@@ -131,14 +131,20 @@ def _configuration(
             )
             values[path] = raw.decode() if isinstance(raw, bytes) else raw
         elif isinstance(value, BaseModel):
-            env_owner = isinstance(value, (EnvironmentSpec, ModalComputeConfig))
+            env_owner = (
+                value
+                if isinstance(value, (EnvironmentSpec, ModalComputeConfig))
+                else None
+            )
             sensitive_env = (
-                sensitive_environment(value.env, value.public_env) if env_owner else {}
+                sensitive_environment(env_owner.env, env_owner.public_env)
+                if env_owner is not None
+                else {}
             )
             for name in type(value).model_fields:
                 child_path = _pointer(path, name)
-                if env_owner and name == "env":
-                    for env_name, item in value.env.items():
+                if env_owner is not None and name == "env":
+                    for env_name, item in env_owner.env.items():
                         visit(
                             item,
                             _pointer(child_path, env_name),

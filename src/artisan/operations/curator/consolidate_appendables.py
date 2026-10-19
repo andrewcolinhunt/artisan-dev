@@ -8,7 +8,7 @@ writes a single combined.jsonl in files_root.
 from __future__ import annotations
 
 from enum import StrEnum, auto
-from typing import TYPE_CHECKING, ClassVar
+from typing import TYPE_CHECKING, ClassVar, cast
 
 import polars as pl
 
@@ -126,7 +126,7 @@ class ConsolidateAppendables(OperationDefinition):
                     external_path=combined_uri,
                     original_name=art.original_name,
                 ),
-                sources={"records": [art.artifact_id]},
+                sources={"records": [cast(str, art.artifact_id)]},
             )
 
         return result
