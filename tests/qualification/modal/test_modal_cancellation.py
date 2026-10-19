@@ -30,7 +30,6 @@ from artisan.execution.tool_endpoint import client as endpoint_client
 from artisan.execution.tool_endpoint.client import EndpointCancellationError
 from artisan.execution.tool_endpoint.protocol import SchemaResponse
 from artisan.execution.tool_endpoint.spec import command_contract
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 from artisan.schemas.specs.input_models import ExecuteInput
 
@@ -48,6 +47,7 @@ async def provider_observation(
             api_pb2.FunctionGetOutputsRequest(
                 function_call_id=call_id,
                 timeout=0,
+                last_entry_id="0-0",
                 max_values=1,
                 clear_on_success=False,
             )
@@ -57,6 +57,14 @@ async def provider_observation(
     result: dict[str, Any] = {
         "observed_at": time.time(),
         "call_statuses": [item.result.status for item in response.outputs],
+        "call_outputs": [
+            {
+                "input_id": item.input_id,
+                "status": item.result.status,
+                "output_created_at": item.output_created_at,
+            }
+            for item in response.outputs
+        ],
     }
     if task_id:
         response = await asyncio.wait_for(
@@ -293,31 +301,26 @@ def test_running_child_closure_and_sibling_isolation(harness: Harness) -> None:
     harness.ready(sibling)
     assert harness.owned[cancelled]["task_id"] != harness.owned[sibling]["task_id"]
     response = harness.cancel(cancelled)
-    assert response["status"] in {"requested", "confirmed"}
+    assert response["status"] == "unknown"
     observed = harness.settled(cancelled)
     harness.completed(sibling)
     assert harness.cancel(sibling)["status"] == "rejected"
     repeated = harness.cancel(cancelled)
-    assert repeated["status"] in {"confirmed", "rejected"}
-    if response["status"] == "confirmed":
-        acknowledgement = harness.owned[cancelled]["cancellations"][0]
-        immediate = acknowledgement["immediate_provider_observation"]["task"]
-        assert immediate["finished_at"] > 0, (
-            "confirmed before positive provider task closure"
-        )
-        acknowledgement["finish_minus_ack_seconds"] = (
-            observed["task"]["finished_at"] - acknowledgement["received_at"]
-        )
-        acknowledgement["interpretation"] = (
-            "Empirical timing only; no synchronous closure guarantee established."
-        )
-        harness.save()
+    assert repeated["status"] == "unknown"
+    acknowledgement = harness.owned[cancelled]["cancellations"][0]
+    acknowledgement["finish_minus_ack_seconds"] = (
+        observed["task"]["finished_at"] - acknowledgement["received_at"]
+    )
+    acknowledgement["interpretation"] = (
+        "Empirical timing only; no synchronous closure guarantee established."
+    )
+    harness.save()
 
 
 def test_cancel_before_command_launch(harness: Harness) -> None:
     call_id = harness.submit(mode="startup", seconds=30)
     harness.ready(call_id, "worker_ready")
-    harness.cancel(call_id)
+    assert harness.cancel(call_id)["status"] == "unknown"
     harness.settled(call_id)
     markers = probe_logs(
         harness.manifest["app_id"], harness.owned[call_id]["token"], harness.started
@@ -336,11 +339,13 @@ def test_cancel_queued_call_does_not_run_later(harness: Harness) -> None:
         )
         == []
     )
-    harness.cancel(queued)
-    harness.settled(queued, require_task=False)
+    assert harness.cancel(queued)["status"] == "unknown"
     for call_id in occupying:
-        harness.cancel(call_id)
+        assert harness.cancel(call_id)["status"] == "unknown"
+    for call_id in occupying:
         harness.settled(call_id)
+    # Modal publishes the queued cancellation output after capacity is available.
+    harness.settled(queued, require_task=False)
     fresh = harness.submit(seconds=2)
     harness.completed(fresh)
     assert (
@@ -382,10 +387,9 @@ def test_real_client_cancel_does_not_deliver_output(
     token = uuid.uuid4().hex
     operation = ManagedCancellationProbe(
         params={"token": token, "mode": "stubborn", "seconds": 90},
-        compute_provider=ComputeProvider(
-            active="modal", modal=ModalComputeConfig(poll_interval=0.1)
-        ),
     )
+    operation.compute_provider.active = "modal"
+    operation.compute_provider.modal.poll_interval = 0.1
     source = tmp_path / "synthetic.csv"
     source.write_text("a,b\n1,2\n")
     output = tmp_path / "outputs"
@@ -420,10 +424,7 @@ def test_real_client_cancel_does_not_deliver_output(
             operation,
             ExecuteInput(inputs={"dataset": str(source)}, execute_dir=str(output)),
         )
-    assert exc.value.acknowledgement.status in {
-        CancellationStatus.CONFIRMED,
-        CancellationStatus.UNKNOWN,
-    }
+    assert exc.value.acknowledgement.status == CancellationStatus.UNKNOWN
     assert len(captured) == 1
     harness.settled(captured[0])
     assert list(output.iterdir()) == []
@@ -495,10 +496,7 @@ def test_pipeline_cancel_preserves_completed_artifacts(
         result = future.result(timeout=20)
         assert time.monotonic() - started < 15
         assert result.status in {StepStatus.CANCELLED, StepStatus.FAILED}
-        assert result.cancellation_status in {
-            CancellationStatus.CONFIRMED,
-            CancellationStatus.UNKNOWN,
-        }
+        assert result.cancellation_status == CancellationStatus.UNKNOWN
         harness.owned[call_id]["pipeline_status"] = {
             "status": result.status.value,
             "cancellation_status": result.cancellation_status.value,
@@ -521,14 +519,31 @@ def test_normal_completion_then_fresh_execution(harness: Harness) -> None:
 
 
 def test_natural_completion_cancellation_race(harness: Harness) -> None:
-    for delay in (1.5, 2.5, 3.5):
-        call_id = harness.submit(seconds=3)
+    outcomes = set()
+    for delay in (0, 5, 9):
+        call_id = harness.submit(seconds=8)
         harness.ready(call_id)
         # Timing selects competing outcomes; final provider records prove them.
         time.sleep(delay)
         response = harness.cancel(call_id)
+        outcomes.add(response["status"])
         if response["status"] == "rejected":
             harness.completed(call_id)
         else:
-            assert response["status"] in {"confirmed", "requested"}
-            harness.settled(call_id)
+            assert response["status"] == "unknown"
+            state = harness.owned[call_id]
+            deadline = min(harness.deadline, time.monotonic() + 45)
+            while time.monotonic() < deadline:
+                observed = provider_observation(call_id, state["task_id"])
+                if observed["call_statuses"]:
+                    break
+                time.sleep(0.5)
+            state["race_terminal_provider_observation"] = observed
+            harness.save()
+            if observed["call_statuses"] == [
+                api_pb2.GenericResult.GENERIC_STATUS_SUCCESS
+            ]:
+                harness.completed(call_id)
+            else:
+                harness.settled(call_id)
+    assert outcomes == {"unknown", "rejected"}
