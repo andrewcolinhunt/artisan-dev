@@ -62,6 +62,7 @@ def _scan_physical(
     fs: AbstractFileSystem,
     storage_options: dict[str, str],
 ) -> pl.LazyFrame:
+    expected_schema = get_physical_schema_for_path(table_path)
     path = uri_join(delta_root, table_path)
     if not fs.exists(path):
         msg = f"Missing required table {table_path!r}"
@@ -72,7 +73,7 @@ def _scan_physical(
     except Exception as exc:
         msg = f"Unreadable Delta table {table_path!r}"
         raise StoreIntegrityError(msg) from exc
-    if schema != get_physical_schema_for_path(table_path):
+    if schema != expected_schema:
         msg = f"Delta table {table_path!r} has an unexpected schema"
         raise StoreIntegrityError(msg)
     return scan

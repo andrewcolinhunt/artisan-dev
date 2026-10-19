@@ -411,3 +411,30 @@ def test_recovery_model_rejects_batch_identity_changed_independently(tmp_path):
             recovery_batch_id="f" * 32,
             logical_commit_id="execution_recovery:" + "f" * 32,
         )
+
+
+@pytest.mark.parametrize(
+    "table_path",
+    ["artifacts/unregistered_domain", "../bad", "/absolute", "artifacts/../bad"],
+)
+def test_plan_reader_distinguishes_registration_from_malformed_paths(
+    tmp_path, table_path
+):
+    from artisan.errors import ApplicationRegistrationError
+
+    fs, delta_root, _, _, plan = _build_input_plan(tmp_path)
+    payload = plan.model_dump(mode="json")
+    payload["tables"][0]["table_path"] = table_path
+    payload["plan_digest"] = _plan_digest(
+        {key: value for key, value in payload.items() if key != "plan_digest"}
+    )
+    path = commit_plan_path(delta_root, plan.step_run_id, plan.commit_kind)
+    with fs.open(path, "w") as stream:
+        json.dump(payload, stream)
+    expected = (
+        ApplicationRegistrationError
+        if table_path == "artifacts/unregistered_domain"
+        else StoreIntegrityError
+    )
+    with pytest.raises(expected):
+        read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)

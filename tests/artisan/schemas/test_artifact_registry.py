@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 from pydantic import Field
 
-from artisan.errors import ArtifactIntegrityError
+from artisan.errors import ApplicationRegistrationError, ArtifactIntegrityError
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -311,7 +311,7 @@ class TestLookup:
     """Public lookup API."""
 
     def test_get_unknown_raises(self) -> None:
-        with pytest.raises(KeyError, match="Unknown artifact type"):
+        with pytest.raises(ApplicationRegistrationError, match="Unknown artifact type"):
             ArtifactTypeDef.get("nonexistent")
 
     def test_get_all_returns_dict(self) -> None:

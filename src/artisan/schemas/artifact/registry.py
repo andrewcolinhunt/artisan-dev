@@ -17,6 +17,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Any, ClassVar, cast
 
+from artisan.errors import ApplicationRegistrationError
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
 
@@ -157,14 +158,14 @@ class ArtifactTypeDef:
             The ArtifactTypeDef subclass.
 
         Raises:
-            KeyError: If key is not registered.
+            ApplicationRegistrationError: If key is not registered.
         """
         if key not in ArtifactTypeDef._registry:
             msg = (
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(ArtifactTypeDef._registry.keys())}"
             )
-            raise KeyError(msg)
+            raise ApplicationRegistrationError(msg)
         return ArtifactTypeDef._registry[key]
 
     @staticmethod

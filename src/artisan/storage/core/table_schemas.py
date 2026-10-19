@@ -14,11 +14,13 @@ Key exports:
 
 from __future__ import annotations
 
+import posixpath
 from typing import Any
 
 import polars as pl
 from polars.datatypes import DataType, DataTypeClass
 
+from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.schemas.enums import TablePath
 
 # Lightweight execution log with success/error/timestamps. Stores
@@ -266,12 +268,19 @@ def get_physical_schema_for_path(table: str | TablePath) -> dict[str, Any]:
     except ValueError:
         from artisan.schemas.artifact.registry import ArtifactTypeDef
 
-        type_def = next(
-            definition
-            for definition in ArtifactTypeDef.get_all().values()
-            if definition.table_path == table
-        )
-        return {**type_def.polars_schema(), "logical_commit_id": pl.String}
+        for definition in ArtifactTypeDef.get_all().values():
+            if definition.table_path == table:
+                return {**definition.polars_schema(), "logical_commit_id": pl.String}
+        if (
+            not table.startswith("artifacts/")
+            or any(part in {"", ".", ".."} for part in table.split("/"))
+            or posixpath.normpath(table) != table
+            or "\\" in table
+        ):
+            msg = "Invalid artifact table path"
+            raise StoreIntegrityError(msg) from None
+        msg = f"No installed artifact definition is registered for table {table!r}"
+        raise ApplicationRegistrationError(msg) from None
 
 
 def get_natural_key(table: str | TablePath) -> tuple[str, ...]:

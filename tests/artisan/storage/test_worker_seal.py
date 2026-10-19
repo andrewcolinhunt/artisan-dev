@@ -9,7 +9,7 @@ import polars as pl
 import pytest
 from fixtures.execution_records import executions_df
 
-from artisan.errors import StoreIntegrityError
+from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.storage.io.publication import publish_immutable_bytes
 from artisan.storage.io.worker_seal import (
     STAGING_INVENTORY_KEY,
@@ -87,5 +87,10 @@ def test_seal_rejects_unsafe_or_unregistered_inventory_filename(tmp_path, filena
             ),
         },
     )
-    with pytest.raises(StoreIntegrityError, match="Unreadable worker seal"):
+    expected = (
+        ApplicationRegistrationError
+        if filename == "unknown.parquet"
+        else StoreIntegrityError
+    )
+    with pytest.raises(expected):
         verify_worker_seal(str(directory), fs)

@@ -255,16 +255,13 @@ class ArtifactStore:
                 referenced_ids.update(frame["artifact_id"].to_list())
         selected = index.filter(pl.col("artifact_id").is_in(referenced_ids))
         types: dict[str, str] = {}
-        registered_types = ArtifactTypeDef.get_all()
         for artifact_id, artifact_type in selected.select(
             "artifact_id", "artifact_type"
         ).iter_rows():
-            if (
-                not isinstance(artifact_type, str)
-                or artifact_type not in registered_types
-            ):
-                msg = f"Unknown staged artifact type {artifact_type!r}"
+            if not isinstance(artifact_type, str) or not artifact_type:
+                msg = "Invalid staged artifact type"
                 raise ArtifactIntegrityError(msg)
+            ArtifactTypeDef.get(artifact_type)
             if types.setdefault(artifact_id, artifact_type) != artifact_type:
                 msg = f"Conflicting staged artifact type for {artifact_id}"
                 raise ArtifactIntegrityError(msg)

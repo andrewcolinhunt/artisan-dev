@@ -39,9 +39,11 @@ from artisan.storage.io.commit_plan import (
     prepare_commit_evidence,
     publish_commit_plan,
     read_commit_plan,
+    read_plan_evidence,
 )
 from artisan.storage.io.publication import is_publication_temporary
 from artisan.storage.io.staging import StagingManager
+from artisan.storage.io.worker_seal import read_worker_files
 from artisan.utils.path import shard_uri, uri_join
 
 RepairClassification = Literal[
@@ -159,7 +161,7 @@ def repair_store(
     staged_paths = tuple(fs.find(staging_root)) if fs.exists(staging_root) else ()
     staged_relative = {_relative_path(staging_root, path, fs) for path in staged_paths}
     controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
-    plans, items = _read_all_plans(committer)
+    plans, items = _preflight_registration(committer, staged_paths)
     items.extend(_plan_ownership_conflicts(plans))
     control_by_id = {
         row["logical_commit_id"]: row for row in controls.iter_rows(named=True)
@@ -495,6 +497,56 @@ def _check_pending_effects(
             physical,
             controls,
         )
+
+
+def _preflight_registration(
+    committer: DeltaCommitter, staged_paths: tuple[str, ...] | None = None
+) -> tuple[dict[str, CommitPlan], list[RepairItem]]:
+    """Require installed definitions across the selected repair inventory."""
+    if staged_paths is None:
+        root = committer.staging_manager.staging_dir
+        staged_paths = (
+            tuple(committer._fs.find(root)) if committer._fs.exists(root) else ()
+        )
+    plans, items = _read_all_plans(committer)
+    for plan in plans.values():
+        try:
+            evidence = read_plan_evidence(
+                plan, committer.staging_manager.staging_dir, committer._fs
+            )
+        except _EVIDENCE_ERRORS:
+            continue
+        _require_index_registrations(
+            evidence.frames.get(TablePath.ARTIFACT_INDEX.value)
+        )
+    _preflight_staging_registration(committer, staged_paths)
+    return plans, items
+
+
+def _preflight_staging_registration(
+    committer: DeltaCommitter, staged_paths: tuple[str, ...]
+) -> None:
+    """Interpret sealed payload registrations before any repair mutation."""
+    for path in staged_paths:
+        if posixpath.basename(
+            path
+        ) != "executions.parquet" or "_orchestrator" in path.split("/"):
+            continue
+        try:
+            files = read_worker_files(posixpath.dirname(path), committer._fs)
+        except _EVIDENCE_ERRORS:
+            # The normal audit owns malformed evidence; configuration errors escape.
+            continue
+        index = files.get("index.parquet")
+        _require_index_registrations(index[1] if index is not None else None)
+
+
+def _require_index_registrations(index: pl.DataFrame | None) -> None:
+    """Distinguish missing installed types from malformed index evidence."""
+    if index is not None and "artifact_type" in index.columns:
+        for kind in index["artifact_type"].unique().to_list():
+            if isinstance(kind, str) and kind:
+                ArtifactTypeDef.get(kind)
 
 
 def _read_all_plans(
