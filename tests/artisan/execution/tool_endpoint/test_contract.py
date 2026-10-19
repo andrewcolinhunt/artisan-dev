@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, ClassVar
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -13,9 +13,10 @@ import jsonschema
 import pytest
 from fastapi.testclient import TestClient
 from fixtures.endpoint_ops import FlagTool, GpuTool, PlainTool
-from pydantic import ValidationError
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
 from artisan.errors import ArtisanError
+from artisan.execution.recording.commands import capture_commands
 from artisan.execution.tool_endpoint import client as client_mod
 from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint import spec as spec_mod
@@ -36,6 +37,8 @@ from artisan.operations.examples import WaitTool
 from artisan.orchestration.engine.step_executor import execute_step
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_overrides import StepOverrides
@@ -45,6 +48,33 @@ from artisan.utils.hashing import (
     compute_step_spec_id,
     effective_config_payload,
 )
+
+
+class CredentialContractTool(PlainTool):
+    name: ClassVar[str] = "credential_contract_test"
+
+    class Params(BaseModel):
+        token: str = Field(description="Synthetic credential-named value.")
+        credential: SecretStr = Field(description="Synthetic typed secret.")
+
+    params: Params
+
+
+class DefaultCredentialContractTool(CredentialContractTool):
+    name: ClassVar[str] = "default_credential_contract_test"
+
+    class Params(CredentialContractTool.Params):
+        pass
+
+    params: Params = Params(
+        token="synthetic-token", credential=SecretStr("synthetic-typed-secret")
+    )
+    tool: ToolSpec = ToolSpec(executable="/tools/synthetic-typed-secret")
+    environments: Environments = Environments(
+        local=LocalEnvironmentSpec(
+            env={"ROOT": "synthetic-typed-secret"}, public_env=("ROOT",)
+        )
+    )
 
 
 def _op(**updates: Any) -> PlainTool:
@@ -110,12 +140,94 @@ def test_contract_unavailable_source_fails(monkeypatch: pytest.MonkeyPatch) -> N
 
 
 @pytest.mark.parametrize(
-    "executable", ["https://user:password@tool.invalid/run", "--token=secret-marker"]
+    "executable",
+    [
+        "https://user:password@tool.invalid/run",
+        "https://:password@tool.invalid/run",
+        "--token=secret-marker",
+    ],
 )
 def test_contract_rejects_sensitive_parts(executable: str) -> None:
     with pytest.raises(ValueError) as error:
         command_contract(PlainTool(tool=ToolSpec(executable=executable)))
     assert executable not in str(error.value)
+
+
+@pytest.mark.parametrize("owner", ["local", "modal"])
+def test_contract_public_environment_preserves_known_secret_precedence(
+    owner: str,
+) -> None:
+    root = "/srv/shared"
+    operation = PlainTool(tool=ToolSpec(executable=f"{root}/bin/tool"))
+    if owner == "local":
+        operation.environments.local = LocalEnvironmentSpec(
+            env={"ROOT": root}, public_env=("ROOT",)
+        )
+    else:
+        operation.compute_provider.modal = type(operation.compute_provider.modal)(
+            **{
+                **operation.compute_provider.modal.model_dump(),
+                "env": {"ROOT": root},
+                "public_env": ("ROOT",),
+            }
+        )
+    assert command_contract(operation).tool_parts == [f"{root}/bin/tool"]
+    with capture_commands(operation) as recorder:
+        recorder.add_sensitive_data(root)
+        with pytest.raises(ValueError, match="sensitive"):
+            command_contract(operation)
+
+
+def test_public_annotation_hash_preserves_modal_checked_policy() -> None:
+    operation = _op(env={"ROOT": "/srv/models"})
+    before = effective_config_payload(operation)
+    operation.compute_provider.modal.public_env = ("ROOT",)
+    annotated = effective_config_payload(operation)
+    assert annotated == before
+    assert annotated["endpoint_contract_policy"] == "fixed_command_v1"
+    operation.compute_provider.modal.env["ROOT"] = "/srv/other"
+    assert effective_config_payload(operation) != before
+    operation.compute_provider.active = "local"
+    assert "endpoint_contract_policy" not in effective_config_payload(operation)
+
+
+@pytest.mark.parametrize("secret", ["synthetic-token", "synthetic-typed-secret"])
+def test_contract_rejects_public_parameter_alias_without_secret_io(
+    monkeypatch: pytest.MonkeyPatch, secret: str
+) -> None:
+    from artisan.execution.recording import commands
+
+    def unexpected_secret_read(*args: Any, **kwargs: Any) -> None:
+        pytest.fail("contract checking must not load endpoint credentials")
+
+    monkeypatch.setattr(commands, "env_or_dotenv", unexpected_secret_read)
+    operation = CredentialContractTool(
+        params={"token": "synthetic-token", "credential": "synthetic-typed-secret"},
+        tool=ToolSpec(executable=f"/tools/{secret}"),
+    )
+    operation.environments.local = LocalEnvironmentSpec(
+        env={"ROOT": secret}, public_env=("ROOT",)
+    )
+    with pytest.raises(ValueError, match="sensitive") as error:
+        command_contract(operation)
+    assert secret not in str(error.value)
+
+
+def test_contract_class_defaults_reject_public_secret_alias_without_construction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from artisan.execution.recording import commands
+
+    def unexpected_call(*args: Any, **kwargs: Any) -> None:
+        pytest.fail(
+            "contract checking must not construct operations or load credentials"
+        )
+
+    monkeypatch.setattr(commands, "env_or_dotenv", unexpected_call)
+    monkeypatch.setattr(DefaultCredentialContractTool, "__init__", unexpected_call)
+    with pytest.raises(ValueError, match="sensitive") as error:
+        command_contract(DefaultCredentialContractTool)
+    assert "synthetic-typed-secret" not in str(error.value)
 
 
 @pytest.mark.parametrize(
