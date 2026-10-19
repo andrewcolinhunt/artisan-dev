@@ -970,10 +970,6 @@ class MockFilterOp(OperationDefinition):
         return PassthroughResult(success=True, passthrough={})
 
 
-# Exercise the filter diagnostic branch without claiming the builtin registry name.
-MockFilterOp.name = "filter"
-
-
 def _make_mock_backend(
     flow_return_value=None, flow_side_effect=None, needs_staging_verification=False
 ):
@@ -2173,6 +2169,11 @@ class TestStagingTimeoutHandling:
 
 class TestFilterStepLogging:
     """Verify filter step logs correct pass/total counts."""
+
+    @pytest.fixture(autouse=True)
+    def _filter_name(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Select filter diagnostics without leaving a mismatched registry entry."""
+        monkeypatch.setattr(MockFilterOp, "name", "filter")
 
     @patch(
         "artisan.orchestration.engine.step_executor._curator_summary",
