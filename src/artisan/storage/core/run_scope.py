@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 import re
+from collections import defaultdict
+from collections.abc import Collection
 from typing import Any
 
 import polars as pl
@@ -55,6 +57,7 @@ def load_execution_membership(
     storage_options: dict[str, str] | None = None,
     pipeline_run_id: str | None = None,
     step_run_id: str | None = None,
+    step_run_ids: Collection[str] | None = None,
 ) -> pl.DataFrame:
     """Derive direct and reused executions for exact current step attempts.
 
@@ -63,7 +66,9 @@ def load_execution_membership(
         fs: Filesystem used for table existence checks.
         storage_options: Delta-rs storage options for cloud backends.
         pipeline_run_id: Optional exact pipeline-run restriction.
-        step_run_id: Optional exact current step-attempt restriction.
+        step_run_id: Optional exact step-attempt restriction, including history.
+        step_run_ids: Frozen exact attempts for internal multi-step readers.
+            Mutually exclusive with step_run_id.
 
     Returns:
         One row per current-step/execution participation. An unknown run or
@@ -74,6 +79,9 @@ def load_execution_membership(
             malformed, dangling, duplicated, or contradictory.
     """
     options = storage_options or {}
+    if step_run_id is not None and step_run_ids is not None:
+        msg = "Select either step_run_id or step_run_ids"
+        raise ValueError(msg)
     assert_store_manifest(delta_root, fs)
     _require_tables(
         delta_root,
@@ -85,11 +93,13 @@ def load_execution_membership(
     reuse = _read_cache_reuse(delta_root, fs, options)
     _validate_relations(steps, executions, reuse)
 
-    attempts = _current_attempts(delta_root, fs, options)
-    if pipeline_run_id is not None:
-        attempts = attempts.filter(pl.col("pipeline_run_id") == pipeline_run_id)
-    if step_run_id is not None:
-        attempts = attempts.filter(pl.col("current_step_run_id") == step_run_id)
+    attempts = _current_attempts(
+        delta_root,
+        fs,
+        options,
+        pipeline_run_id=pipeline_run_id,
+        step_run_ids=[step_run_id] if step_run_id is not None else step_run_ids,
+    )
     if attempts.is_empty():
         return pl.DataFrame(schema=_MEMBERSHIP_SCHEMA)
 
@@ -143,6 +153,7 @@ def load_accepted_outputs(
     storage_options: dict[str, str] | None = None,
     pipeline_run_id: str | None = None,
     step_run_id: str | None = None,
+    step_run_ids: Collection[str] | None = None,
     role: str | None = None,
 ) -> pl.DataFrame:
     """Project accepted direct-and-reused successful output edges."""
@@ -153,6 +164,7 @@ def load_accepted_outputs(
         storage_options=options,
         pipeline_run_id=pipeline_run_id,
         step_run_id=step_run_id,
+        step_run_ids=step_run_ids,
     ).filter(pl.col("status").is_in(_ACCEPTED_OUTPUT_STATUSES) & pl.col("success"))
     if membership.is_empty():
         return pl.DataFrame(schema=_OUTPUT_SCHEMA)
@@ -257,7 +269,8 @@ def load_run_step_outputs(
         fs=fs,
         storage_options=options,
         pipeline_run_id=pipeline_run_id,
-    ).filter(pl.col("current_step_run_id").is_in(selected_ids))
+        step_run_ids=selected_ids,
+    )
 
 
 def validate_cached_executions(
@@ -573,6 +586,9 @@ def _current_attempts(
     delta_root: str,
     fs: AbstractFileSystem,
     options: dict[str, str],
+    *,
+    pipeline_run_id: str | None = None,
+    step_run_ids: Collection[str] | None = None,
 ) -> pl.DataFrame:
     """Project centrally validated current lifecycle attempts."""
     from artisan.orchestration.engine.step_tracker import StepTracker
@@ -582,6 +598,19 @@ def _current_attempts(
         storage_options=options,
         fs=fs,
     ).load_all_current_states()
+    if pipeline_run_id is not None:
+        states = [state for state in states if state.pipeline_run_id == pipeline_run_id]
+    if step_run_ids is not None:
+        states = [state for state in states if state.step_run_id in step_run_ids]
+    else:
+        by_run = defaultdict(list)
+        for state in states:
+            by_run[state.pipeline_run_id].append(state)
+        states = [
+            state
+            for run_states in by_run.values()
+            for state in StepTracker._latest_by_position(run_states)
+        ]
     if not states:
         return pl.DataFrame(
             schema={

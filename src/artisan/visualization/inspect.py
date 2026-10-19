@@ -542,11 +542,40 @@ def _failure_upstream_edges(
     return edges
 
 
+def _validate_attempt_selection(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None,
+    step_run_id: str | None,
+    pipeline_run_id: str | None,
+    step_number: int | None,
+) -> None:
+    """Validate an explicit historical selector before querying output membership."""
+    if step_run_id is None:
+        return
+    from artisan.orchestration.engine.step_tracker import StepTracker
+
+    states = StepTracker(
+        delta_root, fs=fs, storage_options=storage_options
+    ).load_all_current_states()
+    state = next((item for item in states if item.step_run_id == step_run_id), None)
+    if state is None:
+        msg = f"Unknown step attempt {step_run_id!r}"
+        raise ValueError(msg)
+    if pipeline_run_id is not None and state.pipeline_run_id != pipeline_run_id:
+        msg = f"Step attempt {step_run_id!r} does not belong to run {pipeline_run_id!r}"
+        raise ValueError(msg)
+    if step_number is not None and state.step_number != step_number:
+        msg = f"Step attempt {step_run_id!r} is not step {step_number}"
+        raise ValueError(msg)
+
+
 def inspect_step(
     delta_root: str,
     step_number: int,
     *,
     pipeline_run_id: str | None = None,
+    step_run_id: str | None = None,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
@@ -558,11 +587,16 @@ def inspect_step(
             run is selected.
         pipeline_run_id: Exact run whose accepted outputs to inspect. None
             selects artifacts by origin step across all runs.
+        step_run_id: Exact attempt, including history. Must match the required
+            step_number and any supplied pipeline_run_id.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with columns: name, artifact_type, step, details.
+
+    Raises:
+        ValueError: An explicit attempt is unknown or conflicts with run/step.
     """
     empty = pl.DataFrame(
         schema={
@@ -574,11 +608,14 @@ def inspect_step(
     )
 
     fs = _validated_fs(delta_root, fs, storage_options)
+    _validate_attempt_selection(
+        delta_root, fs, storage_options, step_run_id, pipeline_run_id, step_number
+    )
     index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
     if not fs.exists(index_path):
         return empty
 
-    if pipeline_run_id is None:
+    if pipeline_run_id is None and step_run_id is None:
         idx_df = (
             scan_committed(
                 delta_root,
@@ -597,6 +634,7 @@ def inspect_step(
             fs=fs,
             storage_options=storage_options,
             pipeline_run_id=pipeline_run_id,
+            step_run_id=step_run_id,
         )
         rows = [
             {
@@ -667,6 +705,7 @@ def inspect_metrics(
     step_number: int | None = None,
     *,
     pipeline_run_id: str | None = None,
+    step_run_id: str | None = None,
     round_digits: int = 3,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
@@ -679,6 +718,8 @@ def inspect_metrics(
             run is selected. None includes all steps in the selected scope.
         pipeline_run_id: Exact run whose accepted metric outputs to inspect.
             None includes metrics across all runs at their origin steps.
+        step_run_id: Exact attempt, including history. Must match any supplied
+            run or step; omitted positions are inferred from this attempt.
         round_digits: Decimal places for float rounding.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
@@ -688,8 +729,12 @@ def inspect_metrics(
 
     Raises:
         FileNotFoundError: If metrics table doesn't exist.
+        ValueError: An explicit attempt is unknown or conflicts with run/step.
     """
     fs = _validated_fs(delta_root, fs, storage_options)
+    _validate_attempt_selection(
+        delta_root, fs, storage_options, step_run_id, pipeline_run_id, step_number
+    )
     table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("metric"))
     if not fs.exists(table_path):
         msg = f"Metrics table not found at {table_path}"
@@ -702,7 +747,7 @@ def inspect_metrics(
         storage_options=storage_options,
     )
     current_steps: pl.DataFrame | None = None
-    if pipeline_run_id is not None:
+    if pipeline_run_id is not None or step_run_id is not None:
         from artisan.storage.core.run_scope import load_accepted_outputs
 
         outputs = load_accepted_outputs(
@@ -710,6 +755,7 @@ def inspect_metrics(
             fs=fs,
             storage_options=storage_options,
             pipeline_run_id=pipeline_run_id,
+            step_run_id=step_run_id,
         )
         current_steps = outputs.filter(pl.col("artifact_type") == "metric").select(
             "artifact_id", "current_step_number"
@@ -782,6 +828,7 @@ def inspect_data(
     step_number: int | None = None,
     *,
     pipeline_run_id: str | None = None,
+    step_run_id: str | None = None,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
@@ -794,6 +841,8 @@ def inspect_data(
             run is selected. None includes all steps in the selected scope.
         pipeline_run_id: Exact run whose accepted data outputs may match.
             None selects artifacts across all runs by origin step.
+        step_run_id: Exact attempt, including history. Must match any supplied
+            run or step; omitted positions are inferred from this attempt.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
 
@@ -802,9 +851,13 @@ def inspect_data(
 
     Raises:
         FileNotFoundError: If data table doesn't exist.
-        ValueError: If no matching artifacts found or content is None.
+        ValueError: If no matching artifacts found, content is None, or an
+            explicit attempt is unknown or conflicts with run/step.
     """
     fs = _validated_fs(delta_root, fs, storage_options)
+    _validate_attempt_selection(
+        delta_root, fs, storage_options, step_run_id, pipeline_run_id, step_number
+    )
     table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("data"))
     if not fs.exists(table_path):
         msg = f"Data table not found at {table_path}"
@@ -818,7 +871,7 @@ def inspect_data(
     )
     if name is not None:
         scanner = scanner.filter(pl.col("original_name") == name)
-    if pipeline_run_id is not None:
+    if pipeline_run_id is not None or step_run_id is not None:
         from artisan.storage.core.run_scope import load_accepted_outputs
 
         outputs = load_accepted_outputs(
@@ -826,6 +879,7 @@ def inspect_data(
             fs=fs,
             storage_options=storage_options,
             pipeline_run_id=pipeline_run_id,
+            step_run_id=step_run_id,
         )
         artifact_ids = [
             row["artifact_id"]
