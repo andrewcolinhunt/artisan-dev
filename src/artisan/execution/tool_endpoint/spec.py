@@ -24,6 +24,7 @@ from artisan.schemas.operation_config.compute import (
     ModalComputeConfig,
 )
 from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.utils.configuration_secrets import sensitive_environment
 
 
 class EndpointSpec(BaseModel):
@@ -172,20 +173,41 @@ def command_contract(
     current = current_recorder()
     if current is not None:
         recorder.add_sensitive_data(current.sensitive_values)
+    if isinstance(operation, type):
+        defaults = {
+            name: field.default
+            for name, field in op_cls.model_fields.items()
+            if name not in {"environments", "compute_provider"}
+            and not field.is_required()
+            and field.default_factory is None
+        }
+        recorder._learn_json(defaults)
+        for default in defaults.values():
+            recorder._learn_model_fields(default, set())
+    else:
+        recorder._learn_model_fields(operation, {"environments", "compute_provider"})
     provider = (
         op_cls.model_fields["compute_provider"].default
         if isinstance(operation, type)
         else operation.compute_provider
     )
     modal = getattr(provider, "modal", None)
-    recorder.add_environment(getattr(modal, "env", {}))
+    recorder.add_environment(
+        sensitive_environment(
+            getattr(modal, "env", {}), getattr(modal, "public_env", ())
+        )
+    )
     environments = (
         op_cls.model_fields["environments"].default
         if isinstance(operation, type)
         else operation.environments
     )
     environment = getattr(environments, getattr(environments, "active", ""), None)
-    recorder.add_environment(getattr(environment, "env", {}))
+    recorder.add_environment(
+        sensitive_environment(
+            getattr(environment, "env", {}), getattr(environment, "public_env", ())
+        )
+    )
     # Use the same URI, flag, and known-value policy as command evidence.
     if recorder._argv(parts) != parts:
         msg = "command declaration contains sensitive values"
