@@ -6,7 +6,7 @@ import csv
 import os
 import random
 from enum import StrEnum
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, Field
 
@@ -112,7 +112,9 @@ class DataTransformer(OperationDefinition):
                         "artifact_id": artifact.artifact_id,
                         "original_name": artifact.original_name,
                     }
-                    for artifact in inputs.input_artifacts["dataset"]
+                    for artifact in cast(
+                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                    )
                 ]
             )
         }

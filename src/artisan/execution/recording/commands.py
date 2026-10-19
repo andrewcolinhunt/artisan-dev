@@ -6,7 +6,7 @@ import json
 import os
 import re
 import threading
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, cast, get_args, get_origin
@@ -117,9 +117,11 @@ class CommandRecorder:
             for name, field in annotation.model_fields.items():
                 aliases = [name, field.alias, field.validation_alias]
                 for alias in aliases:
-                    choices = (
-                        alias.choices if isinstance(alias, AliasChoices) else [alias]
-                    )
+                    choices: Sequence[str | AliasPath | None]
+                    if isinstance(alias, AliasChoices):
+                        choices = alias.choices
+                    else:
+                        choices = [alias]
                     for choice in choices:
                         item = (
                             choice.search_dict_for_path(supplied)

@@ -103,7 +103,7 @@ def sanitize_replay_snapshot(
     recorder: CommandRecorder, snapshot: ReplaySnapshot
 ) -> ReplaySnapshot:
     """Refuse earlier public evidence containing sensitivity discovered at seal."""
-    user_data = [
+    user_data: list[object] = [
         snapshot.operation.configuration if snapshot.operation is not None else None,
         snapshot.source.roots if snapshot.source is not None else None,
         [observation.diagnostic_error for observation in snapshot.remote_identity],
