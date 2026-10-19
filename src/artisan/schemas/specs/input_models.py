@@ -38,8 +38,7 @@ class _InputArtifactsMixin:
             ValueError: If the config is not a resolved, finalized input.
         """
         if (
-            not isinstance(config, ExecutionConfigArtifact)
-            or config.artifact_id is None
+            config.artifact_id is None
             or config.artifact_id not in self._references
         ):
             msg = "Config is not a declared input with resolved references"
