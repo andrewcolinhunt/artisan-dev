@@ -186,8 +186,12 @@ ARTISAN_S3_ENDPOINT=http://127.0.0.1:9000 pixi run --locked -e dev test-s3
 
 The tests create and remove isolated buckets. Set `ARTISAN_S3_ACCESS_KEY` and
 `ARTISAN_S3_SECRET_KEY` if the service uses credentials other than `minioadmin`.
-If S3 tests are skipped, read the reported service-startup error; skipped tests
-do not verify storage behavior.
+The `test` and `test-s3` tasks require S3 checks to run: unavailable storage is
+an error. Without an explicit endpoint, tests start an isolated container from
+the immutable MinIO image pinned in `tests/conftest.py`. This is a third-party
+build of the upstream MinIO source from [coollabsio/minio](https://github.com/coollabsio/minio).
+Ad hoc `pytest` runs can still skip when storage is unavailable; add
+`--require-s3` when every selected S3 test must execute.
 
 ### Docs environment
 
