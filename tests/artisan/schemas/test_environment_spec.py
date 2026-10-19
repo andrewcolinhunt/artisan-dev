@@ -87,6 +87,7 @@ class TestDockerEnvironmentSpec:
         spec = DockerEnvironmentSpec(image="samtools:1.17")
         result = spec.wrap_command(["samtools", "sort"])
         assert result[:3] == ["docker", "run", "--rm"]
+        assert "--workdir" not in result
         assert "samtools:1.17" in result
         assert result[-2:] == ["samtools", "sort"]
 
@@ -96,11 +97,15 @@ class TestDockerEnvironmentSpec:
         assert "--gpus" in result
         assert "all" in result
 
-    def test_wrap_command_with_cwd(self):
+    @pytest.mark.parametrize("cwd", ["/data/sandbox/step0", "/data/sandbox/step 0"])
+    def test_wrap_command_with_cwd(self, cwd: str) -> None:
         spec = DockerEnvironmentSpec(image="img:latest")
-        result = spec.wrap_command(["cmd"], cwd="/data/sandbox/step0")
+        result = spec.wrap_command(["cmd"], cwd=cwd)
         assert "--volume" in result
         assert "/data/sandbox:/data/sandbox" in result
+        index = result.index("--workdir")
+        assert result[index + 1] == cwd
+        assert index < result.index("img:latest")
 
     def test_wrap_command_with_binds(self):
         spec = DockerEnvironmentSpec(
