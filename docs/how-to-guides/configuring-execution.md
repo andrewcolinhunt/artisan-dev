@@ -349,8 +349,13 @@ External environments still permit ordinary execution. Once an external environm
 has launched work, native cancellation remains `unknown` without separate
 evidence that the external work stopped, even if its host command finished
 earlier. Pixi keeps this conservative behavior until its locked wrapper passes
-the required native platform checks. A remote tool endpoint also retains its
-provider's independent cancellation requirements.
+the required native platform checks.
+
+Modal tool endpoints request termination of the exact named call and its worker
+container. An accepted provider request does not establish that the container
+has stopped, so Artisan reports `unknown` and does not download or ingest the
+cancelled result. A retained result that already completed before the request
+produces `rejected`. Expired results and provider failures remain `unknown`.
 
 Custom environment authors declare the class attribute `cancellation_scope`.
 Its default is `"external"`; `"process_group"` requires the wrapper to keep all
