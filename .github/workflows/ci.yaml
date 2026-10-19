@@ -79,6 +79,103 @@ jobs:
       - name: Execute every CI-runnable tutorial notebook end-to-end
         run: pixi run -e dev test-notebook
 
+  command-supervisor-proof:
+    name: Command ownership proof (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-64
+            runner: ubuntu-24.04
+            system: Linux
+            machine: x86_64
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            system: Linux
+            machine: aarch64
+          - platform: osx-arm64
+            runner: macos-15
+            system: Darwin
+            machine: arm64
+    defaults:
+      run:
+        shell: bash
+    env:
+      PIXI_LOCKED: "1"
+      PROOF_RESULTS: command-supervisor-proof-results
+      PROOF_RUNNER: ${{ matrix.runner }}
+      PROOF_SYSTEM: ${{ matrix.system }}
+      PROOF_MACHINE: ${{ matrix.machine }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Record native host
+        run: |
+          mkdir -p "$PROOF_RESULTS"
+          {
+            git rev-parse HEAD
+            uname -a
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              sw_vers
+            else
+              cat /etc/os-release
+            fi
+          } | tee "$PROOF_RESULTS/host.txt"
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.66.0
+          environments: dev
+          locked: true
+
+      - name: Record and verify native environment
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python - <<'PY' | tee "$PROOF_RESULTS/environment.json"
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import subprocess
+          import sys
+
+          metadata = {
+              "runner": os.environ["PROOF_RUNNER"],
+              "runner_image": os.environ.get("ImageVersion"),
+              "system": platform.system(),
+              "release": platform.release(),
+              "version": platform.version(),
+              "machine": platform.machine(),
+              "macos": platform.mac_ver()[0],
+              "python": sys.version,
+              "pixi": subprocess.check_output(
+                  [str(Path.home() / ".pixi/bin/pixi"), "--version"], text=True
+              ).strip(),
+              "lock_sha256": hashlib.sha256(Path("pixi.lock").read_bytes()).hexdigest(),
+          }
+          print(json.dumps(metadata, indent=2), flush=True)
+          assert metadata["system"] == os.environ["PROOF_SYSTEM"], metadata
+          assert metadata["machine"] == os.environ["PROOF_MACHINE"], metadata
+          PY
+
+      - name: Prove native command ownership
+        timeout-minutes: 5
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
+            tests/artisan/utils/test_command_supervisor.py -q -ra \
+            --junitxml="$PROOF_RESULTS/junit.xml" \
+            --basetemp="$PROOF_RESULTS/traces" 2>&1 | tee "$PROOF_RESULTS/pytest.log"
+
+      - name: Preserve native proof evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: command-supervisor-proof-${{ matrix.platform }}
+          path: ${{ env.PROOF_RESULTS }}
+          if-no-files-found: error
+
   build:
     runs-on: ubuntu-latest
     env:
