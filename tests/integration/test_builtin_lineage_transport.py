@@ -19,6 +19,7 @@ from artisan.execution.lineage.validation import (
 )
 from artisan.execution.tool_endpoint.protocol import ToolRequest
 from artisan.execution.tool_endpoint.server import run_tool_request
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.operations.base import OperationDefinition
 from artisan.operations.examples import CsvHead, WaitTool
@@ -67,7 +68,12 @@ def test_builtin_exact_parents_and_names_survive_worker_transport(
                 refs = transport.pack_inputs({"dataset": path})
                 assert refs[0].filename == Path(path).name
                 response = run_tool_request(
-                    operation_cls, ToolRequest(params=params, inputs=refs)
+                    operation_cls,
+                    ToolRequest(
+                        expected_command_contract=command_contract(operation_cls),
+                        params=params,
+                        inputs=refs,
+                    ),
                 )
                 assert response.manifest.error is None
                 assert response.output_tar is not None

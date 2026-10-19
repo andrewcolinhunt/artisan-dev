@@ -21,7 +21,7 @@ from artisan.execution.tool_endpoint import deploy as deploy_mod
 from artisan.execution.tool_endpoint._optional import MODAL_EXTRA_MESSAGE
 from artisan.execution.tool_endpoint.deploy import build_app
 from artisan.execution.tool_endpoint.protocol import CancelResponse, SchemaResponse
-from artisan.execution.tool_endpoint.spec import endpoint_spec
+from artisan.execution.tool_endpoint.spec import command_contract, endpoint_spec
 from artisan.operations.examples import DataGenerator, WaitTool
 from artisan.registry.schemas import params_schema_for
 from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
@@ -196,6 +196,9 @@ class TestBakedPolicyBoundary:
         ):
             result = worker_fn(
                 {
+                    "expected_command_contract": command_contract(GpuTool).model_dump(
+                        mode="json"
+                    ),
                     "params": {"contigs": "10-20"},
                     "inputs": [],
                     "output_store": None,
@@ -274,6 +277,9 @@ class TestBakedPolicyBoundary:
         with pytest.raises(Exception) as exc_info:
             asyncio.run(
                 submit(
+                    expected_command_contract=command_contract(
+                        GpuTool
+                    ).model_dump_json(),
                     params=_PARAMS,
                     input_uris='{"reference": "s3://bucket/input"}',
                     input_filenames="{}",
@@ -297,6 +303,7 @@ class TestBakedPolicyBoundary:
 
         response = asyncio.run(
             submit(
+                expected_command_contract=command_contract(GpuTool).model_dump_json(),
                 params=_PARAMS,
                 input_uris='{"reference": "s3://bucket/input"}',
                 input_filenames='{"reference": "source.bin"}',
@@ -358,6 +365,9 @@ class TestBakedPolicyBoundary:
         with pytest.raises(Exception) as exc_info:
             asyncio.run(
                 submit(
+                    expected_command_contract=command_contract(
+                        GpuTool
+                    ).model_dump_json(),
                     params=_PARAMS,
                     input_uris=input_uris,
                     input_filenames="{}",
@@ -410,12 +420,28 @@ class TestEndpointRoutes:
         served = client.get("/schema").json()["params_schema"]
         payload = {"contigs": "10-20"}
         jsonschema.validate(payload, served)  # conforms to what /schema served
-        response = client.post("/submit", data={"params": json.dumps(payload)})
+        response = client.post(
+            "/submit",
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": json.dumps(payload),
+            },
+        )
         assert response.status_code == 200
         assert response.json() == {"call_id": "fc-1"}
 
     def test_nonconforming_params_rejected(self, client: TestClient):
-        response = client.post("/submit", data={"params": json.dumps({"contigs": 1})})
+        response = client.post(
+            "/submit",
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": json.dumps({"contigs": 1}),
+            },
+        )
         assert response.status_code == 422
 
     @pytest.mark.parametrize(
@@ -430,7 +456,16 @@ class TestEndpointRoutes:
     def test_submit_rejects_non_string_maps(
         self, client: TestClient, worker: MagicMock, field: str, value: str
     ):
-        response = client.post("/submit", data={"params": _PARAMS, field: value})
+        response = client.post(
+            "/submit",
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": _PARAMS,
+                field: value,
+            },
+        )
         assert response.status_code == 422
         assert "mapping strings to strings" in response.json()["detail"]
         worker.spawn.aio.assert_not_called()
@@ -438,7 +473,13 @@ class TestEndpointRoutes:
     def test_submit_rejects_unknown_role(self, client: TestClient, worker: MagicMock):
         response = client.post(
             "/submit",
-            data={"params": _PARAMS, "input_uris": '{"unknown": "s3://b/k"}'},
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": _PARAMS,
+                "input_uris": '{"unknown": "s3://b/k"}',
+            },
         )
         assert response.status_code == 422
         assert "unknown input roles" in response.json()["detail"]
@@ -450,6 +491,9 @@ class TestEndpointRoutes:
         response = client.post(
             "/submit",
             data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
                 "params": _PARAMS,
                 "input_uris": '{"reference": "s3://b/k"}',
             },
@@ -465,6 +509,9 @@ class TestEndpointRoutes:
         response = client.post(
             "/submit",
             data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
                 "params": _PARAMS,
                 "input_uris": (
                     '{"reference": "s3://b/one", "reference": "s3://b/two"}'
@@ -482,6 +529,9 @@ class TestEndpointRoutes:
         response = client.post(
             "/submit",
             data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
                 "params": _PARAMS,
                 "input_filenames": '{"reference": "source.pdb"}',
             },
@@ -501,7 +551,13 @@ class TestEndpointRoutes:
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
         response = client.post(
             "/submit",
-            data={"params": _PARAMS, "output_store": "s3://bucket/prefix"},
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": _PARAMS,
+                "output_store": "s3://bucket/prefix",
+            },
         )
         assert response.status_code == 200
         payload = worker.spawn.aio.call_args.args[0]
@@ -511,12 +567,30 @@ class TestEndpointRoutes:
         self, client: TestClient, worker: MagicMock
     ):
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
-        assert client.post("/submit", data={"params": _PARAMS}).status_code == 200
+        assert (
+            client.post(
+                "/submit",
+                data={
+                    "expected_command_contract": command_contract(
+                        GpuTool
+                    ).model_dump_json(),
+                    "params": _PARAMS,
+                },
+            ).status_code
+            == 200
+        )
         assert worker.spawn.aio.call_args.args[0]["output_store"] is None
 
     def test_schemeless_output_store_rejected(self, client: TestClient):
         response = client.post(
-            "/submit", data={"params": _PARAMS, "output_store": "not-a-uri"}
+            "/submit",
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": _PARAMS,
+                "output_store": "not-a-uri",
+            },
         )
         assert response.status_code == 422
         assert "output_store" in response.json()["detail"]
@@ -527,10 +601,24 @@ class TestEndpointRoutes:
         """Keep each request's output destination independent."""
         worker.spawn.aio = AsyncMock(return_value=SimpleNamespace(object_id="fc-1"))
         client.post(
-            "/submit", data={"params": _PARAMS, "output_store": "s3://team-a/runs"}
+            "/submit",
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": _PARAMS,
+                "output_store": "s3://team-a/runs",
+            },
         )
         client.post(
-            "/submit", data={"params": _PARAMS, "output_store": "s3://team-b/other"}
+            "/submit",
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": _PARAMS,
+                "output_store": "s3://team-b/other",
+            },
         )
         stores = [
             call.args[0]["output_store"] for call in worker.spawn.aio.call_args_list
@@ -545,7 +633,15 @@ class TestEndpointRoutes:
         client = TestClient(endpoint_fn())
         worker = mock_modal.App.return_value.function.return_value.return_value
 
-        response = client.post("/submit", data={"params": json.dumps({"seconds": 1})})
+        response = client.post(
+            "/submit",
+            data={
+                "expected_command_contract": command_contract(
+                    WaitTool
+                ).model_dump_json(),
+                "params": json.dumps({"seconds": 1}),
+            },
+        )
 
         assert response.status_code == 422
         assert "missing required input roles" in response.json()["detail"]
@@ -563,7 +659,7 @@ class TestEndpointRoutes:
             }
         )
         monkeypatch.setattr(deploy_mod, "endpoint_spec", lambda _op: spec)
-        monkeypatch.setattr(deploy_mod, "MAX_INLINE_BYTES", 4)
+        monkeypatch.setattr(deploy_mod, "MAX_INLINE_BYTES", 1024)
         build_app(GpuTool)
         endpoint_fn = mock_modal.asgi_app.return_value.call_args.args[0]
         client = TestClient(endpoint_fn())
@@ -571,15 +667,20 @@ class TestEndpointRoutes:
 
         response = client.post(
             "/submit",
-            data={"params": _PARAMS},
+            data={
+                "expected_command_contract": command_contract(
+                    GpuTool
+                ).model_dump_json(),
+                "params": _PARAMS,
+            },
             files=[
-                ("files", ("left", b"abc")),
-                ("files", ("right", b"de")),
+                ("files", ("left", b"a" * 600)),
+                ("files", ("right", b"b" * 600)),
             ],
         )
 
         assert response.status_code == 413
-        assert "4-byte aggregate limit" in response.json()["detail"]
+        assert "1024-byte aggregate limit" in response.json()["detail"]
         worker.spawn.aio.assert_not_called()
 
 
@@ -819,6 +920,7 @@ class TestParameterlessSubmit:
 
         result = asyncio.run(
             submit(
+                expected_command_contract=command_contract(PlainTool).model_dump_json(),
                 params="{}",
                 input_uris="{}",
                 input_filenames="{}",
@@ -839,6 +941,9 @@ class TestParameterlessSubmit:
         with pytest.raises(Exception) as exc_info:
             asyncio.run(
                 submit(
+                    expected_command_contract=command_contract(
+                        PlainTool
+                    ).model_dump_json(),
                     params=params,
                     input_uris="{}",
                     input_filenames="{}",
@@ -865,6 +970,9 @@ class TestParameterlessSubmit:
         with pytest.raises(Exception) as exc_info:
             asyncio.run(
                 submit(
+                    expected_command_contract=command_contract(
+                        PlainTool
+                    ).model_dump_json(),
                     params="[]",
                     input_uris="{}",
                     input_filenames="{}",

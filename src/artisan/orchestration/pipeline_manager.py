@@ -29,6 +29,7 @@ from artisan.errors import PersistenceIntegrityError, StoreIntegrityError
 from artisan.execution.executors.curator import is_curator_operation
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.commands import CommandRecorder
+from artisan.execution.tool_endpoint.spec import validate_deployment_overrides
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
 from artisan.orchestration.engine.step_executor import (
@@ -2108,6 +2109,7 @@ class PipelineManager:
             # Prepare once after running is durable: input resolution, path
             # promotion, cache lookup, and dispatch are operational work.
             prepared_operation = instantiate_operation(operation, ov)
+            validate_deployment_overrides(prepared_operation)
             already_verified: set[str] = set()
             if _is_file_path_input(inputs):
                 promoted_inputs, already_verified = self._handle_file_path_inputs(

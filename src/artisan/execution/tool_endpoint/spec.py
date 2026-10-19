@@ -13,7 +13,11 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from artisan.errors import ArtisanError, ErrorCode
+from artisan.execution.recording.commands import CommandRecorder, current_recorder
+from artisan.execution.tool_endpoint.protocol import CommandContract
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.registry.resolve import operation_identity
 from artisan.registry.schemas import params_schema_for
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
@@ -126,3 +130,106 @@ def endpoint_spec(op_cls: type[OperationDefinition]) -> EndpointSpec:
         },
         data_policy=modal_cfg.data_policy.model_dump(mode="json"),
     )
+
+
+_DEPLOYMENT_FIELDS = (
+    "image",
+    "image_registry_secret",
+    "secrets",
+    "volumes",
+    "env",
+    "local_python_sources",
+    "retries",
+    "min_containers",
+    "max_containers",
+    "scaledown_window",
+    "data_policy",
+)
+
+
+def command_contract(
+    operation: type[OperationDefinition] | OperationDefinition,
+) -> CommandContract:
+    """Describe a class or instance without constructing required Params.
+
+    Raises:
+        ValueError: The command is unavailable or contains sensitive values.
+    """
+    op_cls = operation if isinstance(operation, type) else type(operation)
+    tool = (
+        op_cls.model_fields["tool"].default
+        if isinstance(operation, type)
+        else operation.tool
+    )
+    if not op_cls.declares_command_execute():
+        msg = "operation does not declare a command"
+        raise ValueError(msg)
+    if (tool is None) != op_cls.execute_as_tool:
+        msg = "command kind and ToolSpec declaration disagree"
+        raise ValueError(msg)
+    parts = tool.parts() if tool is not None else []
+    recorder = CommandRecorder()
+    current = current_recorder()
+    if current is not None:
+        recorder.add_sensitive_data(current.sensitive_values)
+    provider = (
+        op_cls.model_fields["compute_provider"].default
+        if isinstance(operation, type)
+        else operation.compute_provider
+    )
+    modal = getattr(provider, "modal", None)
+    recorder.add_environment(getattr(modal, "env", {}))
+    environments = (
+        op_cls.model_fields["environments"].default
+        if isinstance(operation, type)
+        else operation.environments
+    )
+    environment = getattr(environments, getattr(environments, "active", ""), None)
+    recorder.add_environment(getattr(environment, "env", {}))
+    # Use the same URI, flag, and known-value policy as command evidence.
+    if recorder._argv(parts) != parts:
+        msg = "command declaration contains sensitive values"
+        raise ValueError(msg)
+    return CommandContract(
+        operation_identity=operation_identity(op_cls),
+        kind="python_function" if op_cls.execute_as_tool else "tool",
+        tool_parts=parts,
+    )
+
+
+def validate_deployment_overrides(
+    operation: OperationDefinition, *, endpoint_call: bool = False
+) -> None:
+    """Reject ignored Modal infrastructure overrides before any cache lookup.
+
+    This check reads declarations only; it performs no discovery or secret I/O.
+    Client routing, polling, output selection, and inactive providers are excluded.
+    """
+    if not endpoint_call and operation.compute_provider.active != "modal":
+        return
+    defaults = type(operation).model_fields["compute_provider"].default
+    declared = defaults.modal if isinstance(defaults, ComputeProvider) else None
+    actual = operation.compute_provider.modal
+    field = None
+    if declared is None or actual is None:
+        field = "compute_provider.modal"
+    else:
+        field = next(
+            (
+                name
+                for name in _DEPLOYMENT_FIELDS
+                if getattr(actual, name) != getattr(declared, name)
+            ),
+            None,
+        )
+    resources = type(operation).model_fields["compute_resources"].default
+    if field is None and operation.compute_resources != resources:
+        field = "compute_resources"
+    if field is not None:
+        raise ArtisanError(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message=f"Modal deployment field {field} differs from the class declaration; change the declaration and explicitly deploy or select the compatible endpoint",
+            error_type="config",
+            operation_name=operation.name,
+            recovery_hint="CHECK_INPUT",
+        )

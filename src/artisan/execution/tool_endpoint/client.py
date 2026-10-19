@@ -39,10 +39,15 @@ from artisan.execution.recording.replay_snapshot import current_replay_builder
 from artisan.execution.tool_endpoint._optional import import_modal
 from artisan.execution.tool_endpoint.protocol import (
     CancelResponse,
+    CommandContract,
     InputRef,
     ResultResponse,
     SchemaResponse,
     ToolManifest,
+)
+from artisan.execution.tool_endpoint.spec import (
+    command_contract,
+    validate_deployment_overrides,
 )
 from artisan.execution.tool_endpoint.transport import (
     EndpointTransportError,
@@ -216,6 +221,7 @@ def _call_endpoint(
     state: _RemoteCall,
 ) -> CancellationAcknowledgement | None:
     """Submit, poll, and receive one invocation while updating call evidence."""
+    validate_deployment_overrides(operation, endpoint_call=True)
     cfg = operation.compute_provider.modal
     if not isinstance(cfg, ModalComputeConfig):
         raise ArtisanError(
@@ -228,20 +234,6 @@ def _call_endpoint(
     cfg = _validated_modal_config(cfg, operation.name)
     base_url, headers = _resolve_target_and_auth(cfg, operation.name)
     transport = InlineTransport()
-    refs = _pack_request_inputs(operation.name, inputs, cfg, transport)
-    multipart = [
-        ("files", (ref.name, ref.data)) for ref in refs if ref.data is not None
-    ]
-    uris = {ref.name: ref.uri for ref in refs if ref.uri is not None}
-    filenames = {ref.name: ref.filename for ref in refs if ref.filename}
-    integrity = {
-        ref.name: {
-            "content_digest": ref.content_digest,
-            "size_bytes": ref.size_bytes,
-        }
-        for ref in refs
-        if ref.uri is not None
-    }
     output_store = None
     if cfg.output_store is not None:
         try:
@@ -260,8 +252,23 @@ def _call_endpoint(
         timeout=_HTTP_TIMEOUT,
         follow_redirects=False,
     ) as client:
-        accepted_identity = _replay_handshake(client, operation.name, state)
+        accepted_contract = _handshake(client, operation, state)
+        refs = _pack_request_inputs(operation.name, inputs, cfg, transport)
+        multipart = [
+            ("files", (ref.name, ref.data)) for ref in refs if ref.data is not None
+        ]
+        uris = {ref.name: ref.uri for ref in refs if ref.uri is not None}
+        filenames = {ref.name: ref.filename for ref in refs if ref.filename}
+        integrity = {
+            ref.name: {
+                "content_digest": ref.content_digest,
+                "size_bytes": ref.size_bytes,
+            }
+            for ref in refs
+            if ref.uri is not None
+        }
         data = {
+            "expected_command_contract": accepted_contract.model_dump_json(),
             "params": operation.params_json(),
             "input_uris": json.dumps(uris),
             "input_filenames": json.dumps(filenames),
@@ -301,12 +308,12 @@ def _call_endpoint(
                 if manifest.log_tail and inputs.log_path:
                     _append_log(inputs.log_path, sanitize_diagnostic(manifest.log_tail))
                 if (
-                    accepted_identity is not None
-                    and state.identity != accepted_identity
+                    manifest.error is None
+                    and manifest.command_contract != accepted_contract
                 ):
                     raise _config_error(
                         operation.name,
-                        "endpoint worker identity changed after the replay handshake",
+                        "endpoint worker command contract changed after the handshake",
                     )
                 if manifest.error is not None:
                     _raise_from_envelope(
@@ -367,22 +374,35 @@ def _call_endpoint(
                 raise
 
 
-def _replay_handshake(
+def _handshake(
     client: httpx.Client,
-    op_name: str,
+    operation: Any,
     state: _RemoteCall,
-) -> OperationIdentity | None:
-    """Require compatible remote code and debug support before remote submission."""
-    if not state.debug:
-        return None
+) -> CommandContract:
+    """Check every invocation; replay additionally verifies historical identity."""
+    op_name = operation.name
+    try:
+        expected = command_contract(operation)
+    except (TypeError, ValueError):
+        raise _config_error(
+            op_name, "command declaration is unavailable or sensitive"
+        ) from None
     response = client.get("/schema")
     _check(response, op_name)
     try:
         schema = SchemaResponse.model_validate(response.json())
     except (TypeError, ValueError):
         raise _config_error(
-            op_name, "endpoint replay protocol is incompatible; redeploy the endpoint"
+            op_name,
+            "endpoint command protocol is incompatible; explicitly redeploy the endpoint",
         ) from None
+    if schema.command_contract != expected:
+        raise _config_error(
+            op_name,
+            "command contract differs from deployment; explicitly redeploy or select a compatible endpoint",
+        )
+    if not state.debug:
+        return schema.command_contract
     if not schema.debug_capture_supported:
         raise _config_error(op_name, "endpoint does not support diagnostic capture")
     builder = current_replay_builder()
@@ -412,7 +432,7 @@ def _replay_handshake(
                 op_name,
                 "endpoint operation identity changed since the source execution",
             )
-    return schema.operation_identity
+    return schema.command_contract
 
 
 def _receive_diagnostics(

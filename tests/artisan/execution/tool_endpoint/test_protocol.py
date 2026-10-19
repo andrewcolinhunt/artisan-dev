@@ -17,6 +17,7 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
     WorkerResult,
 )
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.operations.examples import WaitTool
 from artisan.registry.resolve import operation_identity
 from artisan.schemas.execution.command_record import CommandRecording
@@ -60,24 +61,32 @@ class TestInputRef:
 
 class TestToolRequest:
     def test_defaults(self):
-        request = ToolRequest()
+        request = ToolRequest(
+            expected_command_contract=command_contract(WaitTool),
+        )
         assert request.params == {}
         assert request.inputs == []
         assert request.output_store is None
 
     def test_round_trip_with_bytes(self):
         request = ToolRequest(
-            params={"n": 1}, inputs=[InputRef(name="f", data=b"\x00\x01")]
+            expected_command_contract=command_contract(WaitTool),
+            params={"n": 1},
+            inputs=[InputRef(name="f", data=b"\x00\x01")],
         )
         restored = ToolRequest(**request.model_dump())
         assert restored == request
 
     def test_output_store_round_trips(self):
-        request = ToolRequest(output_store="s3://bucket/prefix")
+        request = ToolRequest(
+            expected_command_contract=command_contract(WaitTool),
+            output_store="s3://bucket/prefix",
+        )
         assert ToolRequest(**request.model_dump()) == request
 
     def test_deployment_policy_is_not_a_wire_field(self):
         assert set(ToolRequest.model_fields) == {
+            "expected_command_contract",
             "params",
             "inputs",
             "output_store",
@@ -103,6 +112,7 @@ class TestToolRequest:
 class TestToolManifest:
     def test_defaults(self):
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -114,6 +124,7 @@ class TestToolManifest:
 
     def test_stored_round_trip(self):
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -130,6 +141,7 @@ class TestToolManifest:
         stored = StoredOutputs(uri="https://bucket.s3.amazonaws.com/run42.tar.gz")
         assert stored.presigned_url is None
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -145,6 +157,7 @@ class TestToolManifest:
             operation_name="wait_tool",
         ).envelope
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -161,6 +174,7 @@ class TestWorkerResult:
     def test_round_trip_with_tar(self):
         result = WorkerResult(
             manifest=ToolManifest(
+                command_contract=command_contract(WaitTool),
                 operation_identity=operation_identity(WaitTool),
                 debug_capture=None,
                 command_recording=CommandRecording.empty(),
@@ -174,6 +188,7 @@ class TestWorkerResult:
     def test_failure_has_no_tar(self):
         result = WorkerResult(
             manifest=ToolManifest(
+                command_contract=command_contract(WaitTool),
                 operation_identity=operation_identity(WaitTool),
                 debug_capture=None,
                 command_recording=CommandRecording.empty(),
@@ -184,6 +199,7 @@ class TestWorkerResult:
     def test_stored_alone_accepted(self):
         result = WorkerResult(
             manifest=ToolManifest(
+                command_contract=command_contract(WaitTool),
                 operation_identity=operation_identity(WaitTool),
                 debug_capture=None,
                 command_recording=CommandRecording.empty(),
@@ -196,6 +212,7 @@ class TestWorkerResult:
         with pytest.raises(ValidationError, match="both an inline tar"):
             WorkerResult(
                 manifest=ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -218,6 +235,7 @@ class TestResponses:
 
     def test_schema_response_defaults(self):
         response = SchemaResponse(
+            command_contract=command_contract(WaitTool),
             operation="wait_tool",
             operation_identity=operation_identity(WaitTool),
             debug_capture_supported=True,

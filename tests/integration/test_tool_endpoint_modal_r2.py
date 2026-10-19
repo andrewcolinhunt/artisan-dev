@@ -248,9 +248,14 @@ def test_capability_mode_external_consumer(
             timeout=120.0,
             follow_redirects=False,
         ) as client:
+            schema = client.get("/schema")
+            schema.raise_for_status()
+            contract = schema.json()["command_contract"]
+            assert contract["tool_parts"] == ["bash"]
             response = client.post(
                 "/submit",
                 data={
+                    "expected_command_contract": json.dumps(contract),
                     "params": json.dumps({"seconds": 1}),
                     "input_filenames": json.dumps({"dataset": "in.csv"}),
                     "output_store": put_url,
@@ -272,6 +277,7 @@ def test_capability_mode_external_consumer(
                 time.sleep(3)
 
             assert body["status"] == "done", body
+            assert body["manifest"]["command_contract"] == contract
             stored = body["manifest"]["stored"]
             assert stored["presigned_url"] is None
             assert stored["uri"] == put_url.split("?", 1)[0]

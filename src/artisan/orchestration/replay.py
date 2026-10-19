@@ -30,6 +30,7 @@ from artisan.execution.recording.replay_snapshot import (
     runtime_roots,
     set_pointer,
 )
+from artisan.execution.tool_endpoint.spec import validate_deployment_overrides
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.runners import resolve_runner
@@ -198,6 +199,7 @@ def _restore_operation(
             ErrorCode.REPLAY_CODE_CHANGED,
             "Operation input/output specifications or class behavior changed",
         )
+    validate_deployment_overrides(operation)
     redactor.add_operation(operation)
     return operation, redactor
 

@@ -23,6 +23,7 @@ from artisan.execution.tool_endpoint.protocol import (
     ToolRequest,
 )
 from artisan.execution.tool_endpoint.server import run_tool_request
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.operations.examples import DataGenerator, WaitTool
 from artisan.orchestration import PipelineManager, StepStatus, replay_execution
@@ -62,6 +63,7 @@ def endpoint_url(monkeypatch, request):
     @app.get("/schema")
     def schema():
         return SchemaResponse(
+            command_contract=command_contract(WaitTool),
             operation=WaitTool.name,
             operation_identity=operation_identity(WaitTool),
             debug_capture_supported=True,
@@ -69,6 +71,7 @@ def endpoint_url(monkeypatch, request):
 
     @app.post("/submit")
     async def submit(
+        expected_command_contract: str = Form(...),
         params: str = Form("{}"),
         input_filenames: str = Form("{}"),
         debug_capture: bool = Form(False),
@@ -86,13 +89,21 @@ def endpoint_url(monkeypatch, request):
         result = run_tool_request(
             WaitTool,
             ToolRequest(
-                params=json.loads(params), inputs=refs, debug_capture=debug_capture
+                expected_command_contract=json.loads(expected_command_contract),
+                params=json.loads(params),
+                inputs=refs,
+                debug_capture=debug_capture,
             ),
         )
         if mode == "identity_change" and debug_capture:
             result.manifest.operation_identity = (
                 result.manifest.operation_identity.model_copy(
                     update={"version": "changed-worker"}
+                )
+            )
+            result.manifest.command_contract = (
+                result.manifest.command_contract.model_copy(
+                    update={"operation_identity": result.manifest.operation_identity}
                 )
             )
         call_id = uuid.uuid4().hex

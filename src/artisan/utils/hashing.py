@@ -134,8 +134,8 @@ def effective_config_payload(operation: Any) -> dict[str, Any]:
     The config counterpart to ``serialize_params``: both read the merged
     values (class defaults + applied overrides) off an already-instantiated
     operation, so the cache key reflects what actually runs — not just what
-    the caller typed at the call site. Every cache-affecting key is
-    always present.
+    the caller typed at the call site. Active Modal execution additionally
+    includes its checked-command policy; local preimages remain unchanged.
 
     Args:
         operation: A fully-instantiated ``OperationDefinition`` (post
@@ -148,7 +148,7 @@ def effective_config_payload(operation: Any) -> dict[str, Any]:
     """
     tool = operation.tool
     group_by = operation.group_by
-    return {
+    payload = {
         "version": type(operation).version,
         "environments": operation.environments.model_dump(mode="json"),
         "tool": tool.model_dump(mode="json") if tool is not None else None,
@@ -156,6 +156,9 @@ def effective_config_payload(operation: Any) -> dict[str, Any]:
         "compute_resources": operation.compute_resources.model_dump(mode="json"),
         "group_by": group_by.value if group_by is not None else None,
     }
+    if operation.compute_provider.active == "modal":
+        payload["endpoint_contract_policy"] = "fixed_command_v1"
+    return payload
 
 
 def compute_execution_spec_id(

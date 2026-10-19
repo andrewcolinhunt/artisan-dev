@@ -58,11 +58,67 @@ class InputRef(BaseModel):
         return self
 
 
+class CommandContract(BaseModel):
+    """Verified operation declaration and normalized fixed command prefix."""
+
+    model_config = ConfigDict(
+        extra="forbid",
+        strict=True,
+        hide_input_in_errors=True,
+        json_schema_extra={
+            "oneOf": [
+                {
+                    "properties": {
+                        "kind": {"const": "tool"},
+                        "tool_parts": {"minItems": 1},
+                    }
+                },
+                {
+                    "properties": {
+                        "kind": {"const": "python_function"},
+                        "tool_parts": {"maxItems": 0},
+                    }
+                },
+            ],
+            "allOf": [
+                {
+                    "properties": {
+                        "operation_identity": {
+                            "properties": {"module_digest": {"type": "string"}}
+                        }
+                    }
+                }
+            ],
+        },
+    )
+
+    operation_identity: OperationIdentity
+    kind: Literal["tool", "python_function"]
+    tool_parts: list[str]
+
+    @model_validator(mode="after")
+    def validate_command(self) -> CommandContract:
+        """Require a verifiable declaration and bound its control payload."""
+        from artisan.execution.tool_endpoint.transport import MAX_INLINE_BYTES
+
+        if (self.kind == "tool") != bool(self.tool_parts):
+            msg = "command kind and tool_parts disagree"
+            raise ValueError(msg)
+        if self.operation_identity.module_digest is None:
+            msg = "command operation source identity is unavailable"
+            raise ValueError(msg)
+        if len(self.model_dump_json().encode("utf-8")) > MAX_INLINE_BYTES:
+            msg = "command contract exceeds the control byte limit"
+            raise ValueError(msg)
+        return self
+
+
 class ToolRequest(BaseModel):
     """Internal worker payload: validated params + input refs."""
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
 
+    expected_command_contract: CommandContract
     params: dict[str, Any] = Field(default_factory=dict)
     inputs: list[InputRef] = Field(default_factory=list)
     output_store: str | None = None
@@ -110,6 +166,7 @@ class DebugCaptureManifest(BaseModel):
 class ToolManifest(BaseModel):
     """Control payload for a completed tool run — small, always JSON."""
 
+    command_contract: CommandContract | None = None
     command_recording: CommandRecording
     operation_identity: OperationIdentity
     debug_capture: DebugCaptureManifest | None
@@ -117,6 +174,18 @@ class ToolManifest(BaseModel):
     stored: StoredOutputs | None = None
     log_tail: str | None = None
     error: ArtisanErrorEnvelope | None = None
+
+    @model_validator(mode="after")
+    def validate_command_contract(self) -> ToolManifest:
+        """A successful result must attest the actual matching worker command."""
+        if self.command_contract is None:
+            if self.error is None:
+                msg = "successful manifest requires command_contract"
+                raise ValueError(msg)
+        elif self.command_contract.operation_identity != self.operation_identity:
+            msg = "manifest operation identity disagrees with command_contract"
+            raise ValueError(msg)
+        return self
 
 
 class WorkerResult(BaseModel):
@@ -152,12 +221,24 @@ class SchemaResponse(BaseModel):
     ``{"required": bool, "description": str}``.
     """
 
+    command_contract: CommandContract
     operation: str
     operation_identity: OperationIdentity
     debug_capture_supported: bool
     description: str = ""
     params_schema: dict[str, Any] = Field(default_factory=dict)
     inputs: dict[str, dict[str, Any]] = Field(default_factory=dict)
+
+    @model_validator(mode="after")
+    def validate_command_contract(self) -> SchemaResponse:
+        """Keep the existing operation identity consistent with the contract."""
+        if (
+            self.command_contract.operation_identity != self.operation_identity
+            or self.operation != self.operation_identity.name
+        ):
+            msg = "schema operation identity disagrees with command_contract"
+            raise ValueError(msg)
+        return self
 
 
 class SubmitResponse(BaseModel):

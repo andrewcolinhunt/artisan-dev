@@ -61,7 +61,8 @@ def _build_parser() -> argparse.ArgumentParser:
     modal_parser = sub.add_parser("modal", help="Modal tool-endpoint commands")
     modal_sub = modal_parser.add_subparsers(dest="modal_command", required=True)
     deploy = modal_sub.add_parser(
-        "deploy", help="Deploy an operation's tool endpoint to Modal"
+        "deploy",
+        help="Explicitly deploy an operation's declared tool endpoint to Modal",
     )
     deploy.add_argument(
         "operation", help="Registered operation name (e.g. 'wait_tool')"

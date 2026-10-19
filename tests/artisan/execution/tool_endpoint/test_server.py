@@ -29,6 +29,7 @@ from artisan.execution.tool_endpoint.server import (
     instantiate_op,
     run_tool_request,
 )
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import WaitTool
@@ -267,6 +268,7 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 params={"seconds": 1},
                 inputs=[
                     InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")
@@ -287,7 +289,10 @@ class TestRunToolRequest:
         src.write_text("payload")
         result = run_tool_request(
             CatTool,
-            ToolRequest(inputs=[InputRef(name="source", data=src.read_bytes())]),
+            ToolRequest(
+                expected_command_contract=command_contract(CatTool),
+                inputs=[InputRef(name="source", data=src.read_bytes())],
+            ),
         )
         assert result.manifest.error is None
         # the input file must not be swept into the output tar
@@ -295,7 +300,12 @@ class TestRunToolRequest:
         assert "copied.txt" in result.manifest.output_names
 
     def test_tool_failure_returns_envelope(self):
-        result = run_tool_request(FailTool, ToolRequest())
+        result = run_tool_request(
+            FailTool,
+            ToolRequest(
+                expected_command_contract=command_contract(FailTool),
+            ),
+        )
         assert result.output_tar is None
         error = result.manifest.error
         assert error is not None
@@ -308,7 +318,13 @@ class TestRunToolRequest:
 
     def test_invalid_params_returns_envelope(self):
         # Direct worker calls must validate params without the /submit gate.
-        result = run_tool_request(WaitTool, ToolRequest(params={"no_such_param": 1}))
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                params={"no_such_param": 1},
+            ),
+        )
         assert result.output_tar is None
         error = result.manifest.error
         assert error is not None
@@ -322,6 +338,7 @@ class TestRunToolRequest:
         [
             (
                 ToolRequest(
+                    expected_command_contract=command_contract(WaitTool),
                     inputs=[
                         InputRef(
                             name="dataset",
@@ -332,16 +349,17 @@ class TestRunToolRequest:
                             content_digest="a" * 32,
                             size_bytes=1,
                         )
-                    ]
+                    ],
                 ),
                 "input_resolution_failed",
             ),
             (
                 ToolRequest(
+                    expected_command_contract=command_contract(WaitTool),
                     output_store=(
                         "https://user:password@private.example/output"
                         "?signature=fake-secret"
-                    )
+                    ),
                 ),
                 "output_delivery_failed",
             ),
@@ -376,7 +394,10 @@ class TestRunToolRequest:
     def test_empty_policy_allows_inline_request(self):
         result = run_tool_request(
             CatTool,
-            ToolRequest(inputs=[InputRef(name="source", data=b"inline")]),
+            ToolRequest(
+                expected_command_contract=command_contract(CatTool),
+                inputs=[InputRef(name="source", data=b"inline")],
+            ),
         )
         assert result.manifest.error is None
 
@@ -388,7 +409,13 @@ class TestRunToolRequest:
             patch.object(server_mod, "instantiate_op") as construct,
             patch.object(server_mod.tempfile, "mkdtemp") as workspace,
         ):
-            result = run_tool_request(CatTool, ToolRequest(), data_policy=policy)
+            result = run_tool_request(
+                CatTool,
+                ToolRequest(
+                    expected_command_contract=command_contract(CatTool),
+                ),
+                data_policy=policy,
+            )
 
         error = result.manifest.error
         assert error is not None
@@ -403,7 +430,8 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest.model_construct(
-                inputs=[InputRef.model_construct(name="dataset")]
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[InputRef.model_construct(name="dataset")],
             ),
         )
         assert result.output_tar is None
@@ -417,10 +445,11 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 inputs=[
                     InputRef(name="dataset", data=b"one"),
                     InputRef(name="dataset", data=b"two"),
-                ]
+                ],
             ),
         )
 
@@ -434,7 +463,10 @@ class TestRunToolRequest:
         marker = "private-marker-" + "x" * 5_000
         result = run_tool_request(
             WaitTool,
-            ToolRequest(inputs=[InputRef(name=marker, data=b"one")]),
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[InputRef(name=marker, data=b"one")],
+            ),
         )
 
         error = result.manifest.error
@@ -452,6 +484,7 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 inputs=[
                     InputRef(
                         name="dataset",
@@ -459,7 +492,7 @@ class TestRunToolRequest:
                         content_digest="a" * 32,
                         size_bytes=1,
                     )
-                ]
+                ],
             ),
             data_policy=_policy(inputs=("s3://bucket",)),
         )
@@ -483,6 +516,7 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 inputs=[
                     InputRef(
                         name="dataset",
@@ -490,7 +524,7 @@ class TestRunToolRequest:
                         content_digest="a" * 32,
                         size_bytes=1,
                     )
-                ]
+                ],
             ),
             data_policy=_policy(inputs=("s3://bucket",)),
         )
@@ -523,6 +557,7 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 inputs=[
                     InputRef(
                         name="dataset",
@@ -530,7 +565,7 @@ class TestRunToolRequest:
                         content_digest="a" * 32,
                         size_bytes=1,
                     )
-                ]
+                ],
             ),
             data_policy=_policy(inputs=("s3://bucket",)),
         )
@@ -546,7 +581,8 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest.model_construct(
-                inputs=[InputRef.model_construct(name="dataset")]
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[InputRef.model_construct(name="dataset")],
             ),
         )
         assert result.manifest.error is not None
@@ -559,6 +595,7 @@ class TestRunToolRequest:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 params={"seconds": 1},
                 inputs=[
                     InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")
@@ -571,7 +608,12 @@ class TestRunToolRequest:
 
     def test_tool_failure_removes_job_dir(self, capture_tempdirs):
         created = capture_tempdirs()
-        result = run_tool_request(FailTool, ToolRequest())
+        result = run_tool_request(
+            FailTool,
+            ToolRequest(
+                expected_command_contract=command_contract(FailTool),
+            ),
+        )
         assert result.manifest.error is not None
         assert created  # the worker did allocate a job dir
         assert all(not os.path.exists(p) for p in created)
@@ -582,7 +624,12 @@ class TestRunToolRequest:
             raise OSError(msg)
 
         monkeypatch.setattr(server_mod.tempfile, "mkdtemp", boom)
-        result = run_tool_request(NoopTool, ToolRequest())
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
 
         error = result.manifest.error
         assert error is not None
@@ -596,7 +643,12 @@ class TestRunToolRequest:
             raise OSError(msg)
 
         monkeypatch.setattr(server_mod, "invoke_op_work", boom)
-        result = run_tool_request(NoopTool, ToolRequest())
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
 
         error = result.manifest.error
         assert error is not None
@@ -614,6 +666,7 @@ class TestRunToolRequest:
             result = run_tool_request(
                 FlagTool,
                 ToolRequest(
+                    expected_command_contract=command_contract(FlagTool),
                     params={"batch_size": 2},
                     inputs=[InputRef(name="source", data=b"x")],
                 ),
@@ -631,6 +684,7 @@ class TestRunToolRequest:
 
 class TestRunToolRequestStoredOutputs:
     _REQUEST = ToolRequest(
+        expected_command_contract=command_contract(WaitTool),
         params={"seconds": 1},
         inputs=[InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")],
         output_store="s3://bucket/prefix",
@@ -698,7 +752,10 @@ class TestRunToolRequestStoredOutputs:
         monkeypatch.setattr(server_mod, "upload_outputs", explode)
         result = run_tool_request(
             FailTool,
-            ToolRequest(output_store="s3://b/p"),
+            ToolRequest(
+                expected_command_contract=command_contract(FailTool),
+                output_store="s3://b/p",
+            ),
             data_policy=_policy(outputs=("s3://b/p",)),
         )
         assert result.manifest.error is not None
@@ -712,7 +769,10 @@ class TestRunToolRequestStoredOutputs:
         monkeypatch.setattr(server_mod, "upload_outputs", explode)
         result = run_tool_request(
             NoopTool,
-            ToolRequest(output_store="s3://b/p"),
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+                output_store="s3://b/p",
+            ),
             data_policy=_policy(outputs=("s3://b/p",)),
         )
         assert result.manifest.error is None
@@ -835,7 +895,12 @@ class TestRunToolRequestInlinePackaging:
             raise exc
 
         monkeypatch.setattr(server_mod.InlineTransport, "pack_outputs", failing_pack)
-        result = run_tool_request(NoopTool, ToolRequest())
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
 
         error = result.manifest.error
         assert error is not None
@@ -850,7 +915,12 @@ class TestRunToolRequestInlinePackaging:
             raise OSError(msg)
 
         monkeypatch.setattr(server_mod, "_list_outputs", failing_list)
-        result = run_tool_request(NoopTool, ToolRequest())
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
 
         error = result.manifest.error
         assert error is not None
@@ -891,6 +961,7 @@ class TestRunToolRequestUriInputMinIO:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 params={"seconds": 1},
                 inputs=[
                     InputRef(
@@ -938,7 +1009,11 @@ class _WorkerLoopbackRouter:
             policy = operation.compute_provider.modal.data_policy
             result = run_tool_request(
                 self._op_cls,
-                ToolRequest(params=params, inputs=refs),
+                ToolRequest(
+                    expected_command_contract=command_contract(self._op_cls),
+                    params=params,
+                    inputs=refs,
+                ),
                 data_policy=policy,
             )
             if result.manifest.error is not None:
@@ -1065,7 +1140,12 @@ def test_request_commands_share_one_slot_and_warm_worker_starts_fresh(monkeypatc
 
     monkeypatch.setattr(NoopTool, "execute_command", command)
     for _ in range(2):
-        result = run_tool_request(NoopTool, ToolRequest())
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
         assert result.manifest.error is None
         commands = result.manifest.command_recording.commands
         assert [(c.invocation, c.sequence) for c in commands] == [(0, 0), (0, 1)]
@@ -1097,7 +1177,12 @@ def test_ordinary_endpoint_failure_preserves_earlier_commands(monkeypatch, failu
             "pack_outputs",
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError("delivery failed")),
         )
-    result = run_tool_request(NoopTool, ToolRequest())
+    result = run_tool_request(
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+        ),
+    )
     assert result.manifest.error is not None
     commands = result.manifest.command_recording.commands
     assert commands[0].outcome == "succeeded"
@@ -1112,7 +1197,11 @@ def test_preflight_failure_returns_explicit_complete_empty_recording():
     from artisan.schemas.execution.command_record import CommandRecording
 
     result = run_tool_request(
-        NoopTool, ToolRequest(output_store="s3://not-authorized/output")
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+            output_store="s3://not-authorized/output",
+        ),
     )
     assert result.manifest.error is not None
     assert result.manifest.command_recording == CommandRecording.empty()
@@ -1130,7 +1219,12 @@ def test_request_scope_captures_helper_before_parameter_construction_failure(
         raise RuntimeError(msg)
 
     monkeypatch.setattr(server_mod, "instantiate_op", instantiate)
-    result = run_tool_request(NoopTool, ToolRequest())
+    result = run_tool_request(
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+        ),
+    )
     assert result.manifest.error is not None
     assert len(result.manifest.command_recording.commands) == 1
     assert result.manifest.command_recording.commands[0].outcome == "succeeded"
@@ -1147,7 +1241,12 @@ def test_python_endpoint_failure_keeps_helper_evidence(monkeypatch):
 
     monkeypatch.setattr(NoopTool, "is_command_op", lambda self: False)
     monkeypatch.setattr(NoopTool, "execute_function", execute)
-    result = run_tool_request(NoopTool, ToolRequest())
+    result = run_tool_request(
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+        ),
+    )
     assert result.manifest.error is not None
     assert len(result.manifest.command_recording.commands) == 1
     assert result.manifest.command_recording.commands[0].outcome == "succeeded"

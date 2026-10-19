@@ -18,6 +18,7 @@ from artisan.execution.tool_endpoint.client import (
     cancel_scope,
 )
 from artisan.execution.tool_endpoint.protocol import StoredOutputs, ToolManifest
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.operations.examples import WaitTool
 from artisan.registry.resolve import operation_identity
@@ -69,7 +70,15 @@ def _tar_payload(tmp_path: Path) -> bytes:
 
 @pytest.fixture
 def mock_http(monkeypatch) -> MagicMock:
-    """Replace and return the httpx module mock."""
+    """Isolate transport from negotiation, covered in test_contract."""
+    monkeypatch.setattr(
+        client_mod,
+        "_handshake",
+        lambda client, operation, state: command_contract(operation),
+    )
+    monkeypatch.setattr(
+        client_mod, "validate_deployment_overrides", lambda operation, **kwargs: None
+    )
     mock_httpx = MagicMock()
     monkeypatch.setattr(client_mod, "httpx", mock_httpx)
     return mock_httpx
@@ -84,6 +93,7 @@ class TestCallEndpointHappyPath:
         client = _client_of(mock_http)
         client.post.return_value = _response({"call_id": "fc-1"})
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -124,6 +134,7 @@ class TestCallEndpointHappyPath:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -171,6 +182,7 @@ class TestCallEndpointHappyPath:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -194,6 +206,7 @@ class TestCallEndpointHappyPath:
 
 class TestStoredOutputs:
     _MANIFEST = ToolManifest(
+        command_contract=command_contract(WaitTool),
         operation_identity=operation_identity(WaitTool),
         debug_capture=None,
         command_recording=CommandRecording.empty(),
@@ -211,6 +224,7 @@ class TestStoredOutputs:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -231,6 +245,7 @@ class TestStoredOutputs:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -273,6 +288,7 @@ class TestStoredOutputs:
 
     def test_stored_without_presigned_url_fails_fast(self, mock_http, tmp_path):
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -293,6 +309,7 @@ class TestStoredOutputs:
     ):
         uri = "https://attacker.example/get?signature=fake-secret"
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -359,6 +376,7 @@ class TestCallEndpointFailures:
             operation_name="wait_tool",
         ).envelope
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -397,6 +415,7 @@ class TestCallEndpointFailures:
             recovery_hint="CHECK_INPUT",
         ).envelope
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -434,6 +453,7 @@ class TestCallEndpointFailures:
             recovery_hint="CHECK_INPUT",
         ).envelope
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -465,6 +485,7 @@ class TestCallEndpointFailures:
             recovery_hint="RETRY_LATER",
         ).envelope
         manifest = ToolManifest(
+            command_contract=command_contract(WaitTool),
             operation_identity=operation_identity(WaitTool),
             debug_capture=None,
             command_recording=CommandRecording.empty(),
@@ -555,6 +576,7 @@ class TestCallEndpointFailures:
         else:
             client.post.return_value = _response({"call_id": "fc-1"})
             manifest = ToolManifest(
+                command_contract=command_contract(WaitTool),
                 operation_identity=operation_identity(WaitTool),
                 debug_capture=None,
                 command_recording=CommandRecording.empty(),
@@ -744,6 +766,7 @@ class TestCancellation:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -807,6 +830,7 @@ class TestTokenDiscovery:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -878,6 +902,7 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -903,6 +928,7 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -931,6 +957,7 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -958,6 +985,7 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -1049,6 +1077,7 @@ class TestAuthAndUrl:
             {
                 "status": "done",
                 "manifest": ToolManifest(
+                    command_contract=command_contract(WaitTool),
                     operation_identity=operation_identity(WaitTool),
                     debug_capture=None,
                     command_recording=CommandRecording.empty(),
@@ -1118,6 +1147,7 @@ def test_remote_evidence_precedes_errors_and_redacts_parent_secrets(
         else None
     )
     manifest = ToolManifest(
+        command_contract=command_contract(WaitTool),
         operation_identity=operation_identity(WaitTool),
         debug_capture=None,
         command_recording=remote_recording,
@@ -1244,6 +1274,7 @@ def test_cancellation_messages_redact_known_secrets_and_capabilities(
         {
             "status": "done",
             "manifest": ToolManifest(
+                command_contract=command_contract(WaitTool),
                 command_recording=CommandRecording.empty(),
                 operation_identity=operation_identity(WaitTool),
                 debug_capture=None,
