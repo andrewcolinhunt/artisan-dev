@@ -37,7 +37,10 @@ class ModalComputeConfig(ComputeConfig):
     Hardware fields (gpu / cpu / memory_gb / timeout) live on
     ``ComputeResources`` so the same hardware spec can apply to any
     compute provider; this class carries Modal-specific non-hardware
-    concerns only.
+    concerns only. Infrastructure fields are class-declared deployment settings;
+    per-call differences are rejected before cache reuse or submission. Endpoint
+    URL/auth references, polling, client concurrency, and output selection remain
+    request controls. Calls never build or redeploy an endpoint.
 
     Attributes:
         image: Container image for the Modal function — a registry ref.

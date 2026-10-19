@@ -48,7 +48,21 @@ adds local source over the worker image. Production images should contain the
 code they execute.
 
 Changing hardware, image, runtime secrets, or data policy requires redeployment.
-Per-step configuration does not resize or rebuild an existing endpoint.
+Per-step changes to deployment settings are rejected, including on a cache hit.
+Change the operation declaration and explicitly redeploy it, then select that
+endpoint. Calls never create an app or alter its infrastructure.
+
+Every new invocation checks the endpoint's declared operation source identity
+and command prefix before packaging inputs. Matching `ToolSpec` overrides are
+accepted; a different executable, interpreter, or subcommand fails before tool
+execution. Valid scientific Params still vary per call. Upgrade clients and
+explicitly redeploy endpoints together: older endpoints without a command
+contract are rejected.
+
+Results from the earlier unchecked Modal protocol are not reused. Checked cache
+hits retain the original execution's provenance and need no live endpoint; use
+`skip_cache=True` to request new execution. Command agreement does not attest
+image contents, dependencies, or weights; verify those separately.
 
 ## Authenticate calls and run a small step
 
@@ -201,7 +215,15 @@ before invoking the notebook's step.
 (presigned-puts-and-external-consumers-capability-mode)=
 ## Call an endpoint from an HTTP client
 
-External clients can submit files and JSON parameters directly to the endpoint.
+External clients first fetch `/schema`, verify its `command_contract` against
+the intended operation and fixed command, then send that exact JSON in the
+`expected_command_contract` form field on `/submit`. The endpoint rechecks it
+before spawning, and the worker checks its own declaration before launching.
+A successful result must return the same `command_contract`; verify it before
+accepting outputs. Missing contracts fail validation and mismatches return 409.
+The contract identifies a declaration, not credentials or a full inference argv.
+
+After this check, clients submit files and JSON parameters to the endpoint.
 For remote inputs, send role-keyed `input_uris` and `input_integrity` maps with
 identical keys; each integrity entry needs `content_digest` and `size_bytes`.
 Only origins or prefixes already in the deployment's input policy are accepted.
@@ -213,6 +235,7 @@ PUT with the required service signature and headers:
 ```bash
 curl -X POST "$ENDPOINT/submit" \
   -H "Modal-Key: $TOKEN_ID" -H "Modal-Secret: $TOKEN_SECRET" \
+  -F expected_command_contract="$EXPECTED_COMMAND_CONTRACT" \
   -F params='{"seconds": 1}' \
   -F 'files=@input.csv;filename=dataset' \
   -F output_store="$PRESIGNED_PUT_URL"

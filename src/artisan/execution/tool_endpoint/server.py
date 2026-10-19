@@ -33,11 +33,13 @@ from artisan.execution.recording.commands import (
 )
 from artisan.execution.tool_endpoint import transport as transport_module
 from artisan.execution.tool_endpoint.protocol import (
+    CommandContract,
     DebugCaptureManifest,
     ToolManifest,
     ToolRequest,
     WorkerResult,
 )
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import (
     MAX_ARCHIVE_MEMBERS,
     EndpointTransportError,
@@ -170,6 +172,19 @@ def _run_tool_request(
         )
 
     try:
+        actual_contract = command_contract(op)
+    except (TypeError, ValueError):
+        actual_contract = None
+    if actual_contract is None or actual_contract != request.expected_command_contract:
+        return _error_result(
+            op_cls,
+            ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            "worker command contract differs from the checked deployment; explicitly redeploy or select a compatible endpoint",
+            "config",
+            "CHECK_INPUT",
+        )
+
+    try:
         job_root = tempfile.mkdtemp(prefix=f"artisan-tool-{op_cls.name}-")
     except OSError:
         return _error_result(
@@ -181,7 +196,7 @@ def _run_tool_request(
         )
     try:
         try:
-            result = _execute_job(op, request, policy, job_root)
+            result = _execute_job(op, request, policy, job_root, actual_contract)
         except Exception as exc:
             result = _error_result(
                 op_cls,
@@ -190,6 +205,8 @@ def _run_tool_request(
                 "compute",
                 "REPORT_TO_USER",
             )
+        result.manifest.command_contract = actual_contract
+        result.manifest.operation_identity = actual_contract.operation_identity
         if request.debug_capture:
             result = _capture_debug(result, request, policy, job_root)
         return result
@@ -202,6 +219,7 @@ def _execute_job(
     request: ToolRequest,
     policy: ToolEndpointDataPolicy,
     job_root: str,
+    actual_contract: CommandContract,
 ) -> WorkerResult:
     """Execute and deliver outputs; the caller captures every workspace outcome."""
     op_cls = type(op)
@@ -299,7 +317,8 @@ def _execute_job(
                 policy=policy,
             )
         manifest = ToolManifest(
-            operation_identity=operation_identity(op_cls),
+            command_contract=actual_contract,
+            operation_identity=actual_contract.operation_identity,
             debug_capture=None,
             command_recording=command_snapshot(),
             output_names=names,

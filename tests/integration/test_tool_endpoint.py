@@ -126,9 +126,15 @@ def test_endpoint_serves_non_artisan_clients():
         # Multipart contract: each part's filename is the input ROLE;
         # input_filenames maps role -> real file name so the worker
         # materializes the input under its original stem.
+        schema = client.get("/schema")
+        schema.raise_for_status()
+        contract = schema.json()["command_contract"]
+        assert contract["operation_identity"]["name"] == "wait_tool"
+        assert contract["tool_parts"] == ["bash"]
         submitted = client.post(
             "/submit",
             data={
+                "expected_command_contract": json.dumps(contract),
                 "params": json.dumps({"seconds": 1}),
                 "input_filenames": json.dumps({"dataset": "sample.csv"}),
             },
@@ -146,6 +152,7 @@ def test_endpoint_serves_non_artisan_clients():
             time.sleep(2)
 
         assert body["status"] == "done"
+        assert body["manifest"]["command_contract"] == contract
         assert "sample_waited.csv" in body["manifest"]["output_names"]
 
         download = client.get("/download", params={"call_id": call_id})

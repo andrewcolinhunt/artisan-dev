@@ -34,6 +34,7 @@ from artisan.execution.recording.commands import capture_commands
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import record_execution_failure
 from artisan.execution.recording.replay_snapshot import build_replay_snapshot
+from artisan.execution.tool_endpoint.spec import validate_deployment_overrides
 from artisan.execution.utils import generate_execution_run_id
 from artisan.operations.base._param_docs import _params_class
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -609,6 +610,7 @@ def execute_step(
     Returns:
         StepResult with output references and execution metadata.
     """
+    validate_deployment_overrides(operation)
     user_overrides = ov.params or {}
     config = cast(PipelineConfig, config)
     if not isinstance(inputs, PreparedInputs):

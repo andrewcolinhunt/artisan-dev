@@ -31,6 +31,7 @@ from artisan.execution.tool_endpoint.protocol import (
     WorkerResult,
 )
 from artisan.execution.tool_endpoint.server import run_tool_request
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.registry.resolve import operation_identity
 from artisan.schemas.execution.command_record import CommandRecording
@@ -82,6 +83,7 @@ def test_capture_keeps_inputs_outputs_and_full_log_before_cleanup(
     result = run_tool_request(
         DiagnosticTool,
         ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
             params={"fail": fail},
             debug_capture=True,
             inputs=[InputRef(name="source", filename="source.txt", data=b"source")],
@@ -106,7 +108,12 @@ def test_ordinary_request_does_not_build_diagnostic_archive(monkeypatch):
     monkeypatch.setattr(
         server_mod, "_diagnostic_names", MagicMock(side_effect=AssertionError)
     )
-    result = run_tool_request(DiagnosticTool, ToolRequest())
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+        ),
+    )
     assert result.manifest.error is None
     assert result.manifest.debug_capture is None
     assert result.debug_tar is None
@@ -114,7 +121,12 @@ def test_ordinary_request_does_not_build_diagnostic_archive(monkeypatch):
 
 def test_prework_failure_has_unavailable_capture():
     result = run_tool_request(
-        DiagnosticTool, ToolRequest(params={"fail": []}, debug_capture=True)
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            params={"fail": []},
+            debug_capture=True,
+        ),
     )
     assert result.manifest.error.code == ErrorCode.PARAM_TYPE_MISMATCH
     assert result.manifest.debug_capture.status == "unavailable"
@@ -129,7 +141,13 @@ def test_partial_input_materialization_is_captured(monkeypatch):
         raise OSError(msg)
 
     monkeypatch.setattr(InlineTransport, "unpack_inputs", partial)
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     assert result.manifest.error.code == ErrorCode.INPUT_RESOLUTION_FAILED
     assert _archive_files(result.debug_tar) == {"inputs/partial.txt": b"first input"}
 
@@ -144,7 +162,13 @@ def test_output_delivery_failure_still_captures_completed_work(monkeypatch):
         return original(self, src, names, max_bytes=max_bytes)
 
     monkeypatch.setattr(InlineTransport, "pack_outputs", fail_outputs)
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     assert result.manifest.error.code == ErrorCode.OUTPUT_DELIVERY_FAILED
     assert _archive_files(result.debug_tar)["outputs/partial.txt"] == b"partial"
 
@@ -155,7 +179,12 @@ def test_capture_failure_preserves_compute_outcome(fail, monkeypatch):
         server_mod, "_diagnostic_names", MagicMock(side_effect=OSError("secret detail"))
     )
     result = run_tool_request(
-        DiagnosticTool, ToolRequest(params={"fail": fail}, debug_capture=True)
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            params={"fail": fail},
+            debug_capture=True,
+        ),
     )
     assert (result.manifest.error is not None) is fail
     assert result.manifest.debug_capture.status == "failed"
@@ -176,14 +205,26 @@ def test_capture_rejects_every_symlink(tmp_path, monkeypatch, target):
         )
 
     monkeypatch.setattr(server_mod, "invoke_op_work", with_link)
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     assert result.manifest.debug_capture.status == "failed"
     assert result.debug_tar is None
 
 
 def test_combined_result_budget_counts_both_archives_and_manifest(monkeypatch):
     monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 17_000)
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     assert result.manifest.error is None
     assert result.manifest.debug_capture.status == "failed"
     total = len(result.output_tar or b"") + len(result.debug_tar or b"")
@@ -202,6 +243,7 @@ def test_http_put_destination_is_used_only_for_regular_outputs(monkeypatch):
     result = run_tool_request(
         DiagnosticTool,
         ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
             debug_capture=True,
             output_store="https://store.example/output.tar?sig=capability",
         ),
@@ -232,6 +274,7 @@ def test_object_archives_use_distinct_fresh_keys(monkeypatch):
     result = run_tool_request(
         DiagnosticTool,
         ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
             debug_capture=True,
             output_store="s3://bucket/prefix",
         ),
@@ -263,6 +306,7 @@ def test_object_archives_use_distinct_fresh_keys(monkeypatch):
 )
 def test_diagnostic_plane_exclusivity(debug, status, stored, valid):
     manifest = ToolManifest(
+        command_contract=command_contract(DiagnosticTool),
         command_recording=CommandRecording.empty(),
         operation_identity=operation_identity(DiagnosticTool),
         debug_capture=None
@@ -309,6 +353,7 @@ def _client(monkeypatch, result, *, download_error=False, schema=None):
     schema = (
         schema
         or SchemaResponse(
+            command_contract=command_contract(DiagnosticTool),
             operation=DiagnosticTool.name,
             operation_identity=operation_identity(DiagnosticTool),
             debug_capture_supported=True,
@@ -358,13 +403,20 @@ def test_client_preserves_diagnostics_before_every_primary_error(
 ):
     result = run_tool_request(
         DiagnosticTool,
-        ToolRequest(params={"fail": failure == "compute"}, debug_capture=True),
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            params={"fail": failure == "compute"},
+            debug_capture=True,
+        ),
     )
     if failure == "outputs":
         result.output_tar = b"not an archive"
     if failure == "identity":
         result.manifest.operation_identity = (
             result.manifest.operation_identity.model_copy(update={"version": "changed"})
+        )
+        result.manifest.command_contract = result.manifest.command_contract.model_copy(
+            update={"operation_identity": result.manifest.operation_identity}
         )
     builder = _builder(monkeypatch)
     _client(monkeypatch, result)
@@ -392,7 +444,12 @@ def test_client_delivery_failure_does_not_replace_compute_outcome(
     tmp_path, monkeypatch, fail
 ):
     result = run_tool_request(
-        DiagnosticTool, ToolRequest(params={"fail": fail}, debug_capture=True)
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            params={"fail": fail},
+            debug_capture=True,
+        ),
     )
     builder = _builder(monkeypatch)
     _client(monkeypatch, result, download_error=True)
@@ -420,12 +477,18 @@ def test_client_delivery_failure_does_not_replace_compute_outcome(
 def test_replay_preflight_stops_before_remote_submission(
     tmp_path, monkeypatch, problem
 ):
-    result = run_tool_request(DiagnosticTool, ToolRequest())
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+        ),
+    )
     _builder(
         monkeypatch,
         source_status="unavailable" if problem == "unavailable" else "observed",
     )
     schema = SchemaResponse(
+        command_contract=command_contract(DiagnosticTool),
         operation=DiagnosticTool.name,
         operation_identity=operation_identity(DiagnosticTool),
         debug_capture_supported=True,
@@ -448,7 +511,13 @@ def test_replay_preflight_stops_before_remote_submission(
 def test_unstarted_or_explicitly_allowed_history_can_replay(
     tmp_path, monkeypatch, source_status, allow
 ):
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     builder = _builder(monkeypatch, source_status=source_status, allow=allow)
     _client(monkeypatch, result)
     call_endpoint(
@@ -462,20 +531,31 @@ def test_ordinary_endpoint_capture_records_actual_worker_identity(
 ):
     builder = ReplayBuilder(ReplaySnapshot.unavailable("test"))
     monkeypatch.setattr(client_mod, "current_replay_builder", lambda: builder)
-    result = run_tool_request(DiagnosticTool, ToolRequest())
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+        ),
+    )
     client = _client(monkeypatch, result)
     call_endpoint(_operation(), ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
     assert builder.snapshot.remote_identity[0].identity == operation_identity(
         DiagnosticTool
     )
-    assert all(call.args[0] != "/schema" for call in client.get.call_args_list)
+    assert client.get.call_args_list[0].args[0] == "/schema"
     assert "debug_capture" not in client.post.call_args.kwargs["data"]
 
 
 def test_parallel_artifact_calls_keep_separate_diagnostic_ownership(
     tmp_path, monkeypatch
 ):
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     builder = _builder(monkeypatch, allow=True)
     _client(monkeypatch, result)
     router = EndpointExecuteRouter(max_concurrent_calls=3)
@@ -507,6 +587,7 @@ def test_diagnostic_roundtrip_through_minio(s3_fs, tmp_path, configure_ambient_s
     result = run_tool_request(
         DiagnosticTool,
         ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
             params={"fail": True},
             debug_capture=True,
             output_store=f"{prefix}/diagnostics",
@@ -570,6 +651,7 @@ def test_oversized_primary_error_is_bounded_without_replacing_its_identity(
     ).envelope
     result = WorkerResult(
         manifest=ToolManifest(
+            command_contract=command_contract(DiagnosticTool),
             command_recording=CommandRecording.empty(),
             operation_identity=operation_identity(DiagnosticTool),
             debug_capture=DebugCaptureManifest(status="failed", error="delivery failed")
@@ -600,7 +682,12 @@ def test_execute_as_tool_python_intermediates_survive_subprocess_failure(
 
     monkeypatch.setenv("PYTHONPATH", os.pathsep.join(sys.path))
     result = run_tool_request(
-        PythonDiagnosticTool, ToolRequest(params={"fail": fail}, debug_capture=True)
+        PythonDiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(PythonDiagnosticTool),
+            params={"fail": fail},
+            debug_capture=True,
+        ),
     )
     assert (result.manifest.error is not None) is fail
     assert result.manifest.debug_capture.status == "complete"
@@ -618,7 +705,12 @@ def test_source_remote_observation_distinguishes_preflight_from_transport_gap(
 ):
     builder = ReplayBuilder(ReplaySnapshot.unavailable("test"))
     monkeypatch.setattr(client_mod, "current_replay_builder", lambda: builder)
-    result = run_tool_request(DiagnosticTool, ToolRequest())
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+        ),
+    )
     client = _client(monkeypatch, result)
     if started:
         client.post.side_effect = OSError("transport interrupted")
@@ -635,7 +727,13 @@ def test_source_remote_observation_distinguishes_preflight_from_transport_gap(
 def test_incomplete_archive_manifest_keeps_compute_success_but_marks_diagnostics(
     tmp_path, monkeypatch
 ):
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     result.manifest.debug_capture.entries.append("outputs/missing.txt")
     builder = _builder(monkeypatch)
     _client(monkeypatch, result)
@@ -649,7 +747,13 @@ def test_incomplete_archive_manifest_keeps_compute_success_but_marks_diagnostics
 def test_duplicate_diagnostic_member_rejects_capture_without_failing_compute(
     tmp_path, monkeypatch
 ):
-    result = run_tool_request(DiagnosticTool, ToolRequest(debug_capture=True))
+    result = run_tool_request(
+        DiagnosticTool,
+        ToolRequest(
+            expected_command_contract=command_contract(DiagnosticTool),
+            debug_capture=True,
+        ),
+    )
     files = _archive_files(result.debug_tar)
     payload = io.BytesIO()
     with tarfile.open(fileobj=payload, mode="w") as archive:

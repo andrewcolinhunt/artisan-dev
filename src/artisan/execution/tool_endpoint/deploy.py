@@ -22,7 +22,8 @@ unpickled function's globals, so annotations must be real objects.
 from typing import Any
 
 from artisan.execution.tool_endpoint._optional import import_modal
-from artisan.execution.tool_endpoint.spec import endpoint_spec
+from artisan.execution.tool_endpoint.protocol import CommandContract
+from artisan.execution.tool_endpoint.spec import command_contract, endpoint_spec
 from artisan.execution.tool_endpoint.transport import MAX_INLINE_BYTES
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.registry.resolve import operation_identity
@@ -55,6 +56,8 @@ def build_app(
     """
     modal = import_modal()
     spec = endpoint_spec(op_cls)
+    deployed_contract = command_contract(op_cls).model_dump(mode="json")
+    contract_schema = CommandContract.model_json_schema()
     app = modal.App(f"artisan-tool-{spec.name}")
 
     worker_image = modal.Image.from_registry(
@@ -273,6 +276,7 @@ def build_app(
             and rejects extra keys.
             """
             return {
+                "command_contract": deployed_contract,
                 "operation": op_name,
                 "operation_identity": deployed_identity,
                 "debug_capture_supported": True,
@@ -283,6 +287,7 @@ def build_app(
 
         @web.post("/submit")
         async def submit(
+            expected_command_contract: str = Form(...),
             params: str = Form("{}"),
             input_uris: str = Form("{}"),
             input_filenames: str = Form("{}"),
@@ -299,6 +304,21 @@ def build_app(
             an object-store prefix or presigned PUT URL — outputs are
             delivered there instead of riding the result inline.
             """
+            try:
+                if len(expected_command_contract.encode("utf-8")) > max_inline_bytes:
+                    msg = "oversized contract"
+                    raise ValueError(msg)
+                expected = json.loads(expected_command_contract)
+                jsonschema.validate(expected, contract_schema)
+            except (TypeError, ValueError, jsonschema.ValidationError):
+                raise HTTPException(
+                    status_code=422, detail="expected_command_contract is invalid"
+                ) from None
+            if expected != deployed_contract:
+                raise HTTPException(
+                    status_code=409,
+                    detail="command contract differs from deployment; explicitly redeploy or select a compatible endpoint",
+                )
             try:
                 parsed = json.loads(params)
                 if not isinstance(parsed, dict):
@@ -335,6 +355,7 @@ def build_app(
             # spawn would stall every concurrent request on this container
             call = await worker.spawn.aio(
                 {
+                    "expected_command_contract": expected,
                     "params": parsed,
                     "inputs": refs,
                     "output_store": output_store or None,

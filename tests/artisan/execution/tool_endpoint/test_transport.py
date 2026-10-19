@@ -18,6 +18,7 @@ import pytest
 from artisan.errors import ArtifactIntegrityError
 from artisan.execution.tool_endpoint import transport as transport_mod
 from artisan.execution.tool_endpoint.protocol import InputRef
+from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import (
     EndpointTransportError,
     InlineTransport,
@@ -1184,6 +1185,7 @@ class TestUnpackInputsMinIO:
         result = run_tool_request(
             WaitTool,
             ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
                 params={"seconds": 1},
                 inputs=[
                     InputRef(
