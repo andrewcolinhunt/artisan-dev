@@ -60,8 +60,19 @@ jobs:
           environments: dev
           locked: true
 
+      - name: Verify required S3 test service is pullable
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python - <<'PY'
+          import runpy
+          import subprocess
+
+          image = runpy.run_path("tests/conftest.py")["_MINIO_IMAGE"]
+          subprocess.run(["docker", "pull", image], check=True)
+          subprocess.run(["docker", "run", "--rm", image, "--version"], check=True)
+          PY
+
       - name: Run tests
-        run: pixi run -e dev test
+        run: ~/.pixi/bin/pixi run --locked -e dev test
 
   test-notebooks:
     runs-on: ubuntu-latest

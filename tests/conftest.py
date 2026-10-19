@@ -56,15 +56,20 @@ sys.unraisablehook = _quiet_socket_resourcewarning_hook
 # S3 / MinIO fixtures (single canonical pin location)
 # =============================================================================
 #
-# The MinIO image tag is pinned for CI reproducibility. Bump this tag during
-# periodic dependency review — track upstream releases at
-# https://github.com/minio/minio/releases. When bumping, run
-# `pytest -m integration` to confirm the new image still passes the smoke
+# The previous official MinIO image pin is no longer publicly pullable. This
+# third-party build uses the same RELEASE.2025-04-22T22-12-26Z source, verified from
+# the binary's Go VCS metadata: 0d7408fc9969caf07de6a8c3a84f9fbb10a6739e,
+# vcs.modified=false. Its immutable index supports linux/amd64 and linux/arm64.
+# Build recipe: https://github.com/coollabsio/minio
+# When updating this pin, run `pixi run --locked -e dev test-s3` for the smoke
 # latency assertion (catches IMDS regressions and behavior drift) and the
 # parametrized [local, s3] tests (catches checksum-handling regressions
 # in DeleteObjects — older MinIO releases require Content-MD5 while
 # modern boto3 sends only CRC32, breaking recursive bucket cleanup).
-_MINIO_IMAGE = "minio/minio:RELEASE.2025-04-22T22-12-26Z"
+_MINIO_IMAGE = (
+    "ghcr.io/coollabsio/minio@"
+    "sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68"
+)
 
 # Common Docker UNIX socket locations, in probe order. Used by
 # ``_detect_minio_unavailable`` to tell the user which runtime is missing.
@@ -83,9 +88,9 @@ _MINIO_SKIP_REASON: dict[str, str] = {}
 # Boilerplate appended to every skip reason so the message is actionable
 # at a glance.
 _MINIO_HOWTO = (
-    "Start Docker Desktop / OrbStack / Colima, or "
-    "`brew install minio/stable/minio && minio server ~/minio-data &` "
-    "and `export ARTISAN_S3_ENDPOINT=http://127.0.0.1:9000` to bypass."
+    "Start Docker (or Docker Desktop / OrbStack / Colima), or set "
+    "ARTISAN_S3_ENDPOINT to an available test S3 service with "
+    "ARTISAN_S3_ACCESS_KEY and ARTISAN_S3_SECRET_KEY."
 )
 
 
@@ -144,15 +149,32 @@ def _detect_minio_unavailable() -> str | None:
     return None
 
 
+def pytest_addoption(parser: pytest.Parser) -> None:
+    """Allow release checks to require execution of all S3 tests."""
+    parser.addoption(
+        "--require-s3",
+        action="store_true",
+        help="Fail S3 fixture setup instead of skipping when MinIO is unavailable.",
+    )
+
+
+def _minio_unavailable(config: pytest.Config, reason: str) -> None:
+    """Fail required S3 checks, or retain an actionable optional skip reason."""
+    if config.getoption("--require-s3"):
+        pytest.fail(f"S3 tests are required: {reason}", pytrace=False)
+    _MINIO_SKIP_REASON["reason"] = reason
+    logging.getLogger(__name__).warning(reason)
+
+
 @pytest.fixture(scope="session")
-def minio_endpoint() -> Iterator[dict[str, str] | None]:
+def minio_endpoint(pytestconfig: pytest.Config) -> Iterator[dict[str, str] | None]:
     """Endpoint + credentials for the session-scoped MinIO storage service.
 
     Honors ``ARTISAN_S3_ENDPOINT`` for developer-owned instances; otherwise
-    boots a MinIO container via testcontainers. Yields ``None`` when boot
-    fails — and stashes a specific skip reason in ``_MINIO_SKIP_REASON``
-    so dependent fixtures surface *why* MinIO is unavailable (no Docker,
-    no testcontainers, image pull failed) instead of just "unavailable".
+    boots a MinIO container via testcontainers. With ``--require-s3``, a
+    startup failure is a test error; otherwise yields ``None`` and retains
+    a specific skip reason for optional local tests. Teardown failures
+    always surface as errors.
     """
     # Disable EC2 IMDS probing in this test process so s3fs/boto3 don't
     # spend ~3 s timing out against 169.254.169.254 on every fixture
@@ -180,30 +202,30 @@ def minio_endpoint() -> Iterator[dict[str, str] | None]:
 
     skip_reason = _detect_minio_unavailable()
     if skip_reason is not None:
-        _MINIO_SKIP_REASON["reason"] = skip_reason
-        logging.getLogger(__name__).warning(skip_reason)
+        _minio_unavailable(pytestconfig, skip_reason)
         yield None
         return
 
     from testcontainers.minio import MinioContainer
 
-    try:
-        with MinioContainer(image=_MINIO_IMAGE) as minio:
+    with contextlib.ExitStack() as stack:
+        try:
+            minio = stack.enter_context(MinioContainer(image=_MINIO_IMAGE))
             host_ip = minio.get_container_host_ip()
             port = minio.get_exposed_port(9000)
-            yield {
+            endpoint = {
                 "endpoint_url": f"http://{host_ip}:{port}",
                 "access_key": minio.access_key,
                 "secret_key": minio.secret_key,
             }
-    except Exception as exc:
-        reason = (
-            f"MinIO container failed to start ({type(exc).__name__}: {exc}). "
-            f"{_MINIO_HOWTO}"
-        )
-        _MINIO_SKIP_REASON["reason"] = reason
-        logging.getLogger(__name__).warning(reason)
-        yield None
+        except Exception as exc:
+            reason = (
+                f"MinIO container failed to start ({type(exc).__name__}: {exc}). "
+                f"{_MINIO_HOWTO}"
+            )
+            _minio_unavailable(pytestconfig, reason)
+            endpoint = None
+        yield endpoint
 
 
 @pytest.fixture
