@@ -37,10 +37,7 @@ class _InputArtifactsMixin:
         Raises:
             ValueError: If the config is not a resolved, finalized input.
         """
-        if (
-            config.artifact_id is None
-            or config.artifact_id not in self._references
-        ):
+        if config.artifact_id is None or config.artifact_id not in self._references:
             msg = "Config is not a declared input with resolved references"
             raise ValueError(msg)
         return MappingProxyType(self._references[config.artifact_id])
