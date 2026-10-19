@@ -19,6 +19,7 @@ import struct
 import subprocess
 import sys
 import time
+from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -237,12 +238,10 @@ class Command:
             raise RuntimeError(message)
         if self.process is None:
             return
-        try:
+        # A failed signal proves neither liveness nor closure. Exact reaping
+        # and subsequent positive group absence still determine the outcome.
+        with suppress(ProcessLookupError, PermissionError):
             os.killpg(self.pid, sig)
-        except ProcessLookupError:
-            pass
-        except PermissionError:
-            self.observation_error = True
         if sig == signal.SIGKILL:
             self.final_signal = True
 
