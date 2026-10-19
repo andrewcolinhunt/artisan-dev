@@ -702,3 +702,62 @@ def test_credential_parameter_uses_owning_model_field_serializer():
     recorder = CommandRecorder(operation)
     recorder.prepare(operation.environments.local, ["tool", value], ())
     assert recorder.sanitize(value) == "<redacted>"
+
+
+def test_copied_nested_configuration_reaches_owner_validation_without_warnings(
+    tmp_path,
+):
+    import warnings
+
+    from artisan.errors import ArtisanError
+    from artisan.execution.tool_endpoint.client import call_endpoint
+    from artisan.operations.examples.data_generator import DataGenerator
+    from artisan.schemas.operation_config.compute import (
+        ComputeProvider,
+        ModalComputeConfig,
+    )
+    from artisan.schemas.specs.input_models import ExecuteInput
+
+    operation = DataGenerator(
+        compute_provider=ComputeProvider(
+            active="modal",
+            modal=ModalComputeConfig(endpoint_url="https://tool.example"),
+        )
+    )
+    operation.compute_provider.modal = operation.compute_provider.modal.model_copy(
+        update={"data_policy": {"input_allowlist": ["file:///copy-sensitive-path"]}}
+    )
+    with (
+        warnings.catch_warnings(record=True) as emitted,
+        patch("artisan.execution.tool_endpoint.client.httpx.Client") as client,
+        pytest.raises(ArtisanError, match="configuration is invalid") as caught,
+    ):
+        call_endpoint(operation, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
+    assert not emitted
+    assert "copy-sensitive-path" not in str(caught.value)
+    assert "copy-sensitive-path" not in repr(caught.value.__cause__)
+    client.assert_not_called()
+
+
+def test_actual_configuration_serialization_failure_remains_sanitized():
+    from pydantic import BaseModel, Field
+
+    from artisan.operations.examples.data_generator import DataGenerator
+
+    class UnsupportedValue:
+        def __repr__(self):
+            return "sensitive-unsupported-value"
+
+    class UnsupportedParameter(DataGenerator):
+        name = "recording_unsupported_parameter"
+
+        class Params(BaseModel):
+            token: object = Field(description="Unsupported credential value.")
+
+        params: Params
+
+    operation = UnsupportedParameter(params={"token": UnsupportedValue()})
+    with pytest.raises(ValueError, match="cannot be classified safely") as caught:
+        CommandRecorder(operation)
+    assert "sensitive-unsupported-value" not in repr(caught.value)
+    assert caught.value.__cause__ is None

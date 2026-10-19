@@ -251,9 +251,9 @@ class CommandRecorder:
         if not isinstance(model, BaseModel):
             return
         try:
-            serialized = model.model_dump(
-                mode="json", exclude=excluded, warnings="error"
-            )
+            # Owners validate copied models; classification must not emit their
+            # raw inputs through serialization warnings before that boundary.
+            serialized = model.model_dump(mode="json", exclude=excluded, warnings=False)
         except (PydanticSerializationError, TypeError, ValueError):
             msg = "Concrete configuration cannot be classified safely"
             raise ValueError(msg) from None
