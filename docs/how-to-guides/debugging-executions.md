@@ -106,6 +106,13 @@ Known replacement values are omitted from new framework diagnostic rows and
 error envelopes. Raw tool output and operation-produced files can contain what
 the operation writes; preserved files are outside that filtering guarantee.
 
+Ordinary attempts use the same secret policy for newly written parameter and
+override records, execution settings, literal input locations, errors, and
+authored result metadata. This includes the initial pending record, cache reuse,
+and interactive-filter commits. Artisan redacts diagnostic copies; operations
+receive the original values and cache identity still reflects their concrete
+configuration. Artifact content stays unchanged.
+
 ### Declare ordinary environment configuration
 
 Declare an environment value public only when it is ordinary configuration that
@@ -130,10 +137,17 @@ annotation itself and its ordering do not.
 The default empty tuple protects every explicit env value. Credential names and
 credential-bearing URLs cannot be declared public. Typed secrets, known secret
 aliases, ambient credentials, and explicit replay replacements remain protected.
-A sensitive value inside a dictionary key still makes capture unavailable.
-Command flags can reveal sensitivity later, immediately before execution; they
-cannot retroactively protect an opaque credential incorrectly declared public
-in an earlier snapshot. Public declarations require trusted configuration authors.
+A sensitive value inside a dictionary key still makes replay capture unavailable.
+Before sealing an execution record, Artisan checks copied command and replay
+evidence against secrets known at that point. If command flags or result metadata
+reveal a previously public value in the captured replay configuration, that
+snapshot becomes unavailable instead of retaining the value.
+
+Earlier pending records cannot use sensitivity discovered after their write,
+including values created only by parameter default factories. Existing records
+are not rewritten. Declare credentials through typed secret fields, recognized
+credential names, or protected environment entries before submission; public
+declarations require trusted configuration authors.
 
 Modal `secrets`, `image_registry_secret`, and `auth_secret` remain provider object
 names or variable prefixes. Replay preserves these references and requires current
