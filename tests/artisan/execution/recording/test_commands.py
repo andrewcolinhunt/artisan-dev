@@ -730,7 +730,9 @@ def test_copied_nested_configuration_reaches_owner_validation_without_warnings(
     with (
         warnings.catch_warnings(record=True) as emitted,
         patch("artisan.execution.tool_endpoint.client.httpx.Client") as client,
-        pytest.raises(ArtisanError, match="configuration is invalid") as caught,
+        pytest.raises(
+            ArtisanError, match="Modal deployment field data_policy"
+        ) as caught,
     ):
         call_endpoint(operation, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
     assert not emitted
