@@ -6,14 +6,23 @@ import re
 from collections.abc import Sequence
 from urllib.parse import urlsplit
 
-_CREDENTIAL = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|AUTH|API_KEY", re.I)
+_CREDENTIAL = re.compile(r"TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL|API_KEY", re.I)
+_AUTHENTICATION = re.compile(
+    r"(?:^|[^a-z0-9])(?:auth|authentication|authori[sz]ation|oauth|basicauth)\d*"
+    r"(?:codes?|keys?|headers?)?\d*(?:$|[^a-z0-9])",
+    re.I,
+)
 
 
 def credential_name(name: str) -> bool:
     """Recognize the documented credential variable/key names."""
+    # Authentication terms are words, including camelCase/acronym boundaries.
+    words = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
+    words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words)
     return (
         bool(_CREDENTIAL.search(name.replace("-", "_")))
-        or name.upper() == "AWS_ACCESS_KEY_ID"
+        or bool(_AUTHENTICATION.search(words))
+        or name.upper() in {"AWS_ACCESS_KEY_ID", "XAUTHORITY"}
     )
 
 
