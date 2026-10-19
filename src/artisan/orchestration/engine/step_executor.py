@@ -13,8 +13,9 @@ import resource
 import threading
 import time
 from collections.abc import Callable
-from concurrent.futures import ProcessPoolExecutor, wait
+from concurrent.futures import CancelledError, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
+from contextvars import copy_context
 from copy import deepcopy
 from dataclasses import replace
 from datetime import UTC, datetime
@@ -53,7 +54,7 @@ from artisan.orchestration.engine.results import (
 )
 from artisan.orchestration.engine.worker_logs import persist_worker_logs
 from artisan.orchestration.runners.base import RunnerBase
-from artisan.orchestration.runners.local import _terminate_process_pool
+from artisan.orchestration.runners.local import _NativePoolOwnership
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.command_record import CommandRecording
@@ -71,6 +72,8 @@ from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
 from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
+from artisan.utils.command_supervisor import initialize_native_worker
+from artisan.utils.external_tools import redact_values
 from artisan.utils.hashing import effective_config_payload, serialize_params
 from artisan.utils.path import (
     cancel_sentinel_path,
@@ -470,9 +473,9 @@ def _aggregate_cancellation(
         return None
     for status in (
         CancellationStatus.UNKNOWN,
+        CancellationStatus.REQUESTED,
         CancellationStatus.REJECTED,
         CancellationStatus.CONFIRMED,
-        CancellationStatus.REQUESTED,
     ):
         matching = [outcome for outcome in outcomes if outcome.status == status]
         if matching:
@@ -507,6 +510,21 @@ def _unknown_cancellation_result(
         error=outcome.message or "Cancellation outcome is unknown",
         step_run_id=step_run_id,
     )
+
+
+def _router_cancellation_evidence(
+    router: LifecycleRouter | None,
+) -> CancellationAcknowledgement:
+    """Keep missing or malformed dispatched ownership evidence uncertain."""
+    if router is None:
+        return CancellationAcknowledgement(
+            CancellationStatus.UNKNOWN,
+            "Dispatched work has no cancellation ownership evidence",
+        )
+    evidence = router.cancellation_acknowledgement
+    if evidence is None:
+        evidence = router.cancel()
+    return LifecycleRouter._validated_cancellation_evidence(evidence)
 
 
 def _verify_staging_if_needed(
@@ -882,6 +900,8 @@ def _execute_curator_step(
     dispatch_error: str | None = None
     actual_types: dict[str, str] = {}
     metadata: dict[str, Any] = {}
+    native_ownership: _NativePoolOwnership | None = None
+    native_returned = False
     with phase_timer("execute", timings):
         runtime_env = prepared_runtime or _create_runtime_environment(config, operation)
 
@@ -889,7 +909,11 @@ def _execute_curator_step(
         timestamp_start = datetime.now(UTC)
 
         try:
-            staging_result = _run_curator_in_subprocess(unit, runtime_env, cancel_event)
+            native_ownership = _NativePoolOwnership()
+            staging_result = _run_curator_in_subprocess(
+                unit, runtime_env, cancel_event, ownership=native_ownership
+            )
+            native_returned = True
             results = [
                 UnitResult(
                     success=staging_result.success,
@@ -905,6 +929,15 @@ def _execute_curator_step(
                     cancellation_acknowledgement=staging_result.cancellation_acknowledgement,
                 )
             ]
+            if staging_result.cancellation_acknowledgement is None:
+                results = _synthesize_missing_failure_records(
+                    [unit],
+                    results,
+                    runtime_env,
+                    timestamp_start,
+                    user_overrides,
+                    step_run_id=step_run_id,
+                )
             succeeded, failed = aggregate_results(results)
 
             # Log filter-specific diagnostics
@@ -952,12 +985,34 @@ def _execute_curator_step(
                 step_number=step_number,
                 step_run_id=step_run_id,
             )
+        finally:
+            if native_ownership is not None:
+                native_ownership.finish(
+                    failed=not native_returned, cancel_event=cancel_event
+                )
 
     # The curator child uses local staging, so no shared-filesystem poll is needed.
     with phase_timer("verify_staging", timings):
         pass
 
     cancellation_outcome = _aggregate_cancellation(results, None)
+    if cancel_event is not None and cancel_event.is_set():
+        if native_ownership is None:
+            native_outcome = CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN, "Curator ownership evidence is missing"
+            )
+        elif native_ownership.cancelled:
+            native_outcome = native_ownership.acknowledgement()
+        elif native_ownership.closed:
+            native_outcome = CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Curator scope completed before cancellation",
+            )
+        else:
+            native_outcome = CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN, native_ownership.reason
+            )
+        cancellation_outcome = _aggregate_cancellation(results, native_outcome)
     if (
         cancellation_outcome is not None
         and cancellation_outcome.status == CancellationStatus.UNKNOWN
@@ -970,7 +1025,10 @@ def _execute_curator_step(
             step_run_id=step_run_id,
         )
 
-    if cancel_event is not None and cancel_event.is_set():
+    if (
+        cancellation_outcome is not None
+        and cancellation_outcome.status == CancellationStatus.CONFIRMED
+    ):
         return _cancelled_result(
             operation, step_number, failure_policy, step_run_id=step_run_id
         )
@@ -999,6 +1057,12 @@ def _execute_curator_step(
         failure_policy=failure_policy,
         status=status,
         disposition=StepDisposition.EXECUTED,
+        cancellation_status=(
+            CancellationStatus.REJECTED
+            if cancellation_outcome is not None
+            and cancellation_outcome.status == CancellationStatus.REJECTED
+            else None
+        ),
         error=_result_error(results, dispatch_error),
         metadata={**metadata, "timings": timings},
         actual_output_types=actual_types,
@@ -1046,45 +1110,106 @@ def _curator_summary(
     )
 
 
+def _dispatch_curator(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    ownership: _NativePoolOwnership,
+) -> Future[Future[StagingResult]]:
+    """Keep user serialization and process creation off the cancellation observer."""
+    dispatched: Future[Future[StagingResult]] = Future()
+    if not ownership.begin_dispatch():
+        dispatched.set_exception(CancelledError())
+        return dispatched
+
+    def submit() -> None:
+        try:
+            call = serialize_process_call(run_curator_flow, unit, runtime_env)
+            if ownership.cancelled:
+                raise CancelledError
+            with suppress_main_reimport():
+                pool = ProcessPoolExecutor(
+                    max_workers=1,
+                    mp_context=multiprocessing.get_context("spawn"),
+                    initializer=initialize_native_worker,
+                    initargs=(ownership.supervisor.attachment,),
+                )
+                ownership.executor = pool
+                dispatched.set_result(pool.submit(execute_process_call, call))
+        except BaseException as exc:
+            dispatched.set_exception(exc)
+        finally:
+            ownership.end_dispatch()
+
+    context = copy_context()
+    dispatcher = threading.Thread(target=lambda: context.run(submit), daemon=True)
+    try:
+        dispatcher.start()
+    except BaseException:
+        ownership.end_dispatch()
+        raise
+    return dispatched
+
+
 def _run_curator_in_subprocess(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
     cancel_event: threading.Event | None = None,
+    *,
+    ownership: _NativePoolOwnership,
 ) -> StagingResult:
-    """Run one curator in a spawned child, proving exit on cancellation."""
-    call = serialize_process_call(run_curator_flow, unit, runtime_env)
-    ctx = multiprocessing.get_context("spawn")
-    with suppress_main_reimport():
-        pool = ProcessPoolExecutor(max_workers=1, mp_context=ctx)
-        wait_for_exit = True
-        try:
-            future = pool.submit(execute_process_call, call)
-            # Poll completion so a task-raised TimeoutError remains a task failure.
-            while not future.done():
-                if cancel_event is not None and cancel_event.is_set():
-                    # Never let context-manager shutdown wait on uncertain work.
-                    wait_for_exit = False
-                    try:
-                        confirmed = _terminate_process_pool(pool)
-                    except (OSError, RuntimeError):
-                        confirmed = False
-                    acknowledgement = CancellationAcknowledgement(
-                        CancellationStatus.CONFIRMED
-                        if confirmed
-                        else CancellationStatus.UNKNOWN,
-                        "Curator worker process exited"
-                        if confirmed
-                        else "Could not prove curator worker process exit",
-                    )
-                    return StagingResult(
-                        success=False,
-                        error=acknowledgement.message,
-                        cancellation_acknowledgement=acknowledgement,
-                    )
-                wait([future], timeout=0.1)
-            return future.result()
-        finally:
-            pool.shutdown(wait=wait_for_exit, cancel_futures=not wait_for_exit)
+    """Run a curator under the same native command/worker ownership as creators."""
+    result = StagingResult(success=False, error="Curator work did not complete")
+    failed = False
+    try:
+        dispatched = _dispatch_curator(unit, runtime_env, ownership)
+        future: Future[StagingResult] | None = None
+        while True:
+            if cancel_event is not None and cancel_event.is_set():
+                ownership.request_cancel(time.monotonic() + 10.0)
+            if dispatched.done():
+                if future is None:
+                    future = dispatched.result()
+                if future.done():
+                    result = future.result()
+                    break
+            if ownership.advance():
+                failed = True
+                break
+            if future is None:
+                wait([dispatched], timeout=0.02)
+            else:
+                wait([future], timeout=0.02)
+    except Exception as exc:
+        failed = True
+        error = (
+            _format_subprocess_kill_error(unit)
+            if isinstance(exc, BrokenProcessPool)
+            else f"{type(exc).__name__}: {exc}"
+        )
+        recorder = configuration_recorder(unit.operation)
+        error = recorder.sanitize(error)
+        error = redact_values(error, (ownership.supervisor.attachment["secret"],))
+        result = StagingResult(success=False, error=error)
+    except (KeyboardInterrupt, SystemExit):
+        failed = True
+        raise
+    finally:
+        closed = ownership.finish(failed=failed, cancel_event=cancel_event)
+    if not closed:
+        result = replace(result, success=False, error=ownership.reason)
+    if ownership.cancelled:
+        result = replace(
+            result, cancellation_acknowledgement=ownership.acknowledgement()
+        )
+    elif cancel_event is not None and cancel_event.is_set():
+        result = replace(
+            result,
+            cancellation_acknowledgement=CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Curator scope completed before cancellation",
+            ),
+        )
+    return result
 
 
 def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
@@ -1446,6 +1571,7 @@ def _execute_creator_step(
 
     staging_fs = config.storage.filesystem()
     cancellation_outcome: CancellationAcknowledgement | None = None
+    router: LifecycleRouter | None = None
     try:
         # --- execute phase ---
         dispatch_error: str | None = None
@@ -1466,7 +1592,7 @@ def _execute_creator_step(
                     # lifecycle router. The compute provider (axis 2) is
                     # consulted inside the lifecycle, in create_execute_router.
                     step_runner.validate_operation(operation)
-                    router: LifecycleRouter = step_runner.create_lifecycle_router(
+                    router = step_runner.create_lifecycle_router(
                         operation.runner_resources,
                         operation.batch_strategy,
                         step_number,
@@ -1539,6 +1665,23 @@ def _execute_creator_step(
                             step_run_id=step_run_id,
                         )
                     )
+                finally:
+                    if cancel_event is not None and cancel_event.is_set():
+                        cancellation_outcome = _aggregate_cancellation(
+                            results, _router_cancellation_evidence(router)
+                        )
+
+        if (
+            cancellation_outcome is not None
+            and cancellation_outcome.status == CancellationStatus.UNKNOWN
+        ):
+            return _unknown_cancellation_result(
+                operation,
+                step_number,
+                failure_policy,
+                cancellation_outcome,
+                step_run_id=step_run_id,
+            )
 
         # --- verify_staging phase ---
         if units_to_dispatch:
@@ -1567,22 +1710,34 @@ def _execute_creator_step(
 
         # --- cancel check: before commit ---
         if (
-            cancellation_outcome is not None
-            and cancellation_outcome.status == CancellationStatus.UNKNOWN
+            units_to_dispatch
+            and cancellation_outcome is None
+            and cancel_event is not None
+            and cancel_event.is_set()
         ):
-            return _unknown_cancellation_result(
-                operation,
-                step_number,
-                failure_policy,
-                cancellation_outcome,
-                step_run_id=step_run_id,
+            cancellation_outcome = _aggregate_cancellation(
+                results, _router_cancellation_evidence(router)
             )
+            if (
+                cancellation_outcome is not None
+                and cancellation_outcome.status == CancellationStatus.UNKNOWN
+            ):
+                return _unknown_cancellation_result(
+                    operation,
+                    step_number,
+                    failure_policy,
+                    cancellation_outcome,
+                    step_run_id=step_run_id,
+                )
         if (
             cancel_event is not None
             and cancel_event.is_set()
             and (
-                cancellation_outcome is None
-                or cancellation_outcome.status == CancellationStatus.CONFIRMED
+                (not units_to_dispatch and cancellation_outcome is None)
+                or (
+                    cancellation_outcome is not None
+                    and cancellation_outcome.status == CancellationStatus.CONFIRMED
+                )
             )
         ):
             return _cancelled_result(

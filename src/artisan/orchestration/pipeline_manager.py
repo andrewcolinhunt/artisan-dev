@@ -1223,8 +1223,22 @@ class PipelineManager:
         expected: StepStatus,
         *,
         register: bool,
+        never_dispatched: bool = False,
+        acknowledgement: CancellationAcknowledgement | None = None,
     ) -> StepResult:
-        """Persist requested, confirmed, and cancelled for one attempt."""
+        """Persist cancellation only from ownership proof or explicit no-dispatch."""
+        if never_dispatched:
+            confirmed = CancellationAcknowledgement(
+                CancellationStatus.CONFIRMED, "Work was cancelled before dispatch"
+            )
+        elif (
+            acknowledgement is not None
+            and acknowledgement.status == CancellationStatus.CONFIRMED
+        ):
+            confirmed = acknowledgement
+        else:
+            msg = "Dispatched cancellation requires confirmed ownership evidence"
+            raise ValueError(msg)
         step_number = self._step_start_records_by_id(step_run_id).step_number
         current = self._step_tracker.current_state(step_run_id)
         existing = self._publish_existing_terminal(
@@ -1235,10 +1249,6 @@ class PipelineManager:
         if existing is not None:
             return existing
         requested = CancellationAcknowledgement(CancellationStatus.REQUESTED)
-        confirmed = CancellationAcknowledgement(
-            CancellationStatus.CONFIRMED,
-            "Work stopped before an output commit",
-        )
         current = self._step_tracker.record_cancellation(
             step_run_id, expected, requested
         )
@@ -1896,6 +1906,10 @@ class PipelineManager:
                 step_run_id,
                 StepStatus.RUNNING,
                 register=False,
+                acknowledgement=CancellationAcknowledgement(
+                    result.cancellation_status or CancellationStatus.UNKNOWN,
+                    result.error,
+                ),
             )
         if result.cancellation_status == CancellationStatus.UNKNOWN:
             return self._persist_unknown_cancellation(
@@ -2375,6 +2389,7 @@ class PipelineManager:
                 step_run_id,
                 StepStatus.PENDING,
                 register=True,
+                never_dispatched=True,
             )
             return self._resolved_step_future(result)
 
@@ -2388,6 +2403,7 @@ class PipelineManager:
                 step_run_id,
                 StepStatus.PENDING,
                 register=True,
+                never_dispatched=True,
             )
             return self._resolved_step_future(result)
 
@@ -2642,6 +2658,7 @@ class PipelineManager:
                 step_run_id,
                 StepStatus.RUNNING,
                 register=True,
+                never_dispatched=True,
             )
             return self._resolved_step_future(result)
 
@@ -2862,6 +2879,7 @@ class PipelineManager:
                     step_run_id,
                     StepStatus.RUNNING,
                     register=False,
+                    never_dispatched=True,
                 )
 
             logger.info(
@@ -2906,6 +2924,10 @@ class PipelineManager:
                         step_run_id,
                         StepStatus.RUNNING,
                         register=False,
+                        acknowledgement=CancellationAcknowledgement(
+                            result.cancellation_status or CancellationStatus.UNKNOWN,
+                            result.error,
+                        ),
                     )
 
                 if result.cancellation_status == CancellationStatus.UNKNOWN:
@@ -2996,6 +3018,7 @@ class PipelineManager:
                 start_record.step_run_id,
                 current.status,
                 register=False,
+                never_dispatched=True,
             )
 
     @_with_log_context

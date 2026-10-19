@@ -600,6 +600,29 @@ def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
 
 
 def _op_run(args: argparse.Namespace) -> int:
+    """Establish inherited command ownership before importing operation code."""
+    from artisan.utils.command_supervisor import (
+        CommandOwnershipError,
+        attachment_sensitive_values,
+        managed_invocation,
+    )
+    from artisan.utils.external_tools import redact_values
+    from artisan.utils.traceback import format_error
+
+    sensitive_values = attachment_sensitive_values()
+    try:
+        with managed_invocation():
+            sensitive_values = (*sensitive_values, *attachment_sensitive_values())
+            return _op_run_managed(args)
+    except CommandOwnershipError:
+        sys.stderr.write("Managed command ownership could not be confirmed\n")
+        return 1
+    except Exception as error:
+        sys.stderr.write(redact_values(format_error(error), sensitive_values) + "\n")
+        return 1
+
+
+def _op_run_managed(args: argparse.Namespace) -> int:
     """Run an execute_as_tool op's function through the command adapter.
 
     Resolves the class by ``module:Qualname`` (no registry discovery),
@@ -611,17 +634,27 @@ def _op_run(args: argparse.Namespace) -> int:
     from artisan.execution.tool_endpoint.server import instantiate_op
     from artisan.registry.resolve import resolve_operation
     from artisan.schemas.specs.input_models import ExecuteInput
+    from artisan.utils.command_supervisor import (
+        attachment_sensitive_values,
+        close_command_scope,
+    )
+    from artisan.utils.external_tools import redact_values
 
     module, sep, qualname = args.target.partition(":")
     if not sep or not module or not qualname:
-        sys.stderr.write(f"target {args.target!r} is not module:Qualname\n")
+        sys.stderr.write(
+            redact_values(
+                f"target {args.target!r} is not module:Qualname\n",
+                attachment_sensitive_values(),
+            )
+        )
         return 1
     try:
         op_cls = resolve_operation(f"{module}:{qualname}")
         normalized = _file_shaped(json.loads(args.inputs))
         op = instantiate_op(op_cls, json.loads(args.params))
     except (ImportError, AttributeError, TypeError, ValueError) as exc:
-        sys.stderr.write(f"{exc}\n")
+        sys.stderr.write(redact_values(f"{exc}\n", attachment_sensitive_values()))
         return 1
     fd, log_path = tempfile.mkstemp(prefix="artisan-op-run-", suffix=".log")
     os.close(fd)
@@ -633,13 +666,21 @@ def _op_run(args: argparse.Namespace) -> int:
                 log_path=log_path,
             )
         )
-    finally:
+    except BaseException as error:
+        if close_command_scope(error):
+            Path(log_path).unlink(missing_ok=True)
+        raise
+    else:
+        close_command_scope()
         Path(log_path).unlink(missing_ok=True)
     if result is not None:
         sys.stderr.write(
-            f"{op_cls.__name__}.execute_function returned "
-            f"{type(result).__name__} — execute_as_tool ops must write files "
-            "to execute_dir and return None\n"
+            redact_values(
+                f"{op_cls.__name__}.execute_function returned "
+                f"{type(result).__name__} — execute_as_tool ops must write files "
+                "to execute_dir and return None\n",
+                attachment_sensitive_values(),
+            )
         )
         return 1
     return 0

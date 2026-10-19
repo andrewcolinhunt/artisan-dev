@@ -30,6 +30,16 @@ from artisan.schemas.execution.command_record import (
     MissingReason,
 )
 from artisan.schemas.operation_config.endpoint_policy import safe_uri_display
+from artisan.utils.command_supervisor import (
+    _diagnostic_invocation,
+    _diagnostic_tool,
+    attachment_sensitive_values,
+    bind_scope_diagnostics,
+    bind_scope_observer,
+    scope_command_diagnostics,
+    scope_command_observer,
+    strip_internal_attachment,
+)
 from artisan.utils.configuration_secrets import (
     credential_name,
     credential_url,
@@ -53,9 +63,7 @@ _URI = re.compile(r"(?<![a-zA-Z0-9+.-])[a-zA-Z][a-zA-Z0-9+.-]*://[^\s\"'<>]+")
 _current: ContextVar[CommandRecorder | None] = ContextVar(
     "command_recorder", default=None
 )
-_invocation: ContextVar[int | None] = ContextVar("command_invocation", default=None)
-_tool: ContextVar[Any] = ContextVar("command_tool", default=None)
-_json_value = TypeAdapter(Any)
+_json_value: TypeAdapter[Any] = TypeAdapter(Any)
 
 
 class CommandRecorder:
@@ -74,6 +82,7 @@ class CommandRecorder:
         self._omitted_missing = 0
         self._values: set[str] = set()
         self._environment: dict[str, str] = {}
+        self.add_sensitive_data(attachment_sensitive_values())
         self.add_environment(
             {k: v for k, v in os.environ.items() if credential_name(k)}
         )
@@ -82,10 +91,16 @@ class CommandRecorder:
     def add_environment(self, values: dict[str, str]) -> None:
         """Remember known credential values for diagnostic replacement only."""
         with self._lock:
-            for name, value in values.items():
+            for value in values.values():
                 if value:
                     self._values.add(value)
-                    self._environment[name] = value
+            self._environment.update(
+                {
+                    name: value
+                    for name, value in strip_internal_attachment(values).items()
+                    if value
+                }
+            )
 
     def add_sensitive_data(self, value: Any) -> None:
         """Register decoded replacement leaves without creating environment hints."""
@@ -249,6 +264,7 @@ class CommandRecorder:
         if "://" in text:
             text = _URI.sub(safe, text)
         with self._lock:
+            self._values.update(attachment_sensitive_values())
             return redact_values(text, tuple(self._values))
 
     def sanitize_data(self, value: Any, *, sanitize_keys: bool = False) -> Any:
@@ -403,6 +419,7 @@ class CommandRecorder:
                 )
             )
             self._values.update(value for value in sensitive_values if value)
+            self._values.update(attachment_sensitive_values())
             self._learn_arguments(requested)
 
     def begin(
@@ -417,13 +434,19 @@ class CommandRecorder:
         with self._lock:
             self.prepare(environment, requested, sensitive_values)
             self._learn_arguments(argv)
-            invocation = _invocation.get()
+            invocation = _diagnostic_invocation.get()
+            tool = _diagnostic_tool.get()
+            if invocation is None and scope_command_observer() is self:
+                invocation, inherited_tool = scope_command_diagnostics()
+                tool = tool or inherited_tool
             if invocation is None:
                 invocation = self.reserve()[0]
+                scoped = False
+            else:
+                scoped = True
             sequence = self._sequences.get(invocation, 0)
-            if _invocation.get() is not None:
+            if scoped:
                 self._sequences[invocation] = sequence + 1
-            tool = _tool.get()
             raw = {
                 "requested_argv": requested,
                 "argv": argv,
@@ -448,7 +471,9 @@ class CommandRecorder:
                         )
                         if isinstance(val := getattr(environment, key, None), str)
                     },
-                    "variable_names": sorted(getattr(environment, "env", {})),
+                    "variable_names": sorted(
+                        strip_internal_attachment(getattr(environment, "env", {}))
+                    ),
                 },
             }
             clean = self.sanitize_data(raw)
@@ -701,6 +726,8 @@ def command_snapshot() -> CommandRecording:
 def sanitize_diagnostic[Diagnostic](value: Diagnostic) -> Diagnostic:
     """Sanitize a diagnostic copy with the current execution's known values."""
     recorder = current_recorder()
+    if recorder is None and attachment_sensitive_values():
+        recorder = CommandRecorder()
     return (
         cast(Diagnostic, recorder.sanitize_data(value))
         if recorder is not None
@@ -710,21 +737,27 @@ def sanitize_diagnostic[Diagnostic](value: Diagnostic) -> Diagnostic:
 
 @contextmanager
 def capture_commands(
-    operation: Any = None, *, location: str = "local"
+    operation: Any = None, *, location: str = "local", bind_scope: bool = True
 ) -> Iterator[CommandRecorder]:
     """Install a fresh execution collector and always reset all context tokens."""
     recorder = CommandRecorder(operation, location=location)
     tokens = (
         _current.set(recorder),
         command_observer.set(recorder),
-        _invocation.set(None),
-        _tool.set(None),
+        _diagnostic_invocation.set(None),
+        _diagnostic_tool.set(None),
     )
+    previous_observer = bind_scope_observer(recorder) if bind_scope else None
+    previous_diagnostics = bind_scope_diagnostics(None, None) if bind_scope else None
     try:
         yield recorder
     finally:
-        _tool.reset(tokens[3])
-        _invocation.reset(tokens[2])
+        if bind_scope:
+            bind_scope_observer(previous_observer)
+            assert previous_diagnostics is not None
+            bind_scope_diagnostics(*previous_diagnostics)
+        _diagnostic_tool.reset(tokens[3])
+        _diagnostic_invocation.reset(tokens[2])
         command_observer.reset(tokens[1])
         _current.reset(tokens[0])
 
@@ -738,19 +771,29 @@ def invocation_scope(
     if recorder is not None:
         recorder.add_operation(operation)
         if invocation is None:
-            invocation = _invocation.get()
+            invocation = _diagnostic_invocation.get()
         if invocation is None:
             invocation = recorder.reserve()[0]
-    previous_invocation = _invocation.get()
-    token = _invocation.set(invocation)
-    tool_token = _tool.set(
-        getattr(operation, "tool", None) if operation is not None else _tool.get()
+    previous_invocation = _diagnostic_invocation.get()
+    token = _diagnostic_invocation.set(invocation)
+    tool = (
+        getattr(operation, "tool", None)
+        if operation is not None
+        else _diagnostic_tool.get()
+    )
+    tool_token = _diagnostic_tool.set(tool)
+    previous_diagnostics = (
+        bind_scope_diagnostics(invocation, tool)
+        if recorder is not None and scope_command_observer() is recorder
+        else None
     )
     try:
         yield invocation
     finally:
-        _tool.reset(tool_token)
-        _invocation.reset(token)
+        if previous_diagnostics is not None:
+            bind_scope_diagnostics(*previous_diagnostics)
+        _diagnostic_tool.reset(tool_token)
+        _diagnostic_invocation.reset(token)
         if (
             recorder is not None
             and invocation is not None

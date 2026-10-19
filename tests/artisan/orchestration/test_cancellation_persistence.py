@@ -70,7 +70,7 @@ def test_unknown_cancellation_persists_custom_named_attempt_and_allows_resume(
         lambda *_args, **_kwargs: UnknownRouter(),
     )
 
-    def uncertain_curator(unit, runtime, event):
+    def uncertain_curator(unit, runtime, event, *, ownership):
         record_request(unit)
         return StagingResult(
             success=False,

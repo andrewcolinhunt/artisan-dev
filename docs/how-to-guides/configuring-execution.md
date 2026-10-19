@@ -280,6 +280,57 @@ See [Write Creator Operations](writing-creator-operations.md#command-operations-
 for a complete command wrapper, and [Python API](../reference/python-api.md)
 for supported configuration types and their source contracts.
 
+### Keep managed commands in the foreground
+
+Use `run_command` for tools that should stop with their execution unit. A call
+returns successfully only after its host process group and any registered nested
+commands have stopped and their command output has been collected. A child in
+that group may run alongside its parent, but cannot remain as a background
+service after the call completes. This also applies to commands issued during
+preprocessing, postprocessing, curators, and replay.
+
+Nested Artisan commands inherit the enclosing command's ownership. Keep that
+inherited environment intact. You can issue commands concurrently from operation
+threads, but join those threads before returning from each phase. Starting a
+nested native pipeline or native replay inside managed work is unsupported and
+raises an execution error before dispatch.
+
+Wait for nested `run_command` calls before the enclosing command exits. If it
+exits while a nested call is still running or collecting output, Artisan stops
+the remaining managed groups and fails the incomplete result. Catching an
+ownership error cannot turn that result into a successful execution.
+
+The implementation targets Linux and macOS host process groups; each platform
+requires its own native release checks. Direct `subprocess` calls, detached
+sessions, deliberately changed process groups, and external daemon work fall
+outside this ownership contract.
+
+Cancellation evidence depends on the selected environment:
+
+| Environment | What local command ownership can establish |
+| --- | --- |
+| Local | Closure of the host process group and registered nested commands |
+| Docker, Apptainer, Pixi | Host command closure; external workload termination remains unconfirmed |
+
+These environments still permit ordinary execution. Once an external environment
+has launched work, native cancellation remains `unknown` without separate
+evidence that the external work stopped, even if its host command finished
+earlier. Pixi keeps this conservative behavior until its locked wrapper passes
+the required native platform checks. A remote tool endpoint also retains its
+provider's independent cancellation requirements.
+
+Custom environment authors declare the class attribute `cancellation_scope`.
+Its default is `"external"`; `"process_group"` requires the wrapper to keep all
+managed work inside the host process group or registered nested commands. This
+attribute is not a per-run option and does not change serialized configuration
+or cache identity.
+
+If command cleanup cannot be confirmed, Artisan fails the execution and retains
+its workspace and uncommitted staging. It does not proceed to later user phases,
+collect outputs, or record success. Earlier independently completed units remain
+eligible for recovery. See [cancellation outcomes](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb)
+and [diagnostic limits](debugging-executions.md#verify) before retrying.
+
 ## Set failure policy
 
 The default `FailurePolicy.CONTINUE` allows independent units to finish,

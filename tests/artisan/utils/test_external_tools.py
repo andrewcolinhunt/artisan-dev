@@ -2,23 +2,17 @@
 
 from __future__ import annotations
 
-import io
-import signal
-import subprocess
 import sys
-from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from artisan.schemas.operation_config.environment_spec import (
     DockerEnvironmentSpec,
-    EnvironmentSpec,
     LocalEnvironmentSpec,
 )
 from artisan.utils.external_tools import (
     ExternalToolError,
-    _kill_process_group,
     format_args,
     run_command,
     to_cli_value,
@@ -220,350 +214,130 @@ class TestExternalToolErrorEnvelope:
         assert err.envelope.recovery_hint == "RETRY_LATER"
 
 
-class TestProcessCleanup:
-    """Tests for subprocess process group cleanup."""
-
-    def test_kill_process_group_sigterm_sufficient(self):
-        """Process exits after SIGTERM — no SIGKILL needed."""
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.wait.return_value = 0
-
-        with (
-            patch("artisan.utils.external_tools.os.getpgid", return_value=12345),
-            patch("artisan.utils.external_tools.os.killpg") as mock_killpg,
-        ):
-            _kill_process_group(mock_proc)
-
-        mock_killpg.assert_called_once_with(12345, signal.SIGTERM)
-
-    def test_kill_process_group_escalates_to_sigkill(self):
-        """SIGKILL sent when process doesn't exit after SIGTERM."""
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-        mock_proc.wait.side_effect = [
-            subprocess.TimeoutExpired(cmd=[], timeout=3),
-            0,
-        ]
-
-        with (
-            patch("artisan.utils.external_tools.os.getpgid", return_value=12345),
-            patch("artisan.utils.external_tools.os.killpg") as mock_killpg,
-        ):
-            _kill_process_group(mock_proc)
-
-        assert mock_killpg.call_count == 2
-        mock_killpg.assert_any_call(12345, signal.SIGTERM)
-        mock_killpg.assert_any_call(12345, signal.SIGKILL)
-
-    def test_kill_process_group_already_dead(self):
-        """ProcessLookupError is swallowed when process already exited."""
-        mock_proc = MagicMock()
-        mock_proc.pid = 12345
-
-        with patch(
-            "artisan.utils.external_tools.os.getpgid",
-            side_effect=ProcessLookupError,
-        ):
-            _kill_process_group(mock_proc)
+@pytest.mark.parametrize("streaming", [False, True])
+def test_real_command_output_and_nonzero_status(streaming, capsys):
+    command = [
+        sys.executable,
+        "-c",
+        "import sys; print('output'); print('problem',file=sys.stderr); sys.exit(4)",
+    ]
+    with pytest.raises(ExternalToolError) as failure:
+        run_command(LocalEnvironmentSpec(), command, stream_output=streaming)
+    assert failure.value.return_code == 4
+    assert "output" in failure.value.stdout
+    assert "problem" in (failure.value.stdout if streaming else failure.value.stderr)
+    assert ("output" in capsys.readouterr().out) is streaming
 
 
-class TestRunCommand:
-    """Tests for run_command with EnvironmentSpec types."""
+@pytest.mark.parametrize("streaming", [False, True])
+def test_real_command_environment_cwd_and_log_modes(streaming, tmp_path):
+    log = tmp_path / "tool.log"
+    command = [
+        sys.executable,
+        "-c",
+        "import os; print(os.getcwd()); print(os.environ['CHECK_VALUE'])",
+    ]
+    for mode in ("w", "a"):
+        result = run_command(
+            LocalEnvironmentSpec(env={"CHECK_VALUE": "value"}),
+            command,
+            cwd=str(tmp_path),
+            stream_output=streaming,
+            log_path=str(log),
+            log_mode=mode,
+        )
+        assert result.stdout == f"{tmp_path}\nvalue\n"
+    assert log.read_text() == result.stdout * 2
 
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_success_local(self, mock_popen):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("output", "")
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
 
-        env = LocalEnvironmentSpec()
-        result = run_command(env, ["python", "run.py"])
-        assert result.returncode == 0
-        assert result.stdout == "output"
+@pytest.mark.parametrize("streaming", [False, True])
+def test_real_command_universal_newlines(streaming):
+    result = run_command(
+        LocalEnvironmentSpec(),
+        [sys.executable, "-c", "import os; os.write(1,b'a\\r\\nb\\rc')"],
+        stream_output=streaming,
+    )
+    assert result.stdout == "a\nb\nc"
 
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_failure_raises_error(self, mock_popen):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "error")
-        mock_proc.returncode = 1
-        mock_popen.return_value = mock_proc
 
-        env = LocalEnvironmentSpec()
-        with pytest.raises(ExternalToolError) as exc_info:
-            run_command(env, ["python", "run.py"])
-        assert exc_info.value.return_code == 1
-
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_docker_wrapping(self, mock_popen):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("ok", "")
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        env = DockerEnvironmentSpec(image="img:latest")
-        run_command(env, ["samtools", "sort"])
-
-        call_args = mock_popen.call_args[0][0]
-        assert call_args[:3] == ["docker", "run", "--rm"]
-        assert "img:latest" in call_args
-
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_env_vars_passed(self, mock_popen):
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("", "")
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        env = EnvironmentSpec(env={"FOO": "bar"})
-        run_command(env, ["cmd"])
-
-        _, kwargs = mock_popen.call_args
-        assert kwargs["env"]["FOO"] == "bar"
-
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_streaming_popen_uses_process_group(self, mock_popen):
-        """Popen is called with process_group=0 in streaming mode."""
-        mock_proc = MagicMock()
-        mock_proc.stdout = io.StringIO()
-        mock_proc.wait.return_value = 0
-        mock_popen.return_value = mock_proc
-
-        env = LocalEnvironmentSpec()
-        run_command(env, ["python", "run.py"], stream_output=True)
-
-        _, kwargs = mock_popen.call_args
-        assert kwargs["process_group"] == 0
-        assert mock_proc.stdout.closed
-
-    @patch("artisan.utils.external_tools._kill_process_group")
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_streaming_interrupt_kills_group(self, mock_popen, mock_kill):
-        """KeyboardInterrupt during streaming triggers process group cleanup."""
-        mock_proc = MagicMock()
-        mock_proc.stdout = MagicMock()
-        mock_proc.stdout.__iter__ = MagicMock(side_effect=KeyboardInterrupt)
-        mock_popen.return_value = mock_proc
-
-        env = LocalEnvironmentSpec()
-        with pytest.raises(KeyboardInterrupt):
-            run_command(env, ["python", "run.py"], stream_output=True)
-
-        mock_kill.assert_called_with(mock_proc)
-        mock_proc.stdout.close.assert_called_once()
-
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_streaming_writes_each_line_to_stdout(self, mock_popen, capsys):
-        """Each child stdout line is written to ``sys.stdout`` for live emission."""
-        mock_proc = MagicMock()
-        mock_proc.stdout = io.StringIO("hello\nworld\n")
-        mock_proc.wait.return_value = 0
-        mock_popen.return_value = mock_proc
-
-        env = LocalEnvironmentSpec()
-        run_command(env, ["python", "run.py"], stream_output=True)
-
-        captured = capsys.readouterr().out
-        assert "hello\n" in captured
-        assert "world\n" in captured
-
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_streaming_writes_log_path_and_stdout(self, mock_popen, capsys, tmp_path):
-        """Streaming writes each line to both ``log_path`` and ``sys.stdout``."""
-        mock_proc = MagicMock()
-        mock_proc.stdout = io.StringIO("one\ntwo\n")
-        mock_proc.wait.return_value = 0
-        mock_popen.return_value = mock_proc
-
-        log_path = tmp_path / "out.log"
-        env = LocalEnvironmentSpec()
+@pytest.mark.parametrize("streaming", [False, True])
+def test_real_command_missing_executable(streaming):
+    with pytest.raises(FileNotFoundError, match="could not be launched"):
         run_command(
-            env, ["python", "run.py"], stream_output=True, log_path=str(log_path)
+            LocalEnvironmentSpec(),
+            ["/missing-artisan-test-executable"],
+            stream_output=streaming,
         )
 
-        captured = capsys.readouterr().out
-        assert "one\n" in captured
-        assert "two\n" in captured
-        assert log_path.read_text() == "one\ntwo\n"
 
-    @patch("artisan.utils.external_tools._kill_process_group")
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_captured_interrupt_kills_group(self, mock_popen, mock_kill):
-        """KeyboardInterrupt during captured run triggers process group cleanup."""
-        mock_proc = MagicMock()
-        mock_proc.communicate.side_effect = KeyboardInterrupt
-        mock_popen.return_value = mock_proc
-
-        env = LocalEnvironmentSpec()
-        with pytest.raises(KeyboardInterrupt):
-            run_command(env, ["python", "run.py"])
-
-        mock_kill.assert_called_once_with(mock_proc)
-
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_captured_writes_log_path_on_success(self, mock_popen, tmp_path):
-        """``_run_captured`` writes captured stdout to ``log_path`` after success."""
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("captured output\n", "")
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        log_path = tmp_path / "out.log"
-        env = LocalEnvironmentSpec()
-        run_command(env, ["python", "run.py"], log_path=str(log_path))
-
-        assert log_path.read_text() == "captured output\n"
-
-    @patch("artisan.utils.external_tools.subprocess.Popen")
-    def test_captured_skips_log_path_when_unset(self, mock_popen, tmp_path):
-        """Without ``log_path`` no file is created in captured mode."""
-        mock_proc = MagicMock()
-        mock_proc.communicate.return_value = ("captured output\n", "")
-        mock_proc.returncode = 0
-        mock_popen.return_value = mock_proc
-
-        env = LocalEnvironmentSpec()
-        run_command(env, ["python", "run.py"])
-
-        assert list(tmp_path.iterdir()) == []
+def test_wrapped_command_reaches_owner_with_prepared_environment():
+    command = MagicMock(returncode=0, launch_seconds=0.01)
+    command.communicate.return_value = ("ok", "")
+    with patch(
+        "artisan.utils.external_tools.ManagedCommand", return_value=command
+    ) as launch:
+        run_command(
+            DockerEnvironmentSpec(image="example:1", env={"FOO": "bar"}), ["tool"]
+        )
+    assert launch.call_args.args[1][:3] == ["docker", "run", "--rm"]
+    assert "example:1" in launch.call_args.args[1]
+    assert launch.call_args.kwargs["external"] is True
+    command.dispose.assert_called_once()
 
 
 @pytest.mark.parametrize("streaming", [False, True])
 @pytest.mark.parametrize(
     "outcome", ["succeeded", "failed", "launch_failed", "interrupted"]
 )
-def test_launch_timing_brackets_only_popen(monkeypatch, tmp_path, streaming, outcome):
-    """Output waits and later failures cannot change a successful launch duration."""
-    from artisan.execution.recording.commands import capture_commands, invocation_scope
-    from artisan.utils import external_tools
+def test_owner_launch_duration_and_single_final_outcome(streaming, outcome, tmp_path):
+    from artisan.execution.recording.commands import capture_commands
 
-    clock = [100.0]
-    events = []
-
-    def now():
-        events.append("clock")
-        return clock[0]
-
-    process = MagicMock()
-    process.returncode = 7 if outcome == "failed" else 0
-
-    def output():
-        events.append("output")
-        clock[0] += 1000.0
-        if outcome == "interrupted":
-            raise KeyboardInterrupt
-        return "tool output\n", ""
-
-    def stream():
-        stdout, _ = output()
-        yield stdout
-
-    process.communicate.side_effect = output
-    process.stdout = stream()
-    process.wait.return_value = process.returncode
-
-    def popen(*args, **kwargs):
-        events.append("popen")
-        clock[0] += 0.123456789
-        if outcome == "launch_failed":
-            msg = "missing executable"
-            raise FileNotFoundError(msg)
-        return process
-
-    monkeypatch.setattr(external_tools, "perf_counter", now)
-    monkeypatch.setattr(external_tools.subprocess, "Popen", popen)
-    kill = MagicMock()
-    monkeypatch.setattr(external_tools, "_kill_process_group", kill)
+    command = MagicMock(
+        returncode=4 if outcome == "failed" else 0, launch_seconds=0.123
+    )
+    if outcome == "interrupted":
+        command.communicate.side_effect = KeyboardInterrupt
+    else:
+        command.communicate.return_value = ("output", "")
     exception = {
         "failed": ExternalToolError,
         "launch_failed": FileNotFoundError,
         "interrupted": KeyboardInterrupt,
     }.get(outcome)
-    with capture_commands() as recorder, invocation_scope():
-        kwargs = {"stream_output": streaming, "log_path": str(tmp_path / "tool.log")}
-        if exception is None:
-            run_command(LocalEnvironmentSpec(), ["tool"], **kwargs)
-        else:
-            with pytest.raises(exception):
-                run_command(LocalEnvironmentSpec(), ["tool"], **kwargs)
-    command = recorder.snapshot().commands[0]
-    assert command.outcome == outcome
-    if outcome == "launch_failed":
-        assert command.launch_seconds is None
-        assert events == ["clock", "popen"]
-    else:
-        assert command.launch_seconds == pytest.approx(0.123456789, abs=1e-12)
-        assert events == ["clock", "popen", "clock", "output"]
-    assert kill.call_count == (outcome == "interrupted")
-
-
-@pytest.mark.parametrize("returncode", [0, 4])
-def test_streaming_closes_real_subprocess_pipe(
-    monkeypatch: pytest.MonkeyPatch, returncode: int
-) -> None:
-    processes: list[subprocess.Popen[str]] = []
-    original_popen = subprocess.Popen
-
-    def launch(*args: Any, **kwargs: Any) -> subprocess.Popen[str]:
-        process = original_popen(*args, **kwargs)
-        processes.append(process)
-        return process
-
-    monkeypatch.setattr("artisan.utils.external_tools.subprocess.Popen", launch)
-    command = [sys.executable, "-c", f"print('output'); raise SystemExit({returncode})"]
-    if returncode:
-        with pytest.raises(ExternalToolError) as failure:
-            run_command(LocalEnvironmentSpec(), command, stream_output=True)
-        assert failure.value.return_code == returncode
-    else:
-        result = run_command(LocalEnvironmentSpec(), command, stream_output=True)
-        assert result.stdout == "output\n"
-    assert len(processes) == 1
-    assert processes[0].stdout is not None
-    assert processes[0].stdout.closed
-    assert processes[0].returncode == returncode
-
-
-@pytest.mark.parametrize("outcome", ["succeeded", "failed", "interrupted"])
-def test_streaming_close_failure_preserves_primary_outcome(outcome: str) -> None:
-    from artisan.execution.recording.commands import capture_commands
-
-    pipe = io.StringIO("output\n")
-    original_close = pipe.close
-    process = MagicMock(stdout=pipe)
-    process.returncode = {"succeeded": 0, "failed": 4, "interrupted": -15}[outcome]
-    process.wait.return_value = process.returncode
-    interruption = KeyboardInterrupt("cancelled")
-    if outcome == "interrupted":
-        process.wait.side_effect = interruption
-
-    def close() -> None:
-        original_close()
-        message = "read pipe close failed"
-        raise OSError(message)
-
     with (
         capture_commands() as recorder,
-        patch("artisan.utils.external_tools.subprocess.Popen", return_value=process),
-        patch("artisan.utils.external_tools._kill_process_group") as kill,
-        patch.object(pipe, "close", side_effect=close) as close_pipe,
+        patch(
+            "artisan.utils.external_tools.ManagedCommand", return_value=command
+        ) as launch,
     ):
-        if outcome == "succeeded":
-            result = run_command(LocalEnvironmentSpec(), ["tool"], stream_output=True)
-            assert result.returncode == 0
-        elif outcome == "failed":
-            with pytest.raises(ExternalToolError) as failure:
-                run_command(LocalEnvironmentSpec(), ["tool"], stream_output=True)
-            assert failure.value.return_code == 4
+        if outcome == "launch_failed":
+            launch.side_effect = FileNotFoundError("missing executable")
+        if exception:
+            with pytest.raises(exception):
+                run_command(LocalEnvironmentSpec(), ["tool"], stream_output=streaming)
         else:
-            with pytest.raises(KeyboardInterrupt) as failure:
-                run_command(LocalEnvironmentSpec(), ["tool"], stream_output=True)
-            assert failure.value is interruption
-    assert pipe.closed
-    close_pipe.assert_called_once()
-    assert kill.call_count == (outcome == "interrupted")
-    command = recorder.snapshot().commands[0]
-    assert command.outcome == outcome
-    assert command.returncode == process.returncode
-    assert command.launch_seconds is not None
+            run_command(LocalEnvironmentSpec(), ["tool"], stream_output=streaming)
+    records = recorder.snapshot().commands
+    assert len(records) == 1
+    assert records[0].outcome == outcome
+    assert records[0].launch_seconds == (
+        None if outcome == "launch_failed" else pytest.approx(0.123)
+    )
+    assert command.interrupt.call_count == (outcome == "interrupted")
+    assert command.dispose.call_count == (outcome != "launch_failed")
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_primary_interruption_preserved_when_cleanup_is_unknown(streaming):
+    interruption = KeyboardInterrupt("cancelled")
+    command = MagicMock(returncode=None, launch_seconds=0.1)
+    command.communicate.side_effect = interruption
+    command.interrupt.side_effect = lambda error: error.add_note("cleanup unconfirmed")
+    with (
+        patch("artisan.utils.external_tools.ManagedCommand", return_value=command),
+        pytest.raises(KeyboardInterrupt) as caught,
+    ):
+        run_command(LocalEnvironmentSpec(), ["tool"], stream_output=streaming)
+    assert caught.value is interruption
+    assert "cleanup unconfirmed" in interruption.__notes__
+    command.dispose.assert_called_once()

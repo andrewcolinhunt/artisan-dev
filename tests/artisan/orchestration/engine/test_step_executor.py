@@ -40,6 +40,7 @@ from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
     CancellationStatus,
     StepDisposition,
     StepStatus,
@@ -1830,6 +1831,9 @@ class TestCreatorCancellationRetention:
             ]
 
         mock_handle.run.side_effect = _cancel_with_failure
+        mock_handle.cancellation_acknowledgement = CancellationAcknowledgement(
+            CancellationStatus.CONFIRMED, "All owned work stopped"
+        )
         mock_cache.return_value = None
 
         result = _execute_creator_step(
@@ -1977,6 +1981,7 @@ def test_cancellation_outcomes_preserve_existing_shards(
     if kind == "creator":
         backend, router = _make_mock_backend()
         router.run.side_effect = finish_creator
+        router.cancellation_acknowledgement = acknowledgement
         result = step_executor._execute_creator_step(step_runner=backend, **kwargs)
     else:
         monkeypatch.setattr(step_executor, "_run_curator_in_subprocess", finish_curator)
@@ -1988,6 +1993,70 @@ def test_cancellation_outcomes_preserve_existing_shards(
         else StepStatus.FAILED
     )
     assert {path: path.read_bytes() for path in directory.iterdir()} == before
+
+
+@pytest.mark.parametrize("dispatch_mode", ["result", "broken", "exception"])
+@pytest.mark.parametrize(
+    "evidence",
+    [
+        None,
+        CancellationStatus.REQUESTED,
+        CancellationStatus.UNKNOWN,
+        CancellationStatus.CONFIRMED,
+    ],
+)
+def test_dispatched_cancellation_requires_evidence_through_failures(
+    tmp_path, monkeypatch, dispatch_mode, evidence
+):
+    from concurrent.futures.process import BrokenProcessPool
+
+    from artisan.orchestration.engine import step_executor
+    from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+
+    event = threading.Event()
+    backend, router = _make_mock_backend()
+    acknowledgement = (
+        CancellationAcknowledgement(evidence) if evidence is not None else None
+    )
+    router.cancellation_acknowledgement = acknowledgement
+    router.cancel.return_value = acknowledgement
+
+    def dispatch(*args, **kwargs):
+        event.set()
+        if dispatch_mode == "broken":
+            message = "worker disappeared"
+            raise BrokenProcessPool(message)
+        if dispatch_mode == "exception":
+            message = "collection failed"
+            raise RuntimeError(message)
+        return [UnitResult(success=False, item_count=1, execution_run_ids=[])]
+
+    router.run.side_effect = dispatch
+    monkeypatch.setattr(step_executor, "check_cache_for_batch", lambda *a, **kw: None)
+    verify = MagicMock()
+    logs = MagicMock()
+    monkeypatch.setattr(step_executor, "_verify_staging_if_needed", verify)
+    monkeypatch.setattr(step_executor, "persist_worker_logs", logs)
+    result = step_executor._execute_creator_step(
+        operation=MockNoGroupByCreatorOp(),
+        inputs=_prepared({"data": [_ID_S1]}),
+        step_runner=backend,
+        step_number=1,
+        config=PipelineConfig(
+            name="proof",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
+        ),
+        cancel_event=event,
+    )
+    if evidence is CancellationStatus.CONFIRMED:
+        assert result.status is StepStatus.CANCELLED
+        assert result.cancellation_status is CancellationStatus.CONFIRMED
+    else:
+        assert result.status is StepStatus.FAILED
+        assert result.cancellation_status is CancellationStatus.UNKNOWN
+        verify.assert_not_called()
+        logs.assert_not_called()
 
 
 class TestCommitFailureHandling:
@@ -2656,7 +2725,7 @@ def _deadline(seconds: int):
 class TestCuratorSubprocessIsolation:
     """Tests for subprocess isolation of curator operations."""
 
-    def test_curator_runs_in_subprocess(self) -> None:
+    def test_curator_runs_in_subprocess(self, mock_native_ownership) -> None:
         """_run_curator_in_subprocess should delegate to ProcessPoolExecutor."""
         from unittest.mock import MagicMock
 
@@ -2682,7 +2751,9 @@ class TestCuratorSubprocessIsolation:
             mock_pool_cls.return_value = mock_pool
             mock_pool.submit.return_value.result.return_value = expected
 
-            result = _run_curator_in_subprocess(unit, runtime_env)
+            result = _run_curator_in_subprocess(
+                unit, runtime_env, ownership=mock_native_ownership
+            )
 
         assert result is expected
         # Verify spawn context is used (avoids fork deadlocks with threaded parents)
@@ -2700,6 +2771,7 @@ class TestCuratorSubprocessIsolation:
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
+        from artisan.orchestration.runners.local import _NativePoolOwnership
         from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 
         class NotebookCurator(OperationDefinition):
@@ -2745,19 +2817,22 @@ class TestCuratorSubprocessIsolation:
             "artisan.orchestration.engine.step_executor.run_curator_flow",
             _run_notebook_curator,
         ):
-            result = _run_curator_in_subprocess(unit, runtime_env)
+            result = _run_curator_in_subprocess(
+                unit, runtime_env, ownership=_NativePoolOwnership()
+            )
 
         assert result.success is True
         assert result.execution_run_id == "run-0"
         assert result.artifact_ids == ["notebook-artifact"]
 
-    def test_curator_task_timeouterror_surfaces_as_failure(self) -> None:
+    def test_curator_task_timeouterror_surfaces_as_failure(
+        self, mock_native_ownership
+    ) -> None:
         """A task raising TimeoutError surfaces, not an infinite poll loop.
 
         On Python 3.12 concurrent.futures.TimeoutError IS
         builtins.TimeoutError; the poll loop must call result() exactly once
-        after done() and let the task-raised TimeoutError propagate rather
-        than eating it as a poll timeout.
+        after done() and report the task-raised TimeoutError as a failure.
         """
         from artisan.orchestration.engine import step_executor as se
 
@@ -2774,11 +2849,16 @@ class TestCuratorSubprocessIsolation:
             future.result.side_effect = TimeoutError("task self-timeout")
 
             # Deadline guard: a regression would spin forever on result(timeout=).
-            with (
-                _deadline(10),
-                pytest.raises(TimeoutError, match="task self-timeout"),
-            ):
-                se._run_curator_in_subprocess(unit, runtime_env)
+            with _deadline(10):
+                result = se._run_curator_in_subprocess(
+                    unit, runtime_env, ownership=mock_native_ownership
+                )
+            assert not result.success
+            assert result.error == "TimeoutError: task self-timeout"
+            future.result.assert_called_once_with()
+            mock_native_ownership.finish.assert_called_once_with(
+                failed=True, cancel_event=None
+            )
 
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")

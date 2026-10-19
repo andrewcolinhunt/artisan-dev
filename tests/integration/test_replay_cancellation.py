@@ -49,7 +49,7 @@ def test_curator_replay_cancellation_commits_no_worker_outputs(
     fs = runtime.storage.filesystem()
     before = read_committed(runtime.delta_root, TablePath.EXECUTIONS, fs=fs)
 
-    def cancelled_curator(unit, runtime, event):
+    def cancelled_curator(unit, runtime, event, *, ownership):
         event.set()
         return StagingResult(
             success=False,
@@ -159,7 +159,7 @@ def test_unknown_cancellation_preserves_terminal_winner_during_persistence(
             finish_attempt(tracker, step_run_id)
         return transition(tracker, step_run_id, expected, target, **kwargs)
 
-    def uncertain_curator(unit, runtime, event):
+    def uncertain_curator(unit, runtime, event, *, ownership):
         event.set()
         return StagingResult(
             success=False,

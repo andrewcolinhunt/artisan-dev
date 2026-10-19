@@ -6,6 +6,8 @@ selector. Pipeline-level overrides change ``active`` via ``model_copy()``.
 
 from __future__ import annotations
 
+from typing import Any
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from artisan.schemas.operation_config.endpoint_policy import (
@@ -13,7 +15,10 @@ from artisan.schemas.operation_config.endpoint_policy import (
     _normalize_http_root,
     _parse_endpoint_uri,
 )
-from artisan.utils.configuration_secrets import validate_public_env
+from artisan.utils.configuration_secrets import (
+    strip_command_attachment,
+    validate_public_env,
+)
 
 ARTISAN_WORKER_IMAGE = "ghcr.io/dexterity-systems/artisan-worker:latest"
 
@@ -153,6 +158,11 @@ class ModalComputeConfig(ComputeConfig):
     max_concurrent_calls: int = Field(default=64, gt=0)
     output_store: str | None = None
     data_policy: ToolEndpointDataPolicy = Field(default_factory=ToolEndpointDataPolicy)
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _exclude_command_attachment(cls, value: Any) -> Any:
+        return strip_command_attachment(value)
 
     @model_validator(mode="after")
     def _validate_public_env(self) -> ModalComputeConfig:

@@ -28,6 +28,9 @@ def serialize_process_call[**P, ResultT](
 
 def execute_process_call[ResultT](call: SerializedProcessCall[ResultT]) -> ResultT:
     """Deserialize and execute a trusted worker-process call."""
+    from artisan.utils.command_supervisor import validate_worker_attachment
+
+    validate_worker_attachment()
     function, args, kwargs = cast(
         tuple[Callable[..., ResultT], tuple[Any, ...], dict[str, Any]],
         cloudpickle.loads(call.payload),

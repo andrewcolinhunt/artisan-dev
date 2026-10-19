@@ -90,7 +90,7 @@ def inline_curator(monkeypatch):
     # Keep the actual worker, seals, and commit path; avoid spawning for these tests.
     monkeypatch.setattr(
         "artisan.orchestration.engine.step_executor._run_curator_in_subprocess",
-        lambda unit, runtime, cancel_event: run_curator_flow(unit, runtime),
+        lambda unit, runtime, cancel_event, **kwargs: run_curator_flow(unit, runtime),
     )
 
 
@@ -165,7 +165,7 @@ def test_dynamic_cache_preserves_metadata_and_exact_source(
             monkeypatch.setattr(pipeline._step_tracker, "check_cache", lambda *a: None)
         monkeypatch.setattr(
             "artisan.orchestration.engine.step_executor._run_curator_in_subprocess",
-            lambda *args: pytest.fail("cached curator must not run"),
+            lambda *args, **kwargs: pytest.fail("cached curator must not run"),
         )
         reused = pipeline.run(DynamicCurator, compact=False)
         assert reused.status == StepStatus.SUCCEEDED, reused.error

@@ -92,7 +92,9 @@ class MyOperation(OperationDefinition):
         """Algorithm parameters for MyOperation."""
 
         factor: float = Field(
-            default=2.0, ge=0.0, description="Multiplier for CSV values",
+            default=2.0,
+            ge=0.0,
+            description="Multiplier for CSV values",
         )
 
     params: Params = Params()
@@ -102,11 +104,18 @@ class MyOperation(OperationDefinition):
     batch_strategy: BatchStrategy = BatchStrategy(job_name="my_operation")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {"datasets": PerArtifact([
-            {"path": a.materialized_path, "source_id": a.artifact_id,
-             "name": a.original_name}
-            for a in inputs.input_artifacts["dataset"]
-        ])}
+        return {
+            "datasets": PerArtifact(
+                [
+                    {
+                        "path": a.materialized_path,
+                        "source_id": a.artifact_id,
+                        "name": a.original_name,
+                    }
+                    for a in inputs.input_artifacts["dataset"]
+                ]
+            )
+        }
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         outputs = []
@@ -121,8 +130,13 @@ class MyOperation(OperationDefinition):
                 scaled.append(",".join(parts))
             out = Path(inputs.execute_dir) / path.name
             out.write_text(header + "\n" + "\n".join(scaled) + "\n")
-            outputs.append({"path": str(out), "source_id": item["source_id"],
-                            "name": f"{item['name']}_scaled.csv"})
+            outputs.append(
+                {
+                    "path": str(out),
+                    "source_id": item["source_id"],
+                    "name": f"{item['name']}_scaled.csv",
+                }
+            )
         return {"outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
@@ -133,8 +147,9 @@ class MyOperation(OperationDefinition):
                 original_name=item["name"],
                 step_number=inputs.step_number,
             )
-            result.add_artifact("dataset", draft,
-                                sources={"dataset": [item["source_id"]]})
+            result.add_artifact(
+                "dataset", draft, sources={"dataset": [item["source_id"]]}
+            )
         return result
 ```
 
@@ -252,9 +267,15 @@ from artisan.schemas import ArtifactResult, LineageMapping
 
 result = ArtifactResult(
     artifacts={"dataset": [draft]},
-    lineage={"dataset": [LineageMapping(
-        draft_index=0, source_role="dataset", source_artifact_id=source_id,
-    )]},
+    lineage={
+        "dataset": [
+            LineageMapping(
+                draft_index=0,
+                source_role="dataset",
+                source_artifact_id=source_id,
+            )
+        ]
+    },
 )
 ```
 
@@ -457,12 +478,16 @@ def test_my_operation(tmp_path):
 
     execute_dir = tmp_path / "execute"
     execute_dir.mkdir()
-    source = DataArtifact.draft(content=input_csv.read_bytes(),
-                                original_name="input.csv", step_number=0).finalize()
+    source = DataArtifact.draft(
+        content=input_csv.read_bytes(), original_name="input.csv", step_number=0
+    ).finalize()
     source.materialized_path = str(input_csv)
-    prepared = op.preprocess(PreprocessInput(
-        preprocess_dir=str(tmp_path / "pre"), input_artifacts={"dataset": [source]},
-    ))
+    prepared = op.preprocess(
+        PreprocessInput(
+            preprocess_dir=str(tmp_path / "pre"),
+            input_artifacts={"dataset": [source]},
+        )
+    )
     execute_input = ExecuteInput(execute_dir=str(execute_dir), inputs=prepared)
     memory_outputs = op.execute_function(execute_input)
 

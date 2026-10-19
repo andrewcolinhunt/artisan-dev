@@ -369,7 +369,9 @@ class TestRunToolRequest:
         self, tool_request, code
     ):
         construct = patch.object(server_mod, "instantiate_op")
-        workspace = patch.object(server_mod.tempfile, "mkdtemp")
+        workspace = patch.object(
+            server_mod.tempfile, "mkdtemp", wraps=server_mod.tempfile.mkdtemp
+        )
         unpack = patch.object(server_mod.InlineTransport, "unpack_inputs")
         execute = patch.object(server_mod, "invoke_op_work")
         with (
@@ -387,7 +389,10 @@ class TestRunToolRequest:
         for secret in ("user", "password", "signature", "fake-secret"):
             assert secret not in error.message
         construct_mock.assert_not_called()
-        workspace_mock.assert_not_called()
+        assert all(
+            not call.kwargs.get("prefix", "").startswith("artisan-tool-")
+            for call in workspace_mock.call_args_list
+        )
         unpack_mock.assert_not_called()
         execute_mock.assert_not_called()
 
@@ -407,7 +412,9 @@ class TestRunToolRequest:
         )
         with (
             patch.object(server_mod, "instantiate_op") as construct,
-            patch.object(server_mod.tempfile, "mkdtemp") as workspace,
+            patch.object(
+                server_mod.tempfile, "mkdtemp", wraps=server_mod.tempfile.mkdtemp
+            ) as workspace,
         ):
             result = run_tool_request(
                 CatTool,
@@ -422,7 +429,10 @@ class TestRunToolRequest:
         assert error.code == "tool_endpoint_misconfigured"
         assert error.message == "endpoint deployment data policy is invalid"
         construct.assert_not_called()
-        workspace.assert_not_called()
+        assert all(
+            not call.kwargs.get("prefix", "").startswith("artisan-tool-")
+            for call in workspace.call_args_list
+        )
 
     def test_bad_input_ref_returns_envelope(self):
         # a ref carrying neither uri nor data raises ValueError in
@@ -619,7 +629,11 @@ class TestRunToolRequest:
         assert all(not os.path.exists(p) for p in created)
 
     def test_workspace_creation_failure_returns_envelope(self, monkeypatch):
+        mkdtemp = server_mod.tempfile.mkdtemp
+
         def boom(*args, **kwargs):
+            if not kwargs.get("prefix", "").startswith("artisan-tool-"):
+                return mkdtemp(*args, **kwargs)
             msg = "worker disk unavailable"
             raise OSError(msg)
 

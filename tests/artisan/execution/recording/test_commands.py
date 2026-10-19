@@ -2,19 +2,21 @@
 
 from __future__ import annotations
 
-import io
 import sys
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import ExitStack, nullcontext
 from contextvars import copy_context
 from unittest.mock import Mock, patch
 
 import pytest
 from pydantic import ValidationError
 
+from artisan.execution.recording import commands as commands_mod
 from artisan.execution.recording.commands import (
     CommandRecorder,
     capture_commands,
     invocation_scope,
+    sanitize_diagnostic,
 )
 from artisan.schemas.execution.command_record import (
     MAX_COMMAND_RECORDING_BYTES,
@@ -27,6 +29,8 @@ from artisan.schemas.operation_config.environment_spec import (
     LocalEnvironmentSpec,
     PixiEnvironmentSpec,
 )
+from artisan.utils.command_supervisor import managed_invocation
+from artisan.utils.configuration_secrets import COMMAND_ATTACHMENT_ENV as ATTACHMENT_ENV
 from artisan.utils.external_tools import ExternalToolError, run_command
 
 
@@ -61,6 +65,88 @@ def _recording(*commands: CommandRecord, omitted: int = 0) -> CommandRecording:
         omitted_missing_invocations=0,
         unavailable_reason=None,
     )
+
+
+def test_partial_inherited_attachment_is_sensitive_without_environment_hints(
+    monkeypatch,
+):
+    secret = "opaque-owner-capability"
+    for name in ATTACHMENT_ENV:
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv(ATTACHMENT_ENV[1], secret)
+    recorder = CommandRecorder()
+    environment = LocalEnvironmentSpec(env={ATTACHMENT_ENV[1]: secret})
+    attempt = recorder.begin(environment, ["tool", secret], ["tool", secret], None, ())
+    attempt.finish("succeeded", 0)
+    record = recorder.snapshot().commands[0]
+    assert secret not in recorder.snapshot().model_dump_json()
+    assert record.required_environment == []
+    assert record.environment.variable_names == []
+    assert sanitize_diagnostic({"message": [secret]}) == {"message": ["<redacted>"]}
+
+
+def test_recorder_learns_new_scope_capability_even_through_public_alias(monkeypatch):
+    monkeypatch.setattr(commands_mod, "attachment_sensitive_values", lambda: ())
+    recorder = CommandRecorder()
+    secret = "new-scope-capability"
+    monkeypatch.setattr(commands_mod, "attachment_sensitive_values", lambda: (secret,))
+    assert recorder.sanitize(f"failure: {secret}") == "failure: <redacted>"
+    environment = LocalEnvironmentSpec(
+        env={"PUBLIC_ALIAS": secret}, public_env=("PUBLIC_ALIAS",)
+    )
+    argv = ["tool", secret]
+    attempt = recorder.begin(environment, argv, argv, None, ())
+    attempt.finish("succeeded", 0)
+    assert secret not in recorder.snapshot().model_dump_json()
+    assert recorder.snapshot().commands[0].argv == ["tool", "<redacted>"]
+    assert environment.env["PUBLIC_ALIAS"] == secret
+    assert argv[-1] == secret
+
+
+def test_configuration_diagnostics_inherit_scope_secret_policy(monkeypatch):
+    from artisan.execution.recording.durable import (
+        configuration_recorder,
+        sanitize_error_envelope,
+        sanitize_metadata,
+    )
+
+    secret = "durable-owner-capability"
+    monkeypatch.setattr(commands_mod, "attachment_sensitive_values", lambda: (secret,))
+    params = {"public_alias": secret}
+    recorder = configuration_recorder(params=params)
+    assert recorder.sanitize_json(params) == {"public_alias": "<redacted>"}
+    assert sanitize_metadata(recorder, {"message": secret}) == {"message": "<redacted>"}
+    assert sanitize_error_envelope(recorder, {"message": secret}) == {
+        "message": "<redacted>"
+    }
+    assert params == {"public_alias": secret}
+
+
+@pytest.mark.parametrize("capture_first", [False, True])
+def test_managed_invocation_records_joined_thread_commands(capture_first):
+    with ExitStack() as scopes:
+        if capture_first:
+            recorder = scopes.enter_context(capture_commands())
+        scopes.enter_context(managed_invocation())
+        if not capture_first:
+            recorder = scopes.enter_context(capture_commands())
+        with ThreadPoolExecutor(max_workers=2) as threads:
+            results = [
+                threads.submit(
+                    run_command,
+                    LocalEnvironmentSpec(),
+                    [sys.executable, "-c", "print('joined')"],
+                )
+                for _ in range(2)
+            ]
+            assert [result.result(timeout=10).stdout for result in results] == [
+                "joined\n",
+                "joined\n",
+            ]
+    commands = recorder.snapshot().commands
+    assert len(commands) == 2
+    assert all(command.outcome == "succeeded" for command in commands)
+    assert len({(command.invocation, command.sequence) for command in commands}) == 2
 
 
 @pytest.mark.parametrize("stream", [False, True])
@@ -112,18 +198,21 @@ def test_log_open_and_post_exit_write_boundaries(tmp_path):
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_interruption_finalizes_and_preserves_cleanup(stream):
-    process = Mock(returncode=-15)
+    process = Mock(returncode=-15, launch_seconds=0.01)
     process.communicate.side_effect = KeyboardInterrupt
-    process.stdout = io.StringIO("line\n")
-    process.wait.side_effect = KeyboardInterrupt
     with (
         capture_commands() as recorder,
-        patch("artisan.utils.external_tools.subprocess.Popen", return_value=process),
-        patch("artisan.utils.external_tools._kill_process_group") as kill,
+        patch("artisan.utils.external_tools.ManagedCommand", return_value=process),
+        patch(
+            "artisan.utils.external_tools.command_attachment",
+            return_value=nullcontext({"secret": "mock-owner-capability"}),
+        ),
         pytest.raises(KeyboardInterrupt),
     ):
         run_command(LocalEnvironmentSpec(), ["tool"], stream_output=stream)
-    kill.assert_called_once_with(process)
+    process.interrupt.assert_called_once()
+    assert isinstance(process.interrupt.call_args.args[0], KeyboardInterrupt)
+    process.dispose.assert_called_once()
     assert recorder.snapshot().commands[0].outcome == "interrupted"
 
 
@@ -199,13 +288,17 @@ def test_standalone_sensitive_values_redact_only_diagnostics():
     ],
 )
 def test_environment_wrapping_and_identity(environment, identity):
-    process = Mock(returncode=0)
+    process = Mock(returncode=0, launch_seconds=0.01)
     process.communicate.return_value = ("", "")
     with (
         capture_commands() as recorder,
         patch(
-            "artisan.utils.external_tools.subprocess.Popen", return_value=process
+            "artisan.utils.external_tools.ManagedCommand", return_value=process
         ) as launch,
+        patch(
+            "artisan.utils.external_tools.command_attachment",
+            return_value=nullcontext({"secret": "mock-owner-capability"}),
+        ),
     ):
         run_command(environment, ["tool", "input"], cwd="/work")
     command = recorder.snapshot().commands[0]
@@ -214,7 +307,7 @@ def test_environment_wrapping_and_identity(environment, identity):
     assert command.requested_argv == ["tool", "input"]
     assert "container-secret" not in recorder.snapshot().model_dump_json()
     if isinstance(environment, DockerEnvironmentSpec):
-        assert "CONFIG=container-secret" in launch.call_args.args[0]
+        assert "CONFIG=container-secret" in launch.call_args.args[1]
         assert "CONFIG=<redacted>" in command.argv
 
 
@@ -431,18 +524,22 @@ def test_execute_as_tool_records_its_actual_generated_command(tmp_path):
     from artisan.execution.compute.invoke import invoke_op_work
     from artisan.schemas.specs.input_models import ExecuteInput
 
-    process = Mock(returncode=0)
+    process = Mock(returncode=0, launch_seconds=0.01)
     process.communicate.return_value = ("", "")
     operation = FlagTool()
     with (
         capture_commands(operation) as recorder,
         patch(
-            "artisan.utils.external_tools.subprocess.Popen", return_value=process
+            "artisan.utils.external_tools.ManagedCommand", return_value=process
         ) as launch,
+        patch(
+            "artisan.utils.external_tools.command_attachment",
+            return_value=nullcontext({"secret": "mock-owner-capability"}),
+        ),
     ):
         invoke_op_work(operation, ExecuteInput(execute_dir=str(tmp_path), inputs={}))
     command = recorder.snapshot().commands[0]
-    assert command.argv == launch.call_args.args[0]
+    assert command.argv == launch.call_args.args[1]
     assert command.argv[:3] == ["artisan", "op", "run"]
 
 

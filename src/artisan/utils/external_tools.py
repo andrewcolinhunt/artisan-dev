@@ -11,17 +11,21 @@ from __future__ import annotations
 import json
 import os
 import re
-import shlex
-import signal
 import subprocess
 import sys
 from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
-from time import perf_counter
 from typing import Any, Literal, Protocol
 
 from artisan.errors import ArtisanError, ErrorCode
+from artisan.utils.command_supervisor import (
+    ManagedCommand,
+    attachment_sensitive_values,
+    command_attachment,
+    scope_command_observer,
+)
+from artisan.utils.configuration_secrets import sensitive_environment
 
 
 def redact_values(text: str, sensitive_values: tuple[str, ...]) -> str:
@@ -93,7 +97,7 @@ class _CommandObservation:
     attempt: CommandAttempt | None = None
 
     def begin(self) -> CommandAttempt:
-        observer = command_observer.get()
+        observer = command_observer.get() or scope_command_observer()
         if observer is not None:
             self.attempt = observer.begin(
                 self.environment,
@@ -243,28 +247,6 @@ def format_args(params: dict[str, Any]) -> list[str]:
     return result
 
 
-def _kill_process_group(process: subprocess.Popen[str], timeout: float = 3.0) -> None:
-    """Kill a subprocess and its entire process group.
-
-    Sends SIGTERM first for graceful shutdown, then escalates to SIGKILL
-    if the process doesn't exit within the timeout.
-
-    Args:
-        process: Subprocess to kill (must have been started with process_group=0).
-        timeout: Seconds to wait after SIGTERM before escalating to SIGKILL.
-    """
-    try:
-        pgid = os.getpgid(process.pid)
-        os.killpg(pgid, signal.SIGTERM)
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(pgid, signal.SIGKILL)
-            process.wait()
-    except ProcessLookupError:
-        pass
-
-
 def run_command(
     environment: Any,
     cmd: list[str],
@@ -296,162 +278,96 @@ def run_command(
     Raises:
         ExternalToolError: On non-zero exit.
     """
-    observer = command_observer.get()
-    if observer is not None:
-        observer.prepare(environment, cmd, sensitive_values)
-    wrapped = environment.wrap_command(cmd, cwd)
-    full_cmd = Command(parts=wrapped, string=shlex.join(wrapped))
-    env = environment.prepare_env()
-
-    observation = _CommandObservation(environment, cmd, wrapped, cwd, sensitive_values)
-    if stream_output:
-        result = _run_with_streaming(
-            full_cmd, cwd, log_path, log_mode, env, observation
+    with command_attachment() as attachment:
+        sensitive_values = (
+            *sensitive_values,
+            *attachment_sensitive_values(),
+            attachment["secret"],
+            *sensitive_environment(
+                getattr(environment, "env", {}), getattr(environment, "public_env", ())
+            ).values(),
         )
-    else:
-        result = _run_captured(full_cmd, cwd, log_path, log_mode, env, observation)
-
-    if result.returncode != 0:
-        attempt = observation.attempt
-        assert attempt is not None
-        raise ExternalToolError(
-            message=f"Command failed with exit code {result.returncode}",
-            command=attempt.command,
-            return_code=result.returncode,
-            stdout=attempt.sanitize(result.stdout),
-            stderr=attempt.sanitize(result.stderr),
-            runtime=environment,
+        observer = command_observer.get() or scope_command_observer()
+        if observer is not None:
+            observer.prepare(environment, cmd, sensitive_values)
+        wrapped = environment.wrap_command(cmd, cwd)
+        env = environment.prepare_env()
+        observation = _CommandObservation(
+            environment, cmd, wrapped, cwd, sensitive_values
         )
-    return result
+        result = _run_managed(
+            attachment,
+            wrapped,
+            cwd,
+            log_path,
+            log_mode,
+            dict(os.environ if env is None else env),
+            observation,
+            streaming=stream_output,
+            external=getattr(environment, "cancellation_scope", "external")
+            != "process_group",
+        )
+        if result.returncode != 0:
+            attempt = observation.attempt
+            assert attempt is not None
+            raise ExternalToolError(
+                message=f"Command failed with exit code {result.returncode}",
+                command=attempt.command,
+                return_code=result.returncode,
+                stdout=attempt.sanitize(result.stdout),
+                stderr=attempt.sanitize(result.stderr),
+                runtime=environment,
+            )
+        return result
 
 
-def _run_with_streaming(
-    cmd: Command,
+def _run_managed(
+    attachment: dict[str, str],
+    argv: list[str],
     cwd: str | None,
     log_path: str | None,
-    log_mode: Literal["w", "a"] = "w",
-    env: dict[str, str] | None = None,
-    observation: _CommandObservation | None = None,
+    log_mode: Literal["w", "a"],
+    env: dict[str, str],
+    observation: _CommandObservation,
+    *,
+    streaming: bool,
+    external: bool,
 ) -> subprocess.CompletedProcess[str]:
-    """Stream merged stdout/stderr to stdout, an optional log, and the result.
+    """Drain worker-owned pipes while the dedicated owner retains command identity."""
+    from contextlib import nullcontext
 
-    Child-side buffering still applies; Python tools can set PYTHONUNBUFFERED
-    when immediate output is required. The observer records launch and outcome.
-    """
-    from contextlib import nullcontext, suppress
-
-    log_context = open(log_path, log_mode) if log_path else nullcontext()  # noqa: SIM115 — conditional; held via `with log_context` below
-
+    log_context = open(log_path, log_mode) if streaming and log_path else nullcontext()  # noqa: SIM115
     with log_context as log_file:
-        attempt = observation.begin() if observation else None
+        attempt = observation.begin()
         try:
-            launch_start = perf_counter()
-            process = subprocess.Popen(
-                cmd.parts,
-                cwd=cwd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                env=env,
-                process_group=0,
+            command = ManagedCommand(
+                attachment, argv, env, cwd, merged=streaming, external=external
             )
-            launch_seconds = perf_counter() - launch_start
-            if attempt:
-                attempt.launch_seconds = launch_seconds
+            attempt.launch_seconds = command.launch_seconds
         except BaseException:
-            if attempt:
-                attempt.finish("launch_failed", None)
+            attempt.finish("launch_failed", None)
             raise
 
-        stdout_lines: list[str] = []
+        def emit(line: str) -> None:
+            if log_file is not None:
+                log_file.write(line)
+                log_file.flush()
+            sys.stdout.write(line)
+            sys.stdout.flush()
 
-        # stdout=PIPE guarantees process.stdout is not None
-        assert process.stdout is not None
         try:
-            for line in process.stdout:
-                if log_file:
-                    log_file.write(line)
-                    log_file.flush()
-
-                sys.stdout.write(line)
-                sys.stdout.flush()
-
-                stdout_lines.append(line)
-
-            returncode = process.wait()
-            if attempt:
-                attempt.finish("succeeded" if returncode == 0 else "failed", returncode)
-        except BaseException:
-            _kill_process_group(process)
-            if attempt:
-                attempt.finish("interrupted", process.returncode)
+            stdout, stderr = command.communicate(emit if streaming else None)
+            assert command.returncode is not None
+            attempt.finish(
+                "succeeded" if command.returncode == 0 else "failed", command.returncode
+            )
+        except BaseException as error:
+            command.interrupt(error)
+            attempt.finish("interrupted", command.returncode)
             raise
         finally:
-            # Closing a read pipe must not replace the process outcome or error.
-            with suppress(OSError):
-                process.stdout.close()
-
-        return subprocess.CompletedProcess(
-            args=cmd.parts,
-            returncode=returncode,
-            stdout="".join(stdout_lines),
-            stderr="",
-        )
-
-
-def _run_captured(
-    cmd: Command,
-    cwd: str | None,
-    log_path: str | None,
-    log_mode: Literal["w", "a"] = "w",
-    env: dict[str, str] | None = None,
-    observation: _CommandObservation | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Capture stdout/stderr separately and clean up the process group on error.
-
-    Write only stdout to the optional log after exit. Stderr remains in the
-    result and failure diagnostics. The observer records launch and outcome.
-    """
-    attempt = observation.begin() if observation else None
-    try:
-        launch_start = perf_counter()
-        process = subprocess.Popen(
-            cmd.parts,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            text=True,
-            env=env,
-            process_group=0,
-        )
-        launch_seconds = perf_counter() - launch_start
-        if attempt:
-            attempt.launch_seconds = launch_seconds
-    except BaseException:
-        if attempt:
-            attempt.finish("launch_failed", None)
-        raise
-    try:
-        stdout, stderr = process.communicate()
-        if attempt:
-            attempt.finish(
-                "succeeded" if process.returncode == 0 else "failed",
-                process.returncode,
-            )
-    except BaseException:
-        _kill_process_group(process)
-        if attempt:
-            attempt.finish("interrupted", process.returncode)
-        raise
-
-    if log_path:
-        with open(log_path, log_mode) as f:
-            f.write(stdout)
-
-    return subprocess.CompletedProcess(
-        args=cmd.parts,
-        returncode=process.returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
+            command.dispose()
+    if log_path and not streaming:
+        with open(log_path, log_mode) as handle:
+            handle.write(stdout)
+    return subprocess.CompletedProcess(argv, command.returncode, stdout, stderr)

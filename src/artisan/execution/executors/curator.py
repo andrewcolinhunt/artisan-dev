@@ -62,6 +62,11 @@ from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.utils.command_supervisor import (
+    check_command_scope,
+    close_command_scope,
+    managed_invocation,
+)
 from artisan.utils.hashing import serialize_params
 from artisan.utils.timing import phase_timer
 from artisan.utils.traceback import format_error
@@ -127,6 +132,7 @@ def _handle_artifact_result(
     )
 
     params_dict = serialize_params(operation)
+    close_command_scope()
     return record_execution_success(
         replay_snapshot=replay_snapshot,
         replay_of_execution_run_id=replay_of_execution_run_id,
@@ -160,6 +166,7 @@ def _handle_passthrough_result(
     lives in ``record_passthrough``.
     """
     validate_passthrough_result(result, operation.outputs)
+    close_command_scope()
     return record_passthrough(
         replay_snapshot=replay_snapshot,
         replay_of_execution_run_id=replay_of_execution_run_id,
@@ -188,18 +195,21 @@ def run_curator_flow(
         Staged success or failure, or an unstaged failure if setup prevents
         recording.
     """
-    bootstrap_applications(runtime_env.application_modules, purpose="curator worker")
     with (
+        managed_invocation(),
         capture_commands(unit.operation) as commands,
-        capture_replay(unit, runtime_env),
     ):
+        bootstrap_applications(
+            runtime_env.application_modules, purpose="curator worker"
+        )
         configuration_recorder(
             unit.operation, params=unit.user_overrides, recorder=commands
         )
         commands.add_environment(
             {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
         )
-        return _run_curator_flow(unit, runtime_env)
+        with capture_replay(unit, runtime_env):
+            return _run_curator_flow(unit, runtime_env)
 
 
 def _run_curator_flow(
@@ -222,6 +232,7 @@ def _run_curator_flow(
     execution_context = None
 
     try:
+        check_command_scope()
         # --- setup phase ---
         with phase_timer("setup", timings):
             execution_context = build_execution_context(
@@ -249,7 +260,9 @@ def _run_curator_flow(
                     step_number=unit.step_number,
                     artifact_store=artifact_store,
                 )
+                close_command_scope()
             except Exception as exc:
+                close_command_scope(exc)
                 return record_execution_failure(
                     **replay_recording_fields(),
                     command_recording=command_snapshot(),
@@ -338,6 +351,7 @@ def _run_curator_flow(
                         )
 
     except Exception as exc:
+        close_command_scope(exc)
         if execution_context is not None and execution_is_sealed(execution_context):
             raise
         error = sanitize_diagnostic(format_error(exc))
