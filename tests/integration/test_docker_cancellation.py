@@ -121,7 +121,7 @@ class DockerWork:
         assert self.identity is not None
         inspected = _docker("inspect", self.identity)
         assert inspected.returncode != 0
-        assert "No such object" in inspected.stderr
+        assert f"no such object: {self.identity}" in inspected.stderr.lower()
         writes = (self.root / "writes").read_bytes()
         time.sleep(0.2)
         assert (self.root / "writes").read_bytes() == writes
