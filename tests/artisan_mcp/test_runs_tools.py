@@ -189,11 +189,11 @@ class TestGetStepLogs:
         assert result["truncated"] is False
 
     def test_rejects_out_of_range_tail(
-        self, make_app, invoke_error, seeded_run
+        self, make_app, invoke_result, seeded_run
     ) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
         for tail_lines in (0, -1, 1001):
-            result = invoke_error(
+            result = invoke_result(
                 app,
                 "artisan_get_step_logs",
                 {
@@ -202,8 +202,8 @@ class TestGetStepLogs:
                     "tail_lines": tail_lines,
                 },
             )
-            assert result["code"] == "param_type_mismatch"
-            assert result["field"] == "tail_lines"
+            assert result.is_error is True
+            assert result.structured_content is None
 
     def test_large_single_line_is_byte_bounded(
         self, make_app, invoke, seeded_run
@@ -268,8 +268,8 @@ def test_get_step_logs_caps_files_in_source_recency_order(
 
     import polars as pl
 
+    from artisan.inspection.logs import MAX_LOG_FILES
     from artisan.utils.log_paths import failure_log_relative_path
-    from artisan_mcp.tools.logs import MAX_LOG_FILES
 
     module = importlib.import_module("artisan.visualization.inspect")
     start = datetime(2026, 9, 19, tzinfo=UTC)
@@ -314,7 +314,7 @@ def test_get_step_logs_caps_aggregate_bytes(
 
     import polars as pl
 
-    from artisan_mcp.tools.logs import MAX_LOG_BYTES
+    from artisan.inspection.logs import MAX_LOG_BYTES
 
     module = importlib.import_module("artisan.visualization.inspect")
     paths = []
@@ -353,7 +353,7 @@ def test_get_step_logs_caps_aggregate_bytes(
 def test_log_source_cut_distinguishes_line_boundary(
     tmp_path, monkeypatch, byte_limit, partial
 ):
-    from artisan_mcp.tools import logs
+    from artisan.inspection import logs
 
     path = tmp_path / "failure.log"
     path.write_bytes(b"oldprefix\nnew\n")
@@ -367,7 +367,7 @@ def test_log_source_cut_distinguishes_line_boundary(
 def test_log_dropped_partial_oldest_chunk_does_not_mark_newest_line(
     tmp_path, monkeypatch
 ):
-    from artisan_mcp.tools import logs
+    from artisan.inspection import logs
 
     older, newer = tmp_path / "old.log", tmp_path / "new.log"
     older.write_bytes(b"long old line\n")
@@ -380,7 +380,7 @@ def test_log_dropped_partial_oldest_chunk_does_not_mark_newest_line(
 
 
 def test_log_invalid_utf8_source_cut_retains_replacement_policy(tmp_path, monkeypatch):
-    from artisan_mcp.tools import logs
+    from artisan.inspection import logs
 
     path = tmp_path / "failure.log"
     path.write_text("雪" * 5)
@@ -392,8 +392,8 @@ def test_log_invalid_utf8_source_cut_retains_replacement_policy(tmp_path, monkey
 
 
 def test_log_single_line_returns_largest_fitting_unicode_suffix(tmp_path, monkeypatch):
-    from artisan_mcp._evidence import encode_json
-    from artisan_mcp.tools import logs
+    from artisan.inspection import logs
+    from artisan.inspection._evidence import encode_json
 
     original = '雪😀"\\' * 500
     path = tmp_path / "failure.log"

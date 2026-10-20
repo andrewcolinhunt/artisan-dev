@@ -10,6 +10,7 @@ import pytest
 from fastmcp import Client
 from fixtures.outcome_store import append_metric_attempt
 
+from artisan.inspection._evidence import MAX_PAYLOAD_BYTES, encode_json
 from artisan.schemas import MetricArtifact
 from artisan.visualization.comparison import (
     ComparisonMetric,
@@ -17,7 +18,6 @@ from artisan.visualization.comparison import (
     MetadataKeyMatch,
 )
 from artisan.visualization.outcomes import AssessmentCheck, AssessmentSpec
-from artisan_mcp._evidence import MAX_PAYLOAD_BYTES, encode_json
 
 
 def _request(tmp_path):
@@ -114,7 +114,7 @@ def test_comparison_views_preserve_complete_summary(
                 follow_up["arguments"][side]["step_run_id"]
                 == request[side]["step_run_id"]
             )
-        page = invoke(app, follow_up["tool"], follow_up["arguments"])
+        page = invoke(app, "artisan_" + follow_up["capability"], follow_up["arguments"])
     assert len(seen) == expected_count
     if view == "pairs":
         assert [item["key"] for item in seen] == ["a", "b"]
@@ -176,5 +176,4 @@ def test_comparison_summary_rejects_invalid_limit_before_store_read(
         make_app(), "artisan_compare_runs", {**request, "limit": limit}
     )
     assert result.is_error
-    assert result.structured_content["field"] == "limit"
-    assert result.structured_content["code"] == "param_type_mismatch"
+    assert result.structured_content is None

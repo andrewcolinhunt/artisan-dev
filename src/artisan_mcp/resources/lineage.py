@@ -6,8 +6,8 @@ import asyncio
 
 from fastmcp import Context, FastMCP
 
+from artisan.inspection._evidence import MAX_PAYLOAD_BYTES
 from artisan_mcp._boundary import capture, require_delta_root
-from artisan_mcp._evidence import MAX_PAYLOAD_BYTES
 
 _OVERSIZED_GRAPH = """digraph pipeline {
   label="Macro lineage omitted: response exceeds the byte budget. Discover run artifacts, then inspect selected provenance walks; those are not macro graph pagination. Use Python for the complete macro graph.";
@@ -27,12 +27,11 @@ def register(mcp: FastMCP) -> None:
     )
     async def run_lineage(pipeline_run_id: str, ctx: Context) -> str:
         """Read the complete run macro graph or an explicit unavailable graph."""
-        config = ctx.lifespan_context["config"]
 
         def payload() -> str:
             from artisan.visualization.graph.macro import build_macro_graph
 
-            root = require_delta_root(config)
+            root = require_delta_root(ctx.lifespan_context)
             source = build_macro_graph(root, pipeline_run_id=pipeline_run_id).source
             return (
                 source

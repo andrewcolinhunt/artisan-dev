@@ -11,6 +11,20 @@ from artisan.composites import CompositeRef
 
 _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
     "artisan": ("__version__", "__version_tuple__"),
+    "artisan.inspection": (
+        "EvidenceExportReceipt",
+        "InspectionCatalog",
+        "InspectionDescription",
+        "OperatingGuideCatalog",
+        "OperatingGuideTopic",
+        "describe_inspection",
+        "export_evidence",
+        "inspect_evidence",
+        "list_inspections",
+        "list_operating_guides",
+        "load_evidence_export",
+        "read_operating_guide",
+    ),
     "artisan.operations.base": ("OperationDefinition", "PerArtifact"),
     "artisan.operations.lineage": ("match_outputs_to_inputs_by_stem",),
     "artisan.operations.curator": (

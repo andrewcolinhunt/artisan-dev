@@ -9,14 +9,14 @@ import re
 from typing import Any
 
 from artisan.errors import ErrorCode
-from artisan.utils.hashing import compute_content_digest
-from artisan_mcp._boundary import invalid_input, validate_int_range
-from artisan_mcp._evidence import (
+from artisan.inspection._boundary import invalid_input, validate_int_range
+from artisan.inspection._evidence import (
     MAX_PAYLOAD_BYTES,
     encode_json,
     evidence_error,
     json_ready,
 )
+from artisan.utils.hashing import compute_content_digest
 
 MAX_PAGE_SIZE = 100
 MAX_CURSOR_BYTES = 512
@@ -28,7 +28,7 @@ def paginate(
     limit: int,
     cursor: str | None,
     *,
-    tool: str,
+    capability: str,
     arguments: dict[str, Any],
     scope: str = "catalog",
     header: dict[str, Any] | None = None,
@@ -37,13 +37,13 @@ def paginate(
     budget: int = MAX_PAYLOAD_BYTES,
     hint: str | None = None,
 ) -> dict[str, Any]:
-    """Return a whole-row page, including a usable tool continuation.
+    """Return a whole-row page, including a portable continuation.
 
     Args:
         items: Complete deterministic projection in its documented order.
         limit: Maximum rows, from one through 100.
         cursor: Opaque continuation from this same query and projected view.
-        tool: Actual public tool name for query identity and continuation.
+        capability: Public inspection name for query identity and continuation.
         arguments: Normalized selectors excluding limit, cursor and store root.
         scope: Configured store identity or catalogue scope; only its digest escapes.
         header: Stable parent fields carried by every page.
@@ -56,8 +56,8 @@ def paginate(
     rows, parent = json_ready(items), json_ready(header or {})
     query_id = _digest(
         {
-            "version": 1,
-            "tool": tool,
+            "version": 2,
+            "capability": capability,
             "arguments": arguments,
             "scope": _digest(scope),
             "page_key": page_key,
@@ -89,12 +89,12 @@ def paginate(
             None
             if next_cursor is None
             else {
-                "tool": tool,
+                "capability": capability,
                 "arguments": {**arguments, "limit": limit, "cursor": next_cursor},
             }
         )
         return {
-            "projection_version": "1",
+            "projection_version": "2",
             "follow_up": continuation,
             **parent,
             **({page_key: page} if page_key else page),
@@ -128,7 +128,7 @@ def _digest(value: Any) -> str:
 
 
 def _cursor(query_id: str, view_id: str, offset: int) -> str:
-    payload = {"version": 1, "query_id": query_id, "view_id": view_id, "offset": offset}
+    payload = {"version": 2, "query_id": query_id, "view_id": view_id, "offset": offset}
     return base64.urlsafe_b64encode(encode_json(payload)).decode("ascii").rstrip("=")
 
 
@@ -152,7 +152,7 @@ def _cursor_offset(cursor: str | None, query_id: str, view_id: str, count: int) 
         "offset",
     }:
         raise invalid
-    if type(token["version"]) is not int or token["version"] != 1:
+    if type(token["version"]) is not int or token["version"] != 2:
         raise invalid
     if any(
         not isinstance(token[key], str) or not _DIGEST.fullmatch(token[key])

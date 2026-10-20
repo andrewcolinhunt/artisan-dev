@@ -1,4 +1,4 @@
-"""Typed MCP projections and schemas, independent of protocol result objects."""
+"""Typed inspection projections and schemas, independent of protocol result objects."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
 
-from artisan.errors import ArtisanErrorEnvelope
+from artisan.inspection._boundary import CommitErrorPayload, ErrorPayload
 from artisan.operations.base.operation_example import OperationExample
 from artisan.orchestration.run_status import RunStepStatus
 from artisan.registry.models import (
@@ -40,23 +40,6 @@ from artisan.visualization.outcomes import (
 )
 
 
-class ErrorPayload(ArtisanErrorEnvelope):
-    """Base handled error without cause or undeclared extension fields."""
-
-    model_config = ConfigDict(extra="forbid")
-
-
-class CommitErrorPayload(ErrorPayload):
-    """Commit repair identities retained by the MCP boundary."""
-
-    code: Literal["commit_failed"] = "commit_failed"
-    logical_commit_id: str
-    table: str
-    plan_key: str
-    verified_tables: list[str]
-    staging_objects: list[str]
-
-
 class Projection(BaseModel):
     """A concrete transport projection rejects unexpected fields."""
 
@@ -64,16 +47,16 @@ class Projection(BaseModel):
 
 
 class FollowUp(Projection):
-    """An actual tool invocation continuing the selected evidence."""
+    """A portable capability invocation continuing the selected evidence."""
 
-    tool: str
+    capability: str
     arguments: dict[str, JsonValue]
 
 
 class Response(Projection):
     """Transport contract version, distinct from a registry schema version."""
 
-    projection_version: Literal["1"] = "1"
+    projection_version: Literal["2"] = "2"
     follow_up: FollowUp | None = None
 
 
@@ -107,10 +90,9 @@ class OperationList(PageResponse[OperationSummary | OperationIdentity]):
 
 
 class CapabilityBase(Response):
-    """Server identity and bounded discovery counts."""
+    """Installed package identity and bounded discovery counts."""
 
     artisan_version: str
-    server_version: str
     read_only: Literal[True]
     delta_root: None = None
     operations_count: int
@@ -149,7 +131,7 @@ CapabilityResult = (
 
 
 class OperationAll(OperationMetadata, Response):
-    """Complete registry metadata in a versioned MCP projection."""
+    """Complete registry metadata in a versioned inspection projection."""
 
     section: Literal["all"] = "all"
 

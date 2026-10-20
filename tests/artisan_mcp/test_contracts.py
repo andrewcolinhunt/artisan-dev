@@ -13,14 +13,13 @@ from mcp.types import CallToolResult
 from pydantic import BaseModel
 
 from artisan.errors import ArtisanError, CommitError, ErrorCode
-from artisan.orchestration.run_status import RunStatus
-from artisan_mcp._boundary import render_tool
-from artisan_mcp._evidence import (
+from artisan.inspection._evidence import (
     MAX_PAYLOAD_BYTES,
-    MAX_TOOL_RESULT_BYTES,
     encode_json,
 )
-from artisan_mcp.models import output_schema
+from artisan.inspection.models import output_schema
+from artisan.orchestration.run_status import RunStatus
+from artisan_mcp._boundary import MAX_TOOL_RESULT_BYTES, render_tool
 
 
 def _handled_error() -> ArtisanError:
@@ -171,7 +170,7 @@ def test_handled_error_raises_by_default_and_preserves_recovery_opt_in(make_app)
 def test_commit_error_preserves_repair_fields_and_suppresses_cause(
     make_app, invoke_result, monkeypatch, tmp_path
 ):
-    from artisan_mcp.tools import runs
+    from artisan.inspection import runs
 
     error = _commit_error()
     marker = "PRIVATE-CAUSE-DO-NOT-EMIT"
@@ -192,7 +191,7 @@ def test_commit_error_preserves_repair_fields_and_suppresses_cause(
 def test_internal_defects_are_masked_in_native_results(
     make_app, invoke_result, monkeypatch, tmp_path, caplog, capfd, failure
 ):
-    from artisan_mcp.tools import runs
+    from artisan.inspection import runs
 
     marker = "PRIVATE-INVALID-PROJECTION"
 
@@ -214,7 +213,7 @@ def test_internal_defects_are_masked_in_native_results(
 def test_success_cannot_pass_validation_as_an_error_branch(
     make_app, invoke_result, monkeypatch, tmp_path
 ):
-    from artisan_mcp.tools import runs
+    from artisan.inspection import runs
 
     monkeypatch.setattr(
         runs, "runs_payload", lambda *args, **kwargs: _handled_error().to_dict()
@@ -273,7 +272,7 @@ def test_domain_and_wire_limits_replace_oversized_results(invoke_result, value):
 def test_oversized_handled_error_uses_fixed_bounded_fallback(
     make_app, invoke_result, monkeypatch, tmp_path
 ):
-    from artisan_mcp.tools import runs
+    from artisan.inspection import runs
 
     marker = "PRIVATE-LARGE-ERROR-"
 
@@ -288,3 +287,46 @@ def test_oversized_handled_error_uses_fixed_bounded_fallback(
     assert result.structured_content["code"] == "evidence_response_too_large"
     assert marker not in _wire(result).decode("utf-8")
     assert len(_wire(result)) <= MAX_TOOL_RESULT_BYTES
+
+
+def _expanded_contract(value, root, active=frozenset()):
+    """Ignore presentation metadata while preserving constraints and defaults."""
+    if isinstance(value, list):
+        return [_expanded_contract(item, root, active) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if "$ref" in value:
+        ref = value["$ref"]
+        if ref in active:
+            return {"$ref": ref}
+        target = root
+        for segment in ref.removeprefix("#/").split("/"):
+            target = target[segment]
+        return _expanded_contract(target, root, active | {ref})
+    # FastMCP drops the OpenAPI discriminator hint; oneOf and const still validate it.
+    return {
+        key: _expanded_contract(item, root, active)
+        for key, item in value.items()
+        if key not in {"title", "description", "$defs", "discriminator"}
+    }
+
+
+def test_mcp_effective_schemas_and_defaults_match_core(make_app):
+    from artisan.inspection.catalog import describe_inspection
+
+    async def check():
+        async with Client(make_app()) as client:
+            for tool in await client.list_tools():
+                core = describe_inspection(tool.name.removeprefix("artisan_"))
+                assert _expanded_contract(
+                    tool.inputSchema, tool.inputSchema
+                ) == _expanded_contract(core.request_schema, core.request_schema), (
+                    tool.name
+                )
+                assert _expanded_contract(
+                    tool.outputSchema, tool.outputSchema
+                ) == _expanded_contract(core.response_schema, core.response_schema), (
+                    tool.name
+                )
+
+    asyncio.run(check())

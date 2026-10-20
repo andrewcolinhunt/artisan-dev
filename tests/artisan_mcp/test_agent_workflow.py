@@ -31,7 +31,7 @@ def test_client_restarts_changed_view_and_finds_late_page_artifact(
             append_metric_attempt(root, [target], step_number=1, step_name="later")
             continuation = old_page["follow_up"]
             changed = await client.call_tool(
-                continuation["tool"],
+                "artisan_" + continuation["capability"],
                 continuation["arguments"],
                 raise_on_error=False,
             )
@@ -53,7 +53,8 @@ def test_client_restarts_changed_view_and_finds_late_page_artifact(
                 continuation = page["follow_up"]
                 page = (
                     await client.call_tool(
-                        continuation["tool"], continuation["arguments"]
+                        "artisan_" + continuation["capability"],
+                        continuation["arguments"],
                     )
                 ).structured_content
             assert len(collected) == len(set(collected)) == 131

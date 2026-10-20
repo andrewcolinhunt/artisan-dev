@@ -10,9 +10,9 @@ import pytest
 from fastmcp import Client
 from fixtures.outcome_store import append_metric_attempt
 
+from artisan.inspection._evidence import MAX_PAYLOAD_BYTES, encode_json
 from artisan.schemas import MetricArtifact
 from artisan.visualization.outcomes import AssessmentCheck, AssessmentSpec
-from artisan_mcp._evidence import MAX_PAYLOAD_BYTES, encode_json
 
 
 def _criteria() -> dict:
@@ -88,7 +88,7 @@ def test_assessment_pages_keep_exact_attempt_and_full_counts(
         assert follow_up["arguments"]["step_run_id"] == selection.step_run_id
         page = invoke(
             app,
-            follow_up["tool"],
+            "artisan_" + follow_up["capability"],
             {**follow_up["arguments"], "limit": 2},
         )
     assert seen == sorted(item.artifact_id for item in artifacts)
@@ -138,7 +138,9 @@ def test_assessment_cursor_does_not_follow_new_current_attempt(
     )
     append_metric_attempt(root, [], step_number=3, status="failed")
     follow_up = page["follow_up"]
-    continued = invoke(app, follow_up["tool"], follow_up["arguments"])
+    continued = invoke(
+        app, "artisan_" + follow_up["capability"], follow_up["arguments"]
+    )
     assert continued["selection"]["step_run_id"] == selection.step_run_id
     assert continued["assessment_status"] == "pass"
     current = invoke(
@@ -236,5 +238,4 @@ def test_assessment_summary_rejects_invalid_limit_before_store_read(
         },
     )
     assert result.is_error
-    assert result.structured_content["field"] == "limit"
-    assert result.structured_content["code"] == "param_type_mismatch"
+    assert result.structured_content is None

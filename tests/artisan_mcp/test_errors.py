@@ -89,7 +89,6 @@ def test_numeric_controls_reject_coercion_and_invalid_summary_limits(
                     name, {**args, "limit": 0}, raise_on_error=False
                 )
                 assert result.is_error is True
-                assert result.structured_content["code"] == "param_type_mismatch"
-                assert result.structured_content["field"] == "limit"
+                assert result.structured_content is None
 
     asyncio.run(check())

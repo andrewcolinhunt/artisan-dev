@@ -6,7 +6,7 @@ import asyncio
 
 from fastmcp import Client
 
-from artisan_mcp._evidence import MAX_PAYLOAD_BYTES
+from artisan.inspection._evidence import MAX_PAYLOAD_BYTES
 from artisan_mcp.prompts import _evidence
 
 
@@ -57,8 +57,8 @@ class TestPromptEvidence:
 def test_prompt_budget_includes_instructions_and_retains_parseable_evidence():
     import json
 
-    from artisan_mcp._pagination import paginate
-    from artisan_mcp.models import PageResponse
+    from artisan.inspection._pagination import paginate
+    from artisan.inspection.models import PageResponse
     from artisan_mcp.prompts import _prompt
 
     rows = ["雪" * 300] * 60
@@ -67,7 +67,7 @@ def test_prompt_budget_includes_instructions_and_retains_parseable_evidence():
         instructions,
         "selected evidence",
         lambda budget: paginate(
-            rows, 50, None, tool="artisan_test", arguments={}, budget=budget
+            rows, 50, None, capability="test", arguments={}, budget=budget
         ),
         PageResponse[str],
     )
@@ -83,8 +83,8 @@ def test_prompt_budget_includes_instructions_and_retains_parseable_evidence():
 
 
 def test_prompt_oversized_selector_returns_fixed_error_without_echo():
-    from artisan_mcp._evidence import ensure_fits
-    from artisan_mcp.models import DiagnosisResult
+    from artisan.inspection._evidence import ensure_fits
+    from artisan.inspection.models import DiagnosisResult
     from artisan_mcp.prompts import _prompt
 
     marker = "private-selector-" * 10_000

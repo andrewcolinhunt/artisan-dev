@@ -5,7 +5,7 @@ from __future__ import annotations
 import math
 from datetime import date, datetime
 from enum import Enum
-from typing import Any, cast
+from typing import Any, Never, cast
 
 from pydantic import BaseModel
 
@@ -13,7 +13,6 @@ from artisan.errors import ArtisanError, ErrorCode
 from artisan.utils.hashing import canonical_json_bytes
 
 MAX_PAYLOAD_BYTES = 48 * 1024
-MAX_TOOL_RESULT_BYTES = 128 * 1024
 
 
 def json_ready(value: Any) -> Any:
@@ -86,3 +85,40 @@ def response_too_large() -> dict[str, Any]:
     return evidence_error(ErrorCode.EVIDENCE_RESPONSE_TOO_LARGE).to_dict(
         include_cause=False
     )
+
+
+def decode_json_object(data: bytes | str) -> dict[str, Any]:
+    """Decode one strict UTF-8 JSON object without exposing malformed contents.
+
+    Raises:
+        ValueError: Input is malformed, duplicated, nonfinite or not an object.
+        UnicodeError: Bytes are not UTF-8.
+    """
+    import json
+
+    def object_pairs(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        for key, value in pairs:
+            if key in result:
+                message = "Duplicate JSON object key"
+                raise ValueError(message)
+            result[key] = value
+        return result
+
+    def reject_constant(value: str) -> Never:
+        message = "JSON numbers must be finite"
+        raise ValueError(message)
+
+    try:
+        text = data.decode("utf-8") if isinstance(data, bytes) else data
+        value = json.loads(
+            text, object_pairs_hook=object_pairs, parse_constant=reject_constant
+        )
+        if not isinstance(value, dict):
+            message = "Expected a JSON object"
+            raise ValueError(message)
+        json_ready(value)
+    except (ValueError, TypeError, UnicodeError, RecursionError) as exc:
+        message = "Expected one valid UTF-8 JSON object"
+        raise ValueError(message) from exc
+    return value

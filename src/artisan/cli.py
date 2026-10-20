@@ -223,7 +223,54 @@ def _build_parser() -> argparse.ArgumentParser:
     repair.add_argument("--reason", help="Required explanation for --abandon")
     repair.set_defaults(func=_store_repair)
 
+    _add_inspection_commands(sub)
     return parser
+
+
+def _add_inspection_commands(sub: Any) -> None:
+    """Register local evidence interfaces without loading readers."""
+    inspect = sub.add_parser("inspect", help="Discover and query bounded evidence")
+    commands = inspect.add_subparsers(dest="inspection_command", required=True)
+    listing = commands.add_parser("list", help="List installed inspection contracts")
+    describe = commands.add_parser("describe", help="Show one inspection's schemas")
+    describe.add_argument("capability")
+    for command in (listing, describe):
+        command.add_argument("--json", action="store_true", help="Emit JSON")
+        command.set_defaults(func=_inspection_command)
+    run = commands.add_parser("run", help="Run one bounded inspection")
+    run.add_argument("capability")
+    run.add_argument("--request", metavar="FILE|-", help="JSON object (default: {})")
+    _add_store_args(run)
+    run.set_defaults(func=_inspection_command)
+
+    guide = sub.add_parser("guide", help="Read installed operating guidance")
+    guides = guide.add_subparsers(dest="inspection_command", required=True)
+    guide_list = guides.add_parser("list", help="List installed guidance topics")
+    show = guides.add_parser("show", help="Read one operating guide topic")
+    show.add_argument("guide_id", choices=["pipeline-operate"])
+    show.add_argument("--topic", default="workflow")
+    for command in (guide_list, show):
+        command.add_argument("--json", action="store_true", help="Emit JSON")
+        command.set_defaults(func=_inspection_command)
+
+    evidence = sub.add_parser("evidence", help="Save complete evidence reports")
+    exports = evidence.add_subparsers(dest="inspection_command", required=True)
+    export = exports.add_parser(
+        "export", help="Export one complete assessment or comparison"
+    )
+    export.add_argument("capability", choices=["assess_outcomes", "compare_runs"])
+    export.add_argument("--request", required=True, metavar="FILE|-")
+    export.add_argument("--output", required=True, metavar="DIRECTORY")
+    export.add_argument("--expected-evidence-id")
+    _add_store_args(export)
+    export.set_defaults(func=_inspection_command)
+
+
+def _inspection_command(args: argparse.Namespace) -> int:
+    """Enter the isolated machine-response boundary only after parsing."""
+    from artisan._inspection_cli import run_command
+
+    return run_command(args)
 
 
 def _add_store_args(parser: argparse.ArgumentParser) -> None:
