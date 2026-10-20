@@ -5,6 +5,7 @@ from __future__ import annotations
 import ast
 import json
 import re
+import shutil
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -93,7 +94,7 @@ def _published_blocks() -> Iterator[tuple[str, int, str]]:
             yield from _notebook_blocks(path)
     for path in sorted((_ROOT / "docker" / "examples").rglob("*.py")):
         yield path.read_text(), 1, str(path.relative_to(_ROOT))
-    for path in sorted((_ROOT / "skills").glob("*/SKILL.md")):
+    for path in sorted((_ROOT / "skills").rglob("*.md")):
         yield from _markdown_blocks(path)
 
 
@@ -247,6 +248,47 @@ def test_only_top_level_generated_docs_are_excluded(
     locations = [location for _, _, location in _published_blocks()]
 
     assert locations == ["docs/chapter/_build/page.md"]
+
+
+def test_skill_reference_imports_are_checked(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setitem(_published_blocks.__globals__, "_ROOT", tmp_path)
+    (tmp_path / "README.md").write_text("")
+    reference = tmp_path / "skills" / "example" / "references" / "inspection.md"
+    reference.parent.mkdir(parents=True)
+    reference.write_text("```python\nfrom artisan.private import inspect_run\n```\n")
+
+    with pytest.raises(AssertionError, match="references/inspection.md:2"):
+        test_published_python_uses_only_supported_facades()
+
+
+def test_canonical_skills_are_discoverable_and_portable(tmp_path: Path) -> None:
+    marketplace = json.loads(
+        (_ROOT / ".claude-plugin" / "marketplace.json").read_text()
+    )
+    plugin = next(item for item in marketplace["plugins"] if item["name"] == "artisan")
+    canonical = sorted((_ROOT / "skills").glob("*/SKILL.md"))
+    assert sorted(plugin["skills"]) == [
+        f"./skills/{entry.parent.name}" for entry in canonical
+    ]
+    for entry in canonical:
+        for host in (".agents", ".claude"):
+            discovered = _ROOT / host / "skills" / entry.parent.name
+            assert discovered.is_symlink()
+            assert discovered.resolve() == entry.parent.resolve()
+            assert (discovered / "SKILL.md").read_text() == entry.read_text()
+
+    copied = tmp_path / "pipeline-operate"
+    shutil.copytree(_ROOT / "skills" / "pipeline-operate", copied)
+    links = re.findall(
+        r"\]\((references/[^)#]+)(?:#[^)]*)?\)", copied.joinpath("SKILL.md").read_text()
+    )
+    assert links, "The operating skill must carry its referenced instructions."
+    for link in links:
+        reference = copied / link
+        assert reference.resolve().is_relative_to(copied.resolve())
+        assert reference.read_text().strip()
 
 
 def test_published_python_uses_only_supported_facades() -> None:

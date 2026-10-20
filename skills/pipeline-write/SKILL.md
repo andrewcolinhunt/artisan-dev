@@ -8,16 +8,19 @@ description: Write or scaffold an Artisan pipeline script. Use this skill when t
 Write the pipeline script described in the user's request. If the invoking
 client supplies explicit skill arguments, treat them as the request details.
 
-Before writing, read the example operations in `src/artisan/operations/examples/`
-and at least one integration test in `tests/integration/test_data_flow_patterns.py`
-to match established patterns.
+When an operation catalogue is available, use `artisan_list_operations` and
+`artisan_describe_operation` to find candidates and inspect their input/output
+roles and parameter contracts. Inspect relevant source and examples for facts
+the catalogue does not provide or behavior you need to change.
 
-If the pipeline uses operations from a plugin package (any package that depends
-on artisan), explore that package's `operations/` directory to discover available
-operations, their input/output roles, and parameter classes. Plugin operations
-are used identically to core operations — just different import paths. Core
-curator operations (`Filter`, `Merge`) work with any artifact type including
-types defined by plugins.
+Without a catalogue, discover core examples in
+`src/artisan/operations/examples/` and plugin operations in the package's
+`operations/` directory. Read relevant examples and
+`tests/integration/test_data_flow_patterns.py` when that source tree is
+available. In a downstream install, use installed public API documentation and
+available plugin examples instead of requiring Artisan's repository files.
+Plugin operations use the same pipeline API with their own import paths.
+Core curators (`Filter`, `Merge`) also work with plugin artifact types.
 
 For application-defined operations or artifact types, pass their installed
 registration modules through `application_modules` when creating or resuming

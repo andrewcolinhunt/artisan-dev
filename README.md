@@ -187,7 +187,8 @@ pixi run --locked -e docs docs-clean
 ## Coding agent integration
 
 Artisan includes portable Agent Skills for scaffolding artifact types,
-operations, composites, and pipelines. Compatible agents discover them through
+operations, composites, and pipelines, and for inspecting existing runs.
+Compatible agents discover them through
 `.agents/skills/`; Claude Code also receives them through the repository's
 published plugin.
 
@@ -197,14 +198,19 @@ published plugin.
 | `operation-write` | Scaffold or review an `OperationDefinition` subclass |
 | `composite-write` | Scaffold or review a `CompositeDefinition` subclass |
 | `pipeline-write` | Scaffold a pipeline script composing operations |
+| `pipeline-operate` | Inspect runs, diagnose failures, trace outputs, and assess or compare available evidence |
 
 The canonical skill packages remain under `skills/`. Downstream Claude Code
 repositories can install the plugin by pointing their settings to this repo.
 See [Using Claude Code](docs/getting-started/using-claude-code.md) for details.
+Other compatible hosts can use the complete skill folder, including its
+references, through their documented skill installation mechanism.
 
 For operation discovery and inspection of persisted runs and failure logs,
 [connect an MCP client](docs/how-to-guides/connecting-mcp.md) to the optional
-read-only `artisan-mcp` server.
+read-only `artisan-mcp` server. Installing the Python MCP extra does not install
+client skills. `pipeline-operate` discovers the connected tools and works with
+the capabilities available there.
 
 ---
 
