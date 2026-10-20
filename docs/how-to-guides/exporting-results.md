@@ -56,6 +56,136 @@ Add `step_number` to select one logical step. This display-oriented reader round
 floats; choose `round_digits` for the precision you need. Load metric artifacts
 directly when you need their original payloads.
 
+## Assess recorded metrics without display rounding
+
+Use `assess_outcomes` when a threshold decision needs the original numbers and
+exact artifact references. Select one run, step and output role. Supply the
+step number if that run uses the same name at several positions.
+
+The following continues the selected-store example above. Replace the step,
+role and criterion with those declared by your application:
+
+```python
+from artisan.visualization import (
+    AssessmentCheck,
+    AssessmentSpec,
+    OutcomeSelection,
+    assess_outcomes,
+)
+
+selection = OutcomeSelection(
+    pipeline_run_id=run_id,
+    step_name="measure",
+    step_number=1,
+    role="metrics",
+)
+criteria = AssessmentSpec(
+    label="Recorded score at least 0.8",
+    checks=[
+        AssessmentCheck(
+            check_id="minimum_score",
+            metric_path=["score"],
+            operator="ge",
+            threshold=0.8,
+        )
+    ],
+)
+assessment = assess_outcomes(delta_root, selection, criteria)
+print(assessment.assessment_status)
+(output_dir / "assessment.json").write_text(
+    assessment.model_dump_json(indent=2), encoding="utf-8"
+)
+```
+
+Check the report's execution status and coverage alongside its assessment.
+Missing or invalid required measurements make an assessment incomplete, even
+when all evaluated values pass. An empty population remains unassessed. A
+count-only criterion tests the number of accepted artifacts; it does not prove
+that the intended upstream cases produced them.
+
+Each observation is a unique accepted artifact in that attempt and role.
+Identical outputs can share one artifact identity. Cached and passthrough
+outputs retain their original artifact origin while belonging to the selected
+attempt. Partial execution can pass over its accepted outputs without showing
+that the whole workflow succeeded.
+
+The report returns the resolved attempt ID. Supply that `step_run_id` in
+`OutcomeSelection` to inspect the same historical attempt later. A fresh
+selection without it uses the current attempt, including a failed retry with
+no available population. Recorded cancellation uncertainty remains uncertainty;
+unavailable outputs do not prove that external work stopped.
+
+Save the normalized criteria and report together. Their fingerprints detect
+changes but cannot restore deleted source records or supply an atomic store
+snapshot. For a read-only observation export without a criterion, use the
+public `read_metric_observations` reader with explicit metric paths and metadata
+keys. It preserves JSON integers and unrounded decoded floats; clients handling
+large integers must parse them without losing precision.
+
+## Compare the same declared cases
+
+Choose both runs explicitly and supply correspondence. This example continues
+the assessment example, using a second run ID supplied by you. It assumes each
+metric artifact has a `case` metadata key identifying the measured subject:
+
+```python
+from artisan.visualization import (
+    ComparisonMetric,
+    ComparisonSpec,
+    MetadataKeyMatch,
+    compare_runs,
+)
+
+candidate = OutcomeSelection(
+    pipeline_run_id="<candidate run ID>",
+    step_name="measure",
+    step_number=1,
+    role="metrics",
+)
+comparison = compare_runs(
+    delta_root,
+    baseline=selection,
+    candidate=candidate,
+    spec=ComparisonSpec(
+        label="Score change for matching cases",
+        matching=MetadataKeyMatch(key="case"),
+        metrics=[
+            ComparisonMetric(
+                metric_id="score",
+                metric_path=["score"],
+                direction="higher",
+                measurement_id="score",
+                measurement_version="1",
+                unit="unitless",
+                absolute_tolerance=0,
+            )
+        ],
+        assessment=criteria,
+    ),
+)
+(output_dir / "comparison.json").write_text(
+    comparison.model_dump_json(indent=2), encoding="utf-8"
+)
+```
+
+Verify that the measurement declaration is appropriate for both runs. Artisan
+checks stored identity and exact matching keys; your declaration supplies the
+meaning, version and unit. Integer and string keys remain distinct. Duplicate
+keys make correspondence ambiguous and suppress numeric comparison rather than
+choosing a representative. When no shared key exists, use `ExplicitPairsMatch`
+with known artifact IDs and unique case labels.
+
+Read pair coverage, unmatched cases and regressions before interpreting a mean
+delta. A better mean can contain regressions. Missing numeric values remain
+incomparable pairs, with separate numeric coverage. The optional assessment
+uses each complete selected role, including its unmatched observations.
+Neither matching labels nor equal redacted diagnostics establish that the
+runs had identical inputs or that a configuration change caused the result.
+
+These readers load the complete selected populations. MCP offers bounded
+summary and detail views for the same reports; see
+[connecting MCP](connecting-mcp.md) for paging and error handling.
+
 ## Materialize an artifact by ID
 
 When you already have artifact IDs, use `ArtifactStore` to load the objects and

@@ -167,6 +167,15 @@ class ErrorCode:
     TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
+    # validation — bounded inspection and declared outcome criteria
+    INVALID_EVIDENCE_CURSOR = "invalid_evidence_cursor"
+    EVIDENCE_VIEW_CHANGED = "evidence_view_changed"
+    EVIDENCE_ITEM_TOO_LARGE = "evidence_item_too_large"
+    EVIDENCE_RESPONSE_TOO_LARGE = "evidence_response_too_large"
+    OUTCOME_SELECTION_INVALID = "outcome_selection_invalid"
+    ASSESSMENT_SPEC_INVALID = "assessment_spec_invalid"
+    COMPARISON_SPEC_INVALID = "comparison_spec_invalid"
+
     # validation — single-execution replay preflight
     REPLAY_EXECUTION_NOT_FOUND = "replay_execution_not_found"
     REPLAY_EVIDENCE_UNAVAILABLE = "replay_evidence_unavailable"
@@ -271,6 +280,48 @@ class ArtifactIntegrityError(ArtisanError):
             code=ErrorCode.ARTIFACT_INTEGRITY_FAILED,
             message=message,
             error_type="io",
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+class OutcomeSelectionError(ArtisanError):
+    """A requested attempt or output role cannot define the observation population."""
+
+    def __init__(self, message: str, *, field: str | None = None) -> None:
+        """Identify an invalid or ambiguous outcome selection."""
+        super().__init__(
+            code=ErrorCode.OUTCOME_SELECTION_INVALID,
+            message=message,
+            error_type="validation",
+            field=field,
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+class AssessmentSpecError(ArtisanError):
+    """Declared assessment criteria are invalid."""
+
+    def __init__(self, message: str, *, field: str | None = None) -> None:
+        """Identify invalid assessment criteria before reading evidence."""
+        super().__init__(
+            code=ErrorCode.ASSESSMENT_SPEC_INVALID,
+            message=message,
+            error_type="validation",
+            field=field,
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+class ComparisonSpecError(ArtisanError):
+    """Comparison declarations or explicit pairs are invalid."""
+
+    def __init__(self, message: str, *, field: str | None = None) -> None:
+        """Identify invalid comparison criteria or pair membership."""
+        super().__init__(
+            code=ErrorCode.COMPARISON_SPEC_INVALID,
+            message=message,
+            error_type="validation",
+            field=field,
             recovery_hint="CHECK_INPUT",
         )
 
