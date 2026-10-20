@@ -72,7 +72,8 @@ The optional cloud batching comparison is listed under Cloud tutorials below.
 These tutorials make billable cloud calls. Start with Running on Modal, which
 sets up the account, authentication, and endpoint used by the batching example.
 The object-storage tutorial also needs a bucket, storage credentials, and its
-own endpoint deployment.
+own endpoint deployment. Deployments are explicit setup steps: remote execution
+requires an existing compatible app, and a pipeline never creates one.
 
 1. [Running on Modal](07-compute-backends/04-modal-execution.ipynb) (~15 min) — Deploy a command operation, compare local and remote execution, and inspect remote markers
 2. [Per-Artifact Batch Execute](04-batching/02-batch-execute.ipynb) (~10 min) — Compare concurrent and sequential endpoint calls within the same unit size

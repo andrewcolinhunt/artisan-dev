@@ -1,18 +1,18 @@
 #!/usr/bin/env python
 """Interactive Ctrl+C cancellation demo.
 
-Run this script and press Ctrl+C while it's executing to see pipeline cancellation and its reported outcome.
+Run this script and press Ctrl+C to inspect the cancellation outcome.
 
 Usage:
-    pixi run python docs/tutorials/05-errors-and-control/cancel_demo.py
+    pixi run --locked python docs/tutorials/05-errors-and-control/cancel_demo.py
 
 What happens:
     - The pipeline submits 10 Wait steps, each sleeping for 30 seconds
     - Press Ctrl+C at any point during execution
     - The signal handler fires and sets the cancel event
-    - Affected attempts record requested and confirmed cancellation
-    - All remaining steps become cancelled without executing
-    - finalize() returns a clean summary
+    - Affected attempts record the cancellation request and outcome
+    - Steps not yet dispatched become cancelled without executing
+    - finalize() returns the pipeline summary
 
 Signal escalation:
     - First Ctrl+C: request cancellation from the active runner
@@ -20,8 +20,9 @@ Signal escalation:
     - Later signals: follow those handlers (usually KeyboardInterrupt for Ctrl+C)
 
 The local runner allows a brief grace period and can terminate owned workers.
-An in-flight execute phase is not guaranteed to finish. Accepted outputs depend
-on the confirmed lifecycle outcome; arbitrary tool side effects may remain.
+It confirms cancellation only after worker and managed-command cleanup is
+verified; uncertain cleanup reports unknown. An in-flight execute phase is not
+guaranteed to finish, and cancellation does not undo earlier side effects.
 
 Try pressing Ctrl+C at different points to see how the cancellation
 window affects which steps succeed vs cancel.
