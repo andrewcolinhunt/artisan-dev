@@ -1,8 +1,8 @@
 # Write Curator Operations
 
-How to write operations that route, filter, merge, or ingest artifacts without
-heavy computation. Companion to
-[Writing Creator Operations](writing-creator-operations.md).
+Use a curator to route, filter, merge, or ingest artifacts in an isolated local
+subprocess. Use a [creator](writing-creator-operations.md) for heavy computation
+or external tools.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Writing Creator Operations](writing-creator-operations.md).
@@ -60,7 +60,7 @@ class SimpleMerge(OperationDefinition):
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
         merged = (
-            pl.concat(inputs.values()).select("artifact_id")
+            pl.concat([frame.select("artifact_id") for frame in inputs.values()])
             if inputs
             else pl.DataFrame({"artifact_id": []})
         )
@@ -93,7 +93,7 @@ before you start writing code.
 | **Execution** | Three phases (`preprocess` / `execute_function` / `postprocess`) | Single `execute_curator` method |
 | **Sandboxing** | Full sandbox with file materialization | No working sandbox; memory-isolated subprocess |
 | **Dispatch** | Built-in local runner or an external provider instance | Local spawned subprocess; step-runner overrides do not relocate it |
-| **Returns** | `ArtifactResult` (always creates new artifacts) | `ArtifactResult` or `PassthroughResult` |
+| **Returns** | `ArtifactResult` containing any new artifacts | `ArtifactResult` or `PassthroughResult` |
 
 **Choose curator when** the operation routes, filters, merges, or annotates
 existing artifacts without heavy computation.
@@ -184,7 +184,9 @@ remains non-cacheable and performs a fresh source read each time it runs.
 A curator operation is an `OperationDefinition` subclass that overrides
 `execute_curator`. The framework detects curator operations automatically — if
 `execute_curator()` is overridden, the operation is treated as a curator.
-No explicit flag or registration needed.
+No operation-type flag is needed. The module must still be imported in every
+process that uses the operation; see
+[application loading](configuring-execution.md#load-application-definitions-in-every-process).
 
 For a merge-like operation, `runtime_defined_inputs=True` lets callers choose
 input roles, and `independent_input_streams=True` allows different stream lengths.
@@ -234,7 +236,7 @@ content, metrics, provenance edges, etc.
 
 ## Implement `execute_curator`
 
-Here are the three common curator patterns with complete implementations.
+The following classes use the imports from the `SimpleMerge` example.
 
 ### Pattern A: Filter (passthrough)
 
@@ -253,10 +255,14 @@ from artisan.schemas import ArtifactTypes
 class NameFilter(OperationDefinition):
     name = "name_filter"
 
-    runtime_defined_inputs: ClassVar[bool] = True
-    hydrate_inputs: ClassVar[bool] = False
+    class InputRole(StrEnum):
+        passthrough = auto()
 
-    inputs: ClassVar[dict[str, InputSpec]] = {}
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.passthrough: InputSpec(
+            artifact_type=ArtifactTypes.DATA, hydrate=False, materialize=False
+        ),
+    }
 
     class OutputRole(StrEnum):
         passthrough = auto()
@@ -327,7 +333,9 @@ class TaggedMerge(OperationDefinition):
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
-        merged = pl.concat(inputs.values()).select("artifact_id")
+        merged = pl.concat(
+            [frame.select("artifact_id") for frame in inputs.values()]
+        )
         return PassthroughResult(
             success=True,
             passthrough={"merged": merged["artifact_id"].to_list()},
@@ -389,7 +397,7 @@ scan config contents or hydrate source contents to discover parents. Reference
 materialization still substitutes paths normally. See
 [Config references and ancestry](writing-creator-operations.md#config-references-and-ancestry).
 
-For a genuinely generative role, set `derives_from={"inputs": []}` and return
+For a generative role, set `derives_from={"inputs": []}` and return
 `lineage={"role": []}` alongside its artifact list. A curator with dynamic
 output types and `outputs={}` may emit only roots and must include an empty
 lineage list for every returned role. `IngestPipelineStep` uses this deliberately
@@ -462,13 +470,13 @@ pipeline.run(
 
 ### Merge
 
-Union multiple artifact streams into one. No content is loaded — pure
-passthrough.
+Union multiple artifact streams into one. The curator routes IDs without
+consuming artifact content. Pipeline preparation still verifies input integrity.
 
 ```python
 from artisan.operations.curator import Merge
 
-# List format (preferred) — auto-generates role names
+# List format combines the streams into one input role.
 pipeline.run(
     operation=Merge,
     name="merge",
@@ -637,15 +645,16 @@ pipeline = PipelineManager.create(
     name="test", delta_root="test/delta", staging_root="test/staging",
 )
 output = pipeline.output
-pipeline.run(operation=DataGenerator, name="gen_a", params={"count": 3})
-pipeline.run(operation=DataGenerator, name="gen_b", params={"count": 2})
+pipeline.run(operation=DataGenerator, name="gen_a", params={"count": 3, "seed": 42})
+pipeline.run(operation=DataGenerator, name="gen_b", params={"count": 2, "seed": 43})
 step = pipeline.run(
     operation=SimpleMerge,
     name="merge",
     inputs=[output("gen_a", "datasets"), output("gen_b", "datasets")],
 )
 assert step.status is StepStatus.SUCCEEDED
-pipeline.finalize()
+assert step.output_roles == {"merged"}
+assert pipeline.finalize()["overall_success"]
 ```
 
 ---

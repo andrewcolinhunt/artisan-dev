@@ -9,9 +9,10 @@ See [Execution Flow](../concepts/execution-flow.md) for lifecycle terminology.
 
 ---
 
-## Minimal working example
+## Replay an execution
 
-Use the execution's existing store and separate diagnostic destinations:
+The following example assumes you have selected an `execution_run_id` from
+the existing store. Use separate diagnostic destinations:
 
 ```python
 from artisan.orchestration import replay_execution
@@ -41,7 +42,7 @@ cache hits.
 
 ---
 
-## Step 1: Select an execution ID
+## Select an execution ID
 
 Use `execution_run_id` from the executions table or failure report:
 
@@ -53,7 +54,7 @@ A pipeline ID or step ID cannot identify one execution unit. For composites,
 select a child's execution ID. Manual interactive selections have no executable
 unit and report unavailable replay evidence.
 
-## Step 2: Choose diagnostic destinations
+## Choose diagnostic destinations
 
 The local CLI supplies working, staging, files, and log defaults:
 
@@ -85,11 +86,11 @@ failure is raised. If cleanup is uncertain, the endpoint reports diagnostic
 capture unavailable and retains its workspace without reading, uploading, or
 deleting its files.
 
-## Step 3: Supply omitted configuration explicitly
+## Supply omitted configuration explicitly
 
 Replay snapshots omit unclassified environment values, credential parameters,
-secret fields, and credential-bearing URLs. Map each reported JSON pointer to a current
-environment variable name:
+secret fields, and credential-bearing URLs. Map each reported JSON pointer
+(the path to an omitted value) to a current environment variable name:
 
 ```bash
 artisan execution replay EXECUTION_RUN_ID \
@@ -165,10 +166,16 @@ Fresh replay snapshots retain replacement sensitivity even when a replacement
 also appears in a public field. Explicit replacements compute a new effective
 execution identity and run a fresh diagnostic attempt with cache skipping.
 
-## Step 4: Handle changed code and dependencies
+## Handle changed code and dependencies
 
-Install the recorded operation and dependencies. Replay checks the concrete
-operation's name, version, module digest, configuration fields, and behavior.
+Install the recorded operation and dependencies. For application operations,
+supply the trusted registration modules again through
+`RuntimeEnvironment.application_modules` or CLI `--load-module`. Recorded module
+names do not authorize imports. See
+[application loading](configuring-execution.md#load-application-definitions-in-every-process).
+
+Replay checks the concrete operation's name, version, module digest,
+configuration fields, and behavior.
 Use `allow_code_change=True` or `--allow-code-change` to acknowledge detected
 code differences. Notebook classes can be supplied through
 `operation_class=MyOperation`; unverifiable code also needs explicit allowance.
@@ -188,6 +195,7 @@ diagnostic-capable deployments and a compatible identity handshake.
 
 ---
 
+(verify-replay)=
 ## Verify
 
 Check both the execution outcome and evidence delivery:
@@ -213,9 +221,11 @@ could not prove the managed work stopped or that a command finished collecting
 its result. It preserves the original error or interruption, skips unsafe output
 collection, and retains the workspace. Missing logs or diagnostic archives in
 this case do not establish that no command ran.
-Check the affected tool or external provider before reusing its files. A local
-command owner does not prove that a Docker, Apptainer, Pixi, or remote workload
-stopped; see [managed command limits](configuring-execution.md#keep-managed-commands-in-the-foreground).
+Check the affected tool or external provider before reusing its files. Host
+process exit alone does not prove that external work stopped. Built-in
+Docker cleanup additionally requires removal of the exact registered container;
+other external environments and Modal have separate limits. See
+[managed command limits](configuring-execution.md#keep-managed-commands-in-the-foreground).
 
 Curators read the current committed store. Explicit run-scoping parameters are
 retained, but arbitrary store queries, external files, network reads, randomness,

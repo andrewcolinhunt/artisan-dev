@@ -1,39 +1,42 @@
 # Configure S3-Compatible Storage
 
-How to point an Artisan pipeline at S3, MinIO, LocalStack, or any
-S3-compatible backend for Delta Lake tables, staging, and external files.
+Store Delta Lake tables, staged results, and external files on S3 or an
+S3-compatible service such as MinIO.
 
 **Prerequisites:** [Configuring Execution](configuring-execution.md),
-the `artisan[s3]` install extra (`pip install 'dexterity-artisan[s3]'`).
+the `dexterity-artisan[s3]` install extra (`pip install 'dexterity-artisan[s3]'`).
 
 **Related:** [Pipeline Configuration](../concepts/pipeline-configuration.md)
 explains how storage and execution settings fit together.
 
-**Key types:** `StorageConfig`, `PipelineConfig`.
-
----
-
-## Minimal working example — production AWS S3
+## Configure AWS S3
 
 When running on EC2 (or anywhere with an IAM role / `~/.aws/credentials` /
 `AWS_*` env vars set), pass `protocol="s3"` and let `delta-rs` and `s3fs`
 read credentials from the environment:
 
 ```python
+from uuid import uuid4
+
 from artisan.orchestration import PipelineConfig, PipelineManager
 from artisan.schemas import StorageConfig
 
 pipeline = PipelineManager(
     PipelineConfig(
         name="prod-ingest",
+        pipeline_run_id=str(uuid4()),
         delta_root="s3://my-bucket/delta",
         staging_root="s3://my-bucket/staging",
         files_root="s3://my-bucket/files",
-        working_root="/var/run/artisan",  # always local — sandboxes + failure logs
+        working_root="runs/working",  # local sandboxes and failure logs
         storage=StorageConfig(protocol="s3"),
     )
 )
 ```
+
+Direct `PipelineConfig` construction needs an explicit run ID; the UUID above
+keeps this run separate from other runs in the same store. Call
+`pipeline.finalize()` when you finish submitting work.
 
 `working_root` and `failure_logs_root` (derived from `working_root` when
 `storage` is cloud) **must** stay local — they're used for sandbox dirs
@@ -49,18 +52,22 @@ not download cloud logs.
 
 ---
 
-## MinIO / LocalStack / on-prem S3
+## Configure an S3-compatible endpoint
 
 For a non-default endpoint, configure both the fsspec client and delta-rs.
-`StorageConfig` carries their settings separately:
+`StorageConfig` carries their settings separately. This example assumes a local
+test service at `http://minio.local:9000` and credentials in your environment;
+use your service's HTTPS endpoint for a remote store:
 
 ```python
+import os
+
 storage = StorageConfig(
     protocol="s3",
-    # fsspec-facing — used for staging Parquet and FileRef/Appendable bytes.
+    # fsspec reads staging and external file content.
     options={
-        "key": "minioadmin",
-        "secret": "minioadmin",
+        "key": os.environ["AWS_ACCESS_KEY_ID"],
+        "secret": os.environ["AWS_SECRET_ACCESS_KEY"],
         "client_kwargs": {"endpoint_url": "http://minio.local:9000"},
         "use_ssl": False,
     },
@@ -68,16 +75,17 @@ storage = StorageConfig(
     # Keys follow the delta-rs / object_store schema, not fsspec's.
     delta_options={
         "AWS_ENDPOINT_URL": "http://minio.local:9000",
-        "AWS_ACCESS_KEY_ID": "minioadmin",
-        "AWS_SECRET_ACCESS_KEY": "minioadmin",
+        "AWS_ACCESS_KEY_ID": os.environ["AWS_ACCESS_KEY_ID"],
+        "AWS_SECRET_ACCESS_KEY": os.environ["AWS_SECRET_ACCESS_KEY"],
         "AWS_REGION": "us-east-1",
         "AWS_ALLOW_HTTP": "true",
     },
 )
 ```
 
-fsspec and delta-rs use different option schemas, so `StorageConfig`
-carries both side by side — see
+Pass this `storage` object to `PipelineConfig(storage=storage, ...)` when
+creating the manager. fsspec and delta-rs use different option schemas, so
+`StorageConfig` carries both side by side. See
 [Pipeline Configuration](../concepts/pipeline-configuration.md) for why.
 Leave `delta_options={}` (the default) on AWS to fall back to env-var
 discovery.
@@ -86,13 +94,13 @@ discovery.
 
 ## Cloud-URI inputs
 
-Pipelines can ingest files directly from cloud URIs — no local download
-step needed:
+Pass cloud URIs directly as inputs; you do not need to download them before
+calling the pipeline:
 
 ```python
 from artisan.operations.curator import IngestData
 
-# `pipeline` continues from the minimal working example above.
+# `pipeline` continues from the AWS S3 example above.
 pipeline.run(
     IngestData,
     inputs=[
@@ -103,12 +111,10 @@ pipeline.run(
 )
 ```
 
-For each path, Artisan resolves the filesystem via a two-step rule
-(`src/artisan/schemas/execution/fs.py`):
+For each path, Artisan chooses a filesystem as follows:
 
 1. If the path's protocol matches `config.storage.protocol`, use the
-   pipeline's configured `StorageConfig.filesystem()` — credentials and
-   endpoint already wired.
+   pipeline's configured filesystem, credentials, and endpoint.
 2. Otherwise fall back to fsspec's standard ambient credential discovery
    (env vars, IAM roles, `~/.aws/credentials`).
 
@@ -142,15 +148,23 @@ Inspect the configured endpoint without printing credentials:
 
 ```python
 print(pipeline.config.storage.protocol)
-print(pipeline.config.storage.delta_storage_options().get("AWS_ENDPOINT_URL"))
+options = pipeline.config.storage.delta_storage_options() or {}
+print(options.get("AWS_ENDPOINT_URL", "default AWS endpoint"))
 ```
 
-This confirms configuration only; a small ingest verifies access and writes.
-If you're testing against MinIO locally, the project provides a
-`testcontainers`-based fixture (`tests/conftest.py`'s `s3_fs`) that
-boots a MinIO container per pytest session. See
-`tests/artisan/storage/test_smoke_s3.py` for the smallest end-to-end
-example.
+This confirms configuration only. Run a small ingest and inspect its status to
+verify access and writes:
+
+```python
+from artisan.orchestration import StepStatus
+
+step = pipeline.run(IngestData, inputs=["s3://my-bucket/raw/dataset_a.csv"])
+assert step.status is StepStatus.SUCCEEDED, step.error
+pipeline.finalize()
+```
+
+Replace the URI with a small CSV that exists on your selected endpoint. For
+repository qualification, see the [S3 test task](../getting-started/using-pixi.md#dev-environment).
 
 ---
 

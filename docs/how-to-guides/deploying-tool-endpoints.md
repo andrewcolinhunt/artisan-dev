@@ -24,6 +24,7 @@ compute_provider = ComputeProvider(
         secrets=["model-access"],
         volumes={"/weights": "model-weights"},
         env={"MODEL_CACHE": "/weights"},
+        public_env=("MODEL_CACHE",),
         max_containers=8,
     ),
 )
@@ -48,14 +49,15 @@ adds local source over the worker image. Production images should contain the
 code they execute.
 
 Changing hardware, image, runtime secrets, or data policy requires redeployment.
-Per-step changes to deployment settings are rejected, including on a cache hit.
+Per-step changes to deployment settings are rejected before both whole-step
+and execution-level cache lookup.
 Change the operation declaration and explicitly redeploy it, then select that
 endpoint. Calls never create an app or alter its infrastructure.
 
 Every new invocation checks the endpoint's declared operation source identity
 and command prefix before packaging inputs. Matching `ToolSpec` overrides are
 accepted; a different executable, interpreter, or subcommand fails before tool
-execution. Valid scientific Params still vary per call. Upgrade clients and
+execution. Valid operation parameters still vary per call. Upgrade clients and
 explicitly redeploy endpoints together: older endpoints without a command
 contract are rejected.
 
@@ -112,7 +114,8 @@ budgets.
 Eligible externally stored `FileRefArtifact` and `LargeFileArtifact` inputs
 travel by reference. The request carries a URI, digest, and byte count. The
 worker authorizes the URI, downloads the full file, and verifies integrity before
-invoking the tool. `AppendableArtifact` inputs instead send the selected,
+invoking the tool. The referenced file is still downloaded at the worker; this
+avoids sending it through the lifecycle worker. `AppendableArtifact` inputs instead send the selected,
 locally verified record inline.
 
 Remote reads are disabled until you declare allowed sources on the operation
@@ -153,6 +156,13 @@ where paths refer to worker-local files.
 Materialized `ExecutionConfigArtifact` inputs containing `$artifact` references
 are rejected for endpoint execution. Configs without references work. Local
 execution still resolves those references into materialized paths.
+
+For configs that need artifact objects, declare
+`InputSpec(artifact_type="config", materialize=False, resolve_references=True)`.
+Preprocess can read `inputs.referenced_artifacts(config)` and package the
+required files into portable execute inputs. The operation must create that
+package; Artisan does not send the reference mapping to the endpoint. See
+[Read typed config dependencies](writing-creator-operations.md#read-typed-config-dependencies).
 
 (object-store-output-delivery)=
 ### Object-store output delivery
@@ -251,6 +261,19 @@ accepts S3 prefixes, so Artisan's pipeline client uses the prefix workflow above
 Capability-only deployments can use authorized GET and PUT URLs without a
 worker object-store secret. Service upload limits and Artisan's archive budgets
 still apply.
+
+## Cancel remote work
+
+Call `pipeline.cancel()` to request cancellation. Artisan sends a request for
+the exact Modal call and its worker container, then suppresses output download
+and ingestion for the cancelled call. Provider acceptance alone does not prove
+termination: the cancellation outcome remains `unknown`, and the step fails
+without exposing those outputs. A retained result that already completed can
+instead reject cancellation and finish normally.
+
+Check the call in Modal before reusing its external files. Existing endpoints
+need an explicit redeployment to receive updated worker cleanup behavior. See
+[managed command limits](configuring-execution.md#keep-managed-commands-in-the-foreground).
 
 ## Related guides
 

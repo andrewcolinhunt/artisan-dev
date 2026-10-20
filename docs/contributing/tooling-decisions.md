@@ -50,9 +50,11 @@ Delta transactions are atomic within one table. Artisan adds a logical commit
 boundary across related tables: a completion record controls which effects
 supported readers accept. Raw Delta queries bypass that boundary.
 
-Supported readers currently load and verify committed rows before returning a
-lazy frame. Later filters do not push into that physical read, so storage
-partitioning alone does not guarantee low memory use for large queries.
+Supported readers gate table visibility on completed logical commits. Ordinary
+reads do not reverify every historical effect; artifact access still checks the
+requested payload. Use the explicit store repair inspection for a historical
+integrity audit. These visibility checks do not make every query a streaming
+read or guarantee low memory use.
 See [storage and Delta Lake](../concepts/storage-and-delta-lake.md) for the
 visibility guarantees, recovery behavior, and external-file handling.
 

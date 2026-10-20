@@ -46,10 +46,10 @@ Each table write is atomic. A pipeline result spans several tables, so Artisan
 adds a logical commit and completion checks to coordinate their visibility.
 Delta Lake's per-table transactions alone do not make the whole step atomic.
 
-Content and execution tables are partitioned by origin step number. That is a
-physical layout choice, not a read-cost guarantee: current supported readers
-load and verify the physical table before applying later filters. See
-[Reading pipeline results](#reading-pipeline-results).
+Content and execution tables are partitioned by origin step number. The
+completion-aware scan remains lazy, so query filters can reach the Delta scan.
+Higher-level readers may collect data to assemble results, and run-scoped reads
+may span several origin steps. See [Reading pipeline results](#reading-pipeline-results).
 
 ---
 
@@ -102,10 +102,8 @@ visible through their logical commit.
 
 ### The artifact index
 
-The `index` table deserves special attention. It maps every `artifact_id` to
-its type and origin step number. This allows the framework to locate an
-artifact without scanning every content table — given an ID, the index reveals
-which type-specific table contains the actual data.
+The `index` table maps each `artifact_id` to its type and origin step number.
+This locates an artifact's content table without scanning every artifact type.
 
 The index is small (one row per artifact, no content bytes) and must support
 fast lookups across all steps. It also powers bulk queries like loading type
@@ -122,45 +120,28 @@ deduplication.
 Provenance queries (ancestor/descendant lookups, edge loading, type maps, step
 maps) are handled by a dedicated `ProvenanceStore` class. `ArtifactStore`
 exposes the `ProvenanceStore` through a `provenance` accessor rather than
-mixing graph queries into artifact content queries, keeping the two cleanly
-separated. This split means provenance
-queries never need access to artifact content tables, and content queries never
-need to load the edge graph.
+mixing graph traversal with artifact content access. Provenance queries can
+traverse the edge tables without loading artifact payloads.
 
 ---
 
 ## Registry-driven extensibility
 
-The framework defines six built-in artifact types (metric, config, data,
-file_ref, appendable, large_file). But the table architecture is not hardcoded
-to these six. New
-artifact types are added by defining two classes: an artifact model (the data
-shape) and a type definition (the registry entry). Registration is automatic —
-Python's `__init_subclass__` mechanism detects the new type definition and
-registers it.
+Built-in artifact types include metrics, execution configs, tabular data, file
+references, appendable records, and large files. An application can register
+another type by defining its artifact model and type definition. The registered
+type participates in staging, content-addressed commitment, provenance, and
+cache reuse without modifying framework storage code.
 
-Once registered, a new type automatically gets:
-
-- Its own Delta Lake table under `artifacts/`
-- Content-addressed deduplication during commit
-- Staging and commit integration
-- Provenance tracking
-- Cache-aware execution
-
-No framework code is modified. No configuration files are edited. The domain
-layer defines the type, and the storage infrastructure extends to cover it.
-
-**Why this matters:** The framework has zero knowledge of domain-specific data.
-A domain layer can register custom artifact types (e.g., `CustomArtifact`,
-`UserDefinedArtifact`). Each gets the full storage infrastructure for free.
-
----
+Registration happens when the defining module is imported. Install the
+application and select its trusted modules in every process that opens its
+store. Startup and repair check required registrations before changing selected
+evidence. See [Load application definitions](../how-to-guides/configuring-execution.md#load-application-definitions-in-every-process)
+and [Create Artifact Types](../how-to-guides/creating-artifact-types.md).
 
 ## The staging-commit pattern
 
-This is the most important architectural pattern in the storage layer. It
-solves the concurrent-write problem by separating worker output from shared
-state.
+Staging separates concurrent worker output from shared table writes.
 
 ### The core idea
 
@@ -278,7 +259,7 @@ Write order does not replace a multi-table transaction. Each Delta write is
 atomic independently; Artisan's completion checks coordinate visibility across
 them. Raw Delta readers bypass those checks and may expose unfinished effects.
 Pending and running step snapshots remain observable while work is in progress.
-See [Crash recovery](#crash-recovery) for handling incomplete plans.
+See [Crash recovery](storage-and-delta-lake.md#storage-crash-recovery) for handling incomplete plans.
 
 ---
 
@@ -326,6 +307,7 @@ preservation off verifies the corresponding committed batch before cleaning its
 retained files. Immediate cleanup uses the verification from the commit that
 just finished.
 
+(storage-crash-recovery)=
 ## Crash recovery
 
 By default, `PipelineManager.create()` and `resume()` recover staging before any
@@ -400,8 +382,9 @@ executions table). Z-ORDER improves predicate pushdown performance for queries
 that filter on those columns.
 
 **Vacuum** removes stale data files that are no longer referenced by the Delta
-transaction log. The default retention period is 7 days, ensuring that
-concurrent readers are not affected by cleanup.
+transaction log. The default retention period is 7 days. Choose retention long enough for your
+readers and recovery needs; older table versions can lose their data files after
+vacuum.
 
 Compaction can be scoped to a single partition (step number) or applied across
 the entire table. Vacuum always operates on the whole table.
@@ -410,11 +393,7 @@ the entire table. Vacuum always operates on the whole table.
 
 ## Compression
 
-All Parquet files — both staged files written by workers and Delta Lake commits
-written by the orchestrator — use zstd compression. Zstd provides a good
-balance of compression ratio and read/write speed, which matters when a
-pipeline produces large volumes of artifact data that will be scanned
-repeatedly during provenance queries and result analysis.
+Worker staging and orchestrator Delta writes use zstd compression.
 
 ---
 
@@ -430,7 +409,9 @@ current step attempt to each existing execution whose result it accepted.
 That two-column relation keeps pipeline runs isolated even when they share
 step numbers or artifacts. A run-scoped reader starts from the run's own step
 IDs, unions directly owned executions with the linked cached executions, and
-then follows their execution edges to outputs. `origin_step_number` remains
+then follows their execution edges to outputs. For current results it first
+selects the newest attempt at each logical step. A failed newer attempt does
+not expose an older success; an explicit `step_run_id` selects historical evidence. `origin_step_number` remains
 the artifact's original production location; it is not used to reconstruct
 which later runs reused the artifact. There is no cache service, TTL, or
 manual invalidation.
@@ -440,6 +421,7 @@ For the full two-level caching mechanism (step-level and execution-level), see
 
 ---
 
+(reading-pipeline-results)=
 ## Reading pipeline results
 
 Use Artisan's inspection helpers, `ArtifactStore`, and `ProvenanceStore` to read

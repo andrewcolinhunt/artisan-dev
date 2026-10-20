@@ -167,10 +167,11 @@ nothing, or a filter removed all items -- the step is skipped rather than
 executed. This is not treated as a failure; it is recorded with
 `status="skipped"` and `skip_reason="empty_inputs"`.
 
-Skipping propagates forward: once a step is skipped due to empty inputs, all
-subsequent steps in the pipeline are also skipped, since they depend on the
-outputs of the skipped step. The pipeline records each skipped step and
-completes normally, giving you visibility into where the data ran out.
+When the manager detects empty inputs before dispatch, it stops accepting new
+work for that pipeline: later submissions are skipped with
+`skip_reason="pipeline_stopped"`, including independent steps. The first skipped
+step records `skip_reason="empty_inputs"`. A source operation with no input
+contract is still executable; having no inputs is its normal starting state.
 
 ---
 
@@ -180,16 +181,23 @@ Some errors are caught before any execution starts. When you call `run()` or
 `submit()`, the pipeline manager validates your inputs immediately:
 
 - Unrecognized parameter keys
-- Invalid resource, batching, environment, or tool configuration keys
+- Unrecognized resource, batching, environment, or tool configuration keys
 - Input roles that do not match the operation's declared inputs
 - Missing required input roles
-- Input type mismatches
+- Declared upstream output types that do not match the consuming input role
 
-Call-shape errors raise at call time, before accepting a step attempt. Some
-checks require reading stored inputs: identity, content, and external-location
-verification happen during operational preparation after acceptance. A failure
-there records a failed attempt. See [Python API](../reference/python-api.md)
-for the exceptions documented by each entry point.
+These call-shape errors raise before accepting a step attempt. Validation of
+values in recognized parameter fields happens when Artisan constructs the
+operation during preparation. If that fails, `run()` returns a failed
+`StepResult`; it does not necessarily raise the model's validation exception.
+Construct the operation's `Params` directly when you want to validate values
+before submission.
+
+Checks that read stored inputs, such as identity, content, external locations,
+and input pairing, also happen during preparation after acceptance. Their
+failures become failed attempts. Empty-input handling can skip a step before
+those checks run. See [Python API](../reference/python-api.md) for each entry
+point's documented exceptions.
 
 ---
 
@@ -199,12 +207,11 @@ Two execution modes have their own error containment strategies.
 
 ### Curator operations in subprocesses
 
-Curator operations run in a spawned subprocess for memory isolation. If the
-subprocess is killed (for example, by the operating system's OOM killer), the
-framework catches the `BrokenProcessPool` exception, generates a synthetic
-execution run ID, records the failure to Delta Lake with the error details, and
-returns a failed `StepResult`. The killed process does not take down the
-orchestrator.
+Curator operations run in a spawned subprocess for memory isolation. If it is
+killed, for example by the operating system's OOM killer, Artisan detects the
+broken process pool and attempts to record a synthetic execution failure.
+Managed commands still require cleanup. If that cleanup cannot be confirmed,
+the step fails and retains its workspace instead of collecting outputs.
 
 ### Composite operations
 
@@ -219,6 +226,19 @@ For the full composites model, see
 
 ---
 
+## Cancellation and uncertain cleanup
+
+Cancellation is a request until Artisan can establish what happened to the
+worker and its managed commands. Confirmed cleanup produces a `cancelled` step;
+unknown cleanup produces a `failed` step without accepted outputs. Work that
+already completed can reject cancellation and keep its natural result.
+
+For example, a successful request to cancel a Modal call does not prove that its
+container stopped. Artisan records `unknown` and suppresses output download and
+ingestion for that call. Check the provider before reusing external files. See
+[Cancellation](execution-flow.md#cancellation) for native, container, and remote
+limits.
+
 ## Crash recovery
 
 After interruption, startup retries eligible recorded commits and recovers
@@ -228,7 +248,7 @@ Incomplete evidence stays in place, while corruption or ownership conflicts
 block startup.
 
 Confirm that the old orchestrator has stopped before reopening its roots. See
-[Crash recovery](storage-and-delta-lake.md#crash-recovery) for the independent
+[Crash recovery](storage-and-delta-lake.md#storage-crash-recovery) for the independent
 recovery and preservation flags, and
 [explicit repair](../how-to-guides/configuring-execution.md#recovering-from-crashes)
 for inspecting evidence or applying recovery separately.

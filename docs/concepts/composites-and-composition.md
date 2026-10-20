@@ -1,37 +1,13 @@
 # Composites and Composition
 
-Operations are the unit of computation. Composites are the unit of
-*reuse*. When operations are tightly coupled — when you always run
-transform-then-score, or preprocess-then-analyze — copying that wiring
-into every pipeline duplicates it, and the copies drift over time. A
-composite solves this by naming the grouping once: a reusable unit with
-declared inputs, outputs, and internal wiring.
+A composite reuses operation wiring. A transform-and-score composite, for
+example, connects a transformer to a metric calculator and exposes their
+outputs through one declared interface. Each child still runs as an ordinary
+pipeline step.
 
-This page explains what composites are, why they exist, how they
-execute, and how they relate to operations.
-
----
-
-## The problem composites solve
-
-Consider three approaches to running two tightly coupled operations:
-
-| Approach | Reusable? | Trade-off |
-|----------|-----------|-----------|
-| Separate `pipeline.run()` calls | No | Flexible but verbose; the wiring is re-typed everywhere it is used |
-| Copy-paste the wiring into every pipeline | No | Duplication; the copies diverge over time |
-| **Composite** | **Yes** | Define the wiring once, use it anywhere with the same contract |
-
-A composite encapsulates the wiring once. Every pipeline that uses it
-gets the same internal structure, the same parameter forwarding, and the
-same output contract — without duplicating code.
-
-**Why this matters:** the value of a composite is *meaning* — "these
-steps form one named, reusable thing." That is a grouping concern, and it
-is the only concern a composite owns. How and where those steps run is a
-separate question, answered by the pipeline and the runner layer.
-
----
+Use a composite when several pipelines need the same sequence or when a named
+composition makes the pipeline easier to read. Keep a single operation as an
+operation; a composite adds no computation lifecycle of its own.
 
 ## Anatomy of a CompositeDefinition
 
@@ -51,8 +27,8 @@ complete implementation.
 
 | | `OperationDefinition` | `CompositeDefinition` |
 |---|---|---|
-| Method to implement | `preprocess`, `execute_function`, `postprocess` (or `execute_curator`) | `compose` |
-| Receives | Raw inputs (files, DataFrames) | `CompositeContext` |
+| Method to implement | Creator lifecycle with `execute_function` or `execute_command`, or curator `execute_curator` | `compose` |
+| Receives | Phase input models or curator DataFrames | `CompositeContext` |
 | Produces | Artifacts directly | Nothing — delegates to operations |
 | Registered in | Operation registry | Composite registry |
 
@@ -72,10 +48,8 @@ connect operations through three actions:
 - **Mapping outputs.** `ctx.output(role, ref)` maps an internal result
   onto one of the composite's declared outputs.
 
-Only refs mapped through `ctx.output()` are visible outside the composite.
-Everything else is an internal wiring reference between steps, so the
-composite's external contract is exactly its declared inputs and mapped
-outputs. See the [composite API entry points](../reference/composite-definition.md)
+The composite's `.output(role)` exposes refs mapped through `ctx.output()`.
+Child steps remain visible in pipeline inspection and provenance. See the [composite API entry points](../reference/composite-definition.md)
 for the public classes and current definitions.
 
 ---
@@ -97,13 +71,6 @@ records, provenance edges, and dispatch. It participates in cancellation in the
 same way as other steps. Step names are prefixed with the composite name
 (dot-separated: `outer.inner.operation` for nested composites) so the
 grouping stays legible in the graph.
-
-**Why there is only one model:** "step" is the unit of identity for
-caching, tracking, provenance, cancellation, and override validation. A
-construct that is one step to some subsystems and many steps to others
-would need a hand-maintained parallel implementation in each — and those
-implementations drift. A composite is a *naming* over real steps, not a
-second kind of step.
 
 ### Composite-level overrides are step defaults
 
@@ -142,28 +109,16 @@ parallel step execution. See
 
 ## What about running everything in one allocation?
 
-A common reason to reach for "run the whole composite as one unit" is
-placement: you want the composite's steps to share a single compute
-allocation with a warm environment, rather than each step acquiring its
-own. That is a real need — but it is a **placement** concern, not a
-**grouping** concern, and it belongs to the runner layer, not the
-composite.
-
-**Why the separation:** grouping (this composite *means* transform-then-
-score) is about identity and reuse. Placement (these steps should run in
-one allocation) is about where work lands. Tying the two together forces
-every step-level subsystem — caching, provenance, cancellation — to grow
-a parallel path for the grouped case. Keeping them separate lets each
-concern be solved once, in the layer that owns it.
+Use a runner when creator steps need to share one compute allocation. The
+choice applies to ordinary steps and to composite children alike.
 
 The runner layer answers placement directly. The optional
 `artisan-submitit` package's `SlurmIntraRunner` dispatches creator steps via
 `srun` inside an existing allocation, whether or not they are wrapped in a
 composite. Because composite-level overrides are child-step defaults, passing
 `step_runner=SlurmIntraRunner()` to the composite forwards it to creator
-children. Curator children remain in isolated local subprocesses because they
-read and write pipeline metadata directly. This gives creator work
-one-allocation execution without a second execution model.
+children. Curator children remain in isolated local subprocesses. They query the store
+and return results for the orchestrator to commit.
 
 ---
 
@@ -176,7 +131,7 @@ and then pass its outputs to a nested transform-and-score composite.
 The nested child's operations become ordinary pipeline steps with dot-separated
 names (`outer.inner.operation`). Nesting adds grouping without changing the
 execution or persistence model. See the
-[nesting example](../how-to-guides/writing-composite-operations.md#nesting-composites).
+[nesting example](../how-to-guides/writing-composite-operations.md#author-composite-nesting).
 
 ---
 
@@ -194,23 +149,6 @@ declare their data contract, but they are distinct abstractions:
 | Implements | Computation (lifecycle phases or `execute_curator`) | Wiring (`compose`) |
 | Can be nested in composites | Yes | Yes |
 | Run as pipeline step via | `pipeline.run` / `submit` | `pipeline.run_composite` / `submit_composite` |
-
-Operations are leaves. Composites are branches. Both are nodes in the
-pipeline DAG.
-
----
-
-## Key design decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Separate class hierarchy (`CompositeDefinition` not `OperationDefinition`) | Composites wire; operations compute. Mixing them would blur the lifecycle contract |
-| One execution model (macro-expansion into real steps) | "Step" is the unit of identity for caching, provenance, cancellation, and validation. A composite names real steps rather than being a second kind of step, so those subsystems need no parallel path |
-| Composite-level overrides are step defaults | Every override demonstrably takes effect on the child steps; per-op values win per knob, matching the ordinary default-then-explicit-override shape |
-| Placement lives in the runner layer | Co-locating steps in one allocation is a placement concern that benefits all steps, not just composite-wrapped ones; keeping it out of the composite avoids a second execution model |
-| `CompositeContext` as the API surface | Provides a uniform wiring interface for `compose()` |
-| Frozen `CompositeRef` | Prevents accidental mutation of wiring state between `ctx.run()` calls |
-| Subclass validation at definition time | Mismatched roles, missing `compose()`, or missing enums fail at import, not at runtime |
 
 ---
 

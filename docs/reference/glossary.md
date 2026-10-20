@@ -1,6 +1,6 @@
 # Glossary
 
-Key terms used throughout the Artisan documentation.
+Terms used in Artisan's public interfaces and documentation.
 
 ---
 
@@ -23,8 +23,8 @@ and common semantic metadata such as its lineage-visible name. Artifacts are the
 fundamental data units flowing through pipelines. External locations are kept
 outside identity and verified against the artifact's digest and size.
 Artifacts follow a [draft/finalize](#glossary-draft-finalize) lifecycle: they
-are created as mutable drafts and become immutable when finalized. The six
-built-in artifact types are `data`, `metric`, `file_ref`, `config`,
+are created as mutable drafts; finalization protects durable fields and snapshots
+them for later integrity checks. The six built-in artifact types are `data`, `metric`, `file_ref`, `config`,
 `large_file`, and `appendable`.
 
 ---
@@ -56,10 +56,12 @@ Lazily initializes a `ProvenanceStore` for graph queries.
 
 A registry entry describing an artifact type. Each concrete subclass declares a
 `key` (e.g. `"data"`), a `table_path` for its Delta Lake table, and a `model`
-`Artifact` model with a `POLARS_SCHEMA`. Registration validates the concrete
+derived from `Artifact` with a `POLARS_SCHEMA`. Registration validates the concrete
 type key, unique non-reserved table path, and the verification/materialization
 contract for external types. It is automatic at class definition time via
-`__init_subclass__`.
+`__init_subclass__` when the defining module is imported. Configure trusted
+application modules so workers, inspection, repair, and replay load the same
+definitions.
 
 ---
 
@@ -80,8 +82,8 @@ defines `WorkerTraits` (worker-side I/O behavior) and `OrchestratorTraits`
 The two-level strategy for dividing work across workers. Level 1
 (`artifacts_per_unit`) controls how many artifacts go into each
 [execution unit](#glossary-execution-unit). Level 2 (`units_per_worker`)
-controls how many execution units are sent to each worker process. Both are
-configured via [BatchStrategy](#glossary-execution-config) on the operation.
+controls how many execution units are packed into one worker task. A worker
+process may handle several tasks. Both are configured via [BatchStrategy](#glossary-execution-config) on the operation.
 
 ---
 
@@ -98,10 +100,12 @@ and skipped attempts never qualify.
 (glossary-cancellation-status)=
 ## CancellationStatus
 
-The acknowledgement state of a cancellation request: `requested`, then exactly
-one of `confirmed`, `rejected`, or `unknown`. A step becomes `cancelled` only
-after confirmation. Rejected work may finish naturally; an unknown outcome
-fails closed as a failed step.
+The state of a cancellation request: `requested`, then one of `confirmed`,
+`rejected`, or `unknown`. Confirmation requires evidence that the affected work
+never started or stopped; accepting a request is insufficient. Rejected work may
+finish naturally.
+An unknown outcome produces a failed step because cleanup could not be proven.
+See [cancellation](../concepts/error-handling.md#cancellation-and-uncertain-cleanup).
 
 ---
 
@@ -121,13 +125,14 @@ dispatch, and provenance.
 
 The routing target for an [operation](#glossary-operation)'s execute phase,
 selected per operation or per step via `compute_provider`. `"local"` (the
-default) runs the execute phase as a direct call inside the worker process.
+default) runs an ordinary Python execute function inside the worker process;
+command operations use a managed subprocess on that host.
 `"modal"` ships it to the operation's deployed tool endpoint: the worker submits
 params and input files over HTTP, polls until the tool finishes, and downloads
 the outputs. Only command operations (a [ToolSpec](#glossary-tool-spec) with an
 `execute_command()`, or `execute_as_tool=True`) can route to `"modal"`. The
-compute provider is orthogonal to the [backend](#glossary-backend): the backend
-controls where the worker process runs; the compute provider controls where the
+compute provider is independent of the [step runner](#glossary-backend): the
+runner controls where the worker process runs; the compute provider controls where the
 execute phase runs inside that worker. See
 [Compute Routing](../tutorials/07-compute-backends/01-compute-routing.ipynb) and
 [Execution Flow](../concepts/execution-flow.md).
@@ -185,9 +190,11 @@ pruning without requiring an external database server.
 
 The artifact lifecycle pattern. A **draft** artifact has `artifact_id=None` and
 is mutable -- created via `Subclass.draft()`. Calling `artifact.finalize()`
-computes the typed identity hash, sets the `artifact_id`, and snapshots durable
-state so direct and nested mutation are rejected. Operations create drafts in
-`postprocess` and the framework finalizes them before committing to storage.
+computes the typed identity hash, sets the `artifact_id`, and protects durable
+fields from reassignment. It also snapshots durable state so later serialization
+or materialization can detect nested changes. Creators return drafts from
+`postprocess`; curators can return them from `execute_curator`. The framework
+finalizes drafts before commitment.
 
 ---
 
@@ -196,7 +203,7 @@ state so direct and nested mutation are rejected. Operations create drafts in
 
 Per-operation configuration controlling how work is divided and distributed.
 Fields include `artifacts_per_unit`, `units_per_worker`, `max_workers`, and
-`estimated_seconds` (used for scheduler hints such as SLURM time limits). Set
+`estimated_seconds` (available to runners as a scheduling hint). Set
 as the `batch_strategy` attribute on an [OperationDefinition](#glossary-operation-definition).
 
 ---
@@ -276,8 +283,12 @@ A declarative specification on an operation class that describes one named
 input: its artifact type, whether it is required, and how it should be
 delivered. Key options include `materialize` (write to disk vs. pass in memory),
 `hydrate` (full content vs. ID-only), and `with_associated` (auto-resolve
-related artifacts via provenance). Defined in the operation's `inputs` class
-variable keyed by [role](#glossary-role) name.
+related artifacts via provenance). For config artifacts,
+`resolve_references=True` makes typed dependencies available through
+`inputs.referenced_artifacts(config)` without replacing their JSON markers.
+Defined in the operation's `inputs` class variable keyed by
+[role](#glossary-role) name. See
+[typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 
 ---
 
@@ -343,7 +354,7 @@ configuration, method implementations) and registers the operation by name.
 A lightweight reference to a previous step's output, created by
 `step_result.output("role")` or `step_future.output("role")`. Used to wire
 steps together without moving data. The framework resolves references to
-concrete artifact IDs when the downstream step executes.
+concrete artifact IDs during downstream input preparation.
 
 ---
 
@@ -396,8 +407,8 @@ specifying the Delta Lake root, staging root, failure policy, and cache policy.
 ## Provenance
 
 The record of where data came from and how it was produced. Artisan maintains
-dual provenance: *execution provenance* (what computation happened, stored as
-`ExecutionEdge` records) and *artifact provenance* (which specific input
+dual provenance: *execution provenance* (execution records and their input/output
+`ExecutionEdge` relationships) and *artifact provenance* (which specific input
 produced which specific output, stored as `ArtifactProvenanceEdge` records).
 See [Provenance System](../concepts/provenance-system.md).
 
@@ -408,8 +419,10 @@ See [Provenance System](../concepts/provenance-system.md).
 
 Portable hardware resource requirements declared on an operation. Specifies
 `cpus`, `memory_gb`, `gpus`, `time_limit`, and an `extra` dict for
-provider-specific settings (e.g. `{"slurm_partition": "gpu"}`). Each
-[backend](#glossary-backend) translates these to its native format.
+provider-specific settings (e.g. `{"slurm_partition": "gpu"}`). A scheduler
+runner translates these into an allocation. The local runner uses GPU requests
+to assign devices and constrain concurrency; it does not reserve CPU or memory.
+See [resource placement](../how-to-guides/configuring-execution.md#allocate-resources-at-the-right-layer).
 
 ---
 
@@ -421,20 +434,22 @@ A named port on an operation's input or output interface. Each role maps to an
 carries artifacts of a declared type. Roles are the unit of wiring between
 steps: `step_result.output("data")` creates an
 [OutputReference](#glossary-output-reference) for the `"data"` role. Operations
-must define matching `InputRole` and `OutputRole` `StrEnum` classes.
+define a matching `InputRole` or `OutputRole` `StrEnum` for each nonempty
+static role mapping.
 
 ---
 
 (glossary-sandbox)=
 ## Sandbox
 
-An isolated directory tree created for each
+A separate directory tree created for each
 [creator operation](#glossary-creator-operation) execution. Contains three
 phase subdirectories: `preprocess/` (input adaptation), `execute/` (computation
 outputs), and `postprocess/` (draft artifact construction). Materialized inputs
-live separately in `materialized_inputs/`. The sandbox is
-cleaned up after execution unless `preserve_working=True` is set on the
-pipeline config.
+live separately in `materialized_inputs/`. This organizes files; it is not a
+security boundary. `preserve_working=True` retains working directories for
+inspection. Interrupted work may also leave directories behind; see
+[debugging executions](../how-to-guides/debugging-executions.md).
 
 ---
 

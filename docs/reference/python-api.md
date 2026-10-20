@@ -13,6 +13,9 @@ and exceptions. The guides explain how to use those interfaces together.
 | Match filenames inside an operation | `artisan.operations.lineage` | `match_outputs_to_inputs_by_stem` |
 | Define an operation | `artisan.operations.base` | `OperationDefinition`, `PerArtifact` |
 | Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
+| Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
+| Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |
+| Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
 | Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |
 | Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
 | Read stored artifacts | `artisan.storage` | `ArtifactStore` |
@@ -66,6 +69,7 @@ Use `pixi run --locked artisan --help` to find CLI commands, then append
 - [Build a pipeline](../how-to-guides/building-a-pipeline.md).
 - [Configure execution](../how-to-guides/configuring-execution.md).
 - [Write an operation](../how-to-guides/writing-creator-operations.md).
+- [Resolve configuration references](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 - [Write a composite](../how-to-guides/writing-composite-operations.md).
 - [Inspect a particular run](../how-to-guides/inspecting-provenance.md#select-the-run-you-want-to-inspect).
 - [Implement a runner provider](../contributing/coding-conventions.md#external-step-runner-providers).

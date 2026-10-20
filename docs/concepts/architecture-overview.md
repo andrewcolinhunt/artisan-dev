@@ -1,24 +1,18 @@
 # Architecture Overview
 
-Artisan is a framework for building reproducible computational pipelines with
-automatic provenance tracking. Before diving into individual subsystems, it
-helps to understand the shape of the system as a whole — how the pieces fit
-together, why they are separated the way they are, and what mental model to
-carry when reading the rest of the documentation.
-
-The main boundaries are the operation's computation, worker execution, and the
-orchestrator's sequencing and persistence.
+Artisan runs operations on typed artifacts and records their results and
+declared lineage. Operations define the work, workers execute it, and the
+orchestrator sequences steps and commits accepted results.
 
 ---
 
 ## The core idea
 
 A pipeline is a sequence of steps. Each step runs an operation on a batch of
-artifacts and produces new artifacts. The framework handles everything around
+artifacts and creates or routes artifacts. The framework handles
 the operation: resolving inputs, dispatching work, tracking provenance,
 caching, and committing results to durable storage. The operation itself is
-a pure computation — it receives data in, produces data out, and knows nothing
-about the infrastructure running it.
+responsible for its computation, output names, and exact parent declarations.
 
 ```
 You write:   "Run this operation on these datasets"
@@ -28,16 +22,10 @@ Framework handles:    resolve + verify + group inputs → check cache → dispat
                       → stage results → complete a logical Delta Lake commit
 ```
 
-This separation is the organizing principle behind the architecture. Everything
-flows from it.
-
----
-
 ## Five layers
 
-The framework is organized into five layers with strict downward-only
-dependencies. Each layer has a single responsibility, and you can use any
-layer without the ones above it.
+The main packages separate data models, operations, persistence, worker
+execution, and orchestration:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -53,7 +41,7 @@ layer without the ones above it.
            │                                   │
 ┌──────────▼───────────┐  ┌────────────────────▼──────────┐
 │  Operations          │  │  Storage                      │
-│  Pure computation    │  │  Delta Lake persistence,      │
+│  Computation         │  │  Delta Lake persistence,      │
 │  with declared I/O   │  │  content-addressed files,     │
 │                      │  │  cache lookup                 │
 └──────────┬───────────┘  └────────────────────┬──────────┘
@@ -64,24 +52,9 @@ layer without the ones above it.
 └─────────────────────────────────────────────────────────┘
 ```
 
-**Why five layers instead of three or ten?** Each layer represents a distinct
-concern with different change frequencies. Schemas change when data models
-change. Operations change when you add new computations. Execution changes
-when runtime behavior changes (sandboxing, staging). Storage changes when
-persistence changes. Orchestration changes when coordination logic changes.
-Most of the time, you touch only one layer.
-
-**Why strict downward dependencies?** So you can test operations without
-orchestration, run execution without SLURM, and use schemas without anything
-else. Each layer is independently testable and replaceable.
-
-| Layer | Depends on | Responsibility |
-|-------|-----------|----------------|
-| Schemas | Nothing | Data models (artifacts, provenance edges, specs, config) |
-| Operations | Schemas | Pure computation with declared inputs and outputs |
-| Storage | Schemas | Delta Lake tables, content-addressed persistence, cache |
-| Execution | Operations, Schemas, Storage | Worker-side lifecycle, sandboxing, lineage, staging |
-| Orchestration | Everything below | Step sequencing, caching, dispatch, logical commit |
+Creators receive prepared inputs without needing store access. Curators receive
+an `ArtifactStore` for collection queries. Both can be tested directly, while
+pipeline tests also exercise dispatch, validation, and persistence.
 
 ---
 
@@ -89,7 +62,8 @@ else. Each layer is independently testable and replaceable.
 
 The system has two distinct runtime roles: the **orchestrator** (one per
 pipeline run) and **workers** (many, potentially on different machines). They
-communicate through two data structures and never share mutable state.
+exchange execution requests and staged results. Workers write isolated staging
+files; the orchestrator owns shared store writes.
 
 ```
  Orchestrator                            Workers
@@ -107,19 +81,11 @@ communicate through two data structures and never share mutable state.
 artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
 **where**: the Delta root, working root, staging root, and step-runner traits.
 
-**Why this split matters:**
-
-- **Fault isolation.** Workers write to isolated staging directories. If a
-  worker crashes, its partial results are ignored. Shared state is never
-  corrupted.
-- **Scale transparency.** The same code runs locally (process pool) or through
-  an optional cluster provider. The step-runner abstraction swaps the dispatch
-  mechanism while keeping operations, execution logic, and storage identical.
-- **No shared mutable state.** Workers never write to Delta Lake directly.
-  Thousands of concurrent workers would cause write conflicts. Instead, they
-  stage Parquet files, and the orchestrator writes the tables and marks the
-  logical commit complete. Artisan readers expose those rows only after
-  completion.
+Incomplete worker output is not accepted as a successful result. Verified,
+sealed output can be recovered after interruption. The orchestrator writes the
+tables and marks each logical commit complete; supported Artisan readers expose
+its rows only after completion. See
+[crash recovery](storage-and-delta-lake.md#storage-crash-recovery).
 
 ### Step runners
 
@@ -141,6 +107,13 @@ and cancellation. Local execution uses Python's `ProcessPoolExecutor` directly.
 Provider runners receive the same `ExecutionUnit` objects and return the same
 ordered `UnitResult` records, so everything above and below that boundary stays
 the same.
+
+Managed native commands have a separate owner that tracks their process groups
+before launch. Docker commands also register an exact container identity.
+Cancellation requests bounded cleanup and reports uncertainty when termination
+cannot be proved. Remote providers have their own cancellation evidence; an
+accepted request alone does not prove termination. See
+[Error Handling](error-handling.md) for the user-visible contract.
 
 ---
 
@@ -177,9 +150,10 @@ tables. Reading raw Delta tables bypasses that filter.
 
 For the full phase-by-phase breakdown, see [Execution Flow](execution-flow.md).
 
-The execution layer also routes *where* an operation's computation runs.
-**Compute-provider routing** either runs the operation in-process on the worker
-(local passthrough) or invokes it on a remote tool endpoint. The
+The execution layer also routes where an operation's computation runs. A plain
+`execute_function` runs in the lifecycle worker. A local command operation or
+`execute_as_tool` operation runs as a managed subprocess in its selected
+environment. Remote compute routing invokes a deployed tool endpoint. The
 **operation-as-tool endpoint** exposes a single operation as a standalone
 service or container CLI, so an external harness can run it without the
 surrounding pipeline. See
@@ -197,12 +171,9 @@ references — is an **artifact** identified by a versioned hash of its register
 type, canonical content, and semantic metadata. Runtime locations and producing
 step numbers stay outside that identity.
 
-This gives you three things for free:
-
-- **Deduplication** — identical typed semantic artifacts are stored once
-- **Deterministic caching** — same inputs + same parameters = same cache key
-- **Immutable provenance** — edges between artifacts are permanent because
-  artifacts never change
+Identical typed semantic artifacts share a stored content row. Cache keys also
+include the declared operation and effective configuration. Provenance edges
+refer to finalized artifact IDs, so later changes produce new identities.
 
 The framework ships six built-in artifact types (metric, file ref, config,
 data, large file, and appendable) and supports registering custom types through
@@ -212,11 +183,10 @@ relation so verified bytes can move or be replicated without changing identity.
 For artifact types and the draft/finalize lifecycle, see
 [Artifacts and Content Addressing](artifacts-and-content-addressing.md).
 
-### Operations: pure computation with declared I/O
+### Operations: computation with declared I/O
 
-An operation is a self-contained computation that declares its inputs, outputs,
-parameters, and the exact parents of its outputs. It has no knowledge of
-orchestration or scheduling.
+An operation declares its inputs, outputs, parameters, and the exact parents of
+its new artifacts. Pipeline code selects its runner and scheduling configuration.
 The framework provides two types:
 
 **Creators** wrap heavy computation (external tools, ML inference, file
@@ -342,14 +312,10 @@ are consumed by whichever layer needs them.
 
 ## Putting it together
 
-Here is a concrete example of how the layers cooperate. You write a
-two-step pipeline:
+For a pipeline that generates and transforms three datasets:
 
-```
-pipeline = PipelineManager.create(name="example", delta_root=delta_root, staging_root=staging_root)
-output = pipeline.output
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 3})
-pipeline.run(operation=DataTransformer, name="transform", inputs={"dataset": output("generate", "datasets")})
+```text
+DataGenerator → three data artifacts → DataTransformer → three transformed artifacts
 ```
 
 What happens:
@@ -371,9 +337,9 @@ What happens:
    The worker validates those declarations and stages the resulting edges.
 6. **Orchestration** completes step 1's logical commit. Pipeline complete.
 
-Every artifact has a content-addressed ID. Every derivation is tracked. Every
-execution is recorded. The pipeline can be re-run and cached steps will be
-skipped automatically.
+On a rerun, matching accepted work may be reused according to the cache policy.
+See [Build a Pipeline](../how-to-guides/building-a-pipeline.md) for the runnable
+version.
 
 ---
 
@@ -389,17 +355,3 @@ skipped automatically.
 | Understand design rationale | [Design Principles](design-principles.md) |
 | Build your first pipeline | [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) |
 | Look up terminology | [Glossary](../reference/glossary.md) |
-
----
-
-## Cross-references
-
-- [Operations Model](operations-model.md) — Two operation types and the three-phase lifecycle
-- [Artifacts and Content Addressing](artifacts-and-content-addressing.md) — Immutable data and content hashing
-- [Provenance System](provenance-system.md) — Dual provenance tracking
-- [Execution Flow](execution-flow.md) — Dispatch, execute, commit in detail
-- [Storage and Delta Lake](storage-and-delta-lake.md) — Persistence and the staging pattern
-- [Composites and Composition](composites-and-composition.md) — Reusable operation composition
-- [Design Principles](design-principles.md) — Rationale for key decisions
-- [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) — Build and run your first pipeline
-- [Coding Conventions](../contributing/coding-conventions.md) — Package boundaries and standards

@@ -1,13 +1,9 @@
 # Execution Flow
 
-When you call `pipeline.run()`, a cascade of coordinated work happens between
-the orchestrator and workers before results appear in Delta Lake. Understanding
-this flow explains what work a cache hit skips, when results become visible,
-why lineage is captured during execution, and where to look when something goes
-wrong.
-
-This page walks through the lifecycle of a pipeline step and the design
-decisions that shape each phase.
+`pipeline.run()` prepares inputs, reuses eligible cached work, dispatches the
+remaining execution units, and commits their results. Workers stage isolated
+files; the orchestrator decides which results become visible to readers and
+downstream steps.
 
 ---
 
@@ -40,9 +36,6 @@ For the rationale behind this split, see
 
 ## Dispatch: preparing work
 
-The orchestrator's job is to figure out what needs to run and whether it needs
-to run at all.
-
 ### Input resolution
 
 When a step receives an `OutputReference` (the lazy pointer returned by
@@ -56,7 +49,9 @@ Resolution is only the first part of input preparation. The orchestrator also
 loads each ID's concrete type, rejects missing or contradictory index entries,
 hydrates enough content to validate stored identities, verifies external bytes,
 and applies the operation's grouping strategy. Both cache levels and worker
-dispatch consume this same prepared snapshot.
+dispatch consume this same prepared snapshot. Modal deployment overrides are
+also checked before either cache lookup, so a cache hit cannot hide an invalid
+infrastructure change.
 
 **Empty input handling.** When every input role resolves to zero artifact IDs,
 the step is skipped entirely. The orchestrator records a "skipped" result
@@ -160,9 +155,10 @@ GPU job). A metrics calculation might set it to 100 (batch for efficiency).
 processes sequentially. Core applies this policy before dispatch, so local and
 external runners use identical packing semantics.
 
-Each `ExecutionUnit` carries the fully configured operation instance (not a class
-reference), the batch of artifact IDs, the cache key, the step number, and any
-group IDs from pairing. Workers need nothing else to execute.
+Each `ExecutionUnit` carries the configured operation instance, prepared inputs,
+cache key, step identity, and pairing information. Workers also receive a
+`RuntimeEnvironment` with storage settings and the trusted application modules
+to load. The worker environment must contain the operation's dependencies.
 
 ---
 
@@ -199,30 +195,31 @@ materialized artifacts. Operations can request format conversion at this stage
 (e.g., materializing with a different file extension) via the `materialize_as`
 field on `InputSpec`.
 
+A non-materialized config can instead request typed references with
+`resolve_references=True`. Its `$artifact` markers remain intact, while
+`inputs.referenced_artifacts(config)` supplies verified dependency objects and
+local files to preprocess and postprocess. The operation packages any dependencies
+needed remotely into its declared execute inputs. See
+[Read typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
+
 **Finalize** (after postprocess). The framework computes a versioned ID from
 each draft's registered type, canonical content, and semantic metadata. It then
 protects durable fields and saves an identity snapshot for later integrity
 checks.
 
-After finalization, the sandbox is cleaned up unless `preserve_working` is set
-in the pipeline configuration.
+After normal completion, the sandbox is cleaned up unless `preserve_working`
+is set. Failed uploads and uncertain command cleanup retain it for diagnosis.
 
 ### Curator operations: the lightweight path
 
-[Curators](operations-model.md#the-curator-lifecycle) skip the sandbox entirely
--- no materialization, no three-phase lifecycle, no remote worker dispatch. The
-orchestrator spawns a local subprocess (via `ProcessPoolExecutor` with the
-`spawn` context) for memory isolation and runs the curator flow with input
-DataFrames rather than on-disk artifacts. This eliminates the overhead of
-sandboxing and remote dispatch that would add latency with no benefit for
-metadata-only operations like Filter and Merge.
+[Curators](operations-model.md#the-curator-lifecycle) receive input DataFrames
+and store access in a local spawned subprocess. They do not use the creator's
+sandbox, materialization, or three-phase lifecycle. Process isolation lets the
+operating system reclaim their memory after execution.
 
-**Why a subprocess?** Curator operations can load large DataFrames into memory.
-Running them in a subprocess means the operating system reclaims all memory when
-the subprocess exits, preventing gradual memory growth in the orchestrator. If
-the subprocess is killed (typically by the OOM killer), the framework detects
-the broken process pool, captures diagnostic information (peak RSS, system
-memory), and stages a failure record rather than crashing the pipeline.
+A killed curator process produces a failed step with available diagnostics.
+Artisan attempts to persist a synthetic execution failure, and any managed
+commands still require cleanup before their files are safe to collect.
 
 ### Composite execution
 
@@ -268,14 +265,18 @@ route the execute phase to Modal; a SLURM worker can also route the execute phas
 The step runner controls where the worker process runs. The compute
 target controls where the execute phase runs inside that worker.
 
-When compute is `"local"` (the default), the execute phase runs as a direct call
-inside the worker process -- today's behavior. When compute is `"modal"`,
+When compute is `"local"` (the default), an ordinary `execute_function` runs
+inside the lifecycle worker. Command operations, including `execute_as_tool`,
+use a managed subprocess on that worker's host. When compute is `"modal"`,
 the execute phase becomes an HTTP client of the operation's deployed tool endpoint:
 it submits the op's params + input files, polls until the tool finishes,
 and downloads the output files back into the execute dir. Only command ops
 can route to modal -- an op with a `ToolSpec` + `execute_command()`, or one
 that sets `execute_as_tool=True`. Inline transfers are bounded at 100 MB per
-direction; `s3://` inputs pass by reference.
+direction. Eligible externally stored file inputs pass by reference after
+policy and integrity checks. Other inputs, including selected appendable
+records, travel inline. See
+[Tool endpoint file transport](../how-to-guides/deploying-tool-endpoints.md#choose-how-files-travel).
 
 ---
 
@@ -357,14 +358,17 @@ Delta table. Once API-shape validation accepts a submission, a fresh
 `step_run_id` is assigned and `pending` is written before hashing or other
 operational work. Execution writes `running`; the attempt then reaches exactly
 one terminal status: `succeeded`, `partial`, `failed`, `cancelled`, or `skipped`.
-Terminal snapshots never transition again.
+Terminal snapshots never transition again. When a logical step has several
+attempts, current-result readers select its newest attempt before checking
+whether outputs are available. A newer failure does not reveal an older
+successful attempt's outputs. Select an exact `step_run_id` when inspecting
+historical results.
 
 The valid lifecycle edges are:
 
 ```text
 pending -> running -> succeeded | partial | failed | cancelled
-       \-> skipped
-       \-> cancelled
+       \-> skipped | cancelled
 ```
 
 This table serves three purposes:
@@ -401,9 +405,9 @@ early as possible.
 are combined with the original error in the returned diagnostic. An error after
 seal publication propagates without rewriting the immutable staging evidence.
 
-**Failure logs.** Every failed execution writes a human-readable log file
-containing the run ID, operation name, step number, step runner, timestamp, full
-traceback, and (when available) tool output. These live in
+**Failure logs.** Artisan attempts to write a human-readable log for each
+failed execution, containing the run ID, operation name, step number, step
+runner, timestamp, traceback, and available tool output. These live in
 `logs/failures/YYYYMMDD/YYYYMMDDTHHMMSSffffffZ_executionID.log` alongside
 local Delta tables, named by the source execution's UTC start time. Cloud stores
 keep these files under the local working root.
@@ -416,65 +420,62 @@ The `failure_policy` controls what happens when some batches fail within a step:
 - **`fail_fast`**: Any observed batch failure makes the step `failed` and its
   outputs unavailable. Work that already finished remains recorded for audit.
 
-**Why default to continue?** In large pipeline runs (thousands of artifacts),
-occasional failures are expected -- a single malformed input should not discard
-thousands of successful results. The failure records are always preserved for
-diagnosis.
-
 ---
 
 ## Cancellation
 
-The framework supports cooperative cancellation through `pipeline.cancel()` or
-signal handling (SIGINT/SIGTERM). Cancellation evidence progresses separately
-from lifecycle state: `requested` must become `confirmed`, `rejected`, or
-`unknown`. Only confirmed evidence can produce `status="cancelled"`. Rejected
-work finishes naturally; an unknown outcome fails closed as `failed`.
+Request cancellation with `pipeline.cancel()` or the installed SIGINT/SIGTERM
+handlers. The request starts cleanup; it does not by itself prove that work
+stopped. Artisan records cancellation evidence separately from the step's
+lifecycle status:
+
+| Evidence | Meaning | Step outcome |
+| --- | --- | --- |
+| `requested` | Cleanup is still being evaluated. | No terminal cancellation outcome yet. |
+| `confirmed` | Work never started, or required worker and command cleanup was proved. | `cancelled` |
+| `rejected` | Work completed before cancellation could take effect. | Its natural outcome. |
+| `unknown` | Artisan cannot prove the required cleanup. | `failed`, with no accepted outputs. |
 
 ### Cancel checkpoints
 
-The cancel event is checked at multiple gates:
+Before dispatch, or after waiting for a predecessor, Artisan can confirm that a
+pending attempt never started. During local creator or curator work, it must
+establish both worker exit and managed command cleanup. Killing the worker alone
+is insufficient.
 
-| Checkpoint | Effect |
-|-----------|--------|
-| Before step dispatch | Pending attempt records requested → confirmed → cancelled |
-| After waiting for predecessors | Queued attempt records requested → confirmed → cancelled |
-| During provider work | Provider acknowledgement determines cancelled, failed, or natural completion |
-| Inside curator subprocess polling | Local process exit supplies confirmation before cancelled |
+On Linux and macOS, an independent supervisor owns native commands before they
+start. Cleanup requests a graceful stop, then forces termination within a shared
+bounded deadline. Registered nested commands remain covered even after their
+parent worker exits. Built-in Docker additionally requires removal of the exact
+owned container. Arbitrarily detached work and external daemons are outside this
+contract; see [managed command limits](../how-to-guides/configuring-execution.md#keep-managed-commands-in-the-foreground).
+
+Modal cancellation targets an exact call and requests termination of its worker
+container. An accepted provider request still leaves the outcome `unknown`;
+Artisan suppresses output download and ingestion for that call. Local process
+cleanup does not supply missing remote evidence.
 
 ### Signal escalation
 
-When running from a terminal, the framework installs signal handlers on the
-first dispatched step when running on the main thread:
+The manager installs signal handlers from the main thread when work begins:
 
 | Press | Effect |
-|-------|--------|
-| First Ctrl+C | Requests cooperative cancellation; pending work records confirmed cancellation before dispatch |
-| Second Ctrl+C | Restores the signal handlers that were installed before Artisan's handlers |
-| Later Ctrl+C | Uses the restored handler; Python's usual SIGINT handler raises `KeyboardInterrupt` |
+| --- | --- |
+| First Ctrl+C | Requests cancellation. |
+| Second Ctrl+C | Restores the signal handlers that preceded Artisan's handlers. |
+| Later Ctrl+C | Uses the restored handler; Python's usual handler raises `KeyboardInterrupt`. |
 
-Worker child processes ignore SIGINT (via `SIG_IGN` in the process pool
-initializer), so only the orchestrator handles the signal. Signal-handler
-installation is skipped off the main thread. In notebooks, use
-`pipeline.cancel()` directly instead of relying on interrupt handling.
-Cancellation does not guarantee that the current execute phase
-finishes: a local runner may terminate workers after its cooperative grace
-period. The recorded acknowledgement determines the terminal status.
+Native worker processes ignore SIGINT so the orchestrator handles the request.
+Handler installation is skipped outside the main thread. In notebooks, call
+`pipeline.cancel()` directly. Cleanup can terminate workers before their execute
+phase finishes; use recorded evidence to determine the outcome.
 
-### Provider cancellation
+### Recovery and cache reuse
 
-Each lifecycle router owns the exact futures, jobs, or processes it submits.
-Cancellation targets those handles only. The optional Submitit provider cancels
-its submitted job IDs rather than issuing a broad name-based scheduler query.
-
-### Cache interaction
-
-Cancelled steps are recorded with `status="cancelled"` in the steps Delta
-table. They are excluded from cache lookups, so re-running the same pipeline
-re-executes them. `succeeded` steps load from cache; `partial` steps also qualify
-when `CachePolicy.STEP_COMPLETED` is selected.
-
----
+Cancelled steps cannot provide whole-step cache hits. Their uncommitted staging
+is retained, and independently completed execution units can still be recovered
+and reused by a new run. Unknown cleanup does not make incomplete work eligible
+for recovery. See [Crash recovery](storage-and-delta-lake.md#storage-crash-recovery).
 
 ## Key design decisions
 

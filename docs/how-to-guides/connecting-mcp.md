@@ -34,7 +34,7 @@ The client starts the process and communicates through its stdin and stdout.
 
 ---
 
-## Step 1: Install the server
+## Install the server
 
 Install Artisan with its optional MCP dependencies:
 
@@ -48,7 +48,7 @@ Use the absolute path to this environment's `artisan-mcp` executable in your
 client. The client does not need an activated shell, shell expansion of `~`,
 or a working directory inside the repository.
 
-## Step 2: Select the store and operation modules
+## Select the store and operation modules
 
 Set `--delta-root` to the Delta directory itself, such as
 `/absolute/path/to/runs/delta`, rather than its parent `runs` directory.
@@ -63,7 +63,9 @@ Check the resolved configuration without starting a session:
 
 This prints JSON and exits. Curator builtins load automatically. Use repeated
 `--load` options for additional trusted, installed operation modules; this
-option imports modules and does not install packages.
+option imports modules and does not install packages. Include modules that
+register custom artifact types used by the store as well as the operations you
+want to discover.
 
 You can provide the same settings through the server entry's environment:
 
@@ -99,8 +101,7 @@ Start the server through your client and inspect it in this order:
 | `artisan_diagnose_run` | `pipeline_run_id` | Failed execution IDs, error details, and log references when the run failed. |
 | `artisan_get_step_logs` | `pipeline_run_id`, `step_name`, `tail_lines: 3` | A bounded tail of the selected step's failure logs. |
 
-The server exposes ten read-only tools; the workflow above uses the tools
-needed for initial inspection. Artifact queries and provenance graphs provide
+Artifact queries and provenance graphs provide
 further detail without modifying the store.
 
 For a failed example, follow the

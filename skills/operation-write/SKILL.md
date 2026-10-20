@@ -14,6 +14,12 @@ Before writing, read at least one example operation from
 base class at `src/artisan/operations/base/operation_definition.py` if you need
 to confirm API details.
 
+For application-defined operations and artifact types, use an installed
+registration module and declare it through `application_modules` when creating
+or resuming the pipeline. Workers, inspection, repair, and replay need the same
+trusted definitions; a driver-only import does not configure fresh processes.
+See [application loading](../../docs/how-to-guides/configuring-execution.md#load-application-definitions-in-every-process).
+
 ---
 
 ## Decision: Creator or Curator?
@@ -303,6 +309,7 @@ and exact parent IDs. Do not rely on an executor output-directory parser.
 | `materialize_as` | `str \| None` | `None` | Target format for materialization (e.g. `".csv"`). Requires `materialize=True` |
 | `hydrate` | `bool` | `True` | `True`: load content. `False`: ID-only mode |
 | `with_associated` | `tuple[str, ...]` | `()` | Auto-resolve related artifacts via provenance |
+| `resolve_references` | `bool` | `False` | Resolve direct config dependencies for preprocess and postprocess; requires `artifact_type="config"`, `hydrate=True`, and `materialize=False` |
 
 ## OutputSpec Fields
 
@@ -406,14 +413,28 @@ command-op form.
 - Produce `ExecutionConfigArtifact` drafts with `{"$artifact": artifact_id}`
   placeholders in the content dict
 - The framework resolves `$artifact` references to materialized paths at
-  execution time
+  execution time for local config-file materialization. Endpoint execution
+  rejects materialized configs that contain these references.
 - Explicitly declare the same intended referenced parents in the result. The
   executor does not scan config contents. An operation may call
   `get_artifact_references()`, deduplicate IDs, and assign declared input roles.
-- Set `materialize=False` on the input to access artifact IDs without writing
-  files to disk
+- For typed dependency access, use
+  `InputSpec(artifact_type="config", materialize=False, resolve_references=True)`.
+  `inputs.referenced_artifacts(config)` returns a read-only mapping of direct
+  dependency IDs to hydrated models with local materialized paths. It is
+  available in preprocess and postprocess; config markers remain unchanged.
+  Config-to-config references are rejected.
+- Operations prepare portable execute-input files from these dependencies.
+  Transport does not rewrite paths embedded inside file contents. Test by
+  relocating prepared files before execution. See the
+  [typed-reference guide](../../docs/how-to-guides/writing-creator-operations.md#read-typed-config-dependencies)
+  for preparation, explicit lineage, and replay.
 
 See `src/artisan/operations/examples/data_transformer_config.py`.
+
+Increment the operation's `version` when changed code, contracts, or dependencies
+can change results for the same inputs and configuration. Set `cacheable=False`
+when the operation observes mutable external state outside declared inputs.
 
 ## Variant: Output-to-output Lineage
 

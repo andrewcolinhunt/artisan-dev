@@ -1,56 +1,43 @@
 # Op Container Images
 
-How to build, resolve, and consume the container image an operation runs
-in. One image serves two consumers: the Modal tool endpoint
-(`artisan modal deploy`) and any external harness — an RL loop, a batch
-script — that pulls the same image and runs the tool's CLI directly,
-with no artisan orchestration.
+Build a container image for a command operation, then use that image for a
+Modal endpoint or a direct Docker invocation.
 
-**Prerequisites:** A command operation in an importable package. See
+**Prerequisites:** A command operation in an importable package, Docker for
+local builds, and registry access if you intend to publish the image. See
 [Deploy Tool Endpoints](deploying-tool-endpoints.md) for endpoint configuration.
-
-**Key types:** `ModalComputeConfig`; CLI commands `artisan op image`,
-`artisan docker build`, `artisan modal deploy`
-
----
 
 ## The image-content contract
 
-An op image is **self-sufficient**. It carries:
+A production operation image should contain its tool binaries, dependencies,
+Artisan, and operation package. Include the package in the Dockerfile so a
+consumer can run it without source files from the deployment machine.
 
-1. the tool binaries and their dependencies,
-2. artisan, and
-3. the op package(s) themselves — baked via `COPY` in the Dockerfile.
+Keep required nonsecret tool settings in the image's `ENV` declarations. Supply
+credentials at runtime. Modal adds its declared environment, secrets, and volume
+mounts; a direct Docker caller must provide equivalent settings when the tool
+needs them. Sharing an image does not make those runtime environments identical.
 
-The image alone — no deploy-machine overlay — can run every op it
-claims. What runs on Modal is exactly what a plain `docker run` of the
-same ref runs.
+The build command expects `docker/<image-name>/Dockerfile`, where
+`<image-name>` is the last path segment of the image reference without its tag
+or digest. For `ghcr.io/dexterity-systems/artisan-worker:latest`, it uses
+`docker/artisan-worker/Dockerfile`.
 
-Two conventions keep the contract honest:
+Install CA certificates in minimal runtime images and verify HTTPS access in the
+actual worker environment. A local Docker smoke test alone does not verify
+Modal's environment, credentials, or mounted files.
 
-- **Env split.** Anything the *tool* needs goes in the Dockerfile's
-  `ENV`. `ModalComputeConfig.env` carries deploy-time concerns only
-  (endpoints, cache-tuning flags) — never values the tool fails or
-  misbehaves without, or `docker run` consumers silently diverge.
-- **Layout.** Each image's Dockerfile lives at
-  `docker/<image-name>/Dockerfile`, where `<image-name>` is the last
-  path segment of the ref (tag stripped). The ref
-  `ghcr.io/dexterity-systems/artisan-worker:latest` builds from
-  `docker/artisan-worker/Dockerfile`.
+## Point an operation at its image
 
-One trap for minimal runtime stages: install the distro CA bundle
-(`ca-certificates`). Modal injects `SSL_CERT_DIR=/etc/ssl/certs` into
-every container, which preempts a conda/pixi env's own certificate
-file — on a bare base image without the bundle, **all TLS verification
-fails** (S3/R2 uploads, presigned PUTs, any HTTPS the tool makes), and
-only on Modal: a plain `docker run` of the same image works.
-
-## Point an op at its image
-
-The image ref lives on the op's modal config — it is the single source
-of truth both consumers read:
+Add the image setting to your existing command operation. This fragment omits
+its input/output declarations and execution methods. Both deployment and
+`artisan op image` read the class-level setting:
 
 ```python
+from artisan.operations.base import OperationDefinition
+from artisan.schemas import ComputeProvider, ModalComputeConfig
+
+
 class ProcessData(OperationDefinition):
     ...
     compute_provider = ComputeProvider(
@@ -58,7 +45,8 @@ class ProcessData(OperationDefinition):
     )
 ```
 
-Ops without per-op needs use the default `artisan-worker` image.
+The default image is `artisan-worker`. Custom operations still need their
+package and dependencies installed in the selected image.
 
 ## Build the image
 
@@ -69,10 +57,9 @@ export ARTISAN_LOAD_MODULES=my_package.ops
 artisan docker build process_data
 ```
 
-This resolves the op's image ref, finds the conventional Dockerfile,
-and runs `docker build` tagged with **exactly the ref the config
-declares** — a tag is never typed twice. Push it wherever the ref
-points:
+The command resolves the declared image tag and builds its conventional
+Dockerfile. Use a writable tag when building; select a registry digest after
+publishing. When you are ready to publish the tagged image:
 
 ```bash
 docker push "$(artisan op image process_data)"
@@ -80,19 +67,22 @@ docker push "$(artisan op image process_data)"
 
 ## Resolve the image from a harness
 
-External harnesses ask artisan instead of hardcoding refs:
+An external script can resolve the operation's image:
 
 ```bash
 IMAGE=$(artisan op image process_data)
 docker run --rm -v /data/weights:/weights "$IMAGE" process --input ...
 ```
 
-`--json` adds what the container expects at runtime — env the deploy
-would layer on, volume mount paths, hardware:
+`--json` also reports the declared environment, volume names, secret references,
+and hardware settings:
 
 ```bash
 artisan op image process_data --json
 ```
+
+For example, an operation that also declares a weights volume and an A100 GPU
+would report those settings:
 
 ```json
 {
@@ -107,14 +97,14 @@ artisan op image process_data --json
 }
 ```
 
-Where Modal binds named Volumes, a harness bind-mounts local
-directories at the same paths.
+Where Modal mounts named volumes, a direct Docker caller can bind-mount local
+directories at the same paths. Secret names in this output are references; the
+caller must supply credentials through its own runtime.
 
-Command ops wrapping an external tool are invoked through that
-tool's CLI, as above. Ops
+Command operations wrapping an external tool use that tool's CLI. Operations
 whose body is Python
 ([`execute_as_tool`](writing-creator-operations.md#execute-as-tool))
-run through the uniform artisan CLI baked into the image:
+run through the Artisan CLI installed in the image:
 
 ```bash
 IMAGE=$(artisan op image transform_data)
@@ -124,27 +114,27 @@ docker run --rm -v /data:/data "$IMAGE" artisan op run mypkg.ops:TransformData \
 
 ## Pin for production
 
-CI publishes `artisan-worker` under two tags on every `main` push that
-touches image inputs: `latest` (dev default) and `sha-<short>` (an
-immutable handle). Production op configs pin an immutable tag — with op
-code baked in, the image ref *is* the code version, so a harness that
-records the digest has recorded exactly what ran.
+The upstream Docker workflow publishes `artisan-worker` with `latest` and
+`sha-<short>` tags when relevant image inputs change on `main`. The workflow
+skips publishing from forks. A tag identifies a name in the registry; use the
+resolved image digest when you need to pin the exact image bytes.
 
-## Iterate without rebuilding (dev mode)
+The image does not freeze mounted files, downloaded weights, credentials, or
+other external state. Record and verify those inputs separately when they affect
+results. Endpoint command-contract validation does not inspect image contents.
 
-Rebuilding and pushing per source edit is slow; for development, the
-deploy can overlay local package sources onto the worker image,
-shadowing the baked versions:
+## Use source overlays during development
+
+During development, overlay local package sources onto the worker image:
 
 ```bash
 artisan modal deploy process_data --overlay artisan --overlay mypkg
 ```
 
-The overlay is per-deploy and dev-only — production deploys bake code
-so the deployed endpoint matches the registry image. (Equivalently, set
-`ModalComputeConfig(local_python_sources=[...])` in config; the in-tree
-example ops do this because they exist to exercise in-development
-artisan.)
+The overlay replaces the image's packaged source for that deployment. You can
+also declare `ModalComputeConfig(local_python_sources=[...])`; the built-in
+example operations use this for checkout-based development. Remove overlays
+from production declarations and rebuild the image with the intended code.
 
 ## Verify
 
@@ -154,8 +144,9 @@ artisan docker build wait_tool          # builds docker/artisan-worker/Dockerfil
 docker run --rm "$(artisan op image wait_tool)" bash -c 'echo ok'
 ```
 
-Both commands succeeding confirms the convention end-to-end: ref →
-Dockerfile → built tag → runnable container.
+These commands verify image resolution, building, and container startup. Also
+run the operation's actual tool with a small valid input to check its runtime
+dependencies. Test the deployed endpoint separately if you will use Modal.
 
 ---
 
