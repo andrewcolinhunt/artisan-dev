@@ -1,45 +1,87 @@
 # Changelog
 
-All notable changes to this project will be documented in this file.
-
-The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
-and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
+User-facing changes are recorded here using
+[Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+This release changes the operation, runner, and storage contracts. Before
+upgrading, update downstream operations and start a new Delta root for store
+format 6. Existing Modal tool apps must be explicitly redeployed to adopt the
+new endpoint behavior. See the breaking changes below.
+
 ### Added
 
+- Trusted application loading through `application_modules`, shared by pipelines,
+  workers, inspection, store repair, and replay. Missing registrations and name
+  collisions fail before execution or repair writes.
+- Typed configuration dependencies through `InputSpec.resolve_references=True`
+  and `inputs.referenced_artifacts(config)`. Referenced artifacts remain
+  available through creator phases and replay. Remote execution still requires
+  the operation to prepare portable input files and declare output lineage.
+- Managed command ownership on Linux and macOS. An independent supervisor tracks
+  launched command groups and performs bounded graceful-then-forced cleanup when
+  cancellation, worker loss, or a timeout interrupts them. Built-in Docker
+  execution through a local Unix daemon endpoint registers the exact container
+  before starting it and verifies its removal.
+  Unproven cleanup remains `unknown`; unrelated or deliberately detached
+  processes are outside the guarantee.
 - Structured command evidence for local and endpoint executions, including actual
   wrapped argument lists, execution order, outcomes, redaction, and subprocess
   launch timing. Commands can be inspected without parsing tool output.
 - Single-execution debug replay with fresh attempt identities, verbose output,
   preserved diagnostics, and explicit limits when reconstruction is unavailable.
 - Per-step and composite `cache_policy` overrides with documented inheritance.
+- `PerArtifact` preprocessing results for independent execute calls within a
+  worker batch, including batched tool-endpoint dispatch.
+- `GroupByStrategy.NAME` for exact-stem input pairing and per-step `group_by`
+  overrides.
+- `DeclareLineage` for explicitly recording relationships between existing
+  artifacts.
+- Operation-as-tool endpoints, including `execute_as_tool=True` for portable
+  Python execution through the command interface.
+- `StorageConfig` and filesystem-backed I/O for local and object-store roots,
+  with separate filesystem and Delta client options.
 - Run-scoped through-N ingestion and an artifact-writing skill.
-- MCP setup guidance and real stdio-client checks for development and installed
-  release packages.
+- Optional read-only `artisan-mcp` server for operation discovery, run status,
+  artifact queries, provenance, and failure diagnosis. Includes setup guidance
+  and stdio-client checks for development and installed release packages.
 - Staging recovery before cache lookup, with independent `recover_staging` and
   `preserve_staging` controls. Finished executions from interrupted or cancelled
   steps can be reused without changing the source step's history.
 - Explicit repair reports and recovery of interrupted logical commits and
   unplanned finished executions, with optional staging preservation.
 - Exact execution-linked provider-log inspection through `inspect_worker_log()`.
+- Required S3 qualification, native Linux/macOS command tests, Docker
+  cancellation checks, and an isolated live Modal qualification procedure.
 
 ### Changed
 
+- **Breaking: Modal deployment compatibility.** Incompatible infrastructure
+  overrides fail before either step-level or execution-level cache reuse.
+  Endpoint submission checks the deployed command contract and rejects missing,
+  stale, or unverifiable apps. Cached results do not require a live deployment
+  lookup. Running a pipeline never creates a Modal app; deploy it separately.
+- **Breaking: composite execution.** Composites expand into ordinary pipeline
+  steps through `CompositeContext` and return `CompositeResult`. Collapsed
+  execution and its separate contexts and result types are removed.
+- **Breaking: post-step operations.** The `post_step` argument and
+  `PostStepFuture` are removed. Submit the follow-up curator as an explicit step
+  wired to the preceding outputs.
 - **Breaking: explicit lineage is required.** Replace `infer_lineage_from` with
   `derives_from` and return a lineage entry for every emitted artifact role.
   `LineageMapping` uses `draft_index` and `source_output_index` instead of
   output names; input parents still use `source_artifact_id`. The optional
   `ArtifactResult.add_artifact(..., sources=...)` constructs the same mappings.
   Automatic filename, dispatch, and config-content lineage inference is removed.
-  Config-producing operations explicitly preserve their referenced parents;
-  reference-to-path materialization is unchanged. Operations may call the public
+  Config-producing operations explicitly preserve their referenced parents.
+  Operations may call the public
   `artisan.operations.lineage` matcher themselves. Joint parent groups contain
   only declared parents. Downstream operations must migrate with this release;
   no compatibility interfaces remain.
-
 - Require Polars 1.30.0 or newer for execution-seal Parquet metadata.
+- Package metadata declares runtime dependencies and separate `s3`, `gcs`,
+  `modal`, and `mcp` extras.
 - Ordinary reads use completion records for visibility and retain artifact checks
   on access. Historical effect verification is an explicit read-only store repair
   inspection; startup recovery validates only the work it must recover or clean.
@@ -55,6 +97,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   package facades; the root package no longer re-exports implementation types.
   Operations declare a nested `Params` model and its `params` field. Flat
   operation parameters and retired compatibility APIs have been removed.
+  Artifact lineage queries use `store.provenance` instead of forwarding
+  methods on `ArtifactStore`.
+- **Breaking: creator methods and execution settings.** Replace `execute()` with
+  `execute_function()` for Python creators, or implement `execute_command()` for
+  command creators. Replace `backend` with `step_runner` and `Backend` with
+  `Runner`; the pipeline default is `default_step_runner`. Replace `execution`
+  and `ExecutionConfig` with `batch_strategy` and `BatchStrategy`. Replace
+  `resources` and `ResourceConfig` with `runner_resources` and `RunnerResources`
+  for worker placement; use `compute_resources` and `ComputeResources` for the
+  execute phase.
+- **Breaking: per-artifact preparation.** Wrap values in `PerArtifact(...)`
+  when each input needs its own execute call. Plain lists are shared values,
+  not a request for per-artifact slicing.
+- **Breaking: managed command completion.** Commands and their registered
+  children must finish before `run_command` succeeds. Background services and
+  nested native pipelines or replay inside managed work are unsupported.
 - **Breaking: orchestration and runner contracts.** Native local execution
   replaces Prefect. SLURM runners come from `artisan-submitit`; pass a configured
   provider instance and use `artisan.orchestration.runner_api` for provider
@@ -81,6 +139,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Step history uses explicit terminal states, guarded transitions, partial
   outcomes, and confirmed/rejected/indeterminate cancellation evidence. Cache
   hits have their own current-run attempt and preserve source execution links.
+- Replay preserves explicitly declared public command and environment settings.
+  Protected values must be supplied again; fresh replay snapshots apply the same
+  redaction rules as ordinary execution.
+- Durable configuration, command evidence, and diagnostics redact recognized
+  credential fields and known secret values while preserving authored metadata.
+  This does not inspect arbitrary artifact content, raw command-output files,
+  or provider logs, and it does not rewrite historical stores.
+  Use a fresh Delta root to keep old sensitive rows out of new run history.
 - Endpoint data policies enforce URI, credential, archive, and output-sink trust
   boundaries. Discovered Modal credentials are never forwarded to custom URLs.
 - Worker identity is resolved once into an immutable worker runtime.
@@ -92,6 +158,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Current result readers no longer fall back to an older successful attempt when
+  the selected attempt failed or was cancelled. Explicit historical selection
+  remains available.
+- Ingest and recovery preserve committed curator results, dynamic output roles,
+  artifact types, and result metadata.
+- Local Docker commands honor the supplied execution directory instead of the
+  image's default working directory.
+- Modal cancellation distinguishes an accepted request from proven termination.
+  An accepted request returns `unknown`; the client does not poll for physical
+  termination. Cancelled calls cannot publish downloaded outputs as successful
+  results.
+- Native cancellation retains completed work and confirmed cleanup evidence
+  across worker-exit races, later supervisor loss, and refused redundant signals.
+- Public replay configuration no longer overwrites secrets supplied for the new
+  attempt, and deployment checks preserve secret precedence.
 - Strict store validation accepts registered artifact schemas containing
   `Float32` and nested `List` columns, matching their existing Delta representation.
 - Recovery batches finished executions from each source step through the ordinary
