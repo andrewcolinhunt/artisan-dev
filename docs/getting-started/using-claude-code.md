@@ -94,13 +94,35 @@ skills.
 
 Use `/pipeline-operate` with a specific run or question, for example
 "Explain why this run failed" or "Compare these runs using this metric and
-case key." [Connect an MCP client](../how-to-guides/connecting-mcp.md) for
-read-only access to the operation catalogue and run evidence.
+case key." The skill prefers local Python/CLI inspection when your established
+environment can access the selected store. Base Artisan provides offline
+operating guidance and capability schemas without MCP:
 
-The skill checks which tools are exposed. When assessment or comparison tools
-are absent, it uses supported local readers where the store is accessible or
-explains the missing evidence. It distinguishes accepted outputs from a passed
-quality criterion. The skill itself does not launch, cancel or monitor jobs.
+```bash
+pixi run --locked artisan guide list --json
+pixi run --locked artisan guide show pipeline-operate
+pixi run --locked artisan inspect list --json
+pixi run --locked artisan inspect describe assess_outcomes --json
+```
+
+Run these through your project's environment. The guide reports the executing
+package version, resource origin and exact content digest; an editable checkout
+can contain newer text than its generated package version. The skill uses the
+installed schemas to decide which calls exist. If an older package lacks guide
+commands, the skill's portable references provide a fallback that must be
+checked against that package's help or public API.
+
+For a store available only through a remote connection,
+[connect an MCP client](../how-to-guides/connecting-mcp.md) and use the remote
+server's advertised schemas. Local guidance describes the local installation;
+it does not establish the remote server's capabilities or filesystem access.
+An explicit remote selection stays the target even if a local run has the same
+ID.
+
+The skill distinguishes accepted outputs from a passed quality criterion and
+retains missing evidence in its conclusions. Inspection alone does not launch,
+cancel or monitor jobs. Python package installation and host skill installation
+are separate: install the complete skill folder or plugin for host discovery.
 
 ---
 

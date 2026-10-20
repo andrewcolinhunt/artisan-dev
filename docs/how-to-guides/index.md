@@ -34,6 +34,10 @@ Each guide explains the task, its prerequisites, and how to check the outcome.
 
 ## Results
 
+- [Inspect Evidence Locally](inspecting-evidence.md) -- Discover shared contracts
+  and query bounded evidence through Python or the CLI
+- [Export Complete Evidence](exporting-evidence.md) -- Save and verify complete
+  assessments and comparisons
 - [Connect an MCP Client](connecting-mcp.md) -- Discover operations and inspect
   runs and failure logs through the read-only MCP server
 - [Inspecting Provenance](inspecting-provenance.md) -- Query lineage and trace

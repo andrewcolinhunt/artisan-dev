@@ -20,6 +20,9 @@ and exceptions. The guides explain how to use those interfaces together.
 | Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
 | Read stored artifacts | `artisan.storage` | `ArtifactStore` |
 | Inspect results, failures, and timing | `artisan.visualization` | `inspect_pipeline`, `inspect_data`, `inspect_failures`, `PipelineTimings` |
+| Discover and query bounded evidence | `artisan.inspection` | `list_inspections`, `describe_inspection`, `inspect_evidence` |
+| Read installed operating guidance | `artisan.inspection` | `list_operating_guides`, `read_operating_guide` |
+| Save and reload complete reports | `artisan.inspection` | `export_evidence`, `load_evidence_export` |
 | Assess recorded metrics or compare selected attempts | `artisan.visualization` | `OutcomeSelection`, `AssessmentSpec`, `assess_outcomes`, `ComparisonSpec`, `compare_runs` |
 | Traverse provenance | `artisan.provenance` | `provenance_edges`, `walk_forward`, `walk_backward` |
 | Implement a runner provider | `artisan.orchestration.runner_api` | `RunnerBase`, `LifecycleRouter`, `UnitResult` |
@@ -73,4 +76,6 @@ Use `pixi run --locked artisan --help` to find CLI commands, then append
 - [Resolve configuration references](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 - [Write a composite](../how-to-guides/writing-composite-operations.md).
 - [Inspect a particular run](../how-to-guides/inspecting-provenance.md#select-the-run-you-want-to-inspect).
+- [Inspect bounded evidence locally](../how-to-guides/inspecting-evidence.md).
+- [Export complete evidence](../how-to-guides/exporting-evidence.md).
 - [Implement a runner provider](../contributing/coding-conventions.md#external-step-runner-providers).
