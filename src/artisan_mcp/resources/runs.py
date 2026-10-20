@@ -1,55 +1,38 @@
-"""Run resources: the run list and one run's status. One-shot, no subscriptions."""
+"""Run resources share tool pages and actual tool continuations."""
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
 
 from fastmcp import Context, FastMCP
 
-from artisan_mcp._boundary import boundary, require_delta_root
-from artisan_mcp._common import MAX_RESOURCE_ITEMS, jsonable_rows, resource_fits
-from artisan_mcp._pagination import MAX_PAGE_SIZE, paginate
+from artisan_mcp._boundary import evidence_payload, require_delta_root
+from artisan_mcp._evidence import encode_json
+from artisan_mcp.models import PageResponse, RunRow, StatusResponse
+from artisan_mcp.tools.runs import runs_payload, status_payload
 
 
 def register(mcp: FastMCP) -> None:
-    """Attach the run resources to ``mcp``."""
+    """Register one-shot JSON run resources without subscriptions."""
 
     @mcp.resource("artisan://runs", mime_type="application/json")
-    async def runs_list(ctx: Context) -> dict[str, Any]:
-        """The 100 most recent persisted run rollups with page metadata."""
+    async def runs_list(ctx: Context) -> str:
+        """Read the default run page; continue through its returned tool call."""
         config = ctx.lifespan_context["config"]
-
-        def payload() -> dict[str, Any]:
-            from artisan.orchestration.run_history import list_runs
-
-            root = require_delta_root(config)
-            rows = jsonable_rows(list_runs(root).to_dicts())
-            return paginate(rows, MAX_PAGE_SIZE, None)
-
-        return boundary(payload)
+        payload = await asyncio.to_thread(
+            evidence_payload,
+            lambda: runs_payload(require_delta_root(config)),
+            PageResponse[RunRow],
+        )
+        return encode_json(payload).decode("utf-8")
 
     @mcp.resource("artisan://runs/{pipeline_run_id}", mime_type="application/json")
-    async def run_detail(pipeline_run_id: str, ctx: Context) -> dict[str, Any]:
-        """One run's ``RunStatus`` — rollup plus per-step current statuses."""
+    async def run_detail(pipeline_run_id: str, ctx: Context) -> str:
+        """Read a run rollup and default step page with tool continuation."""
         config = ctx.lifespan_context["config"]
-
-        def payload() -> dict[str, Any]:
-            from artisan.orchestration.run_status import run_status
-
-            root = require_delta_root(config)
-            result = run_status(root, pipeline_run_id).model_dump()
-            steps = result["steps"]
-            result["steps"] = steps[:MAX_RESOURCE_ITEMS]
-            result["steps_truncated"] = len(steps) > MAX_RESOURCE_ITEMS
-            if resource_fits(result):
-                return result
-            return {
-                "pipeline_run_id": pipeline_run_id,
-                "truncated": True,
-                "message": (
-                    "Run status exceeds the resource limit; use "
-                    "artisan_get_run_status for full detail."
-                ),
-            }
-
-        return boundary(payload)
+        payload = await asyncio.to_thread(
+            evidence_payload,
+            lambda: status_payload(require_delta_root(config), pipeline_run_id),
+            StatusResponse,
+        )
+        return encode_json(payload).decode("utf-8")

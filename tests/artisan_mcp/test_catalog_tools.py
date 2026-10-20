@@ -12,7 +12,7 @@ class TestCapabilities:
         assert payload["server_version"]
         assert payload["read_only"] is True
         assert payload["delta_root"] is None
-        assert payload["discovery"]["operations_count"] >= 1
+        assert payload["operations_count"] >= 1
 
     def test_delta_root_is_withheld(self, make_app, invoke, tmp_path) -> None:
         payload = invoke(make_app(delta_root=tmp_path), "artisan_capabilities")
@@ -31,14 +31,14 @@ class TestListOperations:
         # list_operations can be polluted by earlier tests. The discovery
         # report, attributed per-lifespan, is the honest signal that the
         # examples module was (or was not) loaded by this server.
-        loaded = invoke(make_app(), "artisan_capabilities")["discovery"]
-        modules = {s["module"] for s in loaded["sources"]}
+        loaded = invoke(make_app(), "artisan_capabilities", {"view": "sources"})
+        modules = {s["module"] for s in loaded["items"]}
         assert "artisan.operations.examples" in modules
 
-        bare = invoke(make_app(load_modules=None), "artisan_capabilities")["discovery"]
-        assert "artisan.operations.examples" not in {
-            s["module"] for s in bare["sources"]
-        }
+        bare = invoke(
+            make_app(load_modules=None), "artisan_capabilities", {"view": "sources"}
+        )
+        assert "artisan.operations.examples" not in {s["module"] for s in bare["items"]}
 
     def test_kind_and_query_filter_and_together(self, make_app, invoke) -> None:
         page = invoke(
@@ -56,9 +56,11 @@ class TestListOperations:
         first = invoke(app, "artisan_list_operations", {"limit": 1})
         assert len(first["items"]) == 1
         assert first["has_more"] is True
-        assert first["next_cursor"] == "1"
+        assert first["next_cursor"] is not None
 
-        second = invoke(app, "artisan_list_operations", {"limit": 1, "cursor": "1"})
+        second = invoke(
+            app, "artisan_list_operations", {"limit": 1, "cursor": first["next_cursor"]}
+        )
         assert len(second["items"]) == 1
         assert second["items"][0]["name"] != first["items"][0]["name"]
 
@@ -86,19 +88,21 @@ class TestListOperations:
         assert page["next_cursor"] is None
 
     @pytest.mark.parametrize("limit", [0, -1, 101])
-    def test_rejects_out_of_range_limit(self, make_app, invoke, limit) -> None:
-        result = invoke(make_app(), "artisan_list_operations", {"limit": limit})
+    def test_rejects_out_of_range_limit(self, make_app, invoke_error, limit) -> None:
+        result = invoke_error(make_app(), "artisan_list_operations", {"limit": limit})
         assert result["code"] == "param_type_mismatch"
         assert result["field"] == "limit"
 
     @pytest.mark.parametrize("cursor", ["", "0", "-1", "01", "²", "999999"])
-    def test_rejects_invalid_or_stale_cursor(self, make_app, invoke, cursor) -> None:
-        result = invoke(
+    def test_rejects_invalid_or_stale_cursor(
+        self, make_app, invoke_error, cursor
+    ) -> None:
+        result = invoke_error(
             make_app(),
             "artisan_list_operations",
             {"limit": 1, "cursor": cursor},
         )
-        assert result["code"] == "param_type_mismatch"
+        assert result["code"] == "invalid_evidence_cursor"
         assert result["field"] == "cursor"
 
     def test_rejects_unknown_kind(self, make_app, invoke_result) -> None:
@@ -117,8 +121,8 @@ class TestDescribeOperation:
         assert "params_schema" in meta
         assert "examples" in meta
 
-    def test_unknown_op_returns_envelope(self, make_app, invoke) -> None:
-        env = invoke(
+    def test_unknown_op_returns_envelope(self, make_app, invoke_error) -> None:
+        env = invoke_error(
             make_app(), "artisan_describe_operation", {"name": "data_transformr"}
         )
         assert env["code"] == "unknown_operation"
@@ -145,16 +149,17 @@ class TestOperationResource:
         self, make_app, read_resource, monkeypatch
     ) -> None:
         import json
-        from types import SimpleNamespace
 
         import artisan.registry
 
-        metadata = SimpleNamespace(model_dump=lambda: {"schema": "x" * 100_000})
+        metadata = artisan.registry.describe("data_transformer").model_copy(
+            update={"description": "x" * 100_000}
+        )
         monkeypatch.setattr(artisan.registry, "describe", lambda _name: metadata)
 
         content = read_resource(make_app(), "artisan://operations/large")
         result = json.loads(content.text)
 
-        assert result["name"] == "large"
-        assert result["truncated"] is True
+        assert result["code"] == "evidence_response_too_large"
+        assert "section" in result["hint"]
         assert len(content.text) < 1_000

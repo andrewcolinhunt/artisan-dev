@@ -48,11 +48,11 @@ class TestProvenanceTool:
         app = make_app(delta_root=tmp_path)
         result = invoke(app, "artisan_get_provenance_graph", {"artifact_id": C})
         assert result["direction"] == "backward"
-        assert result["edges"] == [
-            {"source_artifact_id": B, "target_artifact_id": C},
+        assert result["edges"]["items"] == [
             {"source_artifact_id": A, "target_artifact_id": B},
+            {"source_artifact_id": B, "target_artifact_id": C},
         ]
-        assert result["truncated"] is False
+        assert result["traversal_truncated"] is False
 
     def test_forward_depth_truncation(self, make_app, invoke, tmp_path) -> None:
         _seed_edges(tmp_path, [(A, B), (B, C)])
@@ -62,14 +62,16 @@ class TestProvenanceTool:
             "artisan_get_provenance_graph",
             {"artifact_id": A, "direction": "forward", "depth": 1},
         )
-        assert result["edges"] == [{"source_artifact_id": A, "target_artifact_id": B}]
-        assert result["truncated"] is True
+        assert result["edges"]["items"] == [
+            {"source_artifact_id": A, "target_artifact_id": B}
+        ]
+        assert result["traversal_truncated"] is True
 
     def test_missing_table_degrades_to_empty(self, make_app, invoke, tmp_path) -> None:
         publish_test_store(str(tmp_path), LocalFileSystem())
         app = make_app(delta_root=tmp_path)
         result = invoke(app, "artisan_get_provenance_graph", {"artifact_id": A})
-        assert result["edges"] == []
+        assert result["edges"]["items"] == []
 
     def test_rejects_unknown_direction(self, make_app, invoke_result, tmp_path) -> None:
         result = invoke_result(
@@ -79,10 +81,10 @@ class TestProvenanceTool:
         )
         assert result.is_error is True
 
-    def test_rejects_out_of_range_depth(self, make_app, invoke, tmp_path) -> None:
+    def test_rejects_out_of_range_depth(self, make_app, invoke_error, tmp_path) -> None:
         app = make_app(delta_root=tmp_path)
         for depth in (0, 11):
-            result = invoke(
+            result = invoke_error(
                 app,
                 "artisan_get_provenance_graph",
                 {"artifact_id": A, "depth": depth},
@@ -100,7 +102,7 @@ class TestLineageResource:
     def test_unavailable_graph_is_sanitized(self, make_app, read_resource) -> None:
         content = read_resource(make_app(), "artisan://lineage/run/missing")
 
-        assert "Lineage is unavailable" in content.text
+        assert "Macro lineage unavailable" in content.text
         assert "Traceback" not in content.text
 
     def test_passes_resource_run_to_macro_graph(
@@ -138,5 +140,38 @@ class TestLineageResource:
             make_app(delta_root=tmp_path), "artisan://lineage/run/large-run"
         )
 
-        assert "exceeds the MCP resource limit" in content.text
+        assert "response exceeds the byte budget" in content.text
         assert len(content.text) < 1_000
+
+
+def test_wide_provenance_pages_preserve_depth_omission(monkeypatch):
+    import artisan.provenance
+    from artisan.provenance.reader import ProvenanceEdges
+    from artisan_mcp.tools.provenance import provenance_payload
+
+    edges = [
+        {"source_artifact_id": f"parent-{index:03d}", "target_artifact_id": C}
+        for index in range(175)
+    ]
+    result = ProvenanceEdges(
+        artifact_id=C,
+        direction="backward",
+        depth=1,
+        edges=list(reversed(edges)),
+        truncated=True,
+    )
+    monkeypatch.setattr(
+        artisan.provenance, "provenance_edges", lambda *args, **kwargs: result
+    )
+    seen = []
+    cursor = None
+    while True:
+        payload = provenance_payload("/store", C, depth=1, limit=37, cursor=cursor)
+        assert payload["traversal_truncated"] is True
+        assert payload["edges"]["total_items"] == len(edges)
+        seen.extend(payload["edges"]["items"])
+        cursor = payload["edges"]["next_cursor"]
+        if cursor is None:
+            assert payload["edges"]["has_more"] is False
+            break
+    assert seen == edges

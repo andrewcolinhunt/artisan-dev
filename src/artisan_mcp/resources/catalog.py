@@ -1,41 +1,24 @@
-"""Catalog resource: one operation's full metadata by name."""
+"""Operation metadata resource using the same bounded tool projection."""
 
 from __future__ import annotations
 
-from typing import Any
+import asyncio
 
 from fastmcp import FastMCP
 
-from artisan_mcp._boundary import boundary
-from artisan_mcp._common import resource_fits
+from artisan_mcp._boundary import evidence_payload
+from artisan_mcp._evidence import encode_json
+from artisan_mcp.models import OperationDescription
+from artisan_mcp.tools.catalog import operation_payload
 
 
 def register(mcp: FastMCP) -> None:
-    """Attach the operations resource to ``mcp``."""
+    """Register one whole-or-explicitly-unavailable operation resource."""
 
     @mcp.resource("artisan://operations/{name}", mime_type="application/json")
-    async def operation_metadata(name: str) -> dict[str, Any]:
-        """Full ``OperationMetadata`` for the named operation.
-
-        Args:
-            name: Registered operation name.
-
-        Returns:
-            The operation's metadata dump.
-        """
-        from artisan.registry import describe
-
-        def payload() -> dict[str, Any]:
-            metadata = describe(name).model_dump()
-            if resource_fits(metadata):
-                return metadata
-            return {
-                "name": name,
-                "truncated": True,
-                "message": (
-                    "Operation metadata exceeds the resource limit; use "
-                    "artisan_describe_operation when full metadata is required."
-                ),
-            }
-
-        return boundary(payload)
+    async def operation_metadata(name: str) -> str:
+        """Read complete operation metadata or bounded section guidance."""
+        payload = await asyncio.to_thread(
+            evidence_payload, lambda: operation_payload(name), OperationDescription
+        )
+        return encode_json(payload).decode("utf-8")

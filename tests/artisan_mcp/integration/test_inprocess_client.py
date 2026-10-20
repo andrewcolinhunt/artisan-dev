@@ -41,7 +41,7 @@ class TestEndToEnd:
             "artisan_get_step_result",
             {"pipeline_run_id": seeded_run.run_id, "step_name": "generate"},
         )
-        assert set(result["data"][0]) >= {"artifact_id", "artifact_type"}
+        assert set(result["items"][0]) >= {"artifact_id", "artifact_type"}
 
         logs = invoke(
             app,
@@ -66,7 +66,7 @@ class TestEndToEnd:
             "artisan_diagnose_run",
             {"pipeline_run_id": seeded_run.run_id},
         )
-        assert diag["failed_steps"]
+        assert diag["failed_execution_count"] == 1
         assert diag["suggested_actions"]
 
     def test_resources(self, make_app, read_resource, seeded_run) -> None:

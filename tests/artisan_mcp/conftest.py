@@ -89,6 +89,20 @@ def invoke_result() -> Callable[..., Any]:
 
 
 @pytest.fixture
+def invoke_error(invoke_result) -> Callable[..., Any]:
+    """Require native error signaling and return its structured recovery data."""
+
+    def call(app: FastMCP, name: str, args: dict | None = None) -> Any:
+        result = invoke_result(app, name, args)
+        assert result.is_error is True
+        assert result.data is None
+        assert isinstance(result.structured_content, dict)
+        return result.structured_content
+
+    return call
+
+
+@pytest.fixture
 def read_resource() -> Callable[..., Any]:
     """Return a helper reading one resource URI via the in-memory client."""
 

@@ -46,6 +46,11 @@ new endpoint behavior. See the breaking changes below.
 - Optional read-only `artisan-mcp` server for operation discovery, run status,
   artifact queries, provenance, and failure diagnosis. Includes setup guidance
   and stdio-client checks for development and installed release packages.
+- Exact metric observation, outcome assessment and run-comparison readers, also
+  exposed through read-only MCP tools. Criteria and correspondence are explicit;
+  reports retain missing evidence, population coverage and numeric precision.
+- Portable `pipeline-operate` skill for discovering tools, inspecting existing
+  runs and explaining evidence limits.
 - Staging recovery before cache lookup, with independent `recover_staging` and
   `preserve_staging` controls. Finished executions from interrupted or cancelled
   steps can be reused without changing the source step's history.
@@ -57,6 +62,15 @@ new endpoint behavior. See the breaking changes below.
 
 ### Changed
 
+- **Breaking: MCP inspection responses.** Tools advertise typed success/error
+  schemas and signal query failures with native MCP errors. Detail collections
+  use bounded pages and opaque cursors tied to the query and projected evidence;
+  step results are flat artifact-reference pages. Metadata requires explicit
+  selection. Clients must restart changed views and handle error results rather
+  than treating error envelopes as successful data. See
+  [MCP migration and limits](docs/how-to-guides/connecting-mcp.md).
+- Require FastMCP 3.4.0 or newer. Blocking inspection runs in workers so other
+  requests remain responsive; disconnecting a client does not cancel a pipeline.
 - **Breaking: Modal deployment compatibility.** Incompatible infrastructure
   overrides fail before either step-level or execution-level cache reuse.
   Endpoint submission checks the deployed command contract and rejects missing,

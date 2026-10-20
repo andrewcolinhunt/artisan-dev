@@ -396,6 +396,17 @@ _RECOVERY_ACTIONS = {
 _DEFAULT_ACTION = "Read the failure log for the full error and traceback."
 
 
+class DiagnosisUpstreamScope(BaseModel):
+    """Coverage of the selected failed-output seed and depth-limited walks."""
+
+    seed_limit: int = 10
+    seed_count: int = 0
+    total_seed_count: int | None = 0
+    seed_selection_truncated: bool | None = False
+    depth: int = 2
+    traversal_truncated: bool | None = False
+
+
 class RunDiagnosis(BaseModel):
     """Composite failure diagnosis for one run — pure composition, no new state.
 
@@ -410,6 +421,11 @@ class RunDiagnosis(BaseModel):
             failed steps produced, deduplicated and depth-bounded.
         suggested_actions: Deterministic next actions derived from the
             failed steps' ``recovery_hint`` values.
+        matching_failed_run_count: All other failed run rollups before the
+            recent-run window is applied; not a causal similarity count.
+        similar_run_limit: Maximum number of recent failed runs retained.
+        upstream_scope: Seed selection and depth coverage of the selected
+            upstream edge union, independent of response pagination.
     """
 
     pipeline_run_id: str
@@ -418,6 +434,9 @@ class RunDiagnosis(BaseModel):
     similar_runs: list[dict[str, Any]]
     upstream_edges: list[dict[str, str]]
     suggested_actions: list[str]
+    matching_failed_run_count: int
+    similar_run_limit: int = 5
+    upstream_scope: DiagnosisUpstreamScope
 
 
 def diagnose_run(
@@ -465,20 +484,32 @@ def diagnose_run(
         (r["last_status"] for r in runs if r["pipeline_run_id"] == pipeline_run_id),
         None,
     )
-    similar_runs = [
+    matching_runs = [
         r
         for r in runs
         if r["pipeline_run_id"] != pipeline_run_id and r["last_status"] == "failed"
-    ][:5]
+    ]
+    matching_runs.sort(key=lambda row: row["pipeline_run_id"])
+    matching_runs.sort(
+        key=lambda row: (row["started_at"] is not None, row["started_at"]),
+        reverse=True,
+    )
+    similar_runs = matching_runs[:5]
 
-    upstream_edges = _failure_upstream_edges(delta_root, failed_steps, storage)
+    upstream_edges, upstream_scope = _failure_upstream_edges(
+        delta_root, failed_steps, storage
+    )
 
     hints = {
         hint
         for step in failed_steps
         if isinstance(hint := step.get("recovery_hint"), str)
     }
-    suggested = [_RECOVERY_ACTIONS.get(hint, _DEFAULT_ACTION) for hint in sorted(hints)]
+    suggested = list(
+        dict.fromkeys(
+            _RECOVERY_ACTIONS.get(hint, _DEFAULT_ACTION) for hint in sorted(hints)
+        )
+    )
     if not suggested and failed_steps:
         suggested = [_DEFAULT_ACTION]
 
@@ -489,6 +520,8 @@ def diagnose_run(
         similar_runs=similar_runs,
         upstream_edges=upstream_edges,
         suggested_actions=suggested,
+        matching_failed_run_count=len(matching_runs),
+        upstream_scope=upstream_scope,
     )
 
 
@@ -496,22 +529,22 @@ def _failure_upstream_edges(
     delta_root: str,
     failed_steps: list[dict[str, Any]],
     storage: StorageConfig,
-) -> list[dict[str, str]]:
-    """Walk backward provenance from the failed steps' artifacts, deduplicated.
-
-    Trace at most ten output artifacts from failed executions, to depth two.
-    Missing execution or artifact provenance edges yield no upstream edges.
-    """
+) -> tuple[list[dict[str, str]], DiagnosisUpstreamScope]:
+    """Walk ten deterministic failed-output seeds and retain coverage facts."""
     from artisan.provenance import provenance_edges
 
     execution_ids = {step["execution_run_id"] for step in failed_steps}
     if not execution_ids:
-        return []
+        return [], DiagnosisUpstreamScope()
     fs = storage.filesystem()
     edge_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
     if not fs.exists(edge_path):
-        return []
-    artifact_ids = (
+        return [], DiagnosisUpstreamScope(
+            total_seed_count=None,
+            seed_selection_truncated=None,
+            traversal_truncated=None,
+        )
+    all_ids = (
         scan_committed(
             delta_root,
             TablePath.EXECUTION_EDGES,
@@ -523,23 +556,35 @@ def _failure_upstream_edges(
             & (pl.col("direction") == "output")
         )
         .select("artifact_id")
-        .unique(maintain_order=True)
-        .limit(10)
+        .unique()
+        .sort("artifact_id")
         .collect()["artifact_id"]
         .to_list()
     )
-    seen: set[tuple[str, str]] = set()
-    edges: list[dict[str, str]] = []
-    for artifact_id in artifact_ids:
+    scope = DiagnosisUpstreamScope(
+        seed_count=min(10, len(all_ids)),
+        total_seed_count=len(all_ids),
+        seed_selection_truncated=len(all_ids) > 10,
+    )
+    pairs: set[tuple[str, str]] = set()
+    for artifact_id in all_ids[: scope.seed_limit]:
         walk = provenance_edges(
-            delta_root, artifact_id, direction="backward", depth=2, storage=storage
+            delta_root,
+            artifact_id,
+            direction="backward",
+            depth=scope.depth,
+            storage=storage,
         )
-        for edge in walk.edges:
-            key = (edge["source_artifact_id"], edge["target_artifact_id"])
-            if key not in seen:
-                seen.add(key)
-                edges.append(edge)
-    return edges
+        scope.traversal_truncated = bool(scope.traversal_truncated or walk.truncated)
+        pairs.update(
+            (edge["source_artifact_id"], edge["target_artifact_id"])
+            for edge in walk.edges
+        )
+    edges = [
+        {"source_artifact_id": source, "target_artifact_id": target}
+        for source, target in sorted(pairs)
+    ]
+    return edges, scope
 
 
 def _validate_attempt_selection(

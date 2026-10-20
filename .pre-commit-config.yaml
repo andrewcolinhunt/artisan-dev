@@ -83,7 +83,7 @@ repos:
           - botocore
           - cloudpickle
           - fastapi==0.135.4
-          - fastmcp>=3
+          - fastmcp>=3.4.0
           - fsspec
           - griffe
           - httpx

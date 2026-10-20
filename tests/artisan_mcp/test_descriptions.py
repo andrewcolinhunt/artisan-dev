@@ -12,7 +12,18 @@ from fastmcp import Client
 
 # Imperative openers used across the tool surface. A new tool adds its verb
 # here deliberately, keeping the copy uniform.
-_VERBS = {"List", "Describe", "Report", "Get", "Find", "Tail", "Walk", "Diagnose"}
+_VERBS = {
+    "Assess",
+    "Compare",
+    "List",
+    "Describe",
+    "Report",
+    "Get",
+    "Find",
+    "Tail",
+    "Walk",
+    "Diagnose",
+}
 
 
 def _descriptions(app) -> dict[str, str]:

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 _READ_TOOLS = {
     "artisan_capabilities",
+    "artisan_assess_outcomes",
+    "artisan_compare_runs",
     "artisan_list_operations",
     "artisan_describe_operation",
     "artisan_list_runs",
@@ -17,7 +19,7 @@ _READ_TOOLS = {
 
 
 class TestReadOnlySurface:
-    def test_read_only_registers_ten_tools(self, make_app, tool_names) -> None:
+    def test_read_only_registers_twelve_tools(self, make_app, tool_names) -> None:
         assert tool_names(make_app()) == _READ_TOOLS
 
     def test_capabilities_report_read_only(self, make_app, invoke) -> None:
