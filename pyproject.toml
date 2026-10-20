@@ -39,7 +39,7 @@ dependencies = [
 s3 = ["botocore", "s3fs"]
 gcs = ["gcsfs"]
 modal = ["modal"]
-mcp = ["fastmcp>=3", "pydantic-settings", "typer"]
+mcp = ["fastmcp>=3.4.0", "pydantic-settings", "typer"]
 
 [project.scripts]
 artisan = "artisan.cli:main"
@@ -172,7 +172,7 @@ testcontainers = { version = "*", extras = ["minio"] }
 # MCP FEATURE - Model Context Protocol server (dexterity-artisan[mcp] extra)
 # =============================================================================
 [tool.pixi.feature.mcp.pypi-dependencies]
-fastmcp = ">=3"
+fastmcp = ">=3.4.0"
 pydantic-settings = "*"
 typer = "*"
 
