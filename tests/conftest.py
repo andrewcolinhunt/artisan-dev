@@ -62,7 +62,7 @@ sys.unraisablehook = _quiet_socket_resourcewarning_hook
 # vcs.modified=false. Its immutable index supports linux/amd64 and linux/arm64.
 # Build recipe: https://github.com/coollabsio/minio
 # When updating this pin, run `pixi run --locked -e dev test-s3` for the smoke
-# latency assertion (catches IMDS regressions and behavior drift) and the
+# metadata-request sentinel (catches unintended credential-provider I/O) and the
 # parametrized [local, s3] tests (catches checksum-handling regressions
 # in DeleteObjects — older MinIO releases require Content-MD5 while
 # modern boto3 sends only CRC32, breaking recursive bucket cleanup).
