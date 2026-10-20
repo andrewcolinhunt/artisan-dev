@@ -33,6 +33,8 @@ _MARKER = "mcp-smoke-invalid-number"
 _EXAMPLES = "artisan.operations.examples"
 _READ_TOOLS = {
     "artisan_capabilities",
+    "artisan_assess_outcomes",
+    "artisan_compare_runs",
     "artisan_list_operations",
     "artisan_describe_operation",
     "artisan_list_runs",
@@ -142,13 +144,19 @@ async def _session(
 
 
 async def _call(
-    session: ClientSession, name: str, arguments: dict[str, Any] | None = None
+    session: ClientSession,
+    name: str,
+    arguments: dict[str, Any] | None = None,
+    *,
+    error: bool = False,
 ) -> dict[str, Any]:
     """Require a structured response without MCP-level tool failure."""
     response = (await session.call_tool(name, arguments or {})).model_dump(
         mode="json", by_alias=True
     )
-    assert response["isError"] is False, response
+    assert response["isError"] is error, response
+    assert json.loads(response["content"][0]["text"]) == response["structuredContent"]
+    assert len(json.dumps(response).encode("utf-8")) <= 128 * 1024
     assert isinstance(response["structuredContent"], dict), response
     return response["structuredContent"]
 
@@ -163,11 +171,10 @@ async def _catalog(session: ClientSession) -> dict[str, Any]:
     capabilities = await _call(session, "artisan_capabilities")
     assert capabilities["read_only"] is True
     assert capabilities["delta_root"] is None
-    assert capabilities["discovery"]["errors"] == []
-    assert capabilities["discovery"]["name_collisions"] == []
-    assert _EXAMPLES in {
-        source["module"] for source in capabilities["discovery"]["sources"]
-    }
+    assert capabilities["error_count"] == 0
+    assert capabilities["name_collision_count"] == 0
+    sources = await _call(session, "artisan_capabilities", {"view": "sources"})
+    assert _EXAMPLES in {source["module"] for source in sources["items"]}
     operations = await _call(
         session, "artisan_list_operations", {"query": "data_transformer"}
     )
@@ -190,18 +197,20 @@ async def _inspect_run(
     status = await _call(session, "artisan_get_run_status", run_args)
     assert status["pipeline_run_id"] == run_id
     assert status["step_count"] == 2
-    assert len(status["steps"]) == 2
-    assert {step["name"]: step["status"] for step in status["steps"]} == {
+    assert len(status["steps"]["items"]) == 2
+    assert {step["name"]: step["status"] for step in status["steps"]["items"]} == {
         "ingest": "succeeded",
         "transform": "failed",
     }
     result = await _call(
         session, "artisan_get_step_result", {**run_args, "step_name": "ingest"}
     )
-    assert {artifact["artifact_id"] for artifact in result["data"]} == {artifact_id}
-    diagnosis = await _call(session, "artisan_diagnose_run", run_args)
-    assert len(diagnosis["failed_steps"]) == 1
-    failure = diagnosis["failed_steps"][0]
+    assert {artifact["artifact_id"] for artifact in result["items"]} == {artifact_id}
+    diagnosis = await _call(
+        session, "artisan_diagnose_run", {**run_args, "view": "failures"}
+    )
+    assert len(diagnosis["items"]) == 1
+    failure = diagnosis["items"][0]
     assert failure["execution_run_id"] == execution_id
     assert _MARKER in failure["error"]
     assert failure["log"] == log
@@ -211,7 +220,7 @@ async def _inspect_run(
     assert tail["truncated"] is True
     assert _MARKER in tail["lines"][-1]
     oversized = await _call(
-        session, "artisan_get_step_logs", {**log_args, "tail_lines": 1001}
+        session, "artisan_get_step_logs", {**log_args, "tail_lines": 1001}, error=True
     )
     assert oversized["code"] == "param_type_mismatch"
     assert oversized["field"] == "tail_lines"
@@ -220,7 +229,8 @@ async def _inspect_run(
     success_logs = await _call(
         session, "artisan_get_step_logs", {**run_args, "step_name": "ingest"}
     )
-    assert success_logs == {"lines": [], "truncated": False}
+    assert success_logs["lines"] == []
+    assert success_logs["truncated"] is False
 
 
 @pytest.mark.parametrize("mode", ["flags", "environment"])
@@ -261,7 +271,7 @@ def test_stdio_without_root_keeps_catalog_and_reports_configuration_error() -> N
                 Path(temporary), [], {"ARTISAN_LOAD_MODULES": _EXAMPLES}
             ) as session:
                 await _catalog(session)
-                result = await _call(session, "artisan_list_runs")
+                result = await _call(session, "artisan_list_runs", error=True)
                 assert result["code"] == "delta_root_unset"
                 assert result["recovery_hint"] == "CHECK_INPUT"
                 assert "items" not in result

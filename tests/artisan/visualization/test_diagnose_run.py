@@ -5,13 +5,16 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import polars as pl
 import pytest
 from fixtures.logical_commit_store import commit_test_step
 
 from artisan.errors import IncompatibleStoreError
+from artisan.provenance.reader import ProvenanceEdges
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
@@ -209,3 +212,200 @@ class TestDiagnoseRun:
         assert diag.failed_steps == []
         assert diag.last_status == "running"
         assert diag.suggested_actions == []
+        assert diag.upstream_scope.model_dump() == {
+            "seed_limit": 10,
+            "seed_count": 0,
+            "total_seed_count": 0,
+            "seed_selection_truncated": False,
+            "depth": 2,
+            "traversal_truncated": False,
+        }
+
+
+def test_similar_runs_sort_before_window_and_count_all_matches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The five-row window uses deterministic recency, not reader row order."""
+    from artisan.orchestration import run_history
+    from artisan.visualization import inspect
+
+    time = datetime(2026, 7, 1, tzinfo=UTC)
+    rows = [
+        ("old", time - timedelta(days=1), "failed"),
+        ("tie-z", time, "failed"),
+        ("unknown", None, "failed"),
+        ("current", time + timedelta(days=4), "failed"),
+        ("new", time + timedelta(days=1), "failed"),
+        ("tie-a", time, "failed"),
+        ("success", time + timedelta(days=3), "succeeded"),
+        ("newest", time + timedelta(days=2), "failed"),
+        ("tie-m", time, "failed"),
+    ]
+    runs = pl.DataFrame(
+        rows,
+        schema=["pipeline_run_id", "started_at", "last_status"],
+        orient="row",
+    )
+    monkeypatch.setattr(run_history, "list_runs", lambda *args, **kwargs: runs)
+    monkeypatch.setattr(
+        inspect, "inspect_failures", lambda *args, **kwargs: pl.DataFrame()
+    )
+
+    diagnosis = diagnose_run("unused", "current")
+
+    assert diagnosis.last_status == "failed"
+    assert diagnosis.matching_failed_run_count == 7
+    assert diagnosis.similar_run_limit == 5
+    assert [row["pipeline_run_id"] for row in diagnosis.similar_runs] == [
+        "newest",
+        "new",
+        "tie-a",
+        "tie-m",
+        "tie-z",
+    ]
+
+
+@pytest.fixture
+def failed_reader_rows(monkeypatch: pytest.MonkeyPatch) -> list[dict[str, str]]:
+    """Isolate diagnosis aggregation while leaving seed filtering intact."""
+    from artisan.orchestration import run_history
+    from artisan.visualization import inspect
+
+    failures = [
+        {"execution_run_id": "failed-execution", "recovery_hint": "unknown-a"},
+        {"execution_run_id": "failed-execution", "recovery_hint": "unknown-b"},
+        {"execution_run_id": "failed-execution", "recovery_hint": "CHECK_INPUT"},
+    ]
+    monkeypatch.setattr(
+        inspect, "inspect_failures", lambda *args, **kwargs: pl.DataFrame(failures)
+    )
+    monkeypatch.setattr(
+        run_history, "list_runs", lambda *args, **kwargs: pl.DataFrame()
+    )
+    return failures
+
+
+def test_missing_seed_table_has_unknown_coverage(
+    tmp_path: Path, failed_reader_rows: list[dict[str, str]]
+) -> None:
+    diagnosis = diagnose_run(str(tmp_path), "run")
+
+    assert diagnosis.failed_steps == failed_reader_rows
+    assert diagnosis.upstream_edges == []
+    assert diagnosis.upstream_scope.seed_count == 0
+    assert diagnosis.upstream_scope.total_seed_count is None
+    assert diagnosis.upstream_scope.seed_selection_truncated is None
+    assert diagnosis.upstream_scope.traversal_truncated is None
+
+
+@pytest.mark.parametrize("output_count", [0, 1, 12])
+def test_seed_selection_precedes_walk_and_reports_coverage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    failed_reader_rows: list[dict[str, str]],
+    output_count: int,
+) -> None:
+    """Only distinct failed outputs seed walks; truncation survives later walks."""
+    import artisan.provenance
+    from artisan.visualization import inspect
+
+    (tmp_path / TablePath.EXECUTION_EDGES.value).mkdir(parents=True)
+    seed_ids = [f"{index:032x}" for index in range(output_count)]
+    rows = [
+        {
+            "execution_run_id": "failed-execution",
+            "direction": "output",
+            "role": "data",
+            "artifact_id": artifact_id,
+        }
+        for artifact_id in reversed(seed_ids)
+    ]
+    rows += rows[:1]
+    rows += [
+        {
+            "execution_run_id": execution,
+            "direction": direction,
+            "role": "data",
+            "artifact_id": f"excluded-{direction}",
+        }
+        for execution, direction in [
+            ("failed-execution", "input"),
+            ("successful-execution", "output"),
+        ]
+    ]
+    frame = pl.DataFrame(rows, schema=EXECUTION_EDGES_SCHEMA)
+    monkeypatch.setattr(inspect, "scan_committed", lambda *args, **kwargs: frame.lazy())
+    walked: list[str] = []
+
+    def walk(
+        root: str,
+        artifact_id: str,
+        *,
+        direction: Literal["backward", "forward"],
+        depth: int,
+        storage: StorageConfig,
+    ) -> ProvenanceEdges:
+        assert root == str(tmp_path)
+        assert direction == "backward"
+        assert depth == 2
+        walked.append(artifact_id)
+        return ProvenanceEdges(
+            artifact_id=artifact_id,
+            direction=direction,
+            depth=depth,
+            edges=[
+                {"source_artifact_id": "z", "target_artifact_id": artifact_id},
+                {"source_artifact_id": "a", "target_artifact_id": "shared"},
+            ],
+            truncated=artifact_id == seed_ids[0],
+        )
+
+    monkeypatch.setattr(artisan.provenance, "provenance_edges", walk)
+
+    diagnosis = diagnose_run(str(tmp_path), "run")
+
+    assert walked == seed_ids[:10]
+    assert diagnosis.upstream_scope.model_dump() == {
+        "seed_limit": 10,
+        "seed_count": min(output_count, 10),
+        "total_seed_count": output_count,
+        "seed_selection_truncated": output_count > 10,
+        "depth": 2,
+        "traversal_truncated": bool(output_count),
+    }
+    expected = [
+        {"source_artifact_id": "a", "target_artifact_id": "shared"},
+        *[
+            {"source_artifact_id": "z", "target_artifact_id": artifact_id}
+            for artifact_id in seed_ids[:10]
+        ],
+    ]
+    assert diagnosis.upstream_edges == (expected if output_count else [])
+
+
+def test_suggested_actions_deduplicate_unknown_hints(
+    tmp_path: Path, failed_reader_rows: list[dict[str, str]]
+) -> None:
+    diagnosis = diagnose_run(str(tmp_path), "run")
+
+    assert diagnosis.suggested_actions == [
+        "Check the operation's inputs and parameters against its schema.",
+        "Read the failure log for the full error and traceback.",
+    ]
+
+
+def test_failed_step_without_failed_execution_remains_visible(tmp_path: Path) -> None:
+    commit_test_step(
+        tmp_path,
+        str(tmp_path / "staging"),
+        _step_rows("failed-run", 1, "generate", "failed", 0),
+        {},
+    )
+
+    diagnosis = diagnose_run(str(tmp_path), "failed-run")
+
+    assert diagnosis.last_status == "failed"
+    assert diagnosis.failed_steps == []
+    assert diagnosis.upstream_edges == []
+    assert diagnosis.upstream_scope.total_seed_count == 0
+    assert diagnosis.upstream_scope.traversal_truncated is False

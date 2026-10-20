@@ -20,8 +20,8 @@ class TestListRuns:
         page = invoke(make_app(delta_root=tmp_path), "artisan_list_runs")
         assert page["items"] == []
 
-    def test_unset_root_returns_envelope(self, make_app, invoke) -> None:
-        env = invoke(make_app(delta_root=None), "artisan_list_runs")
+    def test_unset_root_returns_envelope(self, make_app, invoke_error) -> None:
+        env = invoke_error(make_app(delta_root=None), "artisan_list_runs")
         assert env["code"] == "delta_root_unset"
         assert env["recovery_hint"] == "CHECK_INPUT"
 
@@ -34,13 +34,13 @@ class TestGetRunStatus:
         )
         assert status["pipeline_run_id"] == seeded_run.run_id
         assert status["step_count"] == 2
-        by_name = {s["name"]: s["status"] for s in status["steps"]}
+        by_name = {s["name"]: s["status"] for s in status["steps"]["items"]}
         assert by_name == {"generate": "succeeded", "transform": "failed"}
 
     def test_unknown_run_is_empty(self, make_app, invoke, seeded_run) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
         status = invoke(app, "artisan_get_run_status", {"pipeline_run_id": "nope"})
-        assert status["steps"] == []
+        assert status["steps"]["items"] == []
         assert status["last_status"] is None
 
 
@@ -51,8 +51,14 @@ class TestDiagnoseRun:
             app, "artisan_diagnose_run", {"pipeline_run_id": seeded_run.run_id}
         )
         assert diag["last_status"] == "failed"
-        assert [s["operation"] for s in diag["failed_steps"]] == ["transform"]
-        assert diag["failed_steps"][0]["code"] == "op_execute_failed"
+        assert diag["failed_execution_count"] == 1
+        failures = invoke(
+            app,
+            "artisan_diagnose_run",
+            {"pipeline_run_id": seeded_run.run_id, "view": "failures"},
+        )
+        assert [s["operation"] for s in failures["items"]] == ["transform"]
+        assert failures["items"][0]["code"] == "op_execute_failed"
         assert diag["suggested_actions"]
 
 
@@ -89,9 +95,9 @@ class TestRunResources:
         content = read_resource(make_app(delta_root=tmp_path), "artisan://runs")
         data = json.loads(content.text)
 
-        assert len(data["items"]) == 100
+        assert len(data["items"]) == 20
         assert data["has_more"] is True
-        assert data["next_cursor"] == "100"
+        assert data["next_cursor"] is not None
 
     def test_run_detail_resource(self, make_app, read_resource, seeded_run) -> None:
         import json
@@ -100,15 +106,16 @@ class TestRunResources:
         content = read_resource(app, f"artisan://runs/{seeded_run.run_id}")
         status = json.loads(content.text)
         assert status["pipeline_run_id"] == seeded_run.run_id
-        assert len(status["steps"]) == 2
-        assert status["steps_truncated"] is False
+        assert len(status["steps"]["items"]) == 2
+        assert status["steps"]["has_more"] is False
 
     def test_run_detail_resource_bounds_steps(
         self, make_app, read_resource, monkeypatch, tmp_path
     ) -> None:
         import importlib
         import json
-        from types import SimpleNamespace
+
+        from artisan.orchestration.run_status import RunStatus
 
         module = importlib.import_module("artisan.orchestration.run_status")
         payload = {
@@ -117,12 +124,21 @@ class TestRunResources:
             "step_count": 101,
             "started_at": None,
             "ended_at": None,
-            "steps": [{"step_number": index} for index in range(101)],
+            "steps": [
+                {
+                    "step_number": index,
+                    "name": f"step-{index}",
+                    "status": "succeeded",
+                    "produced": "1 data",
+                    "duration": "1s",
+                }
+                for index in range(101)
+            ],
         }
         monkeypatch.setattr(
             module,
             "run_status",
-            lambda _root, _run_id: SimpleNamespace(model_dump=lambda: payload),
+            lambda _root, _run_id: RunStatus.model_validate(payload),
         )
 
         content = read_resource(
@@ -130,8 +146,8 @@ class TestRunResources:
         )
         status = json.loads(content.text)
 
-        assert len(status["steps"]) == 100
-        assert status["steps_truncated"] is True
+        assert len(status["steps"]["items"]) == 50
+        assert status["steps"]["has_more"] is True
 
 
 class TestGetStepLogs:
@@ -172,10 +188,12 @@ class TestGetStepLogs:
         assert result["lines"] == []
         assert result["truncated"] is False
 
-    def test_rejects_out_of_range_tail(self, make_app, invoke, seeded_run) -> None:
+    def test_rejects_out_of_range_tail(
+        self, make_app, invoke_error, seeded_run
+    ) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
         for tail_lines in (0, -1, 1001):
-            result = invoke(
+            result = invoke_error(
                 app,
                 "artisan_get_step_logs",
                 {
@@ -325,5 +343,67 @@ def test_get_step_logs_caps_aggregate_bytes(
     assert "0" not in content
     assert "1" not in content
     assert "3" in content
-    assert "2" in content
+    assert "2" not in content
+    assert result["partial_first_line"] is True
+    assert "bytes" in result["truncation_reasons"]
     assert result["truncated"] is True
+
+
+@pytest.mark.parametrize(("byte_limit", "partial"), [(8, True), (5, False)])
+def test_log_source_cut_distinguishes_line_boundary(
+    tmp_path, monkeypatch, byte_limit, partial
+):
+    from artisan_mcp.tools import logs
+
+    path = tmp_path / "failure.log"
+    path.write_bytes(b"oldprefix\nnew\n")
+    monkeypatch.setattr(logs, "MAX_LOG_BYTES", byte_limit)
+    result = logs._tail_logs([str(path)], 20)
+    assert result["lines"][-1] == "new"
+    assert result["partial_first_line"] is partial
+    assert result["truncation_reasons"] == ["bytes"]
+
+
+def test_log_dropped_partial_oldest_chunk_does_not_mark_newest_line(
+    tmp_path, monkeypatch
+):
+    from artisan_mcp.tools import logs
+
+    older, newer = tmp_path / "old.log", tmp_path / "new.log"
+    older.write_bytes(b"long old line\n")
+    newer.write_bytes(b"new")
+    monkeypatch.setattr(logs, "MAX_LOG_BYTES", 16)
+    result = logs._tail_logs([str(older), str(newer)], 1)
+    assert result["lines"] == ["new"]
+    assert result["partial_first_line"] is False
+    assert result["truncation_reasons"] == ["bytes", "lines"]
+
+
+def test_log_invalid_utf8_source_cut_retains_replacement_policy(tmp_path, monkeypatch):
+    from artisan_mcp.tools import logs
+
+    path = tmp_path / "failure.log"
+    path.write_text("雪" * 5)
+    monkeypatch.setattr(logs, "MAX_LOG_BYTES", 8)
+    result = logs._tail_logs([str(path)], 20)
+    assert result["lines"] == ["\ufffd雪雪"]
+    assert result["partial_first_line"] is True
+    assert result["truncation_reasons"] == ["bytes"]
+
+
+def test_log_single_line_returns_largest_fitting_unicode_suffix(tmp_path, monkeypatch):
+    from artisan_mcp._evidence import encode_json
+    from artisan_mcp.tools import logs
+
+    original = '雪😀"\\' * 500
+    path = tmp_path / "failure.log"
+    path.write_text(original)
+    monkeypatch.setattr(logs, "MAX_PAYLOAD_BYTES", 1_000)
+    result = logs._tail_logs([str(path)], 20)
+    suffix = result["lines"][0]
+    assert original.endswith(suffix)
+    assert len(encode_json(result)) <= 1_000
+    previous = original[len(original) - len(suffix) - 1]
+    assert len(encode_json({**result, "lines": [previous + suffix]})) > 1_000
+    assert result["partial_first_line"] is True
+    assert result["truncation_reasons"] == ["bytes"]

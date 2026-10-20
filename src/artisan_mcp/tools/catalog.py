@@ -1,85 +1,229 @@
-"""Catalog tools: capabilities, list_operations, describe_operation.
-
-Serialize the registry populated by startup discovery. Unknown operations and
-invalid pagination return error envelopes through the shared boundary;
-argument-schema errors are handled by MCP.
-"""
+"""Bounded catalogue projections shared by tools and resources."""
 
 from __future__ import annotations
 
 from typing import Any, Literal
 
 from fastmcp import Context, FastMCP
+from fastmcp.tools import ToolResult
+from pydantic import StrictInt
 
-from artisan_mcp._boundary import boundary
+from artisan_mcp._boundary import render_tool, validate_int_range
 from artisan_mcp._common import READ_ONLY
-from artisan_mcp._pagination import paginate
+from artisan_mcp._evidence import MAX_PAYLOAD_BYTES, ensure_fits, json_ready
+from artisan_mcp._pagination import paginate, reject_cursor
+from artisan_mcp.models import (
+    CapabilityResult,
+    OperationDescription,
+    OperationList,
+    output_schema,
+)
+
+CapabilityView = Literal["summary", "sources", "errors", "name_collisions"]
+OperationSection = Literal[
+    "all", "summary", "inputs", "outputs", "params", "examples", "tags"
+]
+
+
+def capability_payload(
+    state: dict[str, Any],
+    view: CapabilityView = "summary",
+    limit: StrictInt = 50,
+    cursor: str | None = None,
+) -> dict[str, Any]:
+    """Project startup discovery without reading the configured store."""
+    from artisan.registry import capabilities
+    from artisan_mcp import __version__
+
+    validate_int_range(limit, field="limit", minimum=1, maximum=100)
+    payload = capabilities(
+        server_version=__version__,
+        discovery=state["discovery"],
+        delta_root=None,
+        read_only=True,
+    ).model_dump()
+    discovery = payload.pop("discovery")
+    header = {
+        **payload,
+        "view": view,
+        "operations_count": discovery["operations_count"],
+        "source_count": len(discovery["sources"]),
+        "error_count": len(discovery["errors"]),
+        "name_collision_count": len(discovery["name_collisions"]),
+    }
+    if view == "summary":
+        reject_cursor(cursor)
+        return ensure_fits({"projection_version": "1", "follow_up": None, **header})
+    keys = {
+        "sources": ("kind", "module"),
+        "errors": ("module", "error_type", "error_message"),
+        "name_collisions": ("name", "first_module", "second_module"),
+    }[view]
+    rows = sorted(discovery[view], key=lambda row: tuple(row[key] for key in keys))
+    return paginate(
+        rows,
+        limit,
+        cursor,
+        tool="artisan_capabilities",
+        arguments={"view": view},
+        header=header,
+        hint="Inspect the selected module or Python discovery report for an oversized discovery row.",
+    )
+
+
+def operation_list_payload(
+    query: str | None,
+    kind: Literal["creator", "curator"] | None,
+    tag: str | None,
+    detail: str,
+    limit: StrictInt,
+    cursor: str | None,
+) -> dict[str, Any]:
+    """Select catalogue identities or full summaries in deterministic order."""
+    from artisan.registry import list_operations
+
+    query = query.lower() if query is not None else None
+    rows = [
+        item.model_dump() for item in list_operations(kind=kind, query=query, tag=tag)
+    ]
+    rows.sort(key=lambda row: row["name"])
+    if detail == "identity":
+        rows = [{"name": row["name"], "kind": row["kind"]} for row in rows]
+    return paginate(
+        rows,
+        limit,
+        cursor,
+        tool="artisan_list_operations",
+        arguments={"query": query, "kind": kind, "tag": tag, "detail": detail},
+        header={"detail": detail},
+        omitted_fields=[
+            "items.description",
+            "items.input_roles",
+            "items.output_roles",
+            "items.tags",
+        ]
+        if detail == "identity"
+        else [],
+        hint="Use detail='identity'; inspect the operation source if its identity cannot fit.",
+    )
+
+
+def operation_payload(
+    name: str,
+    section: OperationSection = "all",
+    limit: StrictInt = 50,
+    cursor: str | None = None,
+    *,
+    budget: int = MAX_PAYLOAD_BYTES,
+) -> dict[str, Any]:
+    """Return a complete metadata section or one whole-row section page."""
+    from artisan.registry import describe
+
+    validate_int_range(limit, field="limit", minimum=1, maximum=100)
+    metadata = json_ready(describe(name))
+    header = {
+        "name": metadata["name"],
+        "kind": metadata["kind"],
+        "source_module": metadata["source_module"],
+        "section": section,
+    }
+    if section in {"all", "summary", "params"}:
+        reject_cursor(cursor)
+        if section == "all":
+            result = {**metadata, "section": section}
+        elif section == "params":
+            result = {**header, "params_schema": metadata["params_schema"]}
+        else:
+            result = {
+                **header,
+                "description": metadata["description"],
+                "input_count": len(metadata["inputs"]),
+                "output_count": len(metadata["outputs"]),
+                "example_count": len(metadata["examples"]),
+                "tag_count": len(metadata["tags"]),
+            }
+        return ensure_fits(
+            {"projection_version": "1", "follow_up": None, **result},
+            budget=budget,
+            hint="Select section='summary', 'inputs', 'outputs', 'params', 'examples' or 'tags'; an oversized parameter schema requires source/Python inspection.",
+        )
+    if section in {"inputs", "outputs"}:
+        rows = [
+            {"role": role, "spec": spec}
+            for role, spec in sorted(metadata[section].items())
+        ]
+    else:
+        rows = sorted(metadata[section]) if section == "tags" else metadata[section]
+    return paginate(
+        rows,
+        limit,
+        cursor,
+        tool="artisan_describe_operation",
+        arguments={"name": name, "section": section},
+        header=header,
+        budget=budget,
+        hint="Inspect the operation source/Python metadata when one complete role, example or tag cannot fit.",
+    )
 
 
 def register(mcp: FastMCP) -> None:
-    """Attach the catalog tools to ``mcp``."""
+    """Register the read-only catalogue tools with explicit output contracts."""
 
-    @mcp.tool(annotations=READ_ONLY)
-    async def artisan_capabilities(ctx: Context) -> dict[str, Any]:
-        """Report what this server can do before you plan any other call.
+    @mcp.tool(annotations=READ_ONLY, output_schema=output_schema(CapabilityResult))
+    async def artisan_capabilities(
+        ctx: Context,
+        view: CapabilityView = "summary",
+        limit: StrictInt = 50,
+        cursor: str | None = None,
+    ) -> ToolResult:
+        """Report versions, read-only behavior and startup discovery coverage.
 
-        Returns the artisan and server versions, whether the server is
-        read-only, and the startup discovery report — which op modules loaded,
-        which failed to import, and any name collisions. The configured Delta
-        root is intentionally withheld. Not a store read: it never touches
-        Delta tables, so it works even when delta_root is unset.
+        The default summary includes exact discovery counts and withholds the
+        configured root. Select sources, errors or name_collisions to page that
+        collection. No store read or store health claim is made. Echo a returned
+        cursor with the same view; restart if the selected evidence changed.
         """
-        from artisan.registry import capabilities
+        return render_tool(
+            lambda: capability_payload(ctx.lifespan_context, view, limit, cursor),
+            CapabilityResult,
+        )
 
-        state = ctx.lifespan_context
-        from artisan_mcp import __version__
-
-        return capabilities(
-            server_version=__version__,
-            discovery=state["discovery"],
-            delta_root=None,
-            read_only=True,
-        ).model_dump()
-
-    @mcp.tool(annotations=READ_ONLY)
-    async def artisan_list_operations(
+    @mcp.tool(annotations=READ_ONLY, output_schema=output_schema(OperationList))
+    def artisan_list_operations(
         query: str | None = None,
         kind: Literal["creator", "curator"] | None = None,
         tag: str | None = None,
-        limit: int = 50,
+        detail: Literal["summary", "identity"] = "summary",
+        limit: StrictInt = 50,
         cursor: str | None = None,
-    ) -> dict[str, Any]:
-        """List registered operations to discover what a pipeline can be built from.
+    ) -> ToolResult:
+        """List registered operations using AND-combined query, kind and tag filters.
 
-        Filters AND together: kind ('creator' or 'curator'), a
-        case-insensitive substring query over name/description, and an exact
-        tag. Returns a page of lightweight summaries (name, kind,
-        description, input/output roles, tags) with has_more and next_cursor
-        for paging, capped at 100 items — pass next_cursor back as cursor to
-        continue. Use this to find an operation by capability; use
-        artisan_describe_operation for one op's full parameter schema and
-        examples. Summaries only, never parameter schemas.
+        Summary rows contain descriptions and roles, never parameter schemas.
+        Use detail='identity' if one summary is too large. Each page reports its
+        selected total, omissions and continuation. Use artisan_describe_operation
+        for a candidate's complete contract or selected metadata section.
         """
-        from artisan.registry import list_operations
+        return render_tool(
+            lambda: operation_list_payload(query, kind, tag, detail, limit, cursor),
+            OperationList,
+        )
 
-        def payload() -> dict[str, Any]:
-            summaries = list_operations(kind=kind, query=query, tag=tag)
-            return paginate([s.model_dump() for s in summaries], limit, cursor)
+    @mcp.tool(annotations=READ_ONLY, output_schema=output_schema(OperationDescription))
+    def artisan_describe_operation(
+        name: str,
+        section: OperationSection = "all",
+        limit: StrictInt = 50,
+        cursor: str | None = None,
+    ) -> ToolResult:
+        """Describe an operation's contracts, parameters and declared usage examples.
 
-        return boundary(payload)
-
-    @mcp.tool(annotations=READ_ONLY)
-    async def artisan_describe_operation(name: str) -> dict[str, Any]:
-        """Describe one operation in full before configuring it in a pipeline.
-
-        Returns the complete metadata for the named op: input and output
-        roles with their artifact types, the JSON Schema for its parameters
-        (with descriptions), declared usage examples, and the source module.
-        Use this once artisan_list_operations has surfaced a candidate and
-        you need its exact parameters. An unknown name returns an
-        unknown_operation error envelope carrying did-you-mean suggestions
-        rather than raising.
+        The all section returns complete metadata when it fits. Select summary,
+        inputs, outputs, params, examples or tags to narrow evidence. Role/example
+        lists page; parameter schemas remain whole with their references. An
+        oversized indivisible section requires source or Python inspection.
         """
-        from artisan.registry import describe
-
-        return boundary(lambda: describe(name).model_dump())
+        return render_tool(
+            lambda: operation_payload(name, section, limit, cursor),
+            OperationDescription,
+        )

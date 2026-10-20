@@ -42,12 +42,13 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
 
     from artisan_mcp import prompts, resources, tools
 
-    mcp = FastMCP("artisan", lifespan=lifespan)
+    mcp = FastMCP("artisan", lifespan=lifespan, mask_error_details=True)
     tools.catalog.register(mcp)
     tools.runs.register(mcp)
     tools.artifacts.register(mcp)
     tools.logs.register(mcp)
     tools.provenance.register(mcp)
+    tools.outcomes.register(mcp)
     resources.catalog.register(mcp)
     resources.runs.register(mcp)
     resources.lineage.register(mcp)

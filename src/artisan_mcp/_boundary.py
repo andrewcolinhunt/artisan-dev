@@ -1,50 +1,122 @@
-"""Shared validation and sanitized error handling for MCP calls."""
+"""Capture domain failures and render them truthfully at each MCP boundary."""
 
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Never
+
+from fastmcp.tools import ToolResult
+from mcp.types import CallToolResult
+from pydantic import TypeAdapter, ValidationError
+
+from artisan.errors import ArtisanError, CommitError, ErrorCode
+from artisan_mcp._evidence import (
+    MAX_PAYLOAD_BYTES,
+    MAX_TOOL_RESULT_BYTES,
+    encode_json,
+    json_ready,
+    response_too_large,
+)
+from artisan_mcp.models import CommitErrorPayload, ErrorPayload
 
 if TYPE_CHECKING:
     from collections.abc import Callable
 
     from artisan_mcp.config import ArtisanMCPConfig
 
-
 logger = logging.getLogger(__name__)
 
 
-def boundary[T](payload_fn: Callable[[], T]) -> T | dict[str, Any]:
-    """Run a tool body, returning its payload or an error envelope.
+@dataclass(frozen=True)
+class Captured[T]:
+    """The actual outcome, without guessing from arbitrary payload keys."""
 
-    Args:
-        payload_fn: Thunk that computes the tool's success payload. Any
-            ``ArtisanError`` it raises (including ``delta_root_unset`` from
-            ``require_delta_root``) or ``FileNotFoundError`` from a store
-            reader is caught and serialized without internal cause details.
+    value: T | None = None
+    error: ArtisanError | None = None
 
-    Returns:
-        The thunk's return value on success, or ``ArtisanError.to_dict()``
-        on a handled failure.
-    """
-    from artisan.errors import ArtisanError, ErrorCode
 
+def capture[T](payload_fn: Callable[[], T]) -> Captured[T]:
+    """Capture known query failures; internal validation remains a masked defect."""
     try:
-        return payload_fn()
+        return Captured(value=payload_fn())
     except FileNotFoundError:
         logger.exception("MCP store read failed")
-        err = ArtisanError(
-            ErrorCode.STORE_NOT_FOUND,
-            "Artisan store not found",
-            error_type="io",
-            hint="no Delta tables at this root — check ARTISAN_DELTA_ROOT",
-            recovery_hint="CHECK_INPUT",
+        return Captured(
+            error=ArtisanError(
+                ErrorCode.STORE_NOT_FOUND,
+                "Artisan store not found",
+                error_type="io",
+                hint="Check ARTISAN_DELTA_ROOT for the intended store.",
+                recovery_hint="CHECK_INPUT",
+            )
         )
-        return err.to_dict(include_cause=False)
     except ArtisanError as exc:
         if exc.__cause__ is not None:
             logger.exception("MCP operation failed")
-        return exc.to_dict(include_cause=False)
+        return Captured(error=exc)
+    except ValidationError as exc:
+        logger.exception("Internal MCP reader validation failed")
+        message = "Internal evidence validation failed"
+        raise RuntimeError(message) from exc
+
+
+def _payload(outcome: Captured[Any], success_type: Any) -> tuple[dict[str, Any], bool]:
+    """Validate the selected outcome branch, then enforce its domain byte budget."""
+    try:
+        if outcome.error is None:
+            model = TypeAdapter(success_type).validate_json(encode_json(outcome.value))
+        else:
+            error_type = (
+                CommitErrorPayload
+                if isinstance(outcome.error, CommitError)
+                else ErrorPayload
+            )
+            model = error_type.model_validate(
+                outcome.error.to_dict(include_cause=False)
+            )
+        payload = json_ready(model)
+        if not isinstance(payload, dict):
+            message = "MCP evidence must be an object"
+            raise TypeError(message)
+        if len(encode_json(payload)) > MAX_PAYLOAD_BYTES:
+            return response_too_large(), True
+        return payload, outcome.error is not None
+    except (ValidationError, ValueError, TypeError) as exc:
+        logger.exception("Internal MCP result validation failed")
+        message = "Internal evidence validation failed"
+        raise RuntimeError(message) from exc
+
+
+def evidence_payload(
+    payload_fn: Callable[[], Any], success_type: Any
+) -> dict[str, Any]:
+    """Render JSON evidence for a resource or prompt, without a tool wrapper."""
+    return _payload(capture(payload_fn), success_type)[0]
+
+
+def render_tool(payload_fn: Callable[[], Any], success_type: Any) -> ToolResult:
+    """Build matching structured/text content with native error signaling."""
+    payload, failed = _payload(capture(payload_fn), success_type)
+    result = _tool_result(payload, failed)
+    wire = CallToolResult(
+        content=result.content,
+        structuredContent=result.structured_content,
+        isError=failed,
+        _meta=result.meta,
+    )
+    if len(wire.model_dump_json(by_alias=True).encode("utf-8")) > MAX_TOOL_RESULT_BYTES:
+        result = _tool_result(response_too_large(), True)
+    return result
+
+
+def _tool_result(payload: dict[str, Any], failed: bool) -> ToolResult:
+    """Serialize one validated object exactly once for the text fallback."""
+    return ToolResult(
+        structured_content=payload,
+        content=encode_json(payload).decode("utf-8"),
+        is_error=failed,
+    )
 
 
 def invalid_input(field: str, message: str) -> Never:

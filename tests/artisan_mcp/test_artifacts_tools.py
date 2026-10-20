@@ -32,7 +32,7 @@ class TestQueryArtifacts:
         page = invoke(app, "artisan_query_artifacts", {"limit": 2})
         assert len(page["items"]) == 2
         assert page["has_more"] is True
-        assert page["next_cursor"] == "2"
+        assert page["next_cursor"] is not None
 
     def test_refs_carry_no_payload(self, make_app, invoke, seeded_run) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
@@ -44,21 +44,20 @@ class TestQueryArtifacts:
                 "origin_step_number",
                 "current_step_number",
                 "pipeline_run_id",
-                "metadata",
             }
             assert "content" not in item
 
 
 class TestGetStepResult:
-    def test_groups_by_type(self, make_app, invoke, seeded_run) -> None:
+    def test_returns_flat_references(self, make_app, invoke, seeded_run) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
         result = invoke(
             app,
             "artisan_get_step_result",
             {"pipeline_run_id": seeded_run.run_id, "step_name": "generate"},
         )
-        assert set(result) == {"data"}
-        assert {r["artifact_id"] for r in result["data"]} == seeded_run.data_ids
+        assert {row["artifact_type"] for row in result["items"]} == {"data"}
+        assert {r["artifact_id"] for r in result["items"]} == seeded_run.data_ids
 
     def test_failed_step_has_no_accepted_output(
         self, make_app, invoke, seeded_run
@@ -69,7 +68,8 @@ class TestGetStepResult:
             "artisan_get_step_result",
             {"pipeline_run_id": seeded_run.run_id, "step_name": "transform"},
         )
-        assert result == {}
+        assert result["items"] == []
+        assert result["total_items"] == 0
 
     def test_unknown_step_is_empty(self, make_app, invoke, seeded_run) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
@@ -78,7 +78,8 @@ class TestGetStepResult:
             "artisan_get_step_result",
             {"pipeline_run_id": seeded_run.run_id, "step_name": "nope"},
         )
-        assert result == {}
+        assert result["items"] == []
+        assert result["total_items"] == 0
 
     def test_cached_step_uses_current_step_and_excludes_other_run(
         self, make_app, invoke, tmp_path
@@ -107,6 +108,6 @@ class TestGetStepResult:
         assert store.other_data_id not in {
             item["artifact_id"] for item in page["items"]
         }
-        assert result["metric"][0]["artifact_id"] == store.metric_id
-        assert result["metric"][0]["origin_step_number"] == 1
-        assert result["metric"][0]["current_step_number"] == 5
+        assert result["items"][0]["artifact_id"] == store.metric_id
+        assert result["items"][0]["origin_step_number"] == 1
+        assert result["items"][0]["current_step_number"] == 5
