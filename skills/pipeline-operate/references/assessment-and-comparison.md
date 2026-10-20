@@ -136,7 +136,9 @@ selection = OutcomeSelection(
     role=args.role,
     step_number=args.step_number,
 )
-spec = AssessmentSpec(label="Expected accepted count", expected_count=args.expected_count)
+spec = AssessmentSpec(
+    label="Expected accepted count", expected_count=args.expected_count
+)
 report = assess_outcomes(args.delta_root, selection, spec)
 print(report.selection)
 print(report.assessment_status)

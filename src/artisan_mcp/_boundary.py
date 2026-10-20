@@ -76,11 +76,13 @@ def render_tool(payload_fn: Callable[[], Any], success_type: Any) -> ToolResult:
     """Build matching structured/text content with native error signaling."""
     payload, failed = _payload(capture(payload_fn), success_type)
     result = _tool_result(payload, failed)
-    wire = CallToolResult(
-        content=result.content,
-        structuredContent=result.structured_content,
-        isError=failed,
-        _meta=result.meta,
+    wire = CallToolResult.model_validate(
+        {
+            "content": result.content,
+            "structuredContent": result.structured_content,
+            "isError": failed,
+            "_meta": result.meta,
+        }
     )
     if len(wire.model_dump_json(by_alias=True).encode("utf-8")) > MAX_TOOL_RESULT_BYTES:
         result = _tool_result(response_too_large(), True)
