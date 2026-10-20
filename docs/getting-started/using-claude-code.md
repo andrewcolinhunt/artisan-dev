@@ -2,8 +2,8 @@
 
 [Claude Code](https://docs.anthropic.com/en/docs/claude-code) is an AI coding
 assistant that runs in your terminal. It reads your codebase, edits files, runs
-commands, and writes code. Artisan provides shared project instructions and authoring skills for coding
-agents working in this repository.
+commands, and writes code. Artisan provides shared project instructions and
+skills for writing pipelines and inspecting existing work.
 
 ---
 
@@ -30,8 +30,8 @@ commands, code style, and Git conventions without duplicating instructions.
 
 ## Artisan skills
 
-The repo ships with framework-specific Agent Skills that teach compatible
-coding agents how to write Artisan code that follows project conventions.
+The repo ships with framework-specific Agent Skills for authoring Artisan code
+and interpreting run evidence.
 
 | Skill | Description |
 |-------|-------------|
@@ -39,6 +39,7 @@ coding agents how to write Artisan code that follows project conventions.
 | `/operation-write` | Scaffold or review an `OperationDefinition` subclass |
 | `/composite-write` | Scaffold or review a `CompositeDefinition` subclass |
 | `/pipeline-write` | Scaffold a pipeline script composing operations |
+| `/pipeline-operate` | Inspect runs, diagnose failures, trace outputs, and assess or compare available evidence |
 
 ### How skills are discovered
 
@@ -51,10 +52,12 @@ discovery symlinks for both cross-agent clients and Claude Code:
 .agents/skills/operation-write  →  ../../skills/operation-write
 .agents/skills/composite-write  →  ../../skills/composite-write
 .agents/skills/pipeline-write   →  ../../skills/pipeline-write
+.agents/skills/pipeline-operate →  ../../skills/pipeline-operate
 .claude/skills/artifact-write   →  ../../skills/artifact-write
 .claude/skills/operation-write  →  ../../skills/operation-write
 .claude/skills/composite-write  →  ../../skills/composite-write
 .claude/skills/pipeline-write   →  ../../skills/pipeline-write
+.claude/skills/pipeline-operate →  ../../skills/pipeline-operate
 ```
 
 ### Downstream repos
@@ -82,6 +85,23 @@ A downstream repo enables it by adding to `.claude/settings.json`:
 Skills appear as `/artisan:operation-write`, etc. Claude Code prompts
 contributors to trust the marketplace on first launch.
 
+For another compatible host, copy the complete canonical skill folder,
+including `references/` when present, using that host's documented installation
+mechanism. Installing Artisan or its Python MCP extra does not install client
+skills.
+
+### Inspect existing runs
+
+Use `/pipeline-operate` with a specific run or question, for example
+"Explain why this run failed" or "Compare these runs using this metric and
+case key." [Connect an MCP client](../how-to-guides/connecting-mcp.md) for
+read-only access to the operation catalogue and run evidence.
+
+The skill checks which tools are exposed. When assessment or comparison tools
+are absent, it uses supported local readers where the store is accessible or
+explains the missing evidence. It distinguishes accepted outputs from a passed
+quality criterion. The skill itself does not launch, cancel or monitor jobs.
+
 ---
 
 ## What you can do
@@ -98,6 +118,8 @@ A few examples of real workflows:
   wiring.
 - **"Explain how artifact lineage works in this codebase"** — Claude reads the
   source and explains the provenance system.
+- **"Why did run `run-id` fail, and which outputs were accepted?"** — Claude
+  inspects the selected run and reports evidence and remaining gaps.
 - **"Run the tests and fix any failures"** — Claude runs pytest, reads errors,
   and proposes fixes.
 
