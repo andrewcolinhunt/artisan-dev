@@ -20,6 +20,7 @@ and exceptions. The guides explain how to use those interfaces together.
 | Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
 | Read stored artifacts | `artisan.storage` | `ArtifactStore` |
 | Inspect results, failures, and timing | `artisan.visualization` | `inspect_pipeline`, `inspect_data`, `inspect_failures`, `PipelineTimings` |
+| Assess recorded metrics or compare selected attempts | `artisan.visualization` | `OutcomeSelection`, `AssessmentSpec`, `assess_outcomes`, `ComparisonSpec`, `compare_runs` |
 | Traverse provenance | `artisan.provenance` | `provenance_edges`, `walk_forward`, `walk_backward` |
 | Implement a runner provider | `artisan.orchestration.runner_api` | `RunnerBase`, `LifecycleRouter`, `UnitResult` |
 
