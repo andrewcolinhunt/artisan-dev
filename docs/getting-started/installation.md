@@ -1,7 +1,7 @@
 # Installation
 
-This page covers installing Artisan and its dependencies and configuring your
-editor.
+Install Artisan from a checkout using the repository's locked Pixi environment.
+The same environment supplies Python, Graphviz, and the notebook kernel.
 
 ---
 
@@ -29,7 +29,7 @@ Restart your terminal after installing Pixi so it appears on your `PATH`.
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
-# Install all dependencies (Python 3.12, scientific stack, etc.)
+# Install the locked runtime dependencies
 pixi install --locked
 pixi run --locked setup
 ```
@@ -72,17 +72,10 @@ it creates an isolated environment — but Pixi also handles Python itself and
 non-Python dependencies such as Graphviz from a single lockfile.
 Each clone gets its own environment.
 
-| Tool | Manages Python? | Manages system deps? | Project-scoped? |
-|------|:-:|:-:|:-:|
-| venv + pip | No | No | Yes |
-| conda | Yes | Yes | No (shared envs) |
-| uv | Yes | No | Yes |
-| **Pixi** | **Yes** | **Yes** | **Yes** |
-
 **Why Pixi for this project?** Artisan needs Graphviz alongside Python (plus
 Node.js for documentation builds). Pixi resolves them from conda-forge and PyPI in one
-lockfile (`pixi.lock`), so every contributor gets an identical environment
-regardless of platform. See [Tooling Decisions](../contributing/tooling-decisions.md)
+lockfile (`pixi.lock`), with a recorded resolution for each supported platform.
+See [Tooling Decisions](../contributing/tooling-decisions.md)
 for the full rationale.
 :::
 
@@ -138,15 +131,12 @@ Environment setup does not choose or overwrite your kernel.
 
 ### Kernel slowness (Pixi environments)
 
-If your pixi Jupyter kernel takes 30+ seconds to start in VS Code, the
-`Python Environments` extension (`ms-python.vscode-python-envs`) is likely the
-cause. It doesn't recognize pixi as a known environment type and spends 30
-seconds trying to activate it before timing out.
-
-**Fix:** Uninstall the `Python Environments` extension (`ms-python.vscode-python-envs`)
-in VS Code. The core Python extension works fine without it.
-
-Tracked upstream: [microsoft/vscode-python#25804](https://github.com/microsoft/vscode-python/issues/25804)
+If a kernel starts slowly, first confirm that it uses the interpreter registered
+above. For a repeated delay accompanied by `Failed to get activated env vars`,
+check [the reported Pixi activation issue](https://github.com/microsoft/vscode-python/issues/25804).
+That report identifies the `Python Environments` extension
+(`ms-python.vscode-python-envs`) as the cause in affected versions. Temporarily
+disable it to check whether the same issue explains your delay.
 
 ---
 

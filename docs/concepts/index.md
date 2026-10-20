@@ -4,7 +4,7 @@ These pages explain the ideas, design decisions, and trade-offs behind the
 Artisan framework. Start with the Architecture Overview for the big picture,
 then explore topics relevant to your work.
 
-## System Architecture
+## System architecture
 
 - [Architecture Overview](architecture-overview.md) -- High-level system
   structure and component relationships
@@ -17,7 +17,7 @@ then explore topics relevant to your work.
 - [Pipeline Configuration](pipeline-configuration.md) -- Orchestrator-level
   settings captured by PipelineConfig
 
-## Data and Tracking
+## Data and tracking
 
 - [Provenance System](provenance-system.md) -- Dual provenance: execution
   and artifact lineage tracking
@@ -25,7 +25,7 @@ then explore topics relevant to your work.
 - [Storage and Delta Lake](storage-and-delta-lake.md) -- Why Delta Lake for
   artifact persistence
 
-## Design Rationale
+## Design rationale
 
 - [Design Principles](design-principles.md) -- Motivating goals and the
   design decisions behind the framework

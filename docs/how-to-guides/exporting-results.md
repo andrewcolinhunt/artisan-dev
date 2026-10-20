@@ -1,7 +1,9 @@
 # Export Pipeline Results
 
 Save accepted data and metrics from a selected run, or materialize known artifact
-IDs as files. These recipes assume a completed run in `delta_root`.
+IDs as files. These recipes assume a completed run in `delta_root`. For custom artifact
+types, [load the application's trusted definitions](configuring-execution.md#load-application-definitions-in-every-process)
+before opening its store.
 
 ## Choose a run and export a step
 
@@ -32,7 +34,11 @@ data.write_csv(output_dir / f"step_{step_number}.csv")
 The CSV combines accepted datasets from that step and retains `_source` to
 identify their original names. It includes cached and passthrough outputs
 accepted at that logical step, even when their content originated elsewhere.
-`inspect_data` raises if no matching data artifacts exist.
+`inspect_data` raises if no matching data artifacts exist. Run-scoped selection
+uses the newest attempt at each logical step; a newer failed attempt does not
+fall back to older successful outputs. To export a historical attempt, pass its
+exact `step_run_id` to `inspect_data` or `inspect_metrics`. Any run or step
+filters you also provide must agree with that attempt.
 
 ## Export metrics
 
@@ -91,7 +97,7 @@ investigate physical storage, not to determine which results a run accepted.
 import polars as pl
 from artisan.schemas import TablePath
 
-physical_rows = pl.read_delta(f"{delta_root}/{TablePath.ARTIFACT_INDEX}")
+physical_rows = pl.read_delta(f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}")
 ```
 
 A manual join with a completion table is not a substitute for the supported

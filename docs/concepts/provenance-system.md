@@ -1,16 +1,8 @@
 # Provenance System
 
-When a pipeline produces thousands of results, you need to answer questions
-like "where did this output come from?", "what parameters produced this
-result?", and "which inputs failed?". Provenance is how the framework records
-the full computational history so that every one of these questions is
-answerable -- without detective work, log parsing, or guesswork.
-
-This page explains the two provenance systems, why both exist, how lineage
-edges are captured and validated, and how the provenance graph is stored and
-visualized.
-
----
+Artisan records which executions consumed and produced artifacts, and which
+exact parents an operation declared for each new output. These records support
+execution inspection and artifact lineage queries.
 
 ## Two complementary systems
 
@@ -19,7 +11,7 @@ fundamentally different questions.
 
 **Execution provenance** records what ran: which operation, with what
 parameters, consuming which artifacts and producing which artifacts. It is
-an activity log -- ground truth directly observable from actual events.
+an activity log of recorded execution participation.
 
 **Artifact provenance** records where things came from: which specific input
 produced which specific output. It captures the individual derivation chains
@@ -30,22 +22,7 @@ produced which specific output. It captures the individual derivation chains
 | Execution provenance | "What computation happened?" | Activity-centric |
 | Artifact provenance | "Where did this artifact come from?" | Entity-centric |
 
-Both align with the [W3C PROV](https://www.w3.org/TR/prov-overview/) standard:
-
-| Framework concept | W3C PROV equivalent |
-|-------------------|---------------------|
-| Executions row | Activity |
-| `Artifact` | Entity |
-| `ArtifactProvenanceEdge` | wasDerivedFrom |
-| `ExecutionEdge` (input) | used |
-| `ExecutionEdge` (output) | wasGeneratedBy |
-
----
-
 ## Why both systems are necessary
-
-This is the core design constraint. Execution provenance cannot replace
-artifact provenance, and vice versa.
 
 An operation processes a batch of artifacts. A single execution record shows
 "consumed {A, B, C}, produced {D, E, F}" -- but not which input produced which
@@ -85,10 +62,9 @@ conflicting requirements.
 | `execution_spec_id` | Cache key (deterministic) | operation config + ordered role/group/position/type/ID input occurrences |
 | `execution_run_id` | Provenance tracking (unique per attempt) | spec_id + timestamp + worker_id |
 
-Same `spec_id` means "same request" -- a cache hit. Different `run_id` means
-"different attempt" -- distinct provenance even when the same computation runs
-twice. This separation lets the framework cache aggressively without losing the
-ability to distinguish separate executions in the provenance graph.
+Matching `spec_id` values identify the same declared invocation. Reuse still
+depends on cache policy and accepted prior results. Distinct `run_id` values
+retain separate execution history when the same computation runs again.
 
 ---
 
@@ -120,7 +96,7 @@ remain stable until finalization.
 Authors can build these records manually or use the optional
 `ArtifactResult.add_artifact` method. The method appends a draft and its supplied
 parents together and returns its index. It chooses no parents. Both forms receive
-the same validation. See the [creator authoring guide](../how-to-guides/writing-creator-operations.md#explicit-lineage)
+the same validation. See the [creator authoring guide](../how-to-guides/writing-creator-operations.md#creator-explicit-lineage)
 for examples.
 
 ## Lineage declaration
@@ -151,13 +127,16 @@ The operation can use the index returned by `add_artifact` or construct a
 
 ### Config ancestry
 
-A config containing `{"$artifact": X}` still resolves X to a tool-local path
-during materialization. Its producing operation separately declares `X -> config`
+A config containing `{"$artifact": X}` can deliver X as a local path through
+config materialization or as a typed dependency through explicit reference
+resolution. Its producing operation separately declares `X -> config`
 using the ordinary input-role contract. Several referenced parents can share a
 role; an operation may call `get_artifact_references()` and deduplicate the IDs
 when constructing its declarations. The executor never scans config contents
 for missing edges. Config-producing operation tests should assert the intended
-parent set as well as the resolved file paths.
+parent set as well as the resolved dependencies. See
+[Read typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies)
+for phase retention and portable preparation.
 
 `IngestPipelineStep` deliberately imports artifacts as new roots, including
 configs. That import boundary does not preserve foreign ancestry.
@@ -219,9 +198,8 @@ correct parents. That responsibility belongs to the operation and its tests.
 ## Edge types
 
 All artifact provenance relationships are stored as directed
-`ArtifactProvenanceEdge` records. The edge direction follows W3C PROV
-`wasDerivedFrom` semantics: source is the parent, target is the derived
-artifact.
+`ArtifactProvenanceEdge` records. In Artisan's stored edges, source is the
+parent and target is the derived artifact.
 
 Four edge patterns appear in practice:
 
@@ -314,7 +292,8 @@ All provenance data is written through the
 [staging-commit pattern](storage-and-delta-lake.md#the-staging-commit-pattern):
 workers stage Parquet files, and the orchestrator includes them in a logical
 commit with the artifacts and terminal step snapshot. Supported readers expose
-these rows only after logical completion and validate the recorded effects.
+these rows only after logical completion. Full verification of historical
+table effects requires an explicit store audit.
 Raw Delta reads bypass that boundary and can show incomplete physical writes.
 
 ---
@@ -329,10 +308,9 @@ execution node, each output role as a data node, and edges trace the data flow
 between steps. This view answers "what is the pipeline shape?" and comes from
 the steps table alone -- no artifact-level provenance needed.
 
-**Micro graphs** show individual artifacts and executions. Every artifact and
-every row in the executions table appears as its own node, with both execution edges
-(artifact-to-execution links) and lineage edges (artifact-to-artifact
-derivations) overlaid. This view answers "what happened to this specific
+**Micro graphs** show selected individual artifacts and executions, with
+execution edges (artifact-to-execution links) and lineage edges
+(artifact-to-artifact derivations) overlaid. This view answers "what happened to this specific
 artifact?" and uses all three provenance tables.
 
 Both graphs use left-to-right layout with strict column ordering
@@ -388,23 +366,6 @@ execution-level and artifact-level perspectives:
 This distinction matters when reading code and querying provenance tables. An
 "input" is always relative to an execution. A "source" is always relative to a
 derivation edge.
-
----
-
-## Key design decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Dual provenance (execution + artifact) | Different questions require different data structures |
-| Operation-owned declarations | The operation knows the exact parents; the framework validates and records them |
-| Validate -> resolve -> enrich | Separate contract checks, exact reference resolution, and type lookup |
-| Optional operation-called matching | Reuse naming helpers without implicit executor behavior |
-| Digit boundary protection | Prevents false matches across numeric suffixes (`design_1` vs `design_10`) |
-| Distinct terminology (inputs/outputs vs source/target) | Avoids confusion between execution and artifact provenance contexts |
-| Denormalized artifact types on edges | Query performance on large provenance tables without joins |
-| Deterministic `group_id` for co-inputs | Enables "all parents of this derivation" queries without intermediate artifacts |
-| Dual execution identity (spec_id + run_id) | Deterministic caching without losing per-attempt provenance |
-| Three-level validation (artifacts, completeness, integrity) | Catches errors before staging rather than storing invalid provenance |
 
 ---
 

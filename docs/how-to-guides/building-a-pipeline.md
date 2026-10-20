@@ -1,6 +1,7 @@
 # Build a Pipeline
 
-How to create a pipeline, wire steps together, and run it to completion.
+Create a pipeline, connect operation outputs to inputs, and check the completed
+results.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md)
 and at least one [operation type](writing-creator-operations.md).
@@ -25,11 +26,12 @@ pipeline = PipelineManager.create(
 )
 output = pipeline.output
 
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
+pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
 pipeline.run(
     operation=DataTransformer,
     name="transform",
     inputs={"dataset": output("generate", "datasets")},
+    params={"scale_factor": 2.0, "noise_amplitude": 0.0},
 )
 pipeline.run(
     operation=MetricCalculator,
@@ -37,9 +39,11 @@ pipeline.run(
     inputs={"dataset": output("transform", "dataset")},
 )
 summary = pipeline.finalize()
+assert summary["overall_success"]
 ```
 
-The rest of this guide breaks down each piece.
+The remaining examples assume the imports above and an open pipeline. Use
+distinct names when trying several examples in the same run.
 
 ---
 
@@ -170,9 +174,8 @@ print(summary["total_steps"])  # 3
 print(summary["overall_success"])  # True
 ```
 
-`finalize()` is required when using `submit()` (see below). With `run()` only,
-it is optional but still recommended — it produces the summary and cleans up
-the executor.
+Call `finalize()` when you have finished submitting steps, including when every
+step used `run()`. It releases the pipeline's executor and runner resources.
 
 ---
 
@@ -200,10 +203,9 @@ pipeline.submit(
 summary = pipeline.finalize()
 ```
 
-### Context-manager form (scripts only)
+### Context-manager form
 
-`PipelineManager` supports `with`-block usage in scripts that exit when the
-block ends:
+Use a `with` block when all steps belong to one block of code:
 
 ```python
 with PipelineManager.create(
@@ -218,10 +220,8 @@ with PipelineManager.create(
 # __exit__ calls finalize() automatically.
 ```
 
-This form is **for scripts only** — do not use it in notebooks. `__exit__`
-calls `finalize()`, which shuts down the executor; subsequent cells that try
-to submit more steps will crash. In notebooks, call `finalize()` explicitly
-in the last cell.
+Leaving the block finalizes the pipeline. For a notebook that adds steps across
+cells, keep the manager open and call `finalize()` in the last cell.
 
 ### Step-level overrides
 
@@ -246,20 +246,22 @@ See [Configuring Execution](configuring-execution.md) for details on each.
 
 ### Branching
 
-Feed the same output into multiple independent steps:
+Feed the same output into separate steps with different parameters:
 
 ```python
 output = pipeline.output
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 10})
+pipeline.run(operation=DataGenerator, name="generate", params={"count": 10, "seed": 42})
 pipeline.submit(
-    operation=TransformA,
+    operation=DataTransformer,
     name="branch_a",
-    inputs={"data": output("generate", "datasets")},
+    inputs={"dataset": output("generate", "datasets")},
+    params={"scale_factor": 2.0, "noise_amplitude": 0.0},
 )
 pipeline.submit(
-    operation=TransformB,
+    operation=DataTransformer,
     name="branch_b",
-    inputs={"data": output("generate", "datasets")},
+    inputs={"dataset": output("generate", "datasets")},
+    params={"scale_factor": 3.0, "noise_amplitude": 0.0},
 )
 ```
 
@@ -273,7 +275,7 @@ from artisan.operations.curator import Merge
 pipeline.run(
     operation=Merge,
     name="merge",
-    inputs=[output("branch_a", "result"), output("branch_b", "result")],
+    inputs=[output("branch_a", "dataset"), output("branch_b", "dataset")],
 )
 # Downstream uses: output("merge", "merged")
 ```
@@ -435,7 +437,7 @@ pipeline = PipelineManager.create(
     delta_root="test/delta",
     staging_root="test/staging",
 )
-step = pipeline.run(operation=DataGenerator, params={"count": 3})
+step = pipeline.run(operation=DataGenerator, params={"count": 3, "seed": 42})
 assert step.status is StepStatus.SUCCEEDED
 assert step.succeeded_count == 1  # One source execution creates three artifacts.
 
@@ -445,7 +447,7 @@ outputs = inspect_step(
     "test/delta", step.step_number, pipeline_run_id=pipeline.config.pipeline_run_id
 )
 assert outputs.filter(outputs["artifact_type"] == "data").height == 3
-pipeline.finalize()
+assert pipeline.finalize()["overall_success"]
 ```
 
 ---

@@ -1,8 +1,8 @@
 # Orientation
 
-This page explains the mental model behind Artisan — how the
-documentation is organized and the five key abstractions you will encounter
-throughout.
+Artisan connects operations through typed artifacts and records their execution
+history and declared lineage. This page introduces the concepts used in the
+tutorials and guides.
 
 ---
 
@@ -18,19 +18,9 @@ situation:
 | **Concepts** | "I want to understand why" | Design decisions, mental models, and architecture. No code to run — explanation only. |
 | **Reference** | "I need to look something up" | Terminology, public API entry points, and links to source and docstrings for exact contracts. |
 
-These four kinds are kept separate on purpose. Tutorials don't stop to explain
-architecture. How-to guides don't teach theory. Reference pages don't include
-design rationale. When you need context that isn't on the page you're reading,
-you'll find a link to the right place.
-
-> **Rule of thumb:** Start with **Tutorials** to build intuition, reach for
-> **How-to Guides** when you have a concrete task, read **Concepts** when
-> something feels like magic, and consult **Reference** when you need exact
-> details.
-
 ---
 
-## Five key abstractions
+## Core concepts
 
 ### Artifacts
 
@@ -45,15 +35,16 @@ Artisan provides six built-in artifact types:
 
 | Type | Class | Purpose |
 |------|-------|---------|
-| `DATA` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
-| `METRIC` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
-| `CONFIG` | `ExecutionConfigArtifact` | Execution configuration snapshots (JSON) |
-| `FILE_REF` | `FileRefArtifact` | References to files at their original paths on disk |
-| `LARGE_FILE` | `LargeFileArtifact` | References to large one-to-one files (bytes stay at their external path) |
-| `APPENDABLE` | `AppendableArtifact` | Individual records stored in a shared JSONL file |
+| `data` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
+| `metric` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
+| `config` | `ExecutionConfigArtifact` | JSON parameters, optionally containing artifact references |
+| `file_ref` | `FileRefArtifact` | Verified references to files at local or object-store locations |
+| `large_file` | `LargeFileArtifact` | References to large files whose bytes remain outside Delta tables |
+| `appendable` | `AppendableArtifact` | Individual records stored in a shared JSONL file |
 
-Custom artifact types can be registered by domain layers through the
-`ArtifactTypeDef` registry.
+Custom artifact types use the `ArtifactTypeDef` registry. Configure their
+application modules so workers and readers can load the registrations; see
+[creating artifact types](../how-to-guides/creating-artifact-types.md).
 
 > **Deep dive:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md)
 
@@ -61,17 +52,17 @@ Custom artifact types can be registered by domain layers through the
 
 An **operation** is a Python class that consumes artifacts and produces
 artifacts. Operations declare typed input and output specifications via
-`InputSpec` and `OutputSpec`, and know nothing about orchestration or
-infrastructure.
+`InputSpec` and `OutputSpec`. Runner settings control where creator workers run;
+compute settings control where their execute phase runs.
 
 There are two kinds:
 
 - **Creator operations** run computation (external tools, GPU work) in a
-  three-phase lifecycle — `preprocess`, `execute`, `postprocess` — each running
-  in its own filesystem-isolated working directory.
+  three-phase lifecycle: `preprocess`, an execute function or command, and
+  `postprocess`. Each execution uses a working directory for its files.
 - **Curator operations** perform metadata work (filtering, merging,
-  ingesting) in a single `execute_curator` method call, skipping sandboxing
-  entirely.
+  ingesting) through `execute_curator` in a local subprocess, without a creator
+  working directory.
 
 The framework ships with example creators (`DataGenerator`, `DataTransformer`,
 `MetricCalculator`) and built-in curators (`Filter`, `Merge`, `IngestFiles`,

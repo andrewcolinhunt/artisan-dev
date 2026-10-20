@@ -1,14 +1,14 @@
 # Artisan
 
-A Python framework for building reproducible, provenance-tracked computational
-pipelines. Define operations, wire them into pipelines, and get automatic
-artifact tracking, content-addressed caching, and full lineage graphs.
+Build computational pipelines from operations with typed inputs and outputs.
+Artisan stores results, reuses eligible cached work, and records execution
+history and the artifact parents declared by each operation.
 
 ::::{grid} 2
 :::{grid-item-card} Getting Started
 :link: getting-started/index.md
 
-Install Artisan and build your first pipeline in ~15 minutes.
+Install Artisan and run your first pipeline.
 :::
 
 :::{grid-item-card} Tutorials

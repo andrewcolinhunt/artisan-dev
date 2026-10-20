@@ -1,7 +1,7 @@
 # Create a New Artifact Type
 
-Add a custom artifact type to the Artisan framework so the storage, staging,
-caching, and provenance systems handle it automatically.
+Define a custom artifact model and register it from your application package.
+Artisan can then persist, materialize, and track instances of that type.
 
 **Prerequisites:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md) (draft/finalize lifecycle, content addressing), familiarity with Pydantic models.
 
@@ -13,8 +13,8 @@ for setup.
 
 ## Minimal working example
 
-Two classes are all you need: a model and a type definition. Here they are in
-full, for a hypothetical `DataRecordArtifact` that stores CSV sample data.
+This `DataRecordArtifact` stores CSV content with validated size and row-count
+descriptors. Save the model and its registration in an importable package:
 
 ```python
 # src/my_project/artifacts/data_record.py
@@ -105,7 +105,9 @@ class DataRecordTypeDef(ArtifactTypeDef):
     model = DataRecordArtifact
 ```
 
-That is the complete implementation. The rest of this guide breaks it down.
+The package must be installed in each environment that reads or executes this
+type. [Load its definitions](#load-the-type-in-every-process) before opening a
+store.
 
 ---
 
@@ -149,11 +151,19 @@ concrete artifacts.
 
 ### Define the Polars schema
 
-Every column written by `to_row()` must appear here. Column order determines
-Parquet column order. All artifact types share `artifact_id` and
-`origin_step_number` and typically store `metadata`. Runtime fields such as
+Every column written by `to_row()` must appear here. Include `artifact_id`,
+`origin_step_number`, `metadata`, and every durable domain field. Runtime fields such as
 `materialized_path` and source paths for embedded artifacts do not belong in
 the content table.
+
+Use scalar columns supported by Delta Lake. Encode structured fields as JSON
+strings, as the built-in types do. Stores enforce their registered table schemas:
+use a fresh Delta root when adding a type or changing its schema. Registration
+does not migrate an existing store.
+
+The model must also allow an ID-only reference without content or descriptors.
+Keep those fields optional and validate their consistency only when content is
+present, as `_validate_identity_descriptors()` does above.
 
 ### Implement draft
 
@@ -171,7 +181,7 @@ and compound extension separately.
 You do not need to implement `finalize()`. The base `Artifact.finalize()`
 method:
 
-- Returns `self` if `artifact_id` is already set (idempotent)
+- Checks saved identity and returns `self` when already finalized
 - Validates content-derived descriptor fields
 - Calls `_identity_payload()` to get the type-owned canonical bytes
 - Hashes a length-framed envelope containing the concrete artifact type,
@@ -243,9 +253,8 @@ disk -- for example, `ExecutionConfigArtifact` overrides it to resolve
 
 ## Register the type definition
 
-Add a three-line `ArtifactTypeDef` subclass. You can place it at the bottom of
-your model file (as `DataArtifact` does) or in `registry.py` alongside the
-framework types:
+Add an `ArtifactTypeDef` subclass in your application package, beside the
+model or in a package registration module:
 
 ```python
 class DataRecordTypeDef(ArtifactTypeDef):
@@ -287,6 +296,43 @@ __all__ = [
 The `ArtifactTypeDef` subclass must be importable for registration to happen.
 Keeping the type definition in the same file as the model means importing the
 model from your domain package is sufficient.
+
+(load-the-type-in-every-process)=
+## Load the type in every process
+
+Use an application module that imports your artifact definitions and operations.
+Pass that installed module to the pipeline:
+
+```python
+from artisan.orchestration import PipelineManager
+
+pipeline = PipelineManager.create(
+    name="custom_types",
+    delta_root="custom_types/delta",
+    staging_root="custom_types/staging",
+    application_modules=("my_project.artifacts",),
+)
+```
+
+This example module registers the type. If your operations live elsewhere,
+use a registration module that imports both. Pipeline startup and fresh workers
+load the declared modules. An import in the driver script alone does not
+configure a fresh worker.
+
+For standalone reads, bootstrap the module before opening the store:
+
+```python
+from artisan.registry import bootstrap_applications
+from artisan.storage import ArtifactStore
+
+bootstrap_applications(("my_project.artifacts",))
+store = ArtifactStore("custom_types/delta")
+```
+
+Only load modules you trust: loading runs their Python code. Inspection, repair,
+and replay also need the relevant application definitions. See
+[application loading](configuring-execution.md#load-application-definitions-in-every-process)
+for configuration and CLI commands.
 
 ---
 
@@ -393,10 +439,14 @@ metadata={"record_count": 42}
 
 If your artifact stores JSON-encoded content (like `MetricArtifact` and
 `ExecutionConfigArtifact` do), use the `JsonContentMixin` from
-`artisan.schemas`. It provides a cached `values` property that
-parses and returns the JSON content as a dict:
+`artisan.schemas`. Its `values` property decodes the JSON content and returns
+an independent value on each access. This fragment shows the JSON-specific
+parts; supply the type declaration, schema, registration, and materialization
+method as in the complete example:
 
 ```python
+import json
+
 from artisan.schemas import JsonContentMixin
 
 class MyJsonArtifact(JsonContentMixin, Artifact):
@@ -412,8 +462,9 @@ class MyJsonArtifact(JsonContentMixin, Artifact):
 ```
 
 After drafting or loading, access parsed values with `artifact.values` instead
-of manually decoding `artifact.content`. The mixin caches the parsed result, so
-repeated access is free. It raises `ValueError` if the artifact is not hydrated.
+of manually decoding `artifact.content`. Each access decodes the content again;
+changing the returned value does not change the artifact's content. It raises
+`ValueError` if the artifact is not hydrated.
 
 Note the MRO: list `JsonContentMixin` before `Artifact` in the class
 definition so the mixin's methods are resolved first.
@@ -455,18 +506,18 @@ Domain types can live in a separate package outside `artisan`. The pattern is
 identical -- subclass `Artifact`, define an `ArtifactTypeDef`, and the
 framework discovers it at import time when its definition is imported.
 
-Ensure the module containing your `ArtifactTypeDef` subclass is imported
-somewhere during application startup. If it is never imported, the type will
-not be registered.
+Declare the package's registration module through
+[application loading](#load-the-type-in-every-process). The definition must be
+available in workers and inspection processes, not only in the driver.
 
 ### Placing the type definition
 
-The framework supports two patterns:
+Keep application definitions in the application package. Two layouts work:
 
 - **In the model file** (like `DataArtifact` does): keeps model and
   registration together. Preferred for domain-layer types.
-- **In `registry.py`** (like `MetricArtifact` does): groups all framework type
-  definitions. Preferred for core framework types.
+- **In a registration module:** imports and registers the package's types in
+  one place.
 
 Both work identically. Pick whichever keeps your import graph cleaner.
 
@@ -504,6 +555,13 @@ Run the tests:
 ```bash
 pixi run --locked -e dev test-unit -k test_data_record
 ```
+
+Also run a local pipeline with a fresh store and a creator that emits the type.
+Then open the store from a separate Python process with the same application
+module loaded. Check that ID-only reads return your model without content,
+hydrated reads restore every field, and materialization writes the original
+bytes. Unit tests of `to_row()` alone do not exercise worker registration or
+stored schemas.
 
 ---
 

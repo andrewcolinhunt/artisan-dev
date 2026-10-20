@@ -1,18 +1,12 @@
 # Artifacts and Content Addressing
 
-Every piece of data flowing through a pipeline -- a metric value, a
-configuration file, a dataset, a file reference -- is an **artifact**.
-Artifacts are the fundamental unit of data in Artisan, and every other
-subsystem (provenance, caching, storage, execution) is built on top of them.
-
-Understanding how artifacts work and why they are content-addressed explains
-three properties you get for free: redundant computation is skipped
-automatically, provenance edges never go stale, and the same artifact identity
-is never stored twice.
+An **artifact** is typed pipeline data, such as a dataset, metric, configuration,
+or file reference. Its ID depends on its type, content, and semantic metadata.
+Changing those values creates a different artifact.
 
 ---
 
-## Content addressing: one idea, three consequences
+## Content addressing
 
 An artifact's identity is a versioned hash of three things: its registered type,
 its type-owned canonical content, and common semantic metadata such as its name,
@@ -23,9 +17,6 @@ colliding, while semantic metadata keeps lineage-visible distinctions intact.
 Runtime state does not enter identity. The producing step number, source URI,
 managed storage URI, and materialized path may change without changing what the
 artifact means.
-
-This single decision produces three consequences that underpin the rest of the
-framework:
 
 **Deduplication.** If two operations produce the same typed semantic artifact,
 only one content row is stored. Commit verification checks that content and
@@ -38,26 +29,18 @@ identity, position, and duplicates remain visible to the key, so two different
 invocations cannot collapse into the same cache entry merely because they use
 the same set of IDs.
 
-**Immutable provenance.** Finalization protects content, names, metadata, and
-durable descriptors against assignment and nested mutation. This means
-provenance edges remain permanent: "A produced B" refers to exact, validated
-artifact identities rather than mutable records.
+**Stable provenance references.** Finalization prevents assignment to durable
+fields. Serialization, verification, and materialization also check for nested
+mutation. A lineage edge refers to validated artifact identities; changing the
+content requires a new draft and identity.
 
 ---
 
 ## Why xxh3_128?
 
-The framework uses xxHash (xxh3_128) rather than a cryptographic hash like
-SHA-256. The choice is deliberate:
-
-- **Speed.** xxh3 is a non-cryptographic hash chosen for content hashing with
-  low computational overhead. It does not protect against adversarial content
-  manipulation.
-- **128-bit collision resistance.** 128 bits provides sufficient collision
-  resistance for artifact identity in scientific workflows. The birthday bound
-  is roughly 2^64 (~10^19) artifacts before a collision becomes probable.
-- **Determinism.** xxh3_128 is deterministic across platforms, architectures, and
-  Python versions. Same bytes in, same hash out, always.
+The framework uses the non-cryptographic xxHash algorithm `xxh3_128` for
+deterministic content hashing with low overhead. It does not authenticate
+untrusted content or provide protection against deliberate hash collisions.
 
 ---
 
@@ -75,20 +58,16 @@ Draft phase                          Finalize phase
 └──────────────────────┘             └──────────────────────┘
 ```
 
-**Why two phases?** Because you cannot compute the hash until the content is
-complete, and content construction can involve multiple steps (reading files,
-encoding JSON, computing derived fields). The draft phase gives operations
-freedom to build artifacts incrementally. Once `finalize()` is called, the
-content hash is computed and the artifact has its permanent identity.
+Build content, names, metadata, and derived fields during the draft phase.
+`finalize()` validates that state and assigns its identity.
 
 Finalization is idempotent when the artifact is unchanged. Calling it again also
 checks the saved identity snapshot, so nested mutation cannot pass silently. The
-framework finalizes all draft artifacts in bulk after an operation's postprocess
-phase completes.
+framework finalizes creator drafts after postprocess and curator drafts after
+`execute_curator`.
 
-**Why not freeze the whole model?** Drafts need mutation while an operation
-builds them, and external locations may change after content is moved. Artisan
-therefore protects durable fields only after finalization. `materialized_path`
+Drafts remain mutable while an operation builds them. After finalization,
+`materialized_path`
 and locators explicitly declared by external artifact types remain mutable;
 embedded source-path fields and all other durable state do not.
 
@@ -144,16 +123,23 @@ duplicating the content-addressed artifact.
 
 ### Config artifacts and cross-references
 
-Config artifacts have a unique capability: they can contain `$artifact`
-references -- JSON values like `{"$artifact": "60d12409ab3e78e8..."}` that point
-to other artifacts by ID. During materialization, the framework resolves these
-references to file paths, so the consuming operation receives a config file with
-real paths where it expects them.
+Config content can contain `$artifact` references: JSON objects such as
+`{"$artifact": "<32-character artifact ID>"}`. The consuming input spec chooses
+how to use them:
 
-This matters for operations that use configuration files referencing data files
-that need to exist on disk. The framework handles the resolution transparently:
-non-config artifacts are materialized first (so their paths are known), then
-config artifacts resolve their `$artifact` references against those paths.
+- With normal config materialization, Artisan writes referenced artifacts first
+  and substitutes their local paths into the config file. This path substitution
+  is local; endpoint execution rejects materialized configs with references.
+- With `materialize=False` and `resolve_references=True`, preprocessing receives
+  the unchanged config plus a read-only mapping of hydrated, materialized direct
+  dependencies. The mapping remains available in postprocess. References to
+  other configs are rejected in this mode.
+
+For remote execution, the operation prepares portable files from those
+dependencies. Artisan does not rewrite paths embedded inside arbitrary file
+contents. Neither delivery mode creates lineage edges; the producing operation
+declares the config's parents explicitly. See
+[Read typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 
 ### External artifacts and verified locations
 
@@ -182,12 +168,11 @@ subclass triggers `__init_subclass__`, which requires an `Artifact` subclass
 with a matching concrete type, a unique non-reserved table path, and—when
 external—the common locator, verification, and materialization contract.
 
-**Why this matters:** the framework has zero knowledge of domain-specific data.
-A domain layer can add a custom artifact type, and the framework automatically
-provides Delta Lake persistence, content-addressed caching, deduplication, and
-provenance tracking. No framework modifications, no explicit wiring, no plugin
-loading. Define two classes, and the entire storage and execution infrastructure
-extends to cover the new type.
+Keep these classes in the application package. Every worker, reader, repair
+process, and replay process that needs the type must load its definitions.
+Declare trusted application modules before opening the store; importing a type
+in the driver alone is not enough for fresh processes. See
+[Create a New Artifact Type](../how-to-guides/creating-artifact-types.md#load-the-type-in-every-process).
 
 ---
 
@@ -204,9 +189,8 @@ and verifies external bytes. Filter can route dataset IDs without consuming
 those datasets in its own logic, while preparation still reads them for
 integrity checks.
 
-Supported storage readers also currently load and verify the physical table
-before applying later filters. Hydration settings therefore describe operation
-input delivery, not a guarantee about total I/O or memory use. See
+Hydration settings describe operation input delivery, not a guarantee about
+total I/O or memory use. For supported result queries, see
 [Reading pipeline results](storage-and-delta-lake.md#reading-pipeline-results).
 
 ---
@@ -238,27 +222,6 @@ without inferring ownership from repeated step numbers.
 
 For the full two-level caching mechanism, see
 [Execution Flow](execution-flow.md#two-level-caching).
-
----
-
-## Artifacts in the bigger picture
-
-Artifacts sit at the intersection of every other subsystem:
-
-- **Provenance** records edges between artifact IDs. Because IDs are immutable,
-  edges are permanent. Each edge captures source and target artifact IDs, their
-  types, their roles, and the execution that established the relationship.
-- **Storage** persists artifacts in Delta Lake tables, one table per type, plus
-  a global artifact index for type resolution. Deduplication is an anti-join on
-  artifact IDs during commit.
-- **Execution** materializes input artifacts to disk, runs operations, and
-  finalizes output drafts. The draft/finalize lifecycle ensures content is
-  complete before IDs are assigned.
-- **Caching** derives cache keys from artifact IDs. Same inputs = same key =
-  skip execution.
-
-Each of these relationships is a direct consequence of content addressing.
-Change the identity model, and every subsystem would need to change with it.
 
 ---
 

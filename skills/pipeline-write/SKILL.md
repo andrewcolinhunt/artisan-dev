@@ -19,6 +19,12 @@ are used identically to core operations — just different import paths. Core
 curator operations (`Filter`, `Merge`) work with any artifact type including
 types defined by plugins.
 
+For application-defined operations or artifact types, pass their installed
+registration modules through `application_modules` when creating or resuming
+the pipeline. A driver-only import does not configure fresh workers.
+Inspection, repair, and replay also need these trusted definitions. See
+[application loading](../../docs/how-to-guides/configuring-execution.md#load-application-definitions-in-every-process).
+
 ---
 
 ## Pipeline Script Template
@@ -318,8 +324,10 @@ pipeline.run(MyMultiInputOp, name="process", inputs={
 })
 ```
 
-Strategies: `LINEAGE` (shared ancestry), `ZIP` (positional), `CROSS_PRODUCT`
-(all combinations).
+Strategies: `LINEAGE` (a directed path from a candidate to a target ancestor),
+`ZIP` (positional), `CROSS_PRODUCT` (all combinations), and `NAME` (matching
+original-name stems). Sibling branches do not pair merely because they share a
+root. See [pairing strategies](../../docs/concepts/operations-model.md#pairing-strategies).
 
 ### Iterative Refinement
 
@@ -379,7 +387,7 @@ pipeline.run_composite(
     TransformAndScore, inputs={"data": output("generate", "datasets")}
 )
 
-# Non-blocking — wire downstream from the CompositeResult
+# Submit and wire downstream from the CompositeResult.
 result = pipeline.submit_composite(
     TransformAndScore, inputs={"data": output("generate", "datasets")}
 )
@@ -392,7 +400,10 @@ Composite-level execution overrides are defaults for every child step.
 
 ### Async Steps (submit)
 
-Use `submit()` for non-blocking execution. Always call `finalize()` after:
+Use `submit()` to keep the caller available after synchronous preparation and
+predecessor waits. The current manager executes steps serially; parallelism is
+within a creator step's worker batches. Call `finalize()` when no more steps
+will be submitted:
 
 ```python
 future_a = pipeline.submit(DataTransformer, name="branch_a",
@@ -422,6 +433,7 @@ summary = pipeline.finalize()
 | `failure_policy` | `FailurePolicy` | `CONTINUE` | Default for all steps |
 | `cache_policy` | `CachePolicy` | `ALL_SUCCEEDED` | Default whole-step cache policy |
 | `default_step_runner` | `str \| RunnerBase` | `"local"` | Built-in local runner or external provider instance |
+| `application_modules` | `Sequence[str] \| None` | `None` | Trusted installed registration modules; factory calls merge these with `ARTISAN_LOAD_MODULES` and remove duplicates |
 | `preserve_staging` | `bool` | `False` | Keep staging after verified commitment; uncommitted evidence is always retained |
 | `preserve_working` | `bool` | `False` | Keep working dirs after execution |
 | `recover_staging` | `bool` | `True` | Recover eligible completed executions before startup cache lookup |
@@ -509,6 +521,12 @@ pipeline = PipelineManager.resume(
 - **Filter points to data, not metrics** — the `passthrough` input wires to the
   artifacts being filtered; Filter auto-discovers metrics via provenance
 - **Merge output role is always `"merged"`** — regardless of input role names
+
+Select `pipeline_run_id` when inspecting accepted outputs, and `step_run_id`
+when deliberately inspecting a historical attempt. Origin step numbers are
+store-wide production metadata, not current-run ownership. A failed or
+unfinished latest attempt does not fall back to an earlier success. See
+[run selection](../../docs/how-to-guides/inspecting-provenance.md#select-the-run-you-want-to-inspect).
 
 ---
 

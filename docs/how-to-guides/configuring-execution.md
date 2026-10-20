@@ -57,8 +57,8 @@ pipeline = PipelineManager.create(
 )
 ```
 
-`ARTISAN_LOAD_MODULES` accepts comma-separated module names. Factory calls and
-CLI store commands resolve environment names first, then explicit names, removing
+`ARTISAN_LOAD_MODULES` accepts comma-separated module names. Pipeline factories
+and store-reading CLI commands resolve environment names first, then explicit names, removing
 duplicates. The resolved selection travels unchanged to creator and curator
 workers. Direct `PipelineConfig` and `RuntimeEnvironment` instances contain an
 explicit selection and do not merge the environment again.
@@ -168,7 +168,7 @@ pipeline.run(
 
 A unit is not necessarily one execute call. By default, creators dispatch
 execute once per input and collect the results for postprocess. Their preprocess
-output uses [`PerArtifact`](writing-creator-operations.md#implement-preprocess)
+output uses [`PerArtifact`](writing-creator-operations.md#creator-preprocess)
 for values that the framework should slice for each call; raw lists are shared.
 An operation that intentionally processes a batch in one call sets
 `per_artifact_dispatch=False`. That call receives the full prepared values,
@@ -273,7 +273,9 @@ Include `active` when configuring a provider in a dict. A string selects a
 provider already configured on the operation. Invalid or unconfigured targets
 fail before cache lookup.
 
-Container mounts use tuples, such as `("/data", "/data", "ro")` for a read-only
+Docker commands run in the supplied execution directory, even when the image
+declares a different `WORKDIR`. Container mounts use tuples, such as
+`("/data", "/data", "ro")` for a read-only
 mount or `("/scratch", "/scratch")` for a writable mount. They are not
 colon-delimited strings. Runtime specs also accept environment variables.
 See [Write Creator Operations](writing-creator-operations.md#command-operations-external-tools)
@@ -282,92 +284,58 @@ for supported configuration types and their source contracts.
 
 ### Keep managed commands in the foreground
 
-Use `run_command` for tools that should stop with their execution unit. A call
-returns successfully only after its host process group and any registered nested
-commands have stopped and their command output has been collected. A child in
-that group may run alongside its parent, but cannot remain as a background
-service after the call completes. This also applies to commands issued during
-preprocessing, postprocessing, curators, and replay.
+Use `run_command` for tools that should stop with their execution unit. On
+Linux and macOS, Artisan starts an independent supervisor before launching
+managed commands. The supervisor can stop them even if the lifecycle worker
+exits unexpectedly.
+
+A successful call means the host process group and registered nested commands
+have stopped and command output has been collected. Children may run alongside
+their parent, but cannot remain as background services after the call completes.
+This applies during preprocessing, execution, postprocessing, curators, and
+replay.
 
 Nested Artisan commands inherit the enclosing command's ownership. Keep that
-inherited environment intact. You can issue commands concurrently from operation
-threads, but join those threads before returning from each phase. Starting a
-nested native pipeline or native replay inside managed work is unsupported and
-raises an execution error before dispatch.
+environment intact and wait for nested calls before their parent exits. Join
+operation threads before returning from each phase. Starting a nested native
+pipeline or native replay inside managed work is unsupported and fails before
+dispatch. Catching an ownership error cannot turn incomplete work into a
+successful execution.
 
-Wait for nested `run_command` calls before the enclosing command exits. If it
-exits while a nested call is still running or collecting output, Artisan stops
-the remaining managed groups and fails the incomplete result. Catching an
-ownership error cannot turn that result into a successful execution.
+Direct `subprocess` calls, detached sessions, deliberately changed process
+groups, and external daemon work fall outside this ownership contract. The
+selected environment determines what Artisan can confirm:
 
-The implementation targets Linux and macOS host process groups; each platform
-requires its own native release checks. Direct `subprocess` calls, detached
-sessions, deliberately changed process groups, and external daemon work fall
-outside this ownership contract.
-
-Cancellation evidence depends on the selected environment:
-
-| Environment | What local command ownership can establish |
+| Environment | Cancellation evidence |
 | --- | --- |
-| Local | Closure of the host process group and registered nested commands |
-| Built-in Docker with a local Unix daemon endpoint | Host command closure and removal of the exact owned container |
-| Docker with other endpoints, custom Docker wrappers, Apptainer, Pixi | Host command closure; external workload termination remains unconfirmed |
+| Local | Host process group and registered nested commands have stopped. |
+| Built-in Docker with a local Unix daemon endpoint | Host commands have stopped and the exact owned container has been removed. |
+| Other Docker endpoints, custom Docker wrappers, Apptainer, Pixi | Host commands have stopped; termination of the external workload remains unconfirmed. |
 
-For built-in Docker, Artisan creates a stopped container and records its full ID
-before starting the workload. Cancellation stops that exact container, then
-requires successful removal before confirming cleanup. Killing the Docker client
-alone is insufficient. The daemon endpoint is fixed when the command starts, so
-changing your active Docker context cannot redirect cleanup. Unavailable daemon
-evidence or a lost container ID produces `unknown` and retains the execution
-workspace. Command arguments, environment configuration, cache identity, and
-replay snapshots keep their existing public forms.
+For built-in Docker, Artisan creates a stopped container and registers its full
+ID before starting it. Cleanup targets that container on the original daemon
+endpoint; changing the active Docker context cannot redirect it. The same
+contract applies to Docker Engine on Linux and Docker Desktop on macOS. A lost
+container ID or unavailable daemon evidence leaves cleanup `unknown`.
 
-Real Docker Engine qualification is available on Linux. Docker Desktop on macOS
-requires the same live container checks; passing the macOS native process tests
-alone does not qualify Docker cancellation.
+External environments still permit ordinary execution. Once one has launched
+work, cancellation remains `unknown` without evidence that its external workload
+stopped, even if the host command finished earlier. Custom environment authors
+may declare `cancellation_scope="process_group"` only when all work stays inside
+the managed host group or registered nested commands. The default is
+`"external"`.
 
-To run those checks from this repository with your local Docker engine, build
-the isolated test image and select its immutable local ID. The tests create and
-remove their own containers; pytest does not pull images or deploy services.
+Modal requests termination of the exact call and its worker container. An
+accepted provider request does not establish that the container stopped, so
+Artisan reports `unknown` and does not download or ingest the cancelled result.
+A retained result that completed before the request produces `rejected`;
+expired results and provider failures remain `unknown`.
 
-```bash
-docker build --pull --network=none --iidfile /tmp/artisan-docker-proof-image - <<'DOCKERFILE'
-FROM docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
-WORKDIR /image-default
-DOCKERFILE
-ARTISAN_DOCKER_CWD_TEST_IMAGE="$(cat /tmp/artisan-docker-proof-image)" \
-  ~/.pixi/bin/pixi run --locked -e dev pytest \
-  tests/integration/test_docker_cancellation.py \
-  tests/integration/test_docker_working_directory.py \
-  -q -ra --junitxml=/tmp/artisan-docker-qualification.xml
-```
-
-Require every selected test to pass without skips. Keep the JUnit report with
-the tested commit and `docker version` output when qualifying a release host.
-
-External environments still permit ordinary execution. Once an external environment
-has launched work, native cancellation remains `unknown` without separate
-evidence that the external work stopped, even if its host command finished
-earlier. Pixi keeps this conservative behavior until its locked wrapper passes
-the required native platform checks.
-
-Modal tool endpoints request termination of the exact named call and its worker
-container. An accepted provider request does not establish that the container
-has stopped, so Artisan reports `unknown` and does not download or ingest the
-cancelled result. A retained result that already completed before the request
-produces `rejected`. Expired results and provider failures remain `unknown`.
-
-Custom environment authors declare the class attribute `cancellation_scope`.
-Its default is `"external"`; `"process_group"` requires the wrapper to keep all
-managed work inside the host process group or registered nested commands. This
-attribute is not a per-run option and does not change serialized configuration
-or cache identity.
-
-If command cleanup cannot be confirmed, Artisan fails the execution and retains
-its workspace and uncommitted staging. It does not proceed to later user phases,
-collect outputs, or record success. Earlier independently completed units remain
-eligible for recovery. See [cancellation outcomes](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb)
-and [diagnostic limits](debugging-executions.md#verify) before retrying.
+If cleanup cannot be confirmed, Artisan fails the execution and retains its
+workspace and uncommitted staging. It skips later user phases and output
+collection. Earlier independently completed units remain eligible for recovery.
+See [cancellation outcomes](../concepts/execution-flow.md#cancellation) and
+[diagnostic limits](debugging-executions.md#verify-replay) before retrying.
 
 ## Set failure policy
 
@@ -542,7 +510,7 @@ startup. Ordinary startup does not audit unrelated completed data.
 Use `--abandon ID --reason ...` only after deciding that a particular
 logical commit should never finish. This retains its evidence and excludes it
 from recovery; abandonment and staging recovery are separate commands.
-See [Crash recovery](../concepts/storage-and-delta-lake.md#crash-recovery) for
+See [Crash recovery](../concepts/storage-and-delta-lake.md#storage-crash-recovery) for
 eligibility, history, and restart-versus-resume behavior.
 
 ## Inspect commands from an execution

@@ -220,8 +220,11 @@ The framework validates at class definition time (`__pydantic_init_subclass__`):
 
 ## Running Composites
 
-Composites run via `run_composite` (blocking) or `submit_composite`
-(non-blocking) — see `pipeline-write` for full API details:
+Composites run via `run_composite` (waits for every child) or `submit_composite`
+(returns a result handle after synchronous composition and preparation).
+Preparing children can wait for predecessors, so submission need not return
+immediately. The current manager runs steps serially; creator batches can run
+in parallel within a step. See `pipeline-write` for pipeline usage:
 
 ```python
 # Blocking: expands into real pipeline steps, one per internal ctx.run()
@@ -231,12 +234,17 @@ pipeline.run_composite(
     inputs={"data": output("generate", "datasets")},
 )
 
-# Non-blocking: returns a CompositeResult for downstream wiring
+# Submit and receive a CompositeResult for downstream wiring.
 result = pipeline.submit_composite(
     TransformAndScore, name="ts", inputs={"data": output("generate", "datasets")}
 )
 pipeline.run(NextOp, inputs={"data": result.output("metrics")})
 ```
+
+Application composites and their child definitions must be importable in the
+relevant processes. Declare trusted application modules at the pipeline
+boundary; see
+[application loading](../../docs/how-to-guides/configuring-execution.md#load-application-definitions-in-every-process).
 
 ---
 

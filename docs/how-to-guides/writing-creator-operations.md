@@ -1,7 +1,7 @@
 # Write Creator Operations
 
-How to build operations that run computation and produce artifacts using the
-three-phase lifecycle.
+Write a creator to prepare inputs, run computation, and return artifacts with
+explicit parents.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Orientation](../getting-started/orientation.md)
@@ -228,8 +228,9 @@ supported — use separate output roles instead.
 
 ## Add parameters
 
-Group algorithm-specific configuration into a nested `Params` model. Use
-Pydantic `Field` for defaults and validation:
+Inside the operation class, group algorithm-specific configuration into a
+nested `Params` model. Annotate `params` with that exact model. Use Pydantic
+`Field` for defaults and validation:
 
 ```python
 class Params(BaseModel):
@@ -249,16 +250,18 @@ Access parameter values in lifecycle methods through `self.params`, such as
 pipeline.run(operation=MyOp, inputs=..., params={"scale_factor": 2.0})
 ```
 
-Parameters are optional. If your operation has no configurable behavior, skip
-this (see `MetricCalculator` in `artisan.operations.examples`).
+Parameterless operations omit both `Params` and `params`; see `MetricCalculator`
+in `artisan.operations.examples`. Subclasses can inherit the pair unchanged or
+replace both together. Flat algorithm fields on an operation are rejected.
 
 ---
 
+(creator-preprocess)=
 ## Implement preprocess
 
 **Required** for operations with inputs. The framework raises `TypeError` at
-class definition time if missing. Generative operations skip this (the
-default returns `{}`).
+class definition time if missing. Generative operations need no override; the
+framework calls the default method, which returns `{}`.
 
 `preprocess` receives `PreprocessInput` containing the materialized artifacts
 and returns a plain dict. Carry the exact source ID and the chosen human name
@@ -430,6 +433,7 @@ implementation, and the
 [Co-Produced Outputs tutorial](../tutorials/09-writing-operations/03-co-produced-outputs.ipynb)
 for a step-by-step walkthrough of authoring this pattern.
 
+(creator-explicit-lineage)=
 ### Explicit lineage
 
 Every artifact-producing operation declares exact parents. `derives_from`
@@ -523,8 +527,8 @@ direct dependencies, keyed by artifact ID. Each dependency is hydrated and has
 a local `materialized_path`; repeated references share the same object. Config
 markers stay unchanged, and dependencies remain available through postprocessing.
 Malformed IDs, missing or corrupt artifacts, and references to other configs fail
-before preprocessing. Reference resolution requires hydration and disables config
-file materialization.
+before preprocessing. The input spec must set `materialize=False` and retain
+`hydrate=True` (the default); invalid combinations fail when the spec is created.
 
 For endpoint execution, use these dependencies to prepare portable files under
 `inputs.preprocess_dir`, then return those files as declared execute inputs. Write
@@ -533,10 +537,44 @@ when files move to a worker. The typed objects stay with the lifecycle worker.
 Check your preparation by moving the prepared files to another directory before
 execution and verifying that the result is unchanged.
 
+For example, this preprocess fragment embeds referenced UTF-8 text in a JSON
+file. It uses the imports from `ScaleData` plus `json` and
+`ExecutionConfigArtifact`:
+
+```python
+import json
+
+from artisan.schemas import ExecutionConfigArtifact
+
+
+def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+    paths = []
+    for config in inputs.input_artifacts["config"]:
+        if not isinstance(config, ExecutionConfigArtifact):
+            raise TypeError("Expected an execution config")
+        references = inputs.referenced_artifacts(config)
+        payload = {
+            "config_id": config.artifact_id,
+            "contents": [
+                Path(references[ref_id].materialized_path).read_text()
+                for ref_id in config.get_artifact_references()
+            ],
+        }
+        path = Path(inputs.preprocess_dir) / f"{config.artifact_id}.json"
+        path.write_text(json.dumps(payload))
+        paths.append(str(path))
+    return {"config": PerArtifact(paths)}
+```
+
+The execute phase reads the prepared JSON file. Its contents have no dependency
+on the original sandbox paths. Choose a format suited to your tool and data;
+large or binary inputs need a different packaging choice.
+
 Declare each output's config parent explicitly. Resolving dependencies does not
 add lineage edges. Replay reloads the same referenced IDs and verifies their
 content, so the source store and external content must remain available after
 working-directory cleanup.
+These resolved dependencies are not additional input roles or a pairing scheme.
 When adopting a different input or output contract, increment the operation's
 `version` to invalidate existing execution caches. Replay also checks the recorded
 reference-resolution setting against the current input declaration.
@@ -646,7 +684,7 @@ endpoint remotely, a standalone container CLI — set one flag:
 ```python
 class EmbedSequences(OperationDefinition):
     name = "embed_sequences"
-    execute_as_tool: ClassVar[bool] = True  # the entire opt-in
+    execute_as_tool: ClassVar[bool] = True
     ...
 
     class Params(BaseModel):
@@ -659,9 +697,9 @@ class EmbedSequences(OperationDefinition):
     ) -> None: ...  # read input files, write output files to inputs.execute_dir
 ```
 
-No `ToolSpec`, no `execute_command` — the framework supplies the command
-(`artisan op run <module:Qualname> --params … --inputs …`) and the op is
-a command op everywhere: `artisan modal deploy` accepts it,
+The framework supplies the command
+(`artisan op run <module:Qualname> --params … --inputs …`) and uses the command
+execution path: `artisan modal deploy` accepts it,
 `compute_provider='modal'` routes it, and a container with the op's
 package baked in runs it with no orchestration at all.
 

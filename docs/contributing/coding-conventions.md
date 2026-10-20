@@ -172,3 +172,33 @@ Markers distinguish pipeline integration from resource requirements. The
 [development task list](../getting-started/using-pixi.md#dev-environment) describes
 which suites need Docker, object storage, or Modal credentials. Run the checks
 appropriate to the change and the repository's required pre-PR checks.
+
+### Qualify Docker commands
+
+Run the container cancellation and working-directory checks against a local
+Docker engine, including Docker Desktop on Apple Silicon when qualifying macOS.
+Build the pinned test image and select its immutable local image ID:
+
+```bash
+qualification_dir="$(mktemp -d /tmp/artisan-docker-check.XXXXXX)"
+git rev-parse HEAD > "$qualification_dir/commit.txt"
+docker version > "$qualification_dir/docker-version.txt"
+docker build --pull --network=none --iidfile "$qualification_dir/image-id" - <<'DOCKERFILE'
+FROM docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
+WORKDIR /image-default
+DOCKERFILE
+ARTISAN_DOCKER_CWD_TEST_IMAGE="$(cat "$qualification_dir/image-id")" \
+  pixi run --locked -e dev pytest \
+  tests/integration/test_docker_cancellation.py \
+  tests/integration/test_docker_working_directory.py \
+  -q -ra --junitxml="$qualification_dir/qualification.xml"
+```
+
+The image build may download the pinned base image. The tests create and remove
+their own containers. Require every selected test to pass without skips and keep
+the JUnit report, commit, and Docker version together.
+
+Native platform checks and these container checks run in CI. Live Modal
+cancellation uses the separate
+[qualification procedure](https://github.com/dexterity-systems/artisan/blob/main/tests/qualification/modal/README.md),
+which creates a temporary app and requires explicit deployment approval.

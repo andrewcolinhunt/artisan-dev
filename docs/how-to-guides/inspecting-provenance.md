@@ -3,6 +3,10 @@
 Select a run, inspect its accepted outputs, and trace how artifacts relate to
 one another. These recipes assume a populated local `delta_root`.
 
+If the store contains application-defined artifact types, load their trusted
+registration modules before reading it. See
+[application loading](configuring-execution.md#load-application-definitions-in-every-process).
+
 See [Provenance System](../concepts/provenance-system.md) for the distinction
 between execution history and artifact lineage.
 

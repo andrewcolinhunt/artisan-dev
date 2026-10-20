@@ -1,7 +1,7 @@
 # Artisan
 
-A Python framework for building computational pipelines with automatic
-provenance tracking.
+A Python framework for building computational pipelines with typed artifacts,
+caching, and provenance tracking.
 
 Operations declare typed inputs, outputs, and parameters. Artisan uses that
 contract to connect steps, track how results were produced, and store artifacts
@@ -28,7 +28,7 @@ storage model, including its limits.
 
 ---
 
-## Quick Start
+## Quick start
 
 **Prerequisites:** [Pixi 0.66.0](https://pixi.sh), Linux (x86_64 or aarch64) or
 macOS (Apple Silicon). Pixi supplies Python 3.12 and the other dependencies.
@@ -55,7 +55,7 @@ your first pipeline and the mental model behind the framework.
 
 ---
 
-## Quick Example
+## Quick example
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -97,7 +97,7 @@ pipeline.run(
 result = pipeline.finalize()
 ```
 
-## Development Setup
+## Development setup
 
 ### Environments
 
@@ -128,7 +128,7 @@ manifest drift stops with an error instead of rewriting `pixi.lock`. Use an
 unlocked Pixi dependency command only for deliberate dependency maintenance,
 then commit `pyproject.toml` and `pixi.lock` together.
 
-### Running Tests
+### Running tests
 
 ```bash
 pixi run --locked -e dev test
@@ -140,13 +140,13 @@ configured S3 endpoint. Modal checks are separate. See the
 [development task list](docs/getting-started/using-pixi.md#dev-environment) for
 focused suites and their resource requirements.
 
-### Formatting and Linting
+### Formatting and linting
 
 ```bash
 pixi run --locked -e dev fmt
 ```
 
-### Shell Completions
+### Shell completions
 
 Enable tab-completion for `pixi` commands and tasks:
 
@@ -163,6 +163,8 @@ Restart your shell or `source` the file to activate.
 ---
 
 ## Documentation
+
+See the [changelog](CHANGELOG.md) for release changes and upgrade requirements.
 
 ```bash
 pixi run --locked -e docs docs-build
@@ -182,7 +184,7 @@ pixi run --locked -e docs docs-clean
 
 ---
 
-## Coding Agent Integration
+## Coding agent integration
 
 Artisan includes portable Agent Skills for scaffolding artifact types,
 operations, composites, and pipelines. Compatible agents discover them through

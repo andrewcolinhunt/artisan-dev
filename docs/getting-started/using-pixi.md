@@ -165,7 +165,7 @@ contains their exact commands. Invoke a task with `pixi run --locked -e ENV TASK
 | `install-hooks` | Install this repository's Git hooks |
 | `test` | Run unit, integration, S3, and local tutorial suites; needs Docker/MinIO or configured S3 |
 | `test-unit` | Unit tests; no external services |
-| `test-integration` | End-to-end local pipelines; no external services |
+| `test-integration` | End-to-end local pipelines; Docker-specific tests skip unless their image is configured |
 | `test-s3` | S3 tests; needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
 | `test-notebook` | CI-runnable tutorial notebooks; excludes Modal notebooks |
 | `test-notebook-modal` | Optional Modal tutorials; needs deployed endpoints and credentials, plus object storage for the R2 tutorial |
@@ -192,6 +192,11 @@ the immutable MinIO image pinned in `tests/conftest.py`. This is a third-party
 build of the upstream MinIO source from [coollabsio/minio](https://github.com/coollabsio/minio).
 Ad hoc `pytest` runs can still skip when storage is unavailable; add
 `--require-s3` when every selected S3 test must execute.
+
+For Docker command checks, build the pinned test image and run the
+[container qualification](../contributing/coding-conventions.md#qualify-docker-commands)
+on a host with Docker available. A passing integration suite with those tests
+skipped does not establish container cancellation.
 
 ### Docs environment
 

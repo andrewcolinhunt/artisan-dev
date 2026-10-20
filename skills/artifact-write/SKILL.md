@@ -38,10 +38,12 @@ calls are not a public helper to import.
   domain package. Give them a unique, matching type key and frozen
   `artifact_type` default, plus an `artifacts/<unique_name>` table path.
   Registration happens on import; no enum edit or manual registry mutation is
-  needed. Export the model and import it from the producing operation's module
-  or package initialization. Every execution environment must be able to import
-  that package. An import only in the orchestration script is insufficient for
-  fresh workers. Import registrations before creating or opening the store.
+  needed. Export the model through an installed application registration module
+  that also imports its operations. Declare that module with
+  `application_modules` on pipeline creation or resume. Standalone readers use
+  `artisan.registry.bootstrap_applications` before opening the store.
+  Workers, inspection, repair, and replay need these trusted definitions. See
+  [application loading](../../docs/how-to-guides/configuring-execution.md#load-application-definitions-in-every-process).
 - **Reference state:** Construction with only `artifact_id` and `artifact_type`
   must work. Content, names, descriptors, and locators normally default to
   `None`; the draft factory supplies hydrated values. Validators must accept
@@ -68,8 +70,8 @@ calls are not a public helper to import.
   does not affect identity.
 - **JSON and rows:** Domain-owned JSON encoding must define accepted values and
   deterministic key ordering. `JsonContentMixin` from `artisan.schemas` adds
-  cached decoded `values`; it does not canonicalize encoding. Inherit `to_row()`
-  and `from_row()`. Extend `_row_encoders()` / `_row_decoders()` only for needed
+  freshly decoded `values` on each access; it does not canonicalize encoding.
+  Inherit `to_row()` and `from_row()`. Extend `_row_encoders()` / `_row_decoders()` only for needed
   conversions, merging `super()` to preserve metadata handling.
 - **Materialization and mutation:** Implement
   `_materialize_content(directory, *, fs=None)` for the representation. Embedded

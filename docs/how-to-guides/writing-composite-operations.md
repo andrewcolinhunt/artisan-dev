@@ -1,7 +1,7 @@
 # Write Composite Operations
 
-How to group tightly coupled operations into a reusable composite with
-declared inputs, outputs, and internal wiring.
+Define shared operation wiring once, then run it as a composite. Each child
+remains a pipeline step with its own results, cache, and provenance.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Writing Creator Operations](writing-creator-operations.md)
@@ -80,12 +80,13 @@ pipeline = PipelineManager.create(
 )
 output = pipeline.output
 
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
+pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
 pipeline.run_composite(
     TransformAndScore,
     inputs={"dataset": output("generate", "datasets")},
 )
 result = pipeline.finalize()
+assert result["overall_success"]
 ```
 
 `run_composite` blocks until every child step completes. Use
@@ -95,7 +96,8 @@ wait while preparing dependent children, so submission is not guaranteed to
 return immediately. The current manager executes child steps serially.
 
 As an alternative to the blocking call above, submit the composite and wire its
-output into a downstream step before finalizing the pipeline:
+output into a downstream step before finalizing the pipeline. Use this in place
+of the blocking call in the previous example:
 
 ```python
 scored = pipeline.submit_composite(
@@ -117,7 +119,9 @@ Composites run only through `run_composite`/`submit_composite`. Passing a
 
 ## Define metadata and role enums
 
-Every composite needs a `name`. Composites with inputs define
+Every composite needs a `name`. The following fragments illustrate parts of a
+class; the complete `TransformAndScore` definition above includes all required
+members. Composites with inputs define
 `InputRole(StrEnum)` whose values match the `inputs` dict keys.
 Composites with outputs define `OutputRole(StrEnum)` whose values match
 the `outputs` dict keys. The framework validates this match at class
@@ -279,7 +283,8 @@ children remain in isolated local subprocesses. See
 
 ### Multi-input composite
 
-A composite that accepts multiple input roles:
+This pattern assumes you supply an `Aligner` operation with `data` and
+`reference` inputs and an `aligned` data output:
 
 ```python
 class AlignAndScore(CompositeDefinition):
@@ -336,6 +341,7 @@ class GenerateAndAnalyze(CompositeDefinition):
         ctx.output("metrics", scored.output("metrics"))
 ```
 
+(author-composite-nesting)=
 ### Nesting composites
 
 A composite can contain other composites. The inner composite's internal
@@ -417,15 +423,16 @@ pipeline = PipelineManager.create(
     staging_root="test/staging",
 )
 output = pipeline.output
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 3})
+pipeline.run(operation=DataGenerator, name="generate", params={"count": 3, "seed": 42})
 
 result = pipeline.run_composite(
     TransformAndScore,
     inputs={"dataset": output("generate", "datasets")},
 )
-# result exposes .output(role) for the composite's declared outputs
 assert result.output("metrics") is not None
-pipeline.finalize()
+summary = pipeline.finalize()
+assert summary["overall_success"]
+assert summary["total_steps"] == 3  # Generator, transformer, and metric calculator.
 ```
 
 ---
