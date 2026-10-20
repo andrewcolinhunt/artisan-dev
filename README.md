@@ -206,11 +206,20 @@ See [Using Claude Code](docs/getting-started/using-claude-code.md) for details.
 Other compatible hosts can use the complete skill folder, including its
 references, through their documented skill installation mechanism.
 
-For operation discovery and inspection of persisted runs and failure logs,
+`pipeline-operate` prefers supported local Python/CLI inspection when the
+selected store is accessible from the project's environment. Base Artisan
+includes offline guidance and installed capability schemas:
+
+```bash
+pixi run --locked artisan guide show pipeline-operate
+pixi run --locked artisan inspect list --json
+```
+
+The guidance reports its package version, source origin and content digest.
+Installing the Python package makes this guidance available; it does not
+install skills into agent hosts. For remote-only access,
 [connect an MCP client](docs/how-to-guides/connecting-mcp.md) to the optional
-read-only `artisan-mcp` server. Installing the Python MCP extra does not install
-client skills. `pipeline-operate` discovers the connected tools and works with
-the capabilities available there.
+read-only `artisan-mcp` server and use that server's advertised schemas.
 
 ---
 

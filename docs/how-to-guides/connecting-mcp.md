@@ -2,6 +2,9 @@
 
 Connect a client to Artisan's read-only Model Context Protocol (MCP) server to
 discover operations and inspect persisted pipeline results and failure logs.
+Python and CLI clients can use the same [inspection contracts locally](inspecting-evidence.md)
+without starting a server. MCP is useful when your client needs a tool protocol
+or an explicitly configured server context.
 
 ## Prerequisites
 
@@ -110,8 +113,9 @@ The server provides read-only evidence; the skill helps interpret it.
 A collection appears as `items`, `steps.items`, or `edges.items`, depending on
 the tool. Its page reports the selected collection's `total_items`, the number
 returned, `has_more`, and `next_cursor`. A byte limit can return fewer rows than
-the requested `limit`. Follow the response's `follow_up.tool` and
-`follow_up.arguments` to continue with the same selectors.
+the requested `limit`. Follow the response's `follow_up.capability` and
+`follow_up.arguments` to continue with the same selectors. Prefix the capability
+with `artisan_` when calling its MCP tool.
 
 For example, this FastMCP client starts from the `artisan://runs` JSON resource
 and follows its tool continuations. Replace the executable and store paths:
@@ -141,7 +145,9 @@ async def inspect_runs():
             if follow_up is None:
                 break
             result = await client.call_tool(
-                follow_up["tool"], follow_up["arguments"], raise_on_error=False
+                "artisan_" + follow_up["capability"],
+                follow_up["arguments"],
+                raise_on_error=False,
             )
             page = result.structured_content
             if result.is_error:
@@ -161,7 +167,7 @@ without reusing that token. Active runs can change repeatedly; wait for a stable
 view or narrow the selection. Paging is not an atomic snapshot of the store.
 
 JSON resources use the same default projections as their corresponding tools.
-Their returned continuations target real tools; do not construct additional
+Their returned continuations identify shared capabilities; do not construct additional
 resource URIs to retrieve later pages. Summary views and indivisible sections
 do not accept a cursor.
 
@@ -186,8 +192,10 @@ Use selectors to avoid transporting unrelated or oversized values:
 For clients upgrading from earlier MCP responses, update step-result consumers
 from type-grouped lists to flat `items`; read run steps and graph edges through
 their named pages; request diagnosis detail views explicitly; and request
-artifact metadata keys explicitly. These MCP projections carry
-`projection_version="1"`; core Python reader results are not paginated.
+artifact metadata keys explicitly. Shared projections carry
+`projection_version="2"`; continuations use `capability` instead of `tool`, and
+version-1 cursors must be discarded. The bounded Python facade uses these same
+contracts; full analytical reader results remain unpaginated.
 
 Artisan-owned JSON responses fit 48 KiB of serialized UTF-8, including page and
 continuation data. The final tool result fits 128 KiB, including matching JSON
