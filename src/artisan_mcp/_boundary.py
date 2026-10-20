@@ -1,59 +1,49 @@
-"""Capture domain failures and render them truthfully at each MCP boundary."""
+"""Render validated core evidence with native MCP errors and wire limits."""
 
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Never
+from typing import Any
 
+from fastmcp import Context
 from fastmcp.tools import ToolResult
 from mcp.types import CallToolResult
-from pydantic import TypeAdapter, ValidationError
+from pydantic import ValidationError
 
-from artisan.errors import ArtisanError, CommitError, ErrorCode
-from artisan_mcp._evidence import (
-    MAX_PAYLOAD_BYTES,
-    MAX_TOOL_RESULT_BYTES,
-    encode_json,
-    json_ready,
-    response_too_large,
+from artisan.errors import ArtisanError
+from artisan.inspection._boundary import (
+    error_payload,
+    store_not_found,
+    validate_response,
 )
-from artisan_mcp.models import CommitErrorPayload, ErrorPayload
+from artisan.inspection._evidence import encode_json, json_ready, response_too_large
 
-if TYPE_CHECKING:
-    from collections.abc import Callable
-
-    from artisan_mcp.config import ArtisanMCPConfig
-
+MAX_TOOL_RESULT_BYTES = 128 * 1024
 logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
 class Captured[T]:
-    """The actual outcome, without guessing from arbitrary payload keys."""
+    """Keep the actual outcome separate from arbitrary payload fields."""
 
     value: T | None = None
     error: ArtisanError | None = None
 
 
 def capture[T](payload_fn: Callable[[], T]) -> Captured[T]:
-    """Capture known query failures; internal validation remains a masked defect."""
+    """Capture known read failures and preserve internal defects as native errors."""
     try:
         return Captured(value=payload_fn())
-    except FileNotFoundError:
+    except FileNotFoundError as exc:
         logger.exception("MCP store read failed")
-        return Captured(
-            error=ArtisanError(
-                ErrorCode.STORE_NOT_FOUND,
-                "Artisan store not found",
-                error_type="io",
-                hint="Check ARTISAN_DELTA_ROOT for the intended store.",
-                recovery_hint="CHECK_INPUT",
-            )
-        )
+        error = store_not_found()
+        error.__cause__ = exc
+        return Captured(error=error)
     except ArtisanError as exc:
         if exc.__cause__ is not None:
-            logger.exception("MCP operation failed")
+            logger.exception("MCP inspection failed")
         return Captured(error=exc)
     except ValidationError as exc:
         logger.exception("Internal MCP reader validation failed")
@@ -62,26 +52,13 @@ def capture[T](payload_fn: Callable[[], T]) -> Captured[T]:
 
 
 def _payload(outcome: Captured[Any], success_type: Any) -> tuple[dict[str, Any], bool]:
-    """Validate the selected outcome branch, then enforce its domain byte budget."""
     try:
-        if outcome.error is None:
-            model = TypeAdapter(success_type).validate_json(encode_json(outcome.value))
-        else:
-            error_type = (
-                CommitErrorPayload
-                if isinstance(outcome.error, CommitError)
-                else ErrorPayload
-            )
-            model = error_type.model_validate(
-                outcome.error.to_dict(include_cause=False)
-            )
-        payload = json_ready(model)
-        if not isinstance(payload, dict):
-            message = "MCP evidence must be an object"
-            raise TypeError(message)
-        if len(encode_json(payload)) > MAX_PAYLOAD_BYTES:
-            return response_too_large(), True
-        return payload, outcome.error is not None
+        if outcome.error is not None:
+            return error_payload(outcome.error), True
+        try:
+            return json_ready(validate_response(outcome.value, success_type)), False
+        except ArtisanError as exc:
+            return error_payload(exc), True
     except (ValidationError, ValueError, TypeError) as exc:
         logger.exception("Internal MCP result validation failed")
         message = "Internal evidence validation failed"
@@ -91,7 +68,7 @@ def _payload(outcome: Captured[Any], success_type: Any) -> tuple[dict[str, Any],
 def evidence_payload(
     payload_fn: Callable[[], Any], success_type: Any
 ) -> dict[str, Any]:
-    """Render JSON evidence for a resource or prompt, without a tool wrapper."""
+    """Render bounded JSON for transport resources and prompts."""
     return _payload(capture(payload_fn), success_type)[0]
 
 
@@ -111,7 +88,6 @@ def render_tool(payload_fn: Callable[[], Any], success_type: Any) -> ToolResult:
 
 
 def _tool_result(payload: dict[str, Any], failed: bool) -> ToolResult:
-    """Serialize one validated object exactly once for the text fallback."""
     return ToolResult(
         structured_content=payload,
         content=encode_json(payload).decode("utf-8"),
@@ -119,63 +95,31 @@ def _tool_result(payload: dict[str, Any], failed: bool) -> ToolResult:
     )
 
 
-def invalid_input(field: str, message: str) -> Never:
-    """Raise a structured error for an invalid MCP argument.
+def require_delta_root(state: dict[str, Any]) -> str:
+    """Strictly bootstrap the snapshotted trusted applications before store reads."""
+    from artisan.inspection._boundary import require_delta_root as require_root
+    from artisan.registry import bootstrap_applications
 
-    Args:
-        field: Name of the invalid argument.
-        message: Human-readable validation failure.
-
-    Raises:
-        ArtisanError: Always, with a machine-readable validation envelope.
-    """
-    from artisan.errors import ArtisanError, ErrorCode
-
-    raise ArtisanError(
-        ErrorCode.PARAM_TYPE_MISMATCH,
-        message,
-        error_type="validation",
-        field=field,
-        hint=f"provide a valid {field}",
-        recovery_hint="CHECK_INPUT",
-    )
+    bootstrap_applications(state["trusted_modules"], purpose="MCP inspection")
+    return require_root(state["config"].delta_root)
 
 
-def validate_int_range(value: int, *, field: str, minimum: int, maximum: int) -> None:
-    """Require an integer argument to fall within an inclusive range.
+def inspection_tool(
+    capability: str, arguments: dict[str, Any], *, ctx: Context | None = None
+) -> ToolResult:
+    """Delegate named MCP tools to the same core request and response definitions."""
+    from artisan.inspection.api import inspect_evidence, validate_request
+    from artisan.inspection.catalog import definition
 
-    Args:
-        value: Value to validate.
-        field: Argument name for the error envelope.
-        minimum: Smallest accepted value.
-        maximum: Largest accepted value.
-    """
-    if isinstance(value, bool) or not isinstance(value, int):
-        invalid_input(field, f"{field} must be an integer")
-    if not minimum <= value <= maximum:
-        invalid_input(field, f"{field} must be between {minimum} and {maximum}")
+    item = definition(capability)
 
-
-def require_delta_root(config: ArtisanMCPConfig) -> str:
-    """Resolve the configured Delta root or raise the ``delta_root_unset`` envelope.
-
-    Args:
-        config: The server configuration carrying ``delta_root``.
-
-    Returns:
-        The resolved Delta root path.
-
-    Raises:
-        ArtisanError: With ``code=delta_root_unset`` when no root is set.
-    """
-    from artisan.errors import ArtisanError, ErrorCode
-
-    if not config.delta_root:
-        raise ArtisanError(
-            ErrorCode.DELTA_ROOT_UNSET,
-            "no Delta root configured",
-            error_type="config",
-            hint="set ARTISAN_DELTA_ROOT or pass --delta-root",
-            recovery_hint="CHECK_INPUT",
+    def payload() -> Any:
+        values = json_ready(arguments)
+        validate_request(capability, values)
+        state = ctx.lifespan_context if ctx is not None else {}
+        root = require_delta_root(state) if item.requires_store else None
+        return inspect_evidence(
+            capability, values, delta_root=root, discovery=state.get("discovery")
         )
-    return config.delta_root
+
+    return render_tool(payload, item.response_type)

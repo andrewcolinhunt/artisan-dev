@@ -6,10 +6,10 @@ import asyncio
 
 from fastmcp import FastMCP
 
+from artisan.inspection._evidence import encode_json
+from artisan.inspection.models import OperationDescription
+from artisan.inspection.operations import operation_payload
 from artisan_mcp._boundary import evidence_payload
-from artisan_mcp._evidence import encode_json
-from artisan_mcp.models import OperationDescription
-from artisan_mcp.tools.catalog import operation_payload
 
 
 def register(mcp: FastMCP) -> None:

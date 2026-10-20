@@ -4645,7 +4645,7 @@ packages:
 - pypi: ./
   name: dexterity-artisan
   version: 0.1.2a6.dev740+g1d7567a14.d20261020
-  sha256: 0982c37fd0dbdf2375de6ddd1d422f46425e70b34643652809f9d4812ca5a475
+  sha256: 508755f971b8f89835a0de3c7b40633490599c0091076394d0db9b29aab1e636
   requires_dist:
   - cloudpickle>=3,<4
   - deltalake>=0.14.0

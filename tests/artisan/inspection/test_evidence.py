@@ -11,19 +11,19 @@ from pathlib import Path
 import pytest
 
 from artisan.errors import ArtisanError, ErrorCode
-from artisan_mcp._evidence import (
+from artisan.inspection._evidence import (
     MAX_PAYLOAD_BYTES,
     encode_json,
     ensure_fits,
     json_ready,
 )
-from artisan_mcp._pagination import paginate
+from artisan.inspection._pagination import paginate
 
 
 def page(rows, limit=1, cursor=None, **kwargs):
     """Select the same synthetic query unless the test changes its identity."""
     defaults = {
-        "tool": "artisan_test",
+        "capability": "test",
         "arguments": {"name": "selected"},
         "scope": "/private/store",
     }
@@ -76,7 +76,7 @@ def test_byte_driven_pages_advance_by_returned_count_without_skipping():
             assert result["follow_up"] is None
             break
         follow = result["follow_up"]
-        assert follow["tool"] == "artisan_test"
+        assert follow["capability"] == "test"
         assert follow["arguments"]["cursor"] == result["next_cursor"]
         result = page(rows, limit=2, cursor=result["next_cursor"])
     assert seen == rows
@@ -113,7 +113,7 @@ def test_empty_page_is_complete_and_counted():
     [
         {"arguments": {"name": "different"}},
         {"scope": "/another/private/store"},
-        {"tool": "another_tool"},
+        {"capability": "another_capability"},
         {"page_key": "edges"},
     ],
 )
@@ -148,7 +148,7 @@ def test_cursor_detects_changed_rows_header_coverage_and_omissions(change):
 @pytest.mark.parametrize(
     "changes",
     [
-        {"version": 2},
+        {"version": 1},
         {"version": True},
         {"offset": 0},
         {"offset": -1},

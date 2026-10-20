@@ -9,7 +9,7 @@ class TestCapabilities:
     def test_reports_versions_and_read_only(self, make_app, invoke) -> None:
         payload = invoke(make_app(), "artisan_capabilities")
         assert payload["artisan_version"]
-        assert payload["server_version"]
+        assert "server_version" not in payload
         assert payload["read_only"] is True
         assert payload["delta_root"] is None
         assert payload["operations_count"] >= 1
@@ -88,10 +88,10 @@ class TestListOperations:
         assert page["next_cursor"] is None
 
     @pytest.mark.parametrize("limit", [0, -1, 101])
-    def test_rejects_out_of_range_limit(self, make_app, invoke_error, limit) -> None:
-        result = invoke_error(make_app(), "artisan_list_operations", {"limit": limit})
-        assert result["code"] == "param_type_mismatch"
-        assert result["field"] == "limit"
+    def test_rejects_out_of_range_limit(self, make_app, invoke_result, limit) -> None:
+        result = invoke_result(make_app(), "artisan_list_operations", {"limit": limit})
+        assert result.is_error is True
+        assert result.structured_content is None
 
     @pytest.mark.parametrize("cursor", ["", "0", "-1", "01", "²", "999999"])
     def test_rejects_invalid_or_stale_cursor(

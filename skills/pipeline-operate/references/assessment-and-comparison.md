@@ -1,7 +1,8 @@
 # Assessment and Comparison
 
-Use this reference when the question concerns result quality, differences
-between runs, or a local fallback for unavailable MCP reads.
+Use this reference when the question concerns result quality or differences
+between runs. Use the selected accessible store and the established environment.
+Check the installed schemas before calling bounded inspection capabilities.
 
 ## Define what success means
 
@@ -9,7 +10,7 @@ Resolve the store, run, step and output role before assessing. A successful
 execution means the operation completed; accepted artifacts identify its
 outputs. Neither alone establishes that the user's goal was met.
 
-If `artisan_assess_outcomes` is exposed, use its actual schema to supply the
+For the `assess_outcomes` capability, use its actual schema to supply the
 criterion: literal metric key path, comparison operator and threshold, with
 an expected count when the task requires one. A key path selects JSON object
 keys; it is not an expression or an array index. Preserve numeric types and
@@ -38,14 +39,14 @@ different from an available empty population; preserve `null` versus zero.
 Recorded disposition and cancellation status add context, not a cleanup
 guarantee. Do not replace unavailable current results with an older success.
 
-If the assessment tool is absent, use a supported public reader or established
+If a remote assessment tool is absent, use a supported public reader or established
 application code only when it supplies the necessary exact evidence. Otherwise
 explain what is known and label quality unassessed. Do not guess a tool name
 or build a private storage query to simulate a missing contract.
 
 ## Make a defensible comparison
 
-If `artisan_compare_runs` is exposed, retain both selected run/step/role scopes
+For the `compare_runs` capability, retain both selected run/step/role scopes
 and their resolved attempt IDs. Supply the actual schema's measurement
 identity/version/unit declarations, key paths, direction and tolerance.
 The caller must establish that the measurements mean the same thing; arithmetic
@@ -74,12 +75,12 @@ use an already available exact application analysis. Ask for correspondence
 or criteria only when needed to answer the question, while continuing useful
 independent reads.
 
-## Use a limited local fallback
+## Use full reports and bounded local evidence
 
-A read-only Python script is appropriate when workspace execution is available
-and the exact store is accessible from that workspace. A remote MCP connection
-does not imply local access. Use the project's established environment; in an
-Artisan checkout use `~/.pixi/bin/pixi run --locked`.
+A read-only Python script can compose complete analytical reports when the
+exact selected store is accessible. A remote MCP connection does not imply local
+access. Use the project's established environment; in an Artisan checkout use
+`~/.pixi/bin/pixi run --locked`.
 
 For custom artifact types, first call the public
 `artisan.registry.bootstrap_applications` with explicit trusted installed
@@ -91,6 +92,7 @@ data.
 
 | Public import | Useful evidence | Limit |
 | --- | --- | --- |
+| `inspect_evidence` from `artisan.inspection` | Validated bounded projections with explicit omissions and continuation | Display limits do not reduce the population assessed by the underlying reader. |
 | `list_runs` from `artisan.orchestration` | Run IDs and rollups | A rollup's `last_status` is not pipeline success. |
 | `inspect_pipeline`, `inspect_failures` from `artisan.visualization` | Step lifecycle and scoped failures | Failed-execution rows can be absent for a failed step. |
 | `inspect_step` from `artisan.visualization` | Accepted-artifact display | Shortened IDs/names are not exact artifact references or role mapping. |
@@ -105,31 +107,68 @@ Use public facades, not internal status, inspection or artifact-query modules.
 Do not create or resume `PipelineManager` to read a store: those entry points
 participate in execution and recovery.
 
-For example, save this as `inspect_existing.py` and supply the accessible store
-and exact run ID as its two arguments. Load trusted application definitions
-first if the store requires them.
+For example, save this as `inspect_existing.py` and supply the selected store,
+run ID, step name and output role. This example uses an explicit count criterion;
+choose the expected count for your task. Repeat `--load-module` only for trusted
+installed registration modules required by that store.
 
 ```python
 import argparse
 
-from artisan.visualization import inspect_pipeline
+from artisan.inspection import inspect_evidence
+from artisan.registry import bootstrap_applications
+from artisan.visualization import AssessmentSpec, OutcomeSelection, assess_outcomes
 
 parser = argparse.ArgumentParser()
 parser.add_argument("delta_root")
 parser.add_argument("pipeline_run_id")
+parser.add_argument("step_name")
+parser.add_argument("role")
+parser.add_argument("--expected-count", type=int, required=True)
+parser.add_argument("--step-number", type=int)
+parser.add_argument("--load-module", action="append", default=[])
 args = parser.parse_args()
 
-steps = inspect_pipeline(
-    args.delta_root,
+bootstrap_applications(args.load_module)
+selection = OutcomeSelection(
     pipeline_run_id=args.pipeline_run_id,
+    step_name=args.step_name,
+    role=args.role,
+    step_number=args.step_number,
 )
-shown = steps.head(20)
-print(f"Run: {args.pipeline_run_id}")
-print(shown)
-print(f"Displayed {shown.height} of {steps.height} step rows.")
-print(f"Omitted {steps.height - shown.height} rows from this display.")
+spec = AssessmentSpec(label="Expected accepted count", expected_count=args.expected_count)
+report = assess_outcomes(args.delta_root, selection, spec)
+print(report.selection)
+print(report.assessment_status)
+
+# Fix the follow-up selection to the attempt just assessed.
+exact_selection = OutcomeSelection.model_validate(
+    report.selection.model_dump(include=set(OutcomeSelection.model_fields))
+)
+summary = inspect_evidence(
+    "assess_outcomes",
+    {**exact_selection.model_dump(mode="json"), "spec": spec.model_dump(mode="json")},
+    delta_root=args.delta_root,
+)
+assert summary.evidence_id == report.evidence_id
+print(summary.model_dump_json())
 ```
 
-This bounds printed rows, not underlying scanning or every cell's size.
-An empty table does not independently establish that the requested run exists.
-The example provides lifecycle evidence, not an exact assessment or comparison.
+The complete `OutcomeAssessment` is an in-process model. Its observations are
+not clipped to fit a response. The bounded summary performs another live read;
+the identity assertion detects a change between these two reads. It does not
+make them an atomic snapshot. Retain the resolved selection and exact spec
+alongside the `evidence_id`; assessment evidence identity does not identify the
+criteria. A count-only pass establishes the accepted count, not metric quality.
+
+For comparison, construct `ComparisonSpec` with `ComparisonMetric` declarations
+and `MetadataKeyMatch` or `ExplicitPairsMatch`, all from `artisan.visualization`,
+then use its public `compare_runs` reader. The complete `RunComparison` preserves
+pair results, diagnostics, unmatched populations and optional assessments.
+Use the bounded `compare_runs` capability for presentation, with both exact
+attempts retained in follow-up requests. Do not recreate its statistics from
+pages or rounded tables.
+
+To preserve an already materialized report without another live query, read
+[evidence exports](evidence-exports.md). Loading that export returns the complete
+Python model; it does not refresh evidence from the store.

@@ -8,6 +8,7 @@ directly — no server-side logic.
 
 from __future__ import annotations
 
+import asyncio
 from contextlib import asynccontextmanager
 from typing import TYPE_CHECKING, Any
 
@@ -29,7 +30,10 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
     Returns:
         A ``FastMCP`` instance with the read-only surface registered.
     """
+    from artisan.utils.application_modules import resolve_application_modules
+
     cfg = config or ArtisanMCPConfig()
+    trusted_modules = resolve_application_modules(cfg.load_modules)
 
     @asynccontextmanager
     async def lifespan(_app: FastMCP) -> AsyncIterator[dict[str, Any]]:
@@ -37,12 +41,16 @@ def build_mcp_app(config: ArtisanMCPConfig | None = None) -> FastMCP:
         # as ctx.lifespan_context.
         from artisan.registry import discover
 
-        report = discover(extra_modules=cfg.load_modules or None)
-        yield {"discovery": report, "config": cfg}
+        report = await asyncio.to_thread(
+            discover, list(trusted_modules), include_environment=False
+        )
+        yield {"discovery": report, "config": cfg, "trusted_modules": trusted_modules}
 
-    from artisan_mcp import prompts, resources, tools
+    from artisan_mcp import __version__, prompts, resources, tools
 
-    mcp = FastMCP("artisan", lifespan=lifespan, mask_error_details=True)
+    mcp = FastMCP(
+        "artisan", version=__version__, lifespan=lifespan, mask_error_details=True
+    )
     tools.catalog.register(mcp)
     tools.runs.register(mcp)
     tools.artifacts.register(mcp)

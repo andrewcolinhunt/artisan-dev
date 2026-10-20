@@ -168,6 +168,7 @@ class ErrorCode:
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
     # validation — bounded inspection and declared outcome criteria
+    UNKNOWN_INSPECTION = "unknown_inspection"
     INVALID_EVIDENCE_CURSOR = "invalid_evidence_cursor"
     EVIDENCE_VIEW_CHANGED = "evidence_view_changed"
     EVIDENCE_ITEM_TOO_LARGE = "evidence_item_too_large"
@@ -175,6 +176,12 @@ class ErrorCode:
     OUTCOME_SELECTION_INVALID = "outcome_selection_invalid"
     ASSESSMENT_SPEC_INVALID = "assessment_spec_invalid"
     COMPARISON_SPEC_INVALID = "comparison_spec_invalid"
+    UNKNOWN_OPERATING_GUIDE_TOPIC = "unknown_operating_guide_topic"
+    OPERATING_GUIDANCE_UNAVAILABLE = "operating_guidance_unavailable"
+    EVIDENCE_EXPORT_INVALID = "evidence_export_invalid"
+    EVIDENCE_EXPORT_FORMAT_UNSUPPORTED = "evidence_export_format_unsupported"
+    EVIDENCE_EXPORT_INTEGRITY_FAILED = "evidence_export_integrity_failed"
+    EVIDENCE_EXPORT_FAILED = "evidence_export_failed"
 
     # validation — single-execution replay preflight
     REPLAY_EXECUTION_NOT_FOUND = "replay_execution_not_found"

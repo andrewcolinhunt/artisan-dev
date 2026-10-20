@@ -81,16 +81,18 @@ class TestProvenanceTool:
         )
         assert result.is_error is True
 
-    def test_rejects_out_of_range_depth(self, make_app, invoke_error, tmp_path) -> None:
+    def test_rejects_out_of_range_depth(
+        self, make_app, invoke_result, tmp_path
+    ) -> None:
         app = make_app(delta_root=tmp_path)
         for depth in (0, 11):
-            result = invoke_error(
+            result = invoke_result(
                 app,
                 "artisan_get_provenance_graph",
                 {"artifact_id": A, "depth": depth},
             )
-            assert result["code"] == "param_type_mismatch"
-            assert result["field"] == "depth"
+            assert result.is_error is True
+            assert result.structured_content is None
 
 
 class TestLineageResource:
@@ -146,8 +148,8 @@ class TestLineageResource:
 
 def test_wide_provenance_pages_preserve_depth_omission(monkeypatch):
     import artisan.provenance
+    from artisan.inspection.provenance import provenance_payload
     from artisan.provenance.reader import ProvenanceEdges
-    from artisan_mcp.tools.provenance import provenance_payload
 
     edges = [
         {"source_artifact_id": f"parent-{index:03d}", "target_artifact_id": C}

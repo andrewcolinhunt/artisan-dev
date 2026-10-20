@@ -18,6 +18,7 @@ _PYTHON_LANGUAGES = {"py", "python", "python3", "ipython", "ipython3"}
 _PUBLIC_MODULES = {
     "artisan",
     "artisan.composites",
+    "artisan.inspection",
     "artisan.operations.base",
     "artisan.operations.curator",
     "artisan.operations.examples",
