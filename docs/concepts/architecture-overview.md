@@ -292,21 +292,27 @@ See [Build a Pipeline](../how-to-guides/building-a-pipeline.md) for usage and
 
 ## Support packages
 
-Beyond the five architectural layers, the framework includes three support
-packages:
+Other packages provide inspection, analysis, traversal, and shared utilities:
 
 - **`utils`** — shared utilities: content hashing (xxh3_128), subprocess
   wrappers (`run_command`), path helpers, DataFrame utilities, error
   formatting, and logging configuration.
 - **`visualization`** — provenance graph rendering (macro and micro views via
-  Graphviz), pipeline and step inspection helpers, and execution timing
-  analysis.
+  Graphviz), pipeline and step inspection helpers, outcome assessment, run
+  comparison, and execution timing analysis.
+- **`inspection`** — a shared set of validated, size-limited queries for Python,
+  the CLI, and the optional MCP server. It uses the existing readers and also
+  provides installed operating guidance and local exports of complete reports.
 - **`provenance`** — graph traversal algorithms (forward and backward BFS
   walks through provenance edges) used to pair inputs through existing ancestry
   and to render provenance graphs.
 
-These packages do not participate in the layered dependency hierarchy. They
-are consumed by whichever layer needs them.
+Inspection reads recorded evidence; it does not schedule work. Python and CLI
+callers need no MCP server. The MCP adapter exposes the same queries to clients
+that use that protocol. See
+[local inspection](../how-to-guides/inspecting-evidence.md) for discovery and
+paging, and [complete evidence exports](../how-to-guides/exporting-evidence.md)
+to save an assessment or comparison beyond the response-size limit.
 
 ---
 

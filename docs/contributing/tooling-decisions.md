@@ -105,12 +105,22 @@ shows how to inspect them for the installed version.
 
 ## Coding assistance
 
-The authoring skills under `skills/` provide guidance for artifact types,
-operations, composites, and pipelines. Compatible local agents discover the
-same files through `.agents/skills/`; Claude Code also has a plugin distribution
-path. These adapters avoid maintaining separate copies of each skill.
+The skills under `skills/` guide artifact, operation and pipeline authoring, and
+inspection of existing runs. Compatible local agents discover the same files
+through `.agents/skills/`; Claude Code also has a plugin distribution path.
+Artisan packages the operating guide with the library so an agent can retrieve
+instructions for the version it is running. Retrieval does not install a skill
+in the agent's host. See [agent setup](../getting-started/using-claude-code.md).
 
-The optional MCP server exposes operation discovery and read-only inspection.
-It does not launch or cancel pipelines. See
-[agent setup](../getting-started/using-claude-code.md) and
-[connecting MCP](../how-to-guides/connecting-mcp.md).
+Python, CLI and MCP inspection share request validation, response models and
+size limits in `artisan.inspection`. A local agent can discover schemas and
+query evidence without a server. The optional MCP adapter serves clients that
+use that protocol; it does not launch or cancel pipelines. Skills supply the
+procedure for selecting and interpreting evidence, while the API validates
+requests and responses. See [local inspection](../how-to-guides/inspecting-evidence.md)
+and [connecting MCP](../how-to-guides/connecting-mcp.md).
+
+Size limits keep responses small enough to return to an agent. They do not
+limit the population assessed by a reader or its memory use. Explicit local
+[evidence exports](../how-to-guides/exporting-evidence.md) preserve complete
+assessment and comparison reports when a bounded response is insufficient.

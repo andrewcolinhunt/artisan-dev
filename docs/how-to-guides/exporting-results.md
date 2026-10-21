@@ -103,6 +103,11 @@ when all evaluated values pass. An empty population remains unassessed. A
 count-only criterion tests the number of accepted artifacts; it does not prove
 that the intended upstream cases produced them.
 
+The JSON file above contains the report. To save it with its schema and a
+completion manifest, then verify it when loading, use
+[complete evidence exports](exporting-evidence.md). The same exporter accepts
+the comparison report below.
+
 Each observation is a unique accepted artifact in that attempt and role.
 Identical outputs can share one artifact identity. Cached and passthrough
 outputs retain their original artifact origin while belonging to the selected
@@ -182,15 +187,16 @@ uses each complete selected role, including its unmatched observations.
 Neither matching labels nor equal redacted diagnostics establish that the
 runs had identical inputs or that a configuration change caused the result.
 
-These readers load the complete selected populations. MCP offers bounded
-summary and detail views for the same reports; see
-[connecting MCP](connecting-mcp.md) for paging and error handling.
+These readers load the complete selected populations. Python, CLI and MCP
+inspection offer size-limited summaries and detail pages for the same reports;
+see [local inspection](inspecting-evidence.md) for discovery, paging and error
+handling. Response limits do not reduce the population assessed or compared.
 
 ## Materialize an artifact by ID
 
 When you already have artifact IDs, use `ArtifactStore` to load the objects and
 write their content. IDs can come from recorded operation inputs, provenance
-queries, or the read-only [MCP query tools](connecting-mcp.md).
+queries, or [local evidence inspection](inspecting-evidence.md).
 
 ```python
 from artisan.storage import ArtifactStore

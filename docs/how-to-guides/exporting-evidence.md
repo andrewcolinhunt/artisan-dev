@@ -1,15 +1,17 @@
 # Export Complete Evidence Reports
 
-Save a complete outcome assessment or run comparison for later inspection,
-including details too large for an inspection response. Exporting returns a
-compact receipt; loading the bundle returns the original typed report without
-opening its source store.
+Save an outcome assessment or run comparison with all its report details,
+including those omitted from a bounded inspection response. You can load the
+saved report later without opening its source store. Python and CLI exports
+work with the base Artisan installation; no MCP server is required.
 
 ## Save a report you already computed
 
 This example continues with the `assessment` report from
 [assessing recorded metrics](exporting-results.md#assess-recorded-metrics-without-display-rounding).
-Create the parent directory yourself and choose an unused destination:
+Create the parent directory yourself and choose an unused local destination.
+Existing files, directories and symlinks are rejected, including valid exports.
+URI destinations such as `s3://` and `file://` are not supported.
 
 ```python
 from pathlib import Path
@@ -35,8 +37,7 @@ print(receipt.model_dump_json(indent=2))
 Pass a `RunComparison` from `compare_runs` to the same exporter to retain every
 pair, unmatched or invalid case, metric summary, and optional nested assessment.
 Both nested assessments retain their complete specifications and observations.
-Use a different destination for each export. Existing files, directories and
-symlinks are rejected, including an existing valid export.
+Use a different destination for each export.
 
 The exporter uses the report already in memory. It does not reread the store or
 reevaluate criteria. The report file retains null values, exact JSON integers
@@ -45,9 +46,16 @@ integers; some browser tools lose integer precision.
 
 ## Compute and export from the command line
 
+Check the installed request schema before preparing a CLI export:
+
+```bash
+artisan inspect describe assess_outcomes --json
+artisan evidence export --help
+```
+
 The CLI accepts the same selection and specification fields as the corresponding
-[inspection request](../reference/python-api.md). Continuing the Python example,
-write a request for the exact resolved attempt:
+[inspection request](inspecting-evidence.md), without page controls. Continuing
+the Python example, write a request for the exact resolved attempt:
 
 ```python
 import json
@@ -74,10 +82,11 @@ artisan evidence export assess_outcomes \
   --json
 ```
 
-The command validates the request and destination before computing one complete
-report. It prints one receipt object on success. Use `--request -` to read the
-request from standard input. For a comparison, use `compare_runs` with a request
-containing `baseline`, `candidate` and `spec`. Add the application's trusted
+The command validates the request and destination before reading the store and
+computing a complete report. It prints one receipt object on success. Use
+`--request -` to read the request from standard input. For a comparison, use
+`compare_runs` with a request containing `baseline`, `candidate` and `spec`.
+Add the application's trusted
 `--load-module` options when its store requires custom definitions.
 
 Do not include `cursor`, `limit` or `view`, even as null or default values. An
@@ -97,15 +106,15 @@ errors go to stderr and exit 2.
 
 ## Check what the receipt guarantees
 
-The receipt records the actual evidence and specification identities, resolved
-attempts, existing coverage and stored collection counts. Its `report_complete`
-flag means every field of the returned report was saved. Missing measurements,
-unavailable populations and ambiguous correspondence remain explicit; exporting
-does not turn them into successful or complete source evidence.
+The receipt records the evidence and specification identities, resolved
+attempts, coverage and saved collection counts. Its `report_complete` flag means
+every field of the report was saved. Missing measurements, unavailable
+populations and ambiguous matches remain in the report. Keep those limits
+alongside any conclusion you share.
 
-The receipt fits the shared 48 KiB JSON response budget. It includes the complete
-authoritative summary when that fits. Otherwise `summary` is null and
-`summary_status` is `omitted_size_limit`; no values are shortened. If the mandatory
+The receipt fits the shared 48 KiB JSON response budget. It includes the full
+summary when that fits. Otherwise `summary` is null and `summary_status` is
+`omitted_size_limit`; no values are shortened. If the mandatory
 receipt itself is too large, the export fails before creating its directory.
 The report file has no conversation-size limit.
 
@@ -117,25 +126,25 @@ Each completed bundle contains exactly three files:
 | `schema.json` | The writer's generated report schema, retained as documentation |
 | `manifest.json` | Completion marker with format/version information, identities, coverage, list lengths and file digests |
 
-`load_evidence_export` verifies the fixed regular files, their lengths and digests,
-supported versions, strict JSON and agreement between the manifest and typed
-report. It validates against Artisan's installed report models; it does not
-execute the archived schema or follow its references. The initial bundle format
-and supported reader/evaluator versions are `"1"`. The Artisan package version
-is recorded for provenance and need not match exactly.
+`load_evidence_export` verifies the files, their lengths and digests, supported
+versions, valid JSON and agreement between the manifest and report. It returns
+an `OutcomeAssessment` or `RunComparison` validated by the installed Artisan
+models. The archived schema documents what the writer saved; loading does not
+execute it or follow its references. The recorded package version need not
+match the reader's exactly, but unsupported bundle or report versions fail to
+load.
 
-Capture consistency remains reader-defined. The bundle retains one materialized
-result and does not create a transactional snapshot across tables or runs. It
-contains the report's evidence, not raw metric artifacts, full logs or the original
-compute environment. Exporting and loading materialize complete reports and can
-use substantial memory and disk.
+The bundle preserves the report as it was read. Reading several tables or runs
+does not create an atomic store snapshot. The export contains the report's
+selected measurements and diagnostics; raw metric artifacts, full logs and the
+original compute environment are outside its scope. Exporting and loading hold
+complete reports in memory, so large reports need sufficient memory and disk.
 
 ## Recover from an interrupted export
 
-The destination must be a local path with an existing parent. URI destinations,
-including `file://`, are rejected. Files are published without replacement and
-the manifest is written last. An I/O failure can leave an incomplete directory,
-or visible completed bytes whose flush failed; the exporter still reports failure.
+The manifest is written last. A failed export can leave an incomplete directory,
+or all three files if the final disk flush failed. Do not infer success from
+file existence or retry into that directory.
 
 If `manifest.json` exists, try the passive loader:
 
@@ -146,19 +155,18 @@ recovered = load_evidence_export("reports/assessment-cli")
 print(recovered.evidence_id)
 ```
 
-A successful load establishes that the currently visible bundle is consistent.
-It does not establish that an earlier failed flush was durable. Digests detect
-inconsistent files, and copied evidence IDs retain identity; neither authenticates
-a bundle whose files and manifest have all been replaced.
+A successful load establishes that the files are currently readable and
+consistent. It cannot prove that an earlier failed disk flush succeeded.
+Digests detect changed contents; they do not authenticate the report's author.
 
 If verification fails, inspect the output and explicitly remove your incomplete
 directory or select a new destination. The exporter never deletes partial output,
 adopts an existing directory or retries automatically. Extra files, nested
 directories, symlinks and interrupted publisher temporary files prevent loading.
 
-These writes require an explicit Python or CLI export request. Inspection calls
-and MCP tools remain read-only. A local server path does not provide a download
-link to a remote MCP client. You own the files and their retention.
+Copy the complete directory when sharing a report. Inspection calls and MCP
+tools do not create exports, and a path on a remote MCP server is not a download
+link. File transfer and retention are up to you.
 
 For selected result tables and individual artifact files, see
 [Export Pipeline Results](exporting-results.md). For public API inspection, see

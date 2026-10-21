@@ -38,15 +38,20 @@ broken resources is a packaging/configuration error to disclose. Useful reads
 can continue with the portable guide, clearly labelled as potentially mismatched.
 Do not automatically upgrade dependencies or start a server.
 
-If only MCP reaches the selected store, use the host's advertised tools, actual
-schemas and available server capability metadata. Local package guidance does
-not describe that server. Apply the portable evidence rules until its contract
-is known. Recheck guidance and schemas after the executable, environment,
-package, trusted module configuration or connection changes, not on every read.
+For quality criteria or paired results, load the installed
+`assessment-and-comparison` topic. For an explicitly requested saved report,
+load `evidence-exports`. Use
+`artisan guide show pipeline-operate --topic TOPIC` with a topic advertised by
+the guide catalogue. If installed guidance is unavailable, use the portable
+[assessment and comparison](references/assessment-and-comparison.md) or
+[evidence exports](references/evidence-exports.md) reference under the same
+compatibility checks. Load only the relevant topic.
 
-Read [assessment and comparison](references/assessment-and-comparison.md) for
-quality criteria or paired results, and [evidence exports](references/evidence-exports.md)
-for an explicitly requested saved report. Load only the relevant topic.
+For a selected MCP connection, use the host's advertised tools, actual schemas
+and available server capability metadata. Local package guidance does not
+describe that server. Apply the portable evidence rules until its contract is
+known. Recheck guidance and schemas after the executable, environment, package,
+trusted module configuration or connection changes, not on every read.
 
 ## Preserve the essential boundaries
 

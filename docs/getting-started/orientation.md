@@ -156,6 +156,11 @@ Selecting a run includes the outputs it reused from earlier runs. See
 [Inspect Pipeline Results](../how-to-guides/inspecting-provenance.md) for run
 selection and provenance queries.
 
+For queries with validated inputs and size-limited responses, use
+[local evidence inspection](../how-to-guides/inspecting-evidence.md) from Python
+or the CLI. The installed operating guide helps an agent select runs, interpret
+missing evidence, and apply explicit assessment or comparison criteria.
+
 > **Deep dive:** [Storage and Delta Lake](../concepts/storage-and-delta-lake.md)
 
 ---
