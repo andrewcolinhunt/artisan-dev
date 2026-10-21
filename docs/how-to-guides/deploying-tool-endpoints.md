@@ -100,6 +100,34 @@ Check `step.status`, inspect the accepted outputs, and review Modal worker logs
 for the matching app. [Running on Modal](../tutorials/07-compute-backends/04-modal-execution.ipynb)
 provides a complete pipeline example.
 
+### Recover from interrupted result polling
+
+Artisan retries `GET /result` for the existing call when retrieval encounters
+HTTP 500, 502, 503, or 504, selected network disconnections, or request timeouts.
+Recovery does not submit another computation. `ModalComputeConfig.retries`
+controls worker retries and does not change this HTTP recovery policy.
+
+Each continuous retrieval outage has a five-minute recovery budget measured
+with a monotonic clock. The budget includes the first failed request, subsequent
+requests, and waits. Retries wait 1, 2, 4, 8, then at most 10 seconds between
+requests, capped by the remaining budget. A valid `pending` response resets
+the recovery budget. Healthy pending polls have no overall native polling
+deadline; an outage that exhausts the budget fails the execution.
+
+Recovery requests use timeouts capped by the remaining budget. HTTPX applies
+timeouts to individual I/O waits, so this budget is not a hard wall-clock limit
+on an active request. Cancellation interrupts recovery waits and retains the
+[existing acknowledgement semantics](#cancel-remote-work); it cannot interrupt
+an active HTTP request. Failed cancellation POSTs and submission POSTs are not
+retried.
+
+Authentication failures, redirects, TLS certificate failures, worker errors,
+and invalid result manifests or identities fail immediately. Recovered results
+pass the same command and identity checks, postprocessing, and lineage
+validation as uninterrupted calls. Terminal polling diagnostics include the
+sanitized call ID, request phase, and HTTP status when available, without
+response bodies, payloads, or credentials.
+
 ## Choose how files travel
 
 Inline requests and responses are bounded at 100 MB per direction. Keep large
@@ -262,6 +290,7 @@ Capability-only deployments can use authorized GET and PUT URLs without a
 worker object-store secret. Service upload limits and Artisan's archive budgets
 still apply.
 
+(cancel-remote-work)=
 ## Cancel remote work
 
 Call `pipeline.cancel()` to request cancellation. Artisan sends a request for
