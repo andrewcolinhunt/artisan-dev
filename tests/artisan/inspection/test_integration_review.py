@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
+from unittest.mock import Mock
 
 import pytest
 
@@ -139,35 +140,71 @@ def test_nested_request_errors_match_python_and_cli_before_bootstrap(
     assert capfd.readouterr().out == encode_json(expected).decode() + "\n"
 
 
-def test_deep_json_is_a_handled_decode_error() -> None:
-    data = '{"cursor":' + "[" * 2000 + "null" + "]" * 2000 + "}"
-    with pytest.raises(ValueError, match="valid UTF-8 JSON object"):
-        decode_json_object(data)
+@pytest.mark.parametrize(
+    "target", ["json.loads", "artisan.inspection._evidence.json_ready"]
+)
+def test_decode_json_object_handles_recursion_error(
+    monkeypatch: pytest.MonkeyPatch, target: str
+) -> None:
+    # Process-wide recursion limits can change when other tests import dependencies.
+    failure = RecursionError(_PRIVATE)
+    recurse = Mock(side_effect=failure)
+    with monkeypatch.context() as patch:
+        patch.setattr(target, recurse)
+        with pytest.raises(ValueError) as caught:
+            decode_json_object("{}")
+    recurse.assert_called_once()
+    assert str(caught.value) == "Expected one valid UTF-8 JSON object"
+    assert caught.value.__cause__ is failure
 
 
-def test_deep_cli_request_returns_sanitized_request_error(
-    tmp_path: Path, capfd: pytest.CaptureFixture[str]
+def test_cli_request_recursion_returns_sanitized_request_error(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
 ) -> None:
     request = tmp_path / "request.json"
-    request.write_text('{"cursor":' + "[" * 2000 + "null" + "]" * 2000 + "}")
-    assert (
-        main(["inspect", "run", "list_runs", "--request", str(request), "--json"]) == 1
+    request.write_text("{}")
+    recurse = Mock(side_effect=RecursionError(_PRIVATE))
+    store = Mock(
+        side_effect=AssertionError("Invalid request reached bootstrap or the store")
     )
+    with monkeypatch.context() as patch:
+        patch.setattr("json.loads", recurse)
+        patch.setattr("artisan._inspection_cli._store_context", store)
+        assert (
+            main(["inspect", "run", "list_runs", "--request", str(request), "--json"])
+            == 1
+        )
+    recurse.assert_called_once()
+    store.assert_not_called()
     output = capfd.readouterr()
     payload = json.loads(output.out)
     assert payload["code"] == ErrorCode.PARAM_TYPE_MISMATCH
     assert payload["field"] == "request"
+    assert "cause" not in payload
+    assert _PRIVATE not in output.out + output.err
     assert "Traceback" not in output.err
 
 
-def test_deep_export_manifest_returns_integrity_error(tmp_path: Path) -> None:
+def test_export_manifest_recursion_returns_integrity_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     path = tmp_path / "export"
     path.mkdir()
     (path / "report.json").write_text("{}")
     (path / "schema.json").write_text("{}")
-    (path / "manifest.json").write_text(
-        '{"files":' + "[" * 2000 + "null" + "]" * 2000 + "}"
-    )
-    with pytest.raises(ArtisanError) as caught:
-        load_evidence_export(path)
+    (path / "manifest.json").write_text("{}")
+    failure = RecursionError(_PRIVATE)
+    recurse = Mock(side_effect=failure)
+    with monkeypatch.context() as patch:
+        patch.setattr("json.loads", recurse)
+        with pytest.raises(ArtisanError) as caught:
+            load_evidence_export(path)
+    recurse.assert_called_once()
     assert caught.value.code == ErrorCode.EVIDENCE_EXPORT_INTEGRITY_FAILED
+    assert isinstance(caught.value.__cause__, ValueError)
+    assert caught.value.__cause__.__cause__ is failure
+    payload = error_payload(caught.value)
+    assert "cause" not in payload
+    assert _PRIVATE not in encode_json(payload).decode()
