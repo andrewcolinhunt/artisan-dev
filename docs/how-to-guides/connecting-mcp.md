@@ -1,10 +1,15 @@
 # Connect an MCP Client
 
-Connect a client to Artisan's read-only Model Context Protocol (MCP) server to
-discover operations and inspect persisted pipeline results and failure logs.
-Python and CLI clients can use the same [inspection contracts locally](inspecting-evidence.md)
-without starting a server. MCP is useful when your client needs a tool protocol
-or an explicitly configured server context.
+Configure a Model Context Protocol (MCP) client to discover Artisan operations
+and inspect persisted results through read-only tools. If your agent already
+runs Python or shell commands in the Artisan environment, it can use the same
+[inspection contracts locally](inspecting-evidence.md) without a server.
+
+This guide uses stdio: your MCP client starts one Artisan server process and
+communicates through its stdin and stdout. The process uses the configured
+store, installed application modules and available credentials. It is not a
+shared service that other Artisan users automatically join. Each client needs
+its own configuration or an explicitly configured connection to a remote server.
 
 ## Prerequisites
 
@@ -17,8 +22,8 @@ or an explicitly configured server context.
 
 ## Minimal working configuration
 
-After installing the server, add this stdio server entry to your client,
-replacing both absolute paths:
+After [installing the server](#install-the-server), add this stdio server entry
+to your client, replacing both absolute paths:
 
 ```json
 {
@@ -33,10 +38,10 @@ replacing both absolute paths:
 
 Your client's surrounding configuration syntax may differ. The executable,
 argument list, and environment settings are the portable parts of this entry.
-The client starts the process and communicates through its stdin and stdout.
 
 ---
 
+(install-the-server)=
 ## Install the server
 
 Install Artisan with its optional MCP dependencies:
@@ -86,6 +91,9 @@ You can provide the same settings through the server entry's environment:
 `ARTISAN_LOAD_MODULES` accepts a comma-separated module list. Explicit
 `--delta-root` and `--load` flags replace their corresponding environment
 settings, so choose one source for each setting when configuring your client.
+The server discovers modules at startup. Restart it after changing its module
+configuration. Discovery reports import failures; store-reading calls fail until
+the configured application definitions load successfully.
 
 ---
 
@@ -106,7 +114,9 @@ Start the server through your client and inspect it in this order:
 For agent instructions that guide this inspection, install the
 [`pipeline-operate` skill](../getting-started/using-claude-code.md#artisan-skills)
 in your client. Installing the MCP Python extra does not install client skills.
-The server provides read-only evidence; the skill helps interpret it.
+The server provides read-only evidence; the skill helps interpret it. When you
+also have access to the server's Artisan environment, run
+`artisan guide show pipeline-operate` to retrieve the matching installed guidance.
 
 ## Continue a result page
 
@@ -115,14 +125,16 @@ the tool. Its page reports the selected collection's `total_items`, the number
 returned, `has_more`, and `next_cursor`. A byte limit can return fewer rows than
 the requested `limit`. Follow the response's `follow_up.capability` and
 `follow_up.arguments` to continue with the same selectors. Prefix the capability
-with `artisan_` when calling its MCP tool.
+with `artisan_` to obtain its server tool name. Your client may add a namespace;
+use the name in that client's tool listing.
 
-For example, this FastMCP client starts from the `artisan://runs` JSON resource
-and follows its tool continuations. Replace the executable and store paths:
+For example, this FastMCP client requests one run per page and follows the
+returned continuations. Run it in the environment where you installed the MCP
+extra, replacing the executable and store paths. Tool errors raise an exception
+before the example reads their content:
 
 ```python
 import asyncio
-import json
 
 from fastmcp import Client
 from fastmcp.client.transports import StdioTransport
@@ -134,12 +146,10 @@ async def inspect_runs():
         args=["--delta-root", "/absolute/path/to/runs/delta"],
     )
     async with Client(transport) as client:
-        resource = await client.read_resource("artisan://runs")
-        page = json.loads(resource[0].text)
+        result = await client.call_tool("artisan_list_runs", {"limit": 1})
         runs = []
         while True:
-            if "code" in page:
-                raise RuntimeError(f"Run inspection failed: {page['code']}")
+            page = result.structured_content
             runs.extend(page["items"])
             follow_up = page["follow_up"]
             if follow_up is None:
@@ -147,11 +157,7 @@ async def inspect_runs():
             result = await client.call_tool(
                 "artisan_" + follow_up["capability"],
                 follow_up["arguments"],
-                raise_on_error=False,
             )
-            page = result.structured_content
-            if result.is_error:
-                raise RuntimeError(f"Run inspection failed: {page['code']}")
         print([run["pipeline_run_id"] for run in runs])
 
 
@@ -166,10 +172,11 @@ without a cursor. On `invalid_evidence_cursor`, restart the intended query
 without reusing that token. Active runs can change repeatedly; wait for a stable
 view or narrow the selection. Paging is not an atomic snapshot of the store.
 
-JSON resources use the same default projections as their corresponding tools.
-Their returned continuations identify shared capabilities; do not construct additional
-resource URIs to retrieve later pages. Summary views and indivisible sections
-do not accept a cursor.
+JSON resources, such as `artisan://runs`, use the same default projections as
+their corresponding tools.
+Their returned continuations identify shared capabilities; do not construct
+additional resource URIs to retrieve later pages. Summary views and indivisible
+sections do not accept a cursor.
 
 ## Request the evidence you need
 
@@ -192,10 +199,10 @@ Use selectors to avoid transporting unrelated or oversized values:
 For clients upgrading from earlier MCP responses, update step-result consumers
 from type-grouped lists to flat `items`; read run steps and graph edges through
 their named pages; request diagnosis detail views explicitly; and request
-artifact metadata keys explicitly. Shared projections carry
-`projection_version="2"`; continuations use `capability` instead of `tool`, and
-version-1 cursors must be discarded. The bounded Python facade uses these same
-contracts; full analytical reader results remain unpaginated.
+artifact metadata keys explicitly. For the current continuation format and cursor
+migration, see [projection version 2](inspecting-evidence.md#update-clients-for-projection-version-2).
+The bounded Python API uses these same contracts; full analytical reader results
+remain unpaginated.
 
 Artisan-owned JSON responses fit 48 KiB of serialized UTF-8, including page and
 continuation data. The final tool result fits 128 KiB, including matching JSON
@@ -239,7 +246,9 @@ selectors in returned arguments. Execution status, assessment, unmatched cases,
 and numeric coverage remain separate; an inspection that reports a failed
 criterion is still a successful tool call. See
 [assessment and comparison examples](exporting-results.md#assess-recorded-metrics-without-display-rounding)
-for criteria, matching and exporting the complete reports.
+for criteria and matching. To save the full report, use a local Python or CLI
+[evidence export](exporting-evidence.md). MCP does not offer an export write tool
+or make a server-side path downloadable.
 
 ## Inspect failure-log excerpts
 
@@ -260,11 +269,18 @@ for older content; use the original local file when you need the full log.
 
 Handled Artisan query failures set MCP `isError=true` and preserve structured
 error details, including `code`, `field` and recovery guidance. FastMCP's client
-raises on these by default. With `raise_on_error=False`, check `result.is_error`
-and read `result.structured_content`; `.data` is `None` for an error. JSON
-resources instead contain an error object in their normal JSON format. Prompt
-evidence retains its untrusted-evidence framing, and lineage resources retain
-DOT format. Unexpected internal failures are masked.
+raises on tool errors by default, as the paging example assumes.
+
+If you use `raise_on_error=False`, check `result.is_error` before reading the
+payload. Artisan query errors have `result.structured_content`; native MCP
+validation errors may have only text content. For example, `tail_lines=1001`
+fails the advertised schema before the inspection runs. Do not assume every
+error has a structured `code`, or read `.data`, which is `None` for errors.
+Unexpected internal failures are masked by the server.
+
+JSON resources instead contain an error object in their normal JSON format.
+Prompt evidence retains its untrusted-evidence framing, and lineage resources
+retain DOT format.
 
 Store reads run away from the server's event loop so lightweight requests can
 remain responsive. Cancelling a request, timing out, or disconnecting does not

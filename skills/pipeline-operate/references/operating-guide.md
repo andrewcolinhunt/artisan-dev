@@ -1,8 +1,8 @@
 # Operating Guide
 
-Use the established environment and the user's selected store or connection.
-This guide describes its accompanying Artisan installation. A portable copy
-can differ from the executing package; inspect the actual installed schemas.
+Inspect the user's selected store or connection through the established
+environment. This guide accompanies an Artisan installation; a portable copy
+can differ from the executing package. Check the actual installed schemas.
 
 ## Discover the available reads
 
@@ -10,8 +10,16 @@ For local work, `artisan inspect list --json` advertises the installed bounded
 inspection capabilities. `artisan inspect describe NAME --json` provides the
 actual request and response schemas. The public Python equivalents are
 `list_inspections`, `describe_inspection` and `inspect_evidence` from
-`artisan.inspection`. Use Python for analytical composition and the CLI for
-convenient bounded calls. Neither needs MCP.
+`artisan.inspection`. Python lets you combine reads in a script; the CLI returns
+bounded results from a terminal. Neither needs MCP. Listing these contracts
+does not access the store or import application registration modules.
+
+Use `artisan guide list --json` to find installed procedure topics, then
+`artisan guide show pipeline-operate --topic TOPIC` to read the one needed.
+Its package version, origin and digest identify the text; the schemas establish
+which calls the installation supports. Recheck after changing the environment
+or connection. Installing the package provides these guides but does not
+install skills into an agent host.
 
 For MCP, use the host's advertised tools or supported tool search; client
 prefixes can differ. Do not invent a tool-listing call. Read the advertised
@@ -64,8 +72,11 @@ from live schemas rather than treating this table as a signature catalogue.
 | Assess a goal | `assess_outcomes` | Explicit criteria assess the complete selected accepted population. |
 | Compare results | `compare_runs` | Explicit correspondence and comparable measurements are required. |
 
-Read [assessment and comparison](assessment-and-comparison.md) for exact
-criteria, coverage and public Python examples. Display readers such as
+Read the installed `assessment-and-comparison` topic for criteria, coverage and
+public Python examples. Use the portable
+[assessment and comparison](assessment-and-comparison.md) reference when
+installed guidance is unavailable, checking its calls against the active API.
+Display readers such as
 `inspect_metrics` are useful for exploration but rounded tables cannot establish
 exact thresholds or complete population coverage. Always provide the run ID to
 readers that otherwise include origin-wide results. Do not construct or resume
@@ -92,10 +103,12 @@ field limits. A view identity detects projection changes without providing an
 atomic storage snapshot. Full-population assessment/comparison readers compute
 the authoritative report; do not aggregate displayed pages into a substitute.
 
-For an explicitly requested complete saved assessment or comparison, read
-[evidence exports](evidence-exports.md). Export support is a separate local
-interface advertised by the catalogue, not an MCP tool or an automatic response
-to a large result. A remote server path is not necessarily client-accessible.
+For an explicitly requested complete saved assessment or comparison, read the
+installed `evidence-exports` topic, or the portable
+[evidence exports](evidence-exports.md) reference with the same compatibility
+checks. The catalogue advertises export support as a separate local interface.
+It is not an MCP tool or an automatic response to a large result. A remote
+server path is not necessarily client-accessible.
 
 ## Interpret failures and closure
 

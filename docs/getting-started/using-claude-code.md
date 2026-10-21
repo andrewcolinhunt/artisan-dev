@@ -1,9 +1,9 @@
 # Using Claude Code
 
-[Claude Code](https://docs.anthropic.com/en/docs/claude-code) is an AI coding
-assistant that runs in your terminal. It reads your codebase, edits files, runs
-commands, and writes code. Artisan provides shared project instructions and
-skills for writing pipelines and inspecting existing work.
+Use Artisan's project instructions and skills with
+[Claude Code](https://docs.anthropic.com/en/docs/claude-code) to write pipelines
+and inspect existing runs. Local inspection uses the project's Python
+environment and needs no MCP server.
 
 ---
 
@@ -92,11 +92,12 @@ skills.
 
 ### Inspect existing runs
 
-Use `/pipeline-operate` with a specific run or question, for example
-"Explain why this run failed" or "Compare these runs using this metric and
-case key." The skill prefers local Python/CLI inspection when your established
-environment can access the selected store. Base Artisan provides offline
-operating guidance and capability schemas without MCP:
+Use `/pipeline-operate` (or `/artisan:pipeline-operate` from the plugin) with a
+specific run or question, such as "Explain why this run failed" or "Compare
+these runs using this metric and case key." Supply the store or remote
+connection so the agent can select the intended evidence.
+
+For local work, run these commands through your project's environment:
 
 ```bash
 pixi run --locked artisan guide list --json
@@ -105,12 +106,28 @@ pixi run --locked artisan inspect list --json
 pixi run --locked artisan inspect describe assess_outcomes --json
 ```
 
-Run these through your project's environment. The guide reports the executing
-package version, resource origin and exact content digest; an editable checkout
-can contain newer text than its generated package version. The skill uses the
-installed schemas to decide which calls exist. If an older package lacks guide
-commands, the skill's portable references provide a fallback that must be
-checked against that package's help or public API.
+The guide reports the executing package version, where its text came from and a
+digest identifying that text. In an editable checkout, guide edits can change
+the digest without changing the package version. The installed request and
+response schemas determine which calls and arguments are supported.
+
+Read another installed topic when the task needs it:
+
+```bash
+pixi run --locked artisan guide show pipeline-operate --topic assessment-and-comparison
+pixi run --locked artisan guide show pipeline-operate --topic evidence-exports
+```
+
+Add `--json` to receive the guide text and its metadata as one JSON object.
+These guide and schema commands need no store access. See
+[Inspecting Evidence](../how-to-guides/inspecting-evidence.md) to query a store,
+or [Exporting Evidence](../how-to-guides/exporting-evidence.md) to save a
+complete assessment or comparison.
+
+If an older package lacks guide commands, the skill's portable references
+provide a fallback. Check their proposed calls against that installation's
+help or public API. A present command that cannot load its resources indicates
+an installation problem, not an older interface.
 
 For a store available only through a remote connection,
 [connect an MCP client](../how-to-guides/connecting-mcp.md) and use the remote
@@ -120,9 +137,8 @@ An explicit remote selection stays the target even if a local run has the same
 ID.
 
 The skill distinguishes accepted outputs from a passed quality criterion and
-retains missing evidence in its conclusions. Inspection alone does not launch,
-cancel or monitor jobs. Python package installation and host skill installation
-are separate: install the complete skill folder or plugin for host discovery.
+reports missing evidence. Inspection alone does not launch, cancel or monitor
+jobs.
 
 ---
 

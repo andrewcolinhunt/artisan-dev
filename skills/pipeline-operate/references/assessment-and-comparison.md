@@ -1,8 +1,11 @@
 # Assessment and Comparison
 
-Use this reference when the question concerns result quality or differences
-between runs. Use the selected accessible store and the established environment.
-Check the installed schemas before calling bounded inspection capabilities.
+Assess results against explicit criteria and compare runs using declared
+correspondence. Use the selected store and the established environment.
+Use `artisan inspect describe assess_outcomes --json` or
+`artisan inspect describe compare_runs --json` to check the installed bounded
+request and response schemas. Artisan MCP tools use the `artisan_` prefix;
+use the names and schemas advertised by your host when using a remote target.
 
 ## Define what success means
 
@@ -17,27 +20,29 @@ keys; it is not an expression or an array index. Preserve numeric types and
 use the supported reader's raw values instead of rounded display tables.
 Units and evaluator labels are caller declarations, not verified provenance.
 
-Select the current step with an unambiguous name or a known step number, or
-select an explicitly requested historical attempt. Retain the resolved
-`step_run_id` for detail pages. Summaries assess the full selected population;
-a detail page is only part of its supporting evidence.
+Select the current step by name, adding its step number when the name repeats.
+Add `step_run_id` to select a historical attempt. Retain the resolved attempt
+ID for detail pages. Summaries assess the full selected population; a detail
+page contains only part of its supporting evidence.
 
 Read coverage as well as verdict. Missing measurements, invalid values and
 evaluation errors cannot silently become zero, failure or success. An
-incomplete assessment can still contain known failed checks. No criterion,
-an unavailable population or an empty population cannot establish quality
-success. A passing count-only criterion establishes the count alone.
+incomplete assessment can still contain known failed checks. Without criteria
+or an available, nonempty population, quality remains unassessed.
 
 The population consists of unique accepted metric artifacts for the selected
 attempt and role, not upstream subjects or execution occurrences. Cached and
 passthrough artifacts retain their origin while belonging to the selected
 step. Report the counting basis when it affects the conclusion.
 
-Running/pending attempts are incomplete. Failed, cancelled or skipped attempts
-do not expose an accepted metric population. An unavailable population is
-different from an available empty population; preserve `null` versus zero.
-Recorded disposition and cancellation status add context, not a cleanup
-guarantee. Do not replace unavailable current results with an older success.
+Running and pending attempts have unavailable populations and remain
+`unassessed`. Failed, cancelled or skipped attempts also have no accepted metric
+population. Preserve the difference between an unavailable count (`null`) and
+an available empty population (zero). A partially successful step can pass
+criteria over its accepted outputs without establishing that all intended work
+finished. Recorded disposition and cancellation status do not prove that
+external work stopped. Do not replace unavailable current results with an older
+success.
 
 If a remote assessment tool is absent, use a supported public reader or established
 application code only when it supplies the necessary exact evidence. Otherwise
@@ -46,9 +51,9 @@ or build a private storage query to simulate a missing contract.
 
 ## Make a defensible comparison
 
-For the `compare_runs` capability, retain both selected run/step/role scopes
-and their resolved attempt IDs. Supply the actual schema's measurement
-identity/version/unit declarations, key paths, direction and tolerance.
+The `compare_runs` reader uses two selections in the same store. Retain both
+run/step/role selections and their resolved attempt IDs. Supply the schema's
+measurement identity/version/unit declarations, key paths, direction and tolerance.
 The caller must establish that the measurements mean the same thing; arithmetic
 alone does not verify a common scorer, subject or experimental treatment.
 
@@ -126,6 +131,7 @@ parser.add_argument("step_name")
 parser.add_argument("role")
 parser.add_argument("--expected-count", type=int, required=True)
 parser.add_argument("--step-number", type=int)
+parser.add_argument("--step-run-id")
 parser.add_argument("--load-module", action="append", default=[])
 args = parser.parse_args()
 
@@ -135,6 +141,7 @@ selection = OutcomeSelection(
     step_name=args.step_name,
     role=args.role,
     step_number=args.step_number,
+    step_run_id=args.step_run_id,
 )
 spec = AssessmentSpec(
     label="Expected accepted count", expected_count=args.expected_count
@@ -161,7 +168,8 @@ not clipped to fit a response. The bounded summary performs another live read;
 the identity assertion detects a change between these two reads. It does not
 make them an atomic snapshot. Retain the resolved selection and exact spec
 alongside the `evidence_id`; assessment evidence identity does not identify the
-criteria. A count-only pass establishes the accepted count, not metric quality.
+criteria. A count-only pass establishes the accepted artifact count; it does not
+establish metric quality or prove that every intended upstream case was processed.
 
 For comparison, construct `ComparisonSpec` with `ComparisonMetric` declarations
 and `MetadataKeyMatch` or `ExplicitPairsMatch`, all from `artisan.visualization`,

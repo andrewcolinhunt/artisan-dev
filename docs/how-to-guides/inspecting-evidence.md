@@ -1,8 +1,19 @@
 # Inspect Evidence Locally
 
-Discover the inspection contracts in your installed Artisan version and query
-them from Python or the CLI. These interfaces work with the base installation;
-an MCP server is optional.
+Inspect runs, failures, artifacts and outcome assessments from Python or the
+CLI. Both interfaces work with the base installation and share their request
+and response contracts with the optional MCP server.
+
+Choose the interface your caller can use:
+
+| Caller | Interface |
+| --- | --- |
+| An agent or script with shell access to the Artisan environment | `artisan inspect`, with JSON requests and responses |
+| Python code already running in that environment | `artisan.inspection`, with validated model responses |
+| A client that calls MCP tools, or a task naming an existing MCP target | The configured [MCP connection](connecting-mcp.md) |
+
+These interfaces inspect persisted evidence. To work with full result tables in
+Python, use the [analytical readers](inspecting-provenance.md).
 
 ## Find the installed contract
 
@@ -15,12 +26,27 @@ artisan guide list --json
 artisan guide show pipeline-operate
 ```
 
-The catalog identifies the installed version and capabilities. Each description
-contains complete request and response JSON schemas. The operating guide adds
-the workflow: select a store and attempt, inspect execution evidence, then assess
-outcomes against explicit criteria. Its version, origin and content digest let
-you check which guidance you read. Availability comes from the installed catalog,
-not a version number alone.
+The catalog identifies the installed version and available inspections. Each
+description contains the complete request and response JSON schemas. Use these
+schemas to construct requests; a remembered version number does not establish
+which capabilities are installed.
+
+The operating guide explains how to select a store and attempt, inspect evidence,
+and assess outcomes against explicit criteria. It comes from the installed
+Artisan distribution or editable checkout and records its version, origin and
+content digest. Read it before applying instructions saved from another version.
+
+These commands do not import application modules or read a store. To discover
+registered operations, load the application's trusted modules explicitly:
+
+```bash
+artisan inspect run list_operations --load-module artisan.operations.examples --json
+artisan inspect run capabilities --load-module artisan.operations.examples --json
+```
+
+Check the capabilities response's `error_count` and `name_collision_count` before
+using the operation catalog. Inspect `view="errors"` or `view="name_collisions"`
+for details.
 
 ## Query a store
 
@@ -33,13 +59,19 @@ printf '%s\n' '{"limit":1}' | artisan inspect run list_runs \
   --request - --delta-root /absolute/path/to/runs/delta --json
 ```
 
+The response's `items` contain the available `pipeline_run_id` values. Confirm
+that the run you intend to inspect appears before requesting its status or
+outputs. The one-row request demonstrates paging; it may not include that run
+until you [follow the continuation](#continue-and-interpret-evidence).
+
 `--request` accepts a UTF-8 JSON object file or `-` for stdin. Omitting it supplies
 an empty object. Invalid JSON, duplicate keys, non-finite numbers, undeclared
 fields and incorrect field types fail before querying the store.
 
 Use repeated `--load-module` flags for trusted installed applications whose
-operations or artifact types you need. Otherwise `ARTISAN_LOAD_MODULES` supplies
-the module list. `--delta-root` takes precedence over `ARTISAN_DELTA_ROOT`.
+operations or artifact types you need. Explicit flags replace the comma-separated
+`ARTISAN_LOAD_MODULES` list. `--delta-root` takes precedence over
+`ARTISAN_DELTA_ROOT`.
 Application imports can run code; use only modules you trust. Discovery queries
 expose import failures, while store queries stop when required application
 registration fails.
@@ -55,11 +87,9 @@ Python callers initialize trusted application definitions explicitly. Replace
 the store path before running this example:
 
 ```python
-from artisan.inspection import describe_inspection, inspect_evidence, list_inspections
+from artisan.inspection import inspect_evidence
 from artisan.registry import bootstrap_applications
 
-print(list_inspections().model_dump(mode="json"))
-print(describe_inspection("list_runs").model_dump(mode="json"))
 bootstrap_applications(["artisan.operations.examples"], purpose="inspect results")
 root = "/absolute/path/to/runs/delta"
 page = inspect_evidence("list_runs", {"limit": 1}, delta_root=root)
@@ -76,33 +106,62 @@ while True:
 print([run["pipeline_run_id"] for run in runs])
 ```
 
-Use `artisan.registry.discover` and pass its report as `discovery` when querying
-the `capabilities` inspection. `list_inspections` and `describe_inspection` describe
-the installed interface without discovering application operations.
+The printed IDs cover every page of the selected run list. Keep one run ID when
+moving on to status, outputs or failure evidence.
 
+For Python discovery, `list_inspections()` and `describe_inspection(name)` from
+`artisan.inspection` provide the same catalog and schemas as the CLI. They do not
+discover application operations. Use `artisan.registry.discover` and pass its
+report as `discovery` when querying the `capabilities` inspection.
+
+(continue-and-interpret-evidence)=
 ## Continue and interpret evidence
 
-Projection version `2` uses transport-neutral `follow_up.capability` and exact
-`follow_up.arguments`. CLI, Python and MCP use the same responses and cursor
-rules. To continue through MCP, prefix the capability with `artisan_` to obtain
-its tool name. Keep the same store representation, selectors and observed
-evidence; an equivalent path spelled differently can invalidate a cursor.
+Continue with the returned `follow_up.capability` and `follow_up.arguments`, as
+the Python example does. For the CLI, save those arguments as a JSON request and
+pass it to `artisan inspect run` with the returned capability name. For MCP,
+prefix the capability with `artisan_` to obtain its server tool name; your client
+may add its own namespace. Use the tool name advertised by that client. A null
+`follow_up` means no continuation is available for the selected view.
+
+CLI, Python and MCP use the same responses and cursor rules. Keep the same store
+representation and selectors, including exact `step_run_id` values in assessment
+or comparison continuations. An equivalent store path spelled differently can
+invalidate a cursor. You may change `limit` between pages.
 
 Responses are bounded to 48 KiB of canonical JSON and collections to at most 100
-rows per page. Selected values remain whole. Inspect collection coverage,
-omitted fields and `has_more`; a summary is not a complete evidence export.
-These bounds limit response size, not reader memory or query cost. MCP also has
-a separate wire-size limit that can reject a response whose duplicated protocol
-encoding is too large.
+rows per page. A byte limit can return fewer rows than requested. Selected values
+remain whole. Check the selected collection's `total_items`, `omitted_fields`
+and `has_more` alongside source coverage. Exhausting a page sequence does not
+establish that a bounded provenance traversal found every ancestor or that an
+assessment has every measurement it needs.
 
-Known query errors are typed Python exceptions or structured CLI/MCP errors.
-The CLI writes one JSON object to stdout with `--json`, including on handled
-failure (exit 1); argument parsing errors exit 2. Application diagnostics go to
+These bounds limit response size, not reader memory or query cost. To retain a
+complete assessment or comparison, [export the evidence](exporting-evidence.md).
+
+## Handle errors and changing evidence
+
+Known query errors are typed `ArtisanError` exceptions in Python and structured
+errors in the CLI. The CLI writes one JSON object to stdout with `--json`,
+including on handled failure (exit 1); argument parsing errors exit 2. Application diagnostics go to
 stderr. Unexpected implementation failures remain visible as exceptions.
-A successfully returned failure report is evidence about a failed execution,
-not a failed inspection request.
+A successfully returned failure report is evidence about a failed execution.
+It does not make the inspection request itself fail. MCP adds protocol-level
+validation; see [MCP error handling](connecting-mcp.md#handle-query-errors-and-slow-reads).
 
-On `evidence_view_changed`, discard accumulated pages and restart the query.
-On `invalid_evidence_cursor`, restart without the token. Older projection-version
-tokens are not supported. Paging over a live store is not an atomic snapshot.
-To retain a complete assessment or comparison, [export the evidence](exporting-evidence.md).
+| Error code | Recovery |
+| --- | --- |
+| `evidence_view_changed` | Discard accumulated pages and restart the query; do not combine pages from different views. |
+| `invalid_evidence_cursor` | Restart the intended query without the token. |
+| `evidence_item_too_large` | Follow the suggested field or section selection. Lowering `limit` cannot make one oversized row fit. |
+| `evidence_response_too_large` | Narrow the request or use a full Python reader for the required evidence. |
+
+Paging over a live store is not an atomic snapshot. If evidence keeps changing,
+wait for a stable view or narrow the selection.
+
+## Update clients for projection version 2
+
+Current responses carry `projection_version="2"`. Continuations use
+`follow_up.capability` instead of the earlier MCP-specific `follow_up.tool`.
+Update consumers to dispatch by capability and discard version-1 cursors. Start
+each query again after upgrading; old tokens are rejected.
