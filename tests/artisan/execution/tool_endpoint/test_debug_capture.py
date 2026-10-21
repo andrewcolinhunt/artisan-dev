@@ -360,7 +360,7 @@ def _client(monkeypatch, result, *, download_error=False, schema=None):
         ).model_dump()
     )
 
-    def get(path, params=None):
+    def get(path, params=None, *, timeout=None):
         if path == "/schema":
             return httpx.Response(200, json=schema)
         if path == "/result":

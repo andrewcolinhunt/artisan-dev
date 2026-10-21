@@ -16,6 +16,7 @@ import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import Response
 
+from artisan.execution.tool_endpoint import client as client_module
 from artisan.execution.tool_endpoint import server as server_module
 from artisan.execution.tool_endpoint.protocol import (
     InputRef,
@@ -36,7 +37,12 @@ pytestmark = pytest.mark.integration
 
 
 @pytest.fixture
-def endpoint_url(monkeypatch, request):
+def endpoint_requests() -> dict[str, list[str]]:
+    return {"submit": [], "result": [], "download": []}
+
+
+@pytest.fixture
+def endpoint_url(monkeypatch, request, endpoint_requests):
     mode = request.param
     if mode == "compute_failure":
         original = server_module.invoke_op_work
@@ -108,10 +114,18 @@ def endpoint_url(monkeypatch, request):
             )
         call_id = uuid.uuid4().hex
         results[call_id] = result
+        endpoint_requests["submit"].append(call_id)
         return {"call_id": call_id}
 
     @app.get("/result")
     def result(call_id: str):
+        endpoint_requests["result"].append(call_id)
+        if mode == "poll_recovery":
+            polls = len(endpoint_requests["result"])
+            if polls == 1:
+                return Response(status_code=500)
+            if polls == 2:
+                return {"status": "pending", "manifest": None}
         manifest = results[call_id].manifest
         return {
             "status": "failed" if manifest.error else "done",
@@ -120,6 +134,7 @@ def endpoint_url(monkeypatch, request):
 
     @app.get("/download")
     def download(call_id: str, plane: Literal["outputs", "diagnostics"] = "outputs"):
+        endpoint_requests["download"].append(call_id)
         outcome = results[call_id]
         return Response(
             outcome.debug_tar if plane == "diagnostics" else outcome.output_tar,
@@ -145,6 +160,91 @@ def endpoint_url(monkeypatch, request):
             server.should_exit = True
             thread.join(timeout=10)
             assert not thread.is_alive()
+
+
+@pytest.mark.parametrize("endpoint_url", ["poll_recovery"], indirect=True)
+def test_result_poll_recovery_commits_original_call_with_lineage(
+    tmp_path: Path,
+    endpoint_url: tuple[str, str],
+    endpoint_requests: dict[str, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(client_module, "_RESULT_BACKOFF_SECONDS", 0.001)
+    url, _ = endpoint_url
+    manager = PipelineManager.create(
+        "poll-recovery",
+        str(tmp_path / "delta"),
+        str(tmp_path / "staging"),
+        working_root=str(tmp_path / "work"),
+    )
+    source = manager.run(DataGenerator, params={"count": 1, "seed": 17}, compact=False)
+    recovered = manager.run(
+        WaitTool,
+        inputs={"dataset": source.output("datasets")},
+        params={"seconds": 1},
+        compute_provider={
+            "active": "modal",
+            "modal": {"endpoint_url": url, "poll_interval": 0.001},
+        },
+        compact=False,
+    )
+    assert manager.finalize()["overall_success"]
+    assert recovered.status == StepStatus.SUCCEEDED
+    assert len(endpoint_requests["submit"]) == 1
+    call_id = endpoint_requests["submit"][0]
+    assert endpoint_requests["result"] == [call_id] * 3
+    assert endpoint_requests["download"] == [call_id]
+
+    delta_root = manager.config.delta_root
+    fs = manager.config.storage.filesystem()
+    executions = read_committed(delta_root, TablePath.EXECUTIONS, fs=fs).filter(
+        pl.col("step_run_id") == recovered.step_run_id
+    )
+    assert executions.height == 1
+    execution = executions.row(0, named=True)
+    assert execution["success"] is True
+    assert execution["error"] is None
+    recording = json.loads(execution["command_recording"])
+    assert recording["status"] == "complete"
+    assert recording["missing_invocations"] == []
+    assert len(recording["commands"]) == 1
+    assert recording["commands"][0]["location"] == "endpoint"
+    assert recording["commands"][0]["outcome"] == "succeeded"
+    identity = json.loads(execution["replay_snapshot"])["remote_identity"]
+    assert len(identity) == 1
+    assert identity[0]["status"] == "observed"
+    assert identity[0]["identity"] == operation_identity(WaitTool).model_dump(
+        mode="json"
+    )
+
+    artifacts = read_committed(delta_root, "artifacts/data", fs=fs)
+    inputs = artifacts.filter(pl.col("origin_step_number") == source.step_number)
+    outputs = artifacts.filter(pl.col("origin_step_number") == recovered.step_number)
+    assert inputs.height == outputs.height == 1
+    parent = inputs.row(0, named=True)
+    output = outputs.row(0, named=True)
+    assert output["original_name"] == f"{parent['original_name']}_waited"
+    assert output["row_count"] == 1
+    assert json.loads(output["columns"]) == ["seconds", "host", "source"]
+    marker = output["content"].decode()
+    assert marker.startswith("seconds,host,source\n1,")
+    assert marker.rstrip().endswith(f",{parent['artifact_id']}.csv")
+    edges = read_committed(delta_root, TablePath.ARTIFACT_EDGES, fs=fs).filter(
+        pl.col("execution_run_id") == execution["execution_run_id"]
+    )
+    assert edges.to_dicts() == [
+        {
+            "execution_run_id": execution["execution_run_id"],
+            "source_artifact_id": parent["artifact_id"],
+            "target_artifact_id": output["artifact_id"],
+            "source_artifact_type": "data",
+            "target_artifact_type": "data",
+            "source_role": "dataset",
+            "target_role": "output",
+            "group_id": None,
+            "step_boundary": True,
+        }
+    ]
 
 
 @pytest.mark.parametrize(

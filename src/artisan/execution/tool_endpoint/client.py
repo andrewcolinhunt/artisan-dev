@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import os
+import ssl
 import threading
 import time
 from collections.abc import Iterator
@@ -81,6 +82,20 @@ _ENV_HINT = (
 )
 
 _HTTP_TIMEOUT = 120.0
+_RESULT_RECOVERY_SECONDS = 300.0
+_RESULT_BACKOFF_SECONDS = 1.0
+_RESULT_BACKOFF_MAX_SECONDS = 10.0
+_RESULT_RETRY_STATUSES = {500, 502, 503, 504}
+_RESULT_RETRY_ERRORS = (
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+)
 
 _cancel_event: ContextVar[threading.Event | None] = ContextVar(
     "tool_endpoint_cancel", default=None
@@ -203,11 +218,16 @@ def call_endpoint(
 class _RecordingError(ArtisanError):
     """A fixed, input-free endpoint evidence protocol failure."""
 
-    def __init__(self, op_name: str, reason: MissingReason) -> None:
+    def __init__(
+        self, op_name: str, reason: MissingReason, *, context: str = ""
+    ) -> None:
         self.reason = reason
         super().__init__(
             code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-            message="endpoint command recording is missing or invalid; redeploy the endpoint",
+            message=(
+                f"{context}endpoint command recording is missing or invalid; "
+                "redeploy the endpoint"
+            ),
             error_type="config",
             operation_name=op_name,
             field="manifest.command_recording",
@@ -497,9 +517,18 @@ def _receive_diagnostics(
 def _poll(
     client: httpx.Client, call_id: str, interval: float, op_name: str
 ) -> tuple[ToolManifest, CancellationAcknowledgement | None]:
-    """Poll ``/result`` until the job leaves ``pending``; honor cancellation."""
+    """Poll one call, allowing five minutes to recover each transport outage.
+
+    Recovery includes failed request time and capped backoff. A validated
+    pending response resets the window; healthy computation has no deadline.
+    HTTPX timeouts bound I/O waits, not the total duration of an active GET.
+    """
     cancel = _cancel_event.get()
     cancellation: CancellationAcknowledgement | None = None
+    deadline: float | None = None
+    delay = _RESULT_BACKOFF_SECONDS
+    failure = ""
+    last_status: int | None = None
     while True:
         if cancel is not None and cancel.is_set() and cancellation is None:
             try:
@@ -540,18 +569,51 @@ def _poll(
             else:
                 time.sleep(interval)
                 continue
-        response = client.get("/result", params={"call_id": call_id})
-        _check(response, op_name)
-        result = _decode_result(response.json(), op_name)
+        started = time.monotonic()
+        if deadline is not None and started >= deadline:
+            raise _result_error(op_name, call_id, failure, last_status)
+        timeout = (
+            _HTTP_TIMEOUT
+            if deadline is None
+            else min(_HTTP_TIMEOUT, deadline - started)
+        )
+        response, transport_error = _request_result(client, call_id, op_name, timeout)
+        if response is None or response.status_code in _RESULT_RETRY_STATUSES:
+            if response is not None:
+                last_status = response.status_code
+            failure = transport_error or f"HTTP {last_status}"
+            if deadline is None:
+                deadline = started + _RESULT_RECOVERY_SECONDS
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                _poll_wait(
+                    min(delay, remaining), cancel if cancellation is None else None
+                )
+                delay = min(delay * 2, _RESULT_BACKOFF_MAX_SECONDS)
+            continue
+        _check(response, op_name, call_id=call_id)
+        context = sanitize_diagnostic(
+            f"GET /result for call {sanitize_diagnostic(call_id)!r} "
+            f"(HTTP {response.status_code}): "
+        )
+        try:
+            payload = response.json()
+        except ValueError:
+            raise _config_error(
+                op_name,
+                f"{context}endpoint returned invalid JSON",
+            ) from None
+        result = _decode_result(payload, op_name, context)
         if result.status == "pending":
-            time.sleep(interval)
+            deadline = None
+            delay = _RESULT_BACKOFF_SECONDS
+            last_status = None
+            _poll_wait(interval, cancel if cancellation is None else None)
             continue
         if result.status == "expired":
             raise ArtisanError(
                 code=ErrorCode.OP_EXECUTE_FAILED,
-                message=sanitize_diagnostic(
-                    f"result for call {call_id} expired — Modal retains results 7 days"
-                ),
+                message=f"{context}result expired — Modal retains results 7 days",
                 error_type="compute",
                 operation_name=op_name,
                 recovery_hint="RETRY_LATER",
@@ -559,14 +621,77 @@ def _poll(
         if result.manifest is None:
             raise ArtisanError(
                 code=ErrorCode.OP_EXECUTE_FAILED,
-                message=f"/result returned {result.status} without a manifest",
+                message=f"{context}returned {result.status} without a manifest",
                 error_type="compute",
                 operation_name=op_name,
             )
         return result.manifest, cancellation
 
 
-def _decode_result(payload: Any, op_name: str) -> ResultResponse:
+def _request_result(
+    client: httpx.Client, call_id: str, op_name: str, timeout: float
+) -> tuple[httpx.Response | None, str]:
+    """Return a response or a retryable failure class without untrusted text."""
+    try:
+        return client.get("/result", params={"call_id": call_id}, timeout=timeout), ""
+    except httpx.HTTPError as exc:
+        if isinstance(exc, _RESULT_RETRY_ERRORS) and not _has_tls_error(exc):
+            return None, type(exc).__name__
+        raise _result_error(
+            op_name, call_id, type(exc).__name__, exhausted=False
+        ) from None
+
+
+def _has_tls_error(error: BaseException) -> bool:
+    """Keep TLS configuration and certificate failures out of network retries."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLError):
+            return True
+        pending.extend(
+            item
+            for item in (current.__cause__, current.__context__)
+            if item is not None
+        )
+    return False
+
+
+def _poll_wait(delay: float, cancel: threading.Event | None) -> None:
+    """Wake recovery and pending waits when cancellation becomes actionable."""
+    if cancel is None:
+        time.sleep(delay)
+    else:
+        cancel.wait(delay)
+
+
+def _result_error(
+    op_name: str,
+    call_id: str,
+    failure: str,
+    status: int | None = None,
+    *,
+    exhausted: bool = True,
+) -> ArtisanError:
+    """Describe result retrieval without response bodies or exception chains."""
+    reason = "recovery budget exhausted" if exhausted else "request failed"
+    http_status = f"; last HTTP status {status}" if status is not None else ""
+    return ArtisanError(
+        code=ErrorCode.OP_EXECUTE_FAILED,
+        message=sanitize_diagnostic(
+            f"GET /result for call {sanitize_diagnostic(call_id)!r}: "
+            f"{reason} ({failure}{http_status})"
+        ),
+        error_type="compute",
+        operation_name=op_name,
+    )
+
+
+def _decode_result(payload: Any, op_name: str, context: str) -> ResultResponse:
     """Size-check untrusted evidence before nested validation; never echo input."""
     manifest = payload.get("manifest") if isinstance(payload, dict) else None
     if (
@@ -574,22 +699,25 @@ def _decode_result(payload: Any, op_name: str) -> ResultResponse:
         and payload.get("status") in {"done", "failed"}
         and manifest is None
     ):
-        raise _RecordingError(op_name, "missing_recording")
+        raise _RecordingError(op_name, "missing_recording", context=context)
     if isinstance(manifest, dict):
         if "command_recording" not in manifest:
-            raise _RecordingError(op_name, "missing_recording")
+            raise _RecordingError(op_name, "missing_recording", context=context)
         try:
             raw = manifest["command_recording"]
             check_recording_size(raw)
             CommandRecording.model_validate(raw)
         except (TypeError, ValueError, RecursionError):
-            raise _RecordingError(op_name, "invalid_recording") from None
+            raise _RecordingError(
+                op_name, "invalid_recording", context=context
+            ) from None
     try:
         return ResultResponse.model_validate(payload)
     except (TypeError, ValueError):
         raise _config_error(
             op_name,
-            "endpoint execution evidence protocol is incompatible; redeploy the endpoint",
+            f"{context}endpoint execution evidence protocol is incompatible; "
+            "redeploy the endpoint",
         ) from None
 
 
@@ -795,14 +923,23 @@ def _append_log(log_path: str, tail: str) -> None:
         f.write(tail)
 
 
-def _check(response: httpx.Response, op_name: str) -> None:
+def _check(
+    response: httpx.Response, op_name: str, *, call_id: str | None = None
+) -> None:
     """Classify refused auth/redirects as config errors, other failures as compute."""
+    context = (
+        sanitize_diagnostic(f"GET /result for call {sanitize_diagnostic(call_id)!r}: ")
+        if call_id is not None
+        else ""
+    )
     # Modal's proxy answers missing/invalid tokens with a fast 401 response
     # (not a connection error); 407 handled defensively.
     if response.status_code in (401, 407):
         raise ArtisanError(
             code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-            message=(f"tool endpoint rejected authentication ({response.status_code})"),
+            message=(
+                f"{context}tool endpoint rejected authentication ({response.status_code})"
+            ),
             error_type="config",
             operation_name=op_name,
             hint=_ENV_HINT,
@@ -811,7 +948,7 @@ def _check(response: httpx.Response, op_name: str) -> None:
     if 300 <= response.status_code < 400:
         raise ArtisanError(
             code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
-            message=f"tool endpoint redirect refused ({response.status_code})",
+            message=f"{context}tool endpoint redirect refused ({response.status_code})",
             error_type="config",
             operation_name=op_name,
             recovery_hint="CHECK_INPUT",
@@ -819,7 +956,7 @@ def _check(response: httpx.Response, op_name: str) -> None:
     if not 200 <= response.status_code < 300:
         raise ArtisanError(
             code=ErrorCode.OP_EXECUTE_FAILED,
-            message=f"tool endpoint request failed ({response.status_code})",
+            message=f"{context}tool endpoint request failed ({response.status_code})",
             error_type="compute",
             operation_name=op_name,
         )
