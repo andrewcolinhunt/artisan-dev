@@ -49,8 +49,17 @@ new endpoint behavior. See the breaking changes below.
 - Exact metric observation, outcome assessment and run-comparison readers, also
   exposed through read-only MCP tools. Criteria and correspondence are explicit;
   reports retain missing evidence, population coverage and numeric precision.
-- Portable `pipeline-operate` skill for discovering tools, inspecting existing
-  runs and explaining evidence limits.
+- Local inspection through `artisan.inspection` and `artisan inspect`, with
+  discoverable request/response schemas and shared validation, bounded responses
+  and pagination across Python, CLI and optional MCP. Local interfaces work
+  with the base Artisan installation.
+- Installed operating guidance through `artisan guide`, with package version,
+  source and content digest. The portable `pipeline-operate` skill prefers local
+  interfaces, checks installed contracts and preserves explicit remote targets.
+- Complete assessment and comparison exports through Python and
+  `artisan evidence export`. Saved reports include their schemas and completion
+  manifests; `load_evidence_export` verifies them without reopening the source
+  store. Missing source evidence remains explicit in the saved report.
 - Staging recovery before cache lookup, with independent `recover_staging` and
   `preserve_staging` controls. Finished executions from interrupted or cancelled
   steps can be reused without changing the source step's history.
@@ -67,7 +76,12 @@ new endpoint behavior. See the breaking changes below.
   use bounded pages and opaque cursors tied to the query and projected evidence;
   step results are flat artifact-reference pages. Metadata requires explicit
   selection. Clients must restart changed views and handle error results rather
-  than treating error envelopes as successful data. See
+  than treating error envelopes as successful data. Responses now use
+  `projection_version="2"`; continuations use `follow_up.capability` instead of
+  `follow_up.tool`. Update consumers and restart queries after upgrading;
+  version-1 cursors are rejected. Handled Artisan query failures retain
+  structured details, while requests rejected by MCP schema validation can
+  return text-only protocol errors. See
   [MCP migration and limits](docs/how-to-guides/connecting-mcp.md).
 - Require FastMCP 3.4.0 or newer. Blocking inspection runs in workers so other
   requests remain responsive; disconnecting a client does not cancel a pipeline.
@@ -172,6 +186,9 @@ new endpoint behavior. See the breaking changes below.
 
 ### Fixed
 
+- MCP store-reading tools, resources and prompts stop when configured
+  application definitions fail to load. Discovery remains available to inspect
+  registration errors.
 - Current result readers no longer fall back to an older successful attempt when
   the selected attempt failed or was cancelled. Explicit historical selection
   remains available.
