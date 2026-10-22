@@ -23,12 +23,15 @@ from artisan.utils.hashing import canonical_json_bytes
 
 
 class FileRefArtifact(Artifact):
-    """Artifact referencing an external file by path and content hash.
+    """Artifact referencing a complete external file of any size.
 
     Unlike content-embedding artifacts (DataArtifact, MetricArtifact),
     this stores a pointer to the file rather than its bytes. The
     ``content_hash`` verifies the raw file bytes. It differs from the artifact
-    ID, which also includes the artifact type and semantic metadata.
+    ID, which also includes the artifact type and semantic metadata. Both
+    existing inputs and generated outputs use this type. Generated files in
+    an operation's ``files_dir`` are relocated to ``files_root`` by the creator
+    lifecycle, which updates ``path`` without changing identity.
     """
 
     POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
@@ -55,12 +58,12 @@ class FileRefArtifact(Artifact):
     )
     path: str | None = Field(
         default=None,
-        description="Original file path. None for ID-only artifacts.",
+        description="Current file path or URI. None for ID-only artifacts.",
     )
     size_bytes: int | None = Field(
         default=None,
         ge=0,
-        description="File size at submission time. None for ID-only artifacts.",
+        description="Byte count of the complete file. None for ID-only artifacts.",
     )
     original_name: str | None = Field(
         default=None,
@@ -74,7 +77,10 @@ class FileRefArtifact(Artifact):
     _cached_content: bytes | None = PrivateAttr(default=None)
 
     def read_content(self, *, fs: Any = None) -> bytes:
-        """Read and cache file content from the original path.
+        """Read and cache all file bytes from the current location.
+
+        For large files, use streaming verification or materialize the file
+        and read the returned path incrementally to avoid caching all bytes.
 
         Args:
             fs: Optional fsspec filesystem for reading from cloud storage.
@@ -122,7 +128,10 @@ class FileRefArtifact(Artifact):
         )
 
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
-        """Copy the referenced file into the given directory.
+        """Stream verified bytes into an artifact-ID subdirectory.
+
+        Preserve the source basename inside that subdirectory so distinct
+        artifacts with the same basename cannot overwrite each other.
 
         Args:
             directory: Target directory for the output file.
@@ -132,13 +141,18 @@ class FileRefArtifact(Artifact):
             Path to the written file.
 
         Raises:
-            ValueError: If path is None (not hydrated).
+            ValueError: If the artifact is not finalized or has no location.
         """
+        if self.artifact_id is None:
+            msg = "Cannot materialize: artifact not finalized (no artifact_id)"
+            raise ValueError(msg)
         if self.path is None:
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
         self._assert_identity_intact()
-        dest = os.path.join(directory, os.path.basename(self.path))
+        artifact_dir = os.path.join(directory, self.artifact_id)
+        os.makedirs(artifact_dir, exist_ok=True)
+        dest = os.path.join(artifact_dir, os.path.basename(self.path))
         copy_verified_file(
             artifact_id=self.artifact_id,
             artifact_type=self.artifact_type,
@@ -165,9 +179,9 @@ class FileRefArtifact(Artifact):
         """Create a draft file-reference artifact.
 
         Args:
-            path: Filesystem path to the referenced file.
+            path: Current filesystem path or URI to the referenced file.
             content_hash: xxh3_128 hash of the file bytes.
-            size_bytes: File size at submission time.
+            size_bytes: Byte count of the complete file.
             step_number: Pipeline step number.
             metadata: Optional metadata dict.
             original_name: Original human-readable filename stem.

@@ -9,7 +9,6 @@ from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
-from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
@@ -39,8 +38,8 @@ def materialize_inputs(
         input_specs: Role-keyed input specs controlling materialization.
         directory: Target directory for materialized files.
         artifact_store: Store for hydrating config-referenced artifacts.
-        endpoint_routed: When True, a remote ``FileRefArtifact`` or
-            ``LargeFileArtifact`` is shipped to the worker by reference.
+        endpoint_routed: When True, a remote ``FileRefArtifact``
+            is shipped to the worker by reference.
             Other artifact families still materialize locally. Local execution
             keeps the default (False), materializing every input as before.
 
@@ -197,7 +196,7 @@ def _materialize_artifact(
     )
     if (
         endpoint_routed
-        and isinstance(artifact, (FileRefArtifact, LargeFileArtifact))
+        and isinstance(artifact, FileRefArtifact)
         and _is_remote(locator)
     ):
         artifact.verify_external_content(fs=fs)

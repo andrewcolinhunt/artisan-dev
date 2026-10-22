@@ -184,6 +184,8 @@ def test_manifest_round_trip_for_initialized_store(tmp_path) -> None:
     assert_store_format(root, fs)
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "r") as stream:
         assert json.load(stream) == STORE_MANIFEST
+    assert fs.exists(f"{root}/artifacts/file_refs")
+    assert not fs.exists(f"{root}/artifacts/large_files")
 
 
 def test_initialize_empty_root_publishes_manifest_last(tmp_path) -> None:
@@ -270,7 +272,10 @@ def test_nonempty_legacy_root_cannot_be_initialized(tmp_path) -> None:
         prepare_store_initialization(root, fs)
 
 
-def test_previous_manifest_rejected_even_with_current_tables(tmp_path) -> None:
+@pytest.mark.parametrize("previous_format", [5, 6])
+def test_previous_manifest_rejected_even_with_current_tables(
+    tmp_path, previous_format: int
+) -> None:
     fs = LocalFileSystem()
     root = str(tmp_path / "delta")
     DeltaCommitter(
@@ -278,11 +283,13 @@ def test_previous_manifest_rejected_even_with_current_tables(tmp_path) -> None:
         StagingManager(str(tmp_path / "staging"), fs),
         fs=fs,
     ).initialize_tables()
-    previous_manifest = {**STORE_MANIFEST, "store_format": 5}
+    previous_manifest = {**STORE_MANIFEST, "store_format": previous_format}
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "w") as stream:
         json.dump(previous_manifest, stream)
 
-    with pytest.raises(IncompatibleStoreError, match="found .*store_format.*5"):
+    with pytest.raises(
+        IncompatibleStoreError, match=f"found .*store_format.*{previous_format}"
+    ):
         assert_store_format(root, fs)
     # Rejection must not rewrite an old manifest to bless inferred history.
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}") as stream:

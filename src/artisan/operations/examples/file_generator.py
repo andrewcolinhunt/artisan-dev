@@ -1,8 +1,8 @@
-"""Generate large binary files stored externally.
+"""Generate binary files stored externally.
 
 Demonstrates the one-to-one external-content pattern: each artifact
-maps to a single large file in files_root, too large for a Parquet
-binary column. Delta stores only metadata (hash, size, name).
+maps to a complete file in files_root. Delta stores only metadata
+(hash, size, name), regardless of file size.
 """
 
 from __future__ import annotations
@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.large_file import LargeFileArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -26,19 +26,19 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import compute_content_digest
 
 
-class LargeFileGenerator(OperationDefinition):
-    """Generate large binary files stored externally.
+class FileGenerator(OperationDefinition):
+    """Generate binary files stored externally.
 
     Produces pseudo-random binary files of a specified size, reproducible
-    when an explicit seed is supplied. Each file becomes a LargeFileArtifact with
-    external_path pointing to the file in files_root.
+    when an explicit seed is supplied. Each file becomes a FileRefArtifact with
+    path pointing to the file in files_root.
 
     Output Roles:
-        files (large_file) -- Generated large binary files
+        files (file_ref) -- Generated binary files
     """
 
-    name = "large_file_generator"
-    description = "Generate large binary files stored externally"
+    name = "file_generator"
+    description = "Generate binary files stored externally"
 
     inputs: ClassVar[dict[str, Any]] = {}
 
@@ -47,14 +47,14 @@ class LargeFileGenerator(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.files: OutputSpec(
-            artifact_type="large_file",
-            description="Generated large binary files",
+            artifact_type="file_ref",
+            description="Generated binary files",
             derives_from={"inputs": []},
         ),
     }
 
     class Params(BaseModel):
-        """Algorithm parameters for LargeFileGenerator."""
+        """Algorithm parameters for FileGenerator."""
 
         count: int = Field(default=1, ge=1, description="Number of files to generate")
         file_size_bytes: int = Field(
@@ -68,7 +68,7 @@ class LargeFileGenerator(OperationDefinition):
 
     params: Params = Params()
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="large_file_generator")  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="file_generator")  # type: ignore[call-arg]  # pydantic defaults
     compute_provider: ComputeProvider = ComputeProvider(
         modal=ModalComputeConfig(),
     )
@@ -76,7 +76,7 @@ class LargeFileGenerator(OperationDefinition):
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Generate binary files in files_dir, reproducible with an explicit seed."""
         if inputs.files_dir is None:
-            msg = "files_dir required for LargeFileGenerator"
+            msg = "files_dir required for FileGenerator"
             raise ValueError(msg)
 
         rng = random.Random(self.params.seed)
@@ -101,15 +101,15 @@ class LargeFileGenerator(OperationDefinition):
         return {"files": files_meta}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Create LargeFileArtifact drafts from execute metadata."""
+        """Create FileRefArtifact drafts from execute metadata."""
         files = inputs.memory_outputs["files"]
 
         drafts: list[Artifact] = [
-            LargeFileArtifact.draft(
+            FileRefArtifact.draft(
                 content_hash=f["content_hash"],
                 size_bytes=f["size_bytes"],
                 step_number=inputs.step_number,
-                external_path=f["path"],
+                path=f["path"],
                 original_name=f["original_name"],
                 extension=f["extension"],
             )
