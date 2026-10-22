@@ -829,6 +829,7 @@ class TestCommit:
         assert result.succeeded_count == 2
         assert result.total_count == 2
         assert "passthrough" in result.output_roles
+        assert not list((delta_root / "_staging").rglob("*.parquet"))
 
         # Verify steps table was updated
         steps_df = pl.read_delta(str(delta_root / "orchestration/steps"))

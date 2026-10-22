@@ -51,7 +51,7 @@ from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
 from artisan.registry.discovery import bootstrap_applications
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
+from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
@@ -2727,12 +2727,7 @@ class PipelineManager:
         attempt_started_at: float,
     ) -> StepResult:
         """Persist worker evidence and its terminal candidate as one commit."""
-        from artisan.storage.io.commit import DeltaCommitter
-        from artisan.storage.io.commit_plan import (
-            prepare_commit_evidence,
-            publish_commit_plan,
-        )
-        from artisan.storage.io.staging import StagingManager
+        from artisan.orchestration.engine.terminal_commit import commit_terminal_result
 
         step_run_id = result.step_run_id
         if step_run_id is None:
@@ -2763,47 +2758,18 @@ class PipelineManager:
                     finalized.error,
                 ),
             )
-        candidate = self._step_tracker.prepare_terminal_candidate(
-            step_run_id,
-            StepStatus.RUNNING,
-            finalized.status,
-            step_spec_id=step_spec_id,
+        return commit_terminal_result(
+            tracker=self._step_tracker,
             result=finalized,
-        )
-        fs = self._config.storage.filesystem()
-        options = self._config.storage.delta_storage_options()
-        staging = StagingManager(self._config.staging_root, fs)
-        staging.stage_orchestrator_dataframe(
-            candidate,
-            TablePath.STEPS.value,
-            commit_kind="step_result",
-            step_run_id=step_run_id,
-            step_number=finalized.step_number,
-            operation_name=operation_name,
-        )
-        staged = prepare_commit_evidence(
-            staging_root=self._config.staging_root,
-            fs=fs,
-            commit_kind="step_result",
-            step_run_id=step_run_id,
-            step_number=finalized.step_number,
-            operation_name=operation_name,
             execution_run_ids=execution_run_ids,
-        )
-        committer = DeltaCommitter(
-            self._config.delta_root,
-            staging,
-            fs=fs,
-            storage_options=options,
-        )
-        prepared = committer.prepare_logical(staged.plan, staged=staged)
-        publish_commit_plan(self._config.delta_root, fs, staged.plan)
-        committer.commit_logical(
-            staged.plan,
-            prepared=prepared,
+            delta_root=self._config.delta_root,
+            staging_root=self._config.staging_root,
+            fs=self._config.storage.filesystem(),
+            storage_options=self._config.storage.delta_storage_options(),
+            step_spec_id=step_spec_id,
+            operation_name=operation_name,
             preserve_staging=self._config.preserve_staging,
         )
-        return self._step_tracker.current_state(step_run_id).to_step_result()
 
     def _handle_file_path_inputs(
         self,
