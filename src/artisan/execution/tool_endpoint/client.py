@@ -529,6 +529,7 @@ def _poll(
     delay = _RESULT_BACKOFF_SECONDS
     failure = ""
     last_status: int | None = None
+    response: httpx.Response | None
     while True:
         if cancel is not None and cancel.is_set() and cancellation is None:
             try:
