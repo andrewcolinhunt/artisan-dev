@@ -92,7 +92,9 @@ new endpoint behavior. See the breaking changes below.
   lookup. Running a pipeline never creates a Modal app; deploy it separately.
 - **Breaking: composite execution.** Composites expand into ordinary pipeline
   steps through `CompositeContext` and return `CompositeResult`. Collapsed
-  execution and its separate contexts and result types are removed.
+  execution and its separate contexts and result types are removed. Construct
+  results with `CompositeResult(output_map, child_futures=None)`; the unused
+  `output_types` argument is removed.
 - **Breaking: post-step operations.** The `post_step` argument and
   `PostStepFuture` are removed. Submit the follow-up curator as an explicit step
   wired to the preceding outputs.
@@ -196,6 +198,10 @@ new endpoint behavior. See the breaking changes below.
 
 ### Fixed
 
+- CLI operation and store commands route Python and native diagnostics to stderr,
+  preserving machine-readable JSON and bare image references on stdout.
+- Execution-cache misses use one committed execution scan; later failed runs do
+  not hide earlier reusable successes.
 - MCP store-reading tools, resources and prompts stop when configured
   application definitions fail to load. Discovery remains available to inspect
   registration errors.
