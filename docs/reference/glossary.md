@@ -237,12 +237,15 @@ matching rules, unmatched inputs, and ambiguity handling.
 (glossary-hydration)=
 ## Hydration
 
-The process of loading an artifact's full content from storage. `hydrate=True`
-(default) loads all fields including content bytes. `hydrate=False` loads only
-the artifact ID and type, which is sufficient for passthrough operations like
-Filter and Merge that route artifacts without consuming their content.
+The process of loading an artifact's content or external content descriptors
+from storage. `hydrate=True` (default) loads embedded bytes for content-bearing
+artifacts. For file references, it loads metadata and a verified `path`, streaming
+the file for integrity checks without caching all its bytes. `hydrate=False`
+delivers only the artifact ID and type, which is sufficient for passthrough
+operations like Filter and Merge that route artifacts without consuming content.
 Orchestration still reads and verifies inputs before cache lookup or dispatch;
 ID-only delivery is not a guarantee that pipeline preparation avoids content I/O.
+See [Hydration](../concepts/artifacts-and-content-addressing.md#hydration-controlling-what-gets-loaded).
 
 ---
 

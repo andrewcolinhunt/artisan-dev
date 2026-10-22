@@ -27,15 +27,14 @@ artifacts produce the same ID; equal bytes in different types remain distinct.
 You can edit a draft until finalization records its durable state, allowing later
 changes to be detected.
 
-Artisan provides six built-in artifact types:
+Artisan provides five built-in artifact types:
 
 | Type | Class | Purpose |
 |------|-------|---------|
 | `data` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
 | `metric` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
 | `config` | `ExecutionConfigArtifact` | JSON parameters, optionally containing artifact references |
-| `file_ref` | `FileRefArtifact` | Verified references to files at local or object-store locations |
-| `large_file` | `LargeFileArtifact` | References to large files whose bytes remain outside Delta tables |
+| `file_ref` | `FileRefArtifact` | Complete files of any size, including existing inputs and generated outputs, at verified local or object-store locations |
 | `appendable` | `AppendableArtifact` | Individual records stored in a shared JSONL file |
 
 Custom artifact types use the `ArtifactTypeDef` registry. Configure their

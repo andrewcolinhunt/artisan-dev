@@ -72,15 +72,14 @@ embedded source-path fields and all other durable state do not.
 
 ## Artifact types
 
-The framework defines six built-in artifact types:
+The framework defines five built-in artifact types:
 
 | Type | What it stores | Content format | Why a separate type |
 |------|---------------|----------------|---------------------|
 | **Metric** | Computed properties (scores, statistics, counts) | JSON-encoded bytes | Queryable structured data, often aggregated across runs |
 | **Config** | Execution parameters and tool configurations | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
 | **Data** | Generic tabular data (CSV) | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
-| **File ref** | Pointers to external files | Metadata only (no embedded content) | Lightweight reference without copying large files into storage |
-| **Large file** | External one-to-one files (model weights, matrices, simulation outputs) | Digest and size descriptor (bytes stay at a verified location) | Handles files too large to embed in a Parquet column |
+| **File ref** | Complete external files, including existing inputs and generated outputs | Digest and size descriptor (bytes stay at a verified location) | Keeps files of any size outside content tables |
 | **Appendable** | Individual records in a shared JSONL file | Metadata only (each record lives in the JSONL file) | Many records share one file; each is addressed by `record_id` |
 
 Each type has its own Delta Lake table, so a metrics query can scan
@@ -127,16 +126,34 @@ declares the config's parents explicitly. See
 
 ### External artifacts and verified locations
 
-File ref and large-file artifacts identify bytes by their content digest and
-size, not by a path. Appendable artifacts add the record ID to the digest and
-size because one container holds many records. Moving verified bytes to another
-URI therefore preserves identity.
+`FileRefArtifact` (`file_ref`) represents a complete external file of any size.
+It identifies the bytes by their content digest and size, not by a path.
+Existing input files and generated output files use this same type; there is
+no size cutoff. `AppendableArtifact` identifies a record within a shared JSONL
+file and adds its record ID to the digest and size. Moving verified bytes to
+another URI preserves identity.
 
-Artisan verifies external bytes before it trusts or materializes them. Reads use
-bounded streaming and compare both digest and size. The location table may hold
-several URIs for one artifact, allowing a relocated or replicated copy to remain
-usable without rewriting the artifact row. A missing, malformed, or mismatched
-location fails closed rather than returning unverified bytes.
+File references expose their current local path or object-store URI as `path`;
+appendable records use `external_path`. The location table may hold several URIs
+for one artifact, allowing a relocated or replicated copy to remain usable
+without rewriting the artifact row. A missing, malformed, or mismatched location
+fails instead of returning unverified bytes.
+
+Where an operation writes a file determines how Artisan manages its location.
+A creator writes generated files under its supplied `files_dir`; after
+finalization, Artisan moves or uploads them to `files_root` and updates their
+locators before sandbox cleanup. References to existing files outside
+`files_dir` retain their locations. This lifecycle does not depend on file size.
+
+Verification and materialization stream bytes in bounded chunks and compare
+both digest and size. A finalized FileRef materializes to
+`directory/artifact_id/basename(path)`: distinct artifacts with the same source
+filename cannot overwrite each other, and filename-sensitive tools still see
+the source basename. Always use the path returned by `materialize_to()` rather
+than assuming the file sits directly in the requested directory. Drafts must
+be finalized before materialization. For small files, `read_content()` is a
+convenience that reads and caches the entire verified file in memory; for large
+files, read the materialized path incrementally.
 
 ---
 
@@ -158,10 +175,12 @@ in the driver alone is not enough for fresh processes. See
 
 ## Hydration: controlling what gets loaded
 
-Hydration controls what the operation receives. Full hydration supplies the
-artifact's content; ID-only delivery supplies references for passthrough
-operations such as Filter and Merge. An input spec can choose a different mode
-for each role. Non-hydrated artifacts are not materialized to disk.
+Hydration controls what the operation receives. Full hydration supplies embedded
+content or external content descriptors. For FileRef, the store loads metadata,
+selects a location, and streams the file to verify its digest and size; it does
+not cache the complete file bytes. ID-only delivery supplies references for
+passthrough operations such as Filter and Merge. An input spec can choose a
+different mode for each role. Non-hydrated artifacts are not materialized to disk.
 
 Before cache lookup or dispatch, the orchestrator still loads input content
 to validate identities and verifies external bytes. Filter can therefore route

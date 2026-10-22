@@ -14,7 +14,6 @@ from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
-from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 
@@ -35,7 +34,6 @@ class TestArtifactHydration:
         "artifact",
         [
             FileRefArtifact(content_hash="b" * 32, size_bytes=0),
-            LargeFileArtifact(content_hash="b" * 32, size_bytes=0),
             AppendableArtifact(content_hash="b" * 32, size_bytes=0, record_id="record"),
         ],
         ids=lambda artifact: type(artifact).__name__,
@@ -45,9 +43,7 @@ class TestArtifactHydration:
     ) -> None:
         assert artifact.is_hydrated
 
-    @pytest.mark.parametrize(
-        "artifact_type", [FileRefArtifact, LargeFileArtifact, AppendableArtifact]
-    )
+    @pytest.mark.parametrize("artifact_type", [FileRefArtifact, AppendableArtifact])
     def test_incomplete_external_descriptors_are_not_hydrated(
         self, artifact_type: type[Artifact]
     ) -> None:

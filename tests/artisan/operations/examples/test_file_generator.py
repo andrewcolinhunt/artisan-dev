@@ -1,4 +1,4 @@
-"""Tests for LargeFileGenerator operation."""
+"""Tests for FileGenerator operation."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ import pytest
 
 from artisan.execution.executors.creator import run_creator_lifecycle
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.operations.examples.large_file_generator import LargeFileGenerator
+from artisan.operations.examples.file_generator import FileGenerator
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
@@ -28,8 +28,8 @@ def _run(
     execute_dir = str(tmp_path / "execute")
     os.makedirs(execute_dir, exist_ok=True)
 
-    op = LargeFileGenerator(
-        params=LargeFileGenerator.Params(
+    op = FileGenerator(
+        params=FileGenerator.Params(
             count=count,
             file_size_bytes=file_size_bytes,
             seed=seed,
@@ -51,8 +51,8 @@ def _run(
     return raw, result
 
 
-class TestLargeFileGenerator:
-    """Tests for the LargeFileGenerator operation."""
+class TestFileGenerator:
+    """Tests for the FileGenerator operation."""
 
     def test_generates_correct_file_count(self, tmp_path: Path) -> None:
         raw, result = _run(tmp_path, count=3)
@@ -80,19 +80,19 @@ class TestLargeFileGenerator:
 
     def test_one_artifact_per_file(self, tmp_path: Path) -> None:
         _raw, result = _run(tmp_path, count=3)
-        paths = {a.external_path for a in result.artifacts["files"]}
+        paths = {a.path for a in result.artifacts["files"]}
         assert len(paths) == 3
 
     def test_requires_files_dir(self, tmp_path: Path) -> None:
-        op = LargeFileGenerator()
+        op = FileGenerator()
         ei = ExecuteInput(execute_dir=str(tmp_path), files_dir=None)
         with pytest.raises(ValueError, match="files_dir required"):
             op.execute_function(ei)
 
-    def test_artifact_type_is_large_file(self, tmp_path: Path) -> None:
+    def test_artifact_type_is_file_ref(self, tmp_path: Path) -> None:
         _, result = _run(tmp_path)
         for art in result.artifacts["files"]:
-            assert art.artifact_type == "large_file"
+            assert art.artifact_type == "file_ref"
 
     def test_content_hash_correct(self, tmp_path: Path) -> None:
         raw, _ = _run(tmp_path, count=1, file_size_bytes=100)
@@ -103,16 +103,16 @@ class TestLargeFileGenerator:
         assert raw["files"][0]["content_hash"] == expected
 
 
-class TestLargeFileGeneratorLifecycle:
-    """End-to-end creator lifecycle for LargeFileGenerator on both backends.
+class TestFileGeneratorLifecycle:
+    """End-to-end creator lifecycle for FileGenerator on both backends.
 
     Regression guard for the files_root upload path: without
     ``_upload_files_to_root`` the cloud run would leak a literal-colon
     directory under the executor and store a local path in
-    ``external_path``.
+    ``path``.
     """
 
-    def test_external_path_resolves_on_parametrized_backend(
+    def test_path_resolves_on_parametrized_backend(
         self, backend_env, tmp_path: Path
     ) -> None:
         fs, storage, delta_root, files_root, working_root = backend_env
@@ -125,11 +125,11 @@ class TestLargeFileGeneratorLifecycle:
             storage=storage,
         )
         unit = ExecutionUnit(
-            operation=LargeFileGenerator(
-                params=LargeFileGenerator.Params(count=2, file_size_bytes=256, seed=0)
+            operation=FileGenerator(
+                params=FileGenerator.Params(count=2, file_size_bytes=256, seed=0)
             ),
             inputs={},
-            execution_spec_id=digest_utf8("large-file-generator-lifecycle"),
+            execution_spec_id=digest_utf8("file-generator-lifecycle"),
             step_number=3,
         )
 
@@ -138,10 +138,11 @@ class TestLargeFileGeneratorLifecycle:
         artifacts = result.artifacts["files"]
         assert len(artifacts) == 2
         for art in artifacts:
-            assert art.external_path is not None
-            assert art.external_path.startswith(files_root), (
-                f"external_path {art.external_path!r} not under {files_root!r}"
+            assert art.path is not None
+            assert art.path.startswith(files_root), (
+                f"path {art.path!r} not under {files_root!r}"
             )
-            assert fs.exists(art.external_path), (
-                f"external_path {art.external_path!r} does not resolve on {fs}"
-            )
+            assert fs.exists(art.path), f"path {art.path!r} does not resolve on {fs}"
+            content = fs.cat_file(art.path)
+            assert len(content) == art.size_bytes == 256
+            assert compute_content_digest(content) == art.content_hash

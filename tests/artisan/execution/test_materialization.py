@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import ANY, MagicMock, patch
 
 import pytest
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtifactIntegrityError
 from artisan.execution.inputs.materialization import (
@@ -18,8 +19,47 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
-from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.specs.input_spec import InputSpec
+from artisan.utils.hashing import compute_content_digest
+
+
+def test_same_basename_file_refs_materialize_without_overwriting(
+    tmp_path: Path,
+) -> None:
+    artifacts = []
+    contents = [b"first generated file", b"second generated file"]
+    for index, content in enumerate(contents):
+        source = tmp_path / str(index) / "output.bin"
+        source.parent.mkdir()
+        source.write_bytes(content)
+        artifacts.append(
+            FileRefArtifact.draft(
+                path=str(source),
+                content_hash=compute_content_digest(content),
+                size_bytes=len(content),
+                step_number=index,
+                original_name="output",
+                extension=".bin",
+            ).finalize()
+        )
+    destination = tmp_path / "inputs"
+    destination.mkdir()
+    store = MagicMock()
+    store._fs = LocalFileSystem()
+
+    result = materialize_inputs(
+        {"files": artifacts},
+        {"files": InputSpec(artifact_type="file_ref")},
+        str(destination),
+        store,
+    )
+
+    assert result == {"files": artifacts}
+    assert artifacts[0].materialized_path != artifacts[1].materialized_path
+    for artifact, content in zip(artifacts, contents, strict=True):
+        path = Path(artifact.materialized_path)
+        assert path == destination / artifact.artifact_id / "output.bin"
+        assert path.read_bytes() == content
 
 
 def _typed_spec() -> InputSpec:
@@ -256,42 +296,13 @@ class TestIsRemote:
 class TestEndpointRoutedSkip:
     """Endpoint-routed steps ship cloud inputs by reference (no download)."""
 
-    def _cloud_large_file(self) -> LargeFileArtifact:
-        return LargeFileArtifact.draft(
-            content_hash="h" * 32,
-            size_bytes=2_000_000_000,  # 2 GB — way past the 100 MB inline cap
-            step_number=0,
-            external_path="s3://bucket/weights/model.bin",
-            original_name="model",
-            extension=".bin",
-        ).finalize()
-
-    def test_cloud_input_skipped_when_endpoint_routed(self, tmp_path: Path):
-        # Direct-URI transport verifies the current source without materializing it.
-        art = self._cloud_large_file()
-        specs = {"weights": InputSpec(artifact_type="large_file")}
-        output_dir = tmp_path / "outputs"
-        output_dir.mkdir()
-
-        with patch.object(LargeFileArtifact, "verify_external_content") as verify:
-            result = materialize_inputs(
-                {"weights": [art]},
-                specs,
-                str(output_dir),
-                MagicMock(),
-                endpoint_routed=True,
-            )
-
-        verify.assert_called_once_with(fs=ANY)
-        assert art.materialized_path == "s3://bucket/weights/model.bin"
-        assert list(output_dir.iterdir()) == []  # nothing downloaded
-        assert result == {"weights": [art]}
-
     def test_remote_file_ref_skipped_when_endpoint_routed(self, tmp_path: Path):
+        destination = tmp_path / "inputs"
+        destination.mkdir()
         art = FileRefArtifact.draft(
             path="s3://bucket/inputs/source.bin",
             content_hash="a" * 32,
-            size_bytes=4,
+            size_bytes=2_000_000_000,  # Far above the inline content limit.
             step_number=0,
             original_name="source",
             extension=".bin",
@@ -301,13 +312,14 @@ class TestEndpointRoutedSkip:
             result = materialize_inputs(
                 {"source": [art]},
                 {"source": InputSpec(artifact_type="file_ref")},
-                str(tmp_path),
+                str(destination),
                 MagicMock(),
                 endpoint_routed=True,
             )
 
         verify.assert_called_once_with(fs=ANY)
         assert art.materialized_path == "s3://bucket/inputs/source.bin"
+        assert list(destination.iterdir()) == []
         assert result == {"source": [art]}
 
     def test_appendable_record_materializes_when_endpoint_routed(self, tmp_path: Path):
