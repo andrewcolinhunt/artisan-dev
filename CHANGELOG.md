@@ -71,6 +71,9 @@ new endpoint behavior. See the breaking changes below.
 
 ### Changed
 
+- Full, integration, and sequential test tasks now require Docker checks to run.
+  Shared setup prepares and caches the pinned test image, fails early when
+  Docker is unavailable, and supports focused checks through `test-docker`.
 - **Breaking: MCP inspection responses.** Tools advertise typed success/error
   schemas and signal query failures with native MCP errors. Detail collections
   use bounded pages and opaque cursors tied to the query and projected evidence;

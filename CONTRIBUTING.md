@@ -72,8 +72,10 @@ commit.
 pixi run -e dev test
 ```
 
-This runs unit, integration, S3, and local notebook tests. S3 tests need
-Docker/MinIO or a configured endpoint. Modal tests and notebooks run separately.
+This runs unit, integration, S3, and local notebook tests. A local Docker engine
+is required and checked before unit tests start; the Docker test image is
+prepared automatically. S3 tests use Docker/MinIO or a configured endpoint.
+Modal tests and notebooks run separately.
 See the [development tasks](docs/getting-started/using-pixi.md#dev-environment)
 for the focused suites and their resource requirements.
 
