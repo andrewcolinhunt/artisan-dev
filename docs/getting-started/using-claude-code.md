@@ -144,16 +144,23 @@ jobs.
 
 ## What you can do
 
+Start by asking the agent to inspect the operations and composites available in
+your project and its installed application packages. Check their contracts and
+tests, then compose those that fit the analysis. Add or improve an integration
+when the existing operations do not meet the requirement. See
+[operation discovery](../how-to-guides/inspecting-evidence.md#find-the-installed-contract)
+for inspecting registered operations.
+
 A few examples of real workflows:
 
+- **"Build a pipeline that generates data, transforms it, and filters by
+  median score using existing operations"** — Claude checks the available
+  operations, composes them, and verifies the output wiring and results.
 - **"Create a custom artifact type for binary content"** — Claude writes the
   model, registration, and tests for persistence and hydration.
 - **"Write me an operation that takes CSV files and computes column
   statistics"** — Claude scaffolds the class, tests, and docstrings following
   Artisan conventions.
-- **"Build a pipeline that generates data, transforms it, and filters by
-  median score"** — Claude writes a working pipeline script with correct output
-  wiring.
 - **"Explain how artifact lineage works in this codebase"** — Claude reads the
   source and explains the provenance system.
 - **"Why did run `run-id` fail, and which outputs were accepted?"** — Claude

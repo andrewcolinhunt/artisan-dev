@@ -1,8 +1,9 @@
 # Orientation
 
-Artisan connects operations through typed artifacts and records their execution
-history and declared lineage. This page introduces the concepts used in the
-tutorials and guides.
+Artisan connects reusable operations through typed artifacts. It records
+execution history and declared lineage so you can inspect results and use their
+relationships in later computations. This page introduces the concepts used in
+the tutorials and guides.
 
 ---
 

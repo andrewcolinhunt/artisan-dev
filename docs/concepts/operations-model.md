@@ -4,6 +4,11 @@ An operation declares its inputs, outputs, and configuration, then implements
 the work. Artisan delivers inputs, dispatches workers, validates output lineage,
 and records results.
 
+An operation keeps a tool's input preparation, computation, and output handling
+in one reusable implementation. Test that integration independently, then compose
+it into pipelines or [composites](composites-and-composition.md). New workflows
+can reuse the same tested code while adding or improving operations where needed.
+
 ---
 
 ## Two kinds of work

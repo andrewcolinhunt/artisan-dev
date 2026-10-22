@@ -5,7 +5,7 @@ version: 1
 
 project:
   title: Artisan
-  subtitle: Reproducible, provenance-tracked computational pipelines
+  subtitle: Composable, observable computational workflows
   copyright: "2026"
   license: BSD-3-Clause
 
