@@ -222,6 +222,8 @@ docs/
 
 ## Personal Overrides
 
-Personal agent settings are tool-specific and must remain gitignored. Claude
-Code users may use `CLAUDE.local.md`, typically symlinked into the personal
-notes repo under `_dev/`. See the project README for details.
+Use your coding agent's personal settings or local instruction mechanism for
+individual preferences, and keep local files gitignored. Shared project
+conventions belong in this file. See
+[personal instructions](docs/getting-started/using-coding-agents.md#personal-instructions)
+for details.
