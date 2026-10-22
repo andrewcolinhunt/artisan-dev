@@ -27,7 +27,6 @@ class PreparedInputs:
     """One resolved, verified, grouped input snapshot used by both caches."""
 
     inputs: dict[str, list[str]]
-    artifact_types: dict[str, str]
     group_ids: list[str] | None
     cache_inputs: dict[str, list[CacheInputIdentity]]
 
@@ -319,7 +318,7 @@ def prepare_inputs(
         aligned, group_ids = resolved, None
 
     cache_inputs = _build_cache_inputs(aligned, type_map, group_ids)
-    return PreparedInputs(aligned, type_map, group_ids, cache_inputs)
+    return PreparedInputs(aligned, group_ids, cache_inputs)
 
 
 def _build_cache_inputs(

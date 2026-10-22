@@ -3170,7 +3170,6 @@ class PipelineManager:
 
         return CompositeResult(
             output_map=ctx.get_output_map(),
-            output_types=ctx.get_output_types(),
             child_futures=ctx.get_child_futures(),
         )
 

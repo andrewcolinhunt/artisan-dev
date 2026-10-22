@@ -110,6 +110,13 @@ class TestRun:
 
 
 class TestOutput:
+    def test_get_output_types_returns_declared_types(self) -> None:
+        ctx = _make_ctx(MagicMock())
+        types = ctx.get_output_types()
+        assert types == {"result": "data"}
+        types.clear()
+        assert ctx.get_output_types() == {"result": "data"}
+
     def test_output_records_output_reference(self):
         out_ref = OutputReference(source_step=1, role="result")
         ctx = _make_ctx(MagicMock())
@@ -229,9 +236,7 @@ class TestCachePolicyInheritance:
     @pytest.mark.parametrize("override", [None, *CachePolicy])
     def test_nested_composite_receives_nearest_default(self, override):
         pipeline = MagicMock()
-        pipeline.submit_composite.return_value = CompositeResult(
-            output_map={}, output_types={}
-        )
+        pipeline.submit_composite.return_value = CompositeResult(output_map={})
         ctx = _make_ctx(
             pipeline, step_defaults={"cache_policy": CachePolicy.STEP_COMPLETED}
         )
@@ -290,7 +295,6 @@ class TestNestedComposite:
         pipeline = MagicMock()
         pipeline.submit_composite.return_value = CompositeResult(
             output_map={"result": OutputReference(source_step=5, role="result")},
-            output_types={"result": "data"},
         )
         ctx = _make_ctx(pipeline)
         handle = ctx.run(InnerComposite, inputs={"data": ctx.input("data")})
@@ -303,7 +307,6 @@ class TestNestedComposite:
         pipeline = MagicMock()
         pipeline.submit_composite.return_value = CompositeResult(
             output_map={"result": OutputReference(source_step=5, role="result")},
-            output_types={"result": "data"},
         )
         ctx = _make_ctx(pipeline)
         handle = ctx.run(InnerComposite, inputs={"data": ctx.input("data")})
@@ -313,9 +316,7 @@ class TestNestedComposite:
 
     def test_nested_composite_inherits_defaults(self):
         pipeline = MagicMock()
-        pipeline.submit_composite.return_value = CompositeResult(
-            output_map={}, output_types={}
-        )
+        pipeline.submit_composite.return_value = CompositeResult(output_map={})
         ctx = _make_ctx(pipeline, step_defaults={"environment": "docker"})
         ctx.run(InnerComposite, inputs={"data": ctx.input("data")})
         assert pipeline.submit_composite.call_args.kwargs["environment"] == "docker"
@@ -334,13 +335,13 @@ def _step_future(number: int) -> tuple[StepFuture, Future[StepResult]]:
 
 
 def _result_from_context(ctx: CompositeContext) -> CompositeResult:
-    return CompositeResult({}, {}, child_futures=ctx.get_child_futures())
+    return CompositeResult({}, child_futures=ctx.get_child_futures())
 
 
 @pytest.mark.parametrize("depth", [1, 2])
 def test_wait_includes_nested_only_descendants(depth: int) -> None:
     child, pending = _step_future(0)
-    result = CompositeResult({}, {}, child_futures=[child])
+    result = CompositeResult({}, child_futures=[child])
     for _ in range(depth):
         pipeline = MagicMock()
         pipeline.submit_composite.return_value = result
@@ -366,9 +367,7 @@ def test_wait_propagates_nested_child_exception() -> None:
     child, pending = _step_future(0)
     pending.set_exception(RuntimeError("nested child failed"))
     pipeline = MagicMock()
-    pipeline.submit_composite.return_value = CompositeResult(
-        {}, {}, child_futures=[child]
-    )
+    pipeline.submit_composite.return_value = CompositeResult({}, child_futures=[child])
     ctx = _make_ctx(pipeline)
     ctx.run(InnerComposite)
     with pytest.raises(RuntimeError, match="nested child failed"):
@@ -389,9 +388,7 @@ def test_wait_includes_siblings_without_draining_unrelated_steps() -> None:
     )
     pipeline = MagicMock()
     pipeline.submit.return_value = sibling
-    pipeline.submit_composite.return_value = CompositeResult(
-        {}, {}, child_futures=[nested]
-    )
+    pipeline.submit_composite.return_value = CompositeResult({}, child_futures=[nested])
     pipeline._active_futures = [sibling, nested, unrelated]
     ctx = _make_ctx(pipeline)
     ctx.run(DataGenerator)
@@ -417,7 +414,7 @@ def test_wait_shares_deadline_across_sibling_and_nested_steps() -> None:
     pipeline = MagicMock()
     pipeline.submit.return_value = sibling
     pipeline.submit_composite.return_value = CompositeResult(
-        {}, {}, child_futures=[first_nested, second_nested]
+        {}, child_futures=[first_nested, second_nested]
     )
     ctx = _make_ctx(pipeline)
     ctx.run(DataGenerator)

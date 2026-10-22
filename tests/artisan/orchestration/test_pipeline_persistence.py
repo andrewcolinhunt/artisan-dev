@@ -102,7 +102,6 @@ def _mock_prepared_inputs(inputs, *_args, **_kwargs) -> PreparedInputs:
     resolved = {} if inputs is None else {"data": ["a" * 32]}
     return PreparedInputs(
         inputs=resolved,
-        artifact_types={},
         group_ids=None,
         cache_inputs={},
     )
