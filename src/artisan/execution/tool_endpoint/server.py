@@ -75,16 +75,6 @@ _OUTPUT_BOUNDARY_ERRORS: tuple[type[BaseException], ...] = (
     tarfile.TarError,
     httpx.HTTPError,
 )
-try:
-    from botocore.exceptions import (  # type: ignore[import-untyped]
-        BotoCoreError,
-        ClientError,
-    )
-except ModuleNotFoundError:
-    pass
-else:
-    _INPUT_RESOLUTION_ERRORS += (BotoCoreError, ClientError)
-    _OUTPUT_BOUNDARY_ERRORS += (BotoCoreError, ClientError)
 
 
 def run_tool_request(
@@ -299,12 +289,8 @@ def _execute_job(
             "CHECK_INPUT",
         )
     except _INPUT_RESOLUTION_ERRORS:
-        # malformed ref; a URI that would not resolve (missing object,
-        # denied read — s3fs maps these to FileNotFoundError/
-        # PermissionError); or a botocore root s3fs returns untranslated
-        # (NoCredentialsError, EndpointConnectionError — the R2 bad-creds
-        # / bad-endpoint modes, both BotoCoreError, neither an OSError).
-        # Earlier inputs may already exist; the final capture retains them.
+        # Local preparation can fail after earlier inputs were written;
+        # the final diagnostic capture retains those completed files.
         return _error_result(
             op_cls,
             ErrorCode.INPUT_RESOLUTION_FAILED,

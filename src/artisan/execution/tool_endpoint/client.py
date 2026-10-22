@@ -30,6 +30,7 @@ import httpx
 from pydantic import ValidationError
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.compute.invoke import tool_command_inputs
 from artisan.execution.recording.commands import (
     capture_commands,
     current_recorder,
@@ -724,11 +725,6 @@ def _decode_result(payload: Any, op_name: str, context: str) -> ResultResponse:
 
 def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
     """Require prepared tool inputs to be file paths or remote URIs."""
-    # Deferred: importing artisan.execution.compute.invoke at module level
-    # runs the compute package __init__, whose endpoint re-export imports
-    # this module back — a cycle for any client-first import order.
-    from artisan.execution.compute.invoke import tool_command_inputs
-
     files: dict[str, str] = {}
     for name, value in tool_command_inputs(prepared).items():
         if not isinstance(value, str):
