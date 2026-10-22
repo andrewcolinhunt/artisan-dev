@@ -187,13 +187,15 @@ contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 | Task | Purpose and resource needs |
 |------|----------------------------|
 | `install-hooks` | Install this repository's Git hooks |
-| `test` | Run unit, integration, S3, and local tutorial suites; needs Docker/MinIO or configured S3 |
+| `test` | Run unit, integration, S3, and local tutorial suites; requires local Docker; S3 uses MinIO or a configured endpoint |
 | `test-unit` | Unit tests; no external services |
-| `test-integration` | End-to-end local pipelines; Docker-specific tests skip unless their image is configured |
+| `test-integration` | End-to-end local pipelines and container checks; requires local Docker |
+| `test-docker` | Container cancellation and working-directory checks; requires local Docker |
+| `prepare-docker-tests` | Check the selected Docker engine and prepare or reuse the pinned test image |
 | `test-s3` | S3 tests; needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
 | `test-notebook` | CI-runnable tutorial notebooks; excludes Modal notebooks |
 | `test-notebook-modal` | Optional Modal tutorials; needs deployed endpoints and credentials, plus object storage for the R2 tutorial |
-| `test-seq` | Sequential tests for debugging; excludes notebooks and Modal, includes S3 |
+| `test-seq` | Sequential tests for debugging; requires local Docker, excludes notebooks and Modal, includes S3 |
 | `test-modal` | Optional live Modal tests; needs cloud credentials and each test's prerequisites |
 | `test-modal-endpoint` | Deploy a test endpoint and exercise R2 delivery; needs Modal/R2 credentials and a worker secret |
 | `fmt` | Format and lint the codebase |
@@ -217,10 +219,25 @@ build of the upstream MinIO source from [coollabsio/minio](https://github.com/co
 Ad hoc `pytest` runs can still skip when storage is unavailable; add
 `--require-s3` when every selected S3 test must execute.
 
-For Docker command checks, build the pinned test image and run the
-[container qualification](../contributing/coding-conventions.md#qualify-docker-commands)
-on a host with Docker available. A passing integration suite with those tests
-skipped does not establish container cancellation.
+The `test`, `test-integration`, `test-docker`, and `test-seq` tasks require a
+reachable local Linux Docker engine, including Docker Desktop on macOS. The
+full `test` task checks Docker before starting unit tests. Start Docker or select
+a working local context if setup reports an unavailable socket or access denied.
+The selected context is preserved; `DOCKER_CONTEXT` takes precedence over
+`DOCKER_HOST`.
+
+Setup automatically builds a small image from the pinned Alpine digest and
+reuses it on later runs. The first build needs registry access. An optional
+`ARTISAN_DOCKER_CWD_TEST_IMAGE` override selects an existing local Linux image
+with `sh` and a declared `WORKDIR`; an invalid override fails setup. Image build
+or pull failures are errors, not skips. No manual image export is needed for the
+default tasks.
+
+Ad hoc `pytest` runs prepare Docker only when a Docker test executes and may
+skip if the engine is unavailable. Add `--require-docker` to fail before
+collection instead. `--collect-only` never prepares Docker. For saved release
+evidence, follow the
+[container qualification](../contributing/coding-conventions.md#qualify-docker-commands).
 
 ### Docs environment
 
