@@ -180,7 +180,6 @@ def prep_unit(
             timestamp_start=timestamp_start,
             runtime_env=runtime_env,
             operation=operation,
-            sandbox_path=sandbox_path_str,
             step_run_id=unit.step_run_id,
         )
         artifact_store = execution_context.artifact_store
@@ -301,8 +300,8 @@ def post_unit(
 
     Args:
         prepped: State captured by ``prep_unit()``.
-        raw_results: One raw result per artifact from execute.
-            Exceptions at a given index represent execute failures.
+        raw_results: One successful result per artifact from execute.
+            The lifecycle rejects execution failures before this phase.
         runtime_env: Output storage, integrity verification and sandbox cleanup.
 
     Returns:
@@ -592,8 +591,8 @@ def _reassemble_results(
     results or transported files.
 
     Args:
-        per_artifact_results: One raw result per artifact.
-            Exceptions at failed indices are filtered out.
+        per_artifact_results: One successful result per artifact.
+            Execution failures must be handled before reassembly.
         artifact_execute_dirs: Per-artifact execute sub-directory
             paths, in dispatch order.
 
@@ -604,23 +603,20 @@ def _reassemble_results(
     for directory in artifact_execute_dirs:
         file_outputs.extend(output_snapshot(directory))
 
-    # Filter exceptions, merge memory_outputs
-    successes = [r for r in per_artifact_results if not isinstance(r, Exception)]
-
-    if not successes or all(r is None for r in successes):
+    if not per_artifact_results or all(r is None for r in per_artifact_results):
         return None, file_outputs
 
-    if all(isinstance(r, dict) for r in successes):
+    if all(isinstance(r, dict) for r in per_artifact_results):
         merged: dict[str, Any] = {}
-        for key in successes[0]:
-            values = [r[key] for r in successes if key in r]
+        for key in per_artifact_results[0]:
+            values = [r[key] for r in per_artifact_results if key in r]
             if all(isinstance(v, list) for v in values):
                 merged[key] = [item for v in values for item in v]
             else:
                 merged[key] = values
         return merged, file_outputs
 
-    return successes, file_outputs
+    return per_artifact_results, file_outputs
 
 
 def _extract_artifacts_from_input(

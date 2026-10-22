@@ -205,7 +205,6 @@ class TestRecordExecutionFailureEnvelope:
     def test_envelope_persisted_as_json(self, tmp_path):
         """A provided envelope dict lands as JSON that reconstructs the model."""
         ctx = _make_execution_context(tmp_path)
-        ctx.shared_filesystem = False
         ctx.step_run_id = None
         envelope = ArtisanError(
             code=ErrorCode.OP_EXECUTE_FAILED,
@@ -236,7 +235,6 @@ class TestRecordExecutionFailureEnvelope:
     def test_no_envelope_persists_null(self, tmp_path):
         """An unstructured failure persists NULL in the envelope column."""
         ctx = _make_execution_context(tmp_path)
-        ctx.shared_filesystem = False
         ctx.step_run_id = None
 
         result = record_execution_failure(
@@ -275,7 +273,6 @@ class TestPassthroughStagedRowsGolden:
         ctx.timestamp_start = datetime(2026, 1, 1, tzinfo=UTC)
         ctx.worker_id = 0
         ctx.compute_backend = "local"
-        ctx.shared_filesystem = False
         ctx.step_run_id = None
 
         edge = ArtifactProvenanceEdge(
@@ -410,7 +407,6 @@ class TestStagingRecorderBackendParametrized:
         ctx.timestamp_start = datetime.now(UTC)
         ctx.worker_id = 0
         ctx.compute_backend = "local"
-        ctx.shared_filesystem = False
         ctx.step_run_id = None
 
         result = record_execution_failure(

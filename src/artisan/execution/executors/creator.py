@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import logging
-import os
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
@@ -153,10 +152,8 @@ def run_creator_lifecycle(
                 _read_tool_output(prepped.log_path) if commands_closed else None
             )
             raise _ExecuteFailure(error, tool_output=tool_output) from exc
-        # Per-artifact failures land as exception entries (the batch
-        # contract); surface them here — downstream _reassemble_results
-        # silently filters them, which masks the real error as an
-        # empty-artifact validation failure.
+        # Reject failed entries before postprocessing while retaining the
+        # original error and cancellation evidence from the execute router.
         cancellation_failures = [
             result
             for result in raw_results
@@ -422,10 +419,6 @@ def _build_execution_context(
         timestamp_start=timestamp_start,
         runtime_env=runtime_env,
         operation=operation,
-        # The record phase only stages the execution record, which never
-        # reads sandbox_path; the sandbox was created and torn down inside
-        # run_creator_lifecycle, so any placeholder path suffices here.
-        sandbox_path=os.path.join(working_root, "dummy"),
         step_run_id=unit.step_run_id,
     )
 

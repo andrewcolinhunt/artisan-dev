@@ -183,7 +183,6 @@ class TestRecordExecutionSuccess:
             fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
-            sandbox_path=None,
             compute_backend="local",
         )
 
@@ -227,7 +226,6 @@ class TestRecordExecutionSuccess:
             fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
-            sandbox_path=None,
             compute_backend="local",
         )
 
@@ -275,7 +273,6 @@ class TestRecordExecutionFailure:
             fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
-            sandbox_path=None,
             compute_backend="local",
         )
 
@@ -322,7 +319,6 @@ class TestRecordExecutionFailure:
             fs=_local_fs(),
             operation_name="test_op",
             operation=MockCreatorOp(),
-            sandbox_path=None,
             compute_backend="local",
         )
 

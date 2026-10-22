@@ -18,7 +18,6 @@ def build_execution_context(
     timestamp_start: datetime,
     runtime_env: RuntimeEnvironment,
     operation: OperationDefinition,
-    sandbox_path: str | None = None,
     step_run_id: str | None = None,
 ) -> ExecutionContext:
     """Build an execution context for a creator or curator operation.
@@ -30,9 +29,6 @@ def build_execution_context(
         timestamp_start: Execution start time (UTC).
         runtime_env: Resolved worker identity, runtime paths, and storage configuration.
         operation: Fully configured operation this context describes.
-        sandbox_path: Sandbox directory for the file-based I/O of a
-            creator's preprocess/execute/postprocess phases. None for
-            curators, which operate on in-memory DataFrames.
         step_run_id: Identifier of the owning pipeline step run, or None
             for a standalone execution.
 
@@ -57,8 +53,6 @@ def build_execution_context(
         fs=fs,
         operation_name=type(operation).name,
         operation=operation,
-        sandbox_path=sandbox_path,
         compute_backend=runtime_env.compute_backend_name,
-        shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=step_run_id,
     )
