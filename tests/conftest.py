@@ -9,9 +9,19 @@ import socket
 import sys
 import uuid
 from collections.abc import Iterator
+from typing import TYPE_CHECKING
 
 import pytest
 import rootutils
+from fixtures.docker_runtime import (
+    DockerPreparationError,
+    DockerRuntime,
+    DockerUnavailable,
+    prepare_docker_runtime,
+)
+
+if TYPE_CHECKING:
+    from xdist.workermanage import WorkerController
 
 # Setup project root once for all tests
 rootutils.setup_root(
@@ -150,12 +160,67 @@ def _detect_minio_unavailable() -> str | None:
 
 
 def pytest_addoption(parser: pytest.Parser) -> None:
-    """Allow release checks to require execution of all S3 tests."""
+    """Allow release checks to require external test resources."""
+    parser.addoption(
+        "--require-docker",
+        action="store_true",
+        help="Require a local Docker engine and prepare its test image before collection.",
+    )
     parser.addoption(
         "--require-s3",
         action="store_true",
         help="Fail S3 fixture setup instead of skipping when MinIO is unavailable.",
     )
+
+
+_DOCKER_RUNTIME = pytest.StashKey[DockerRuntime]()
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Prepare required Docker resources once, before any tests are collected."""
+    if config.getoption("--collect-only") or not config.getoption("--require-docker"):
+        return
+    workerinput = getattr(config, "workerinput", {})
+    if "artisan_docker_runtime" in workerinput:
+        config.stash[_DOCKER_RUNTIME] = DockerRuntime(
+            **workerinput["artisan_docker_runtime"]
+        )
+        return
+    try:
+        config.stash[_DOCKER_RUNTIME] = prepare_docker_runtime()
+    except (DockerUnavailable, DockerPreparationError) as exc:
+        msg = f"Docker tests are required: {exc}"
+        raise pytest.UsageError(msg) from exc
+
+
+@pytest.hookimpl(optionalhook=True)
+def pytest_configure_node(node: WorkerController) -> None:
+    """Share the prepared immutable image and engine with xdist workers."""
+    runtime = node.config.stash.get(_DOCKER_RUNTIME, None)
+    if runtime is not None:
+        node.workerinput["artisan_docker_runtime"] = {
+            "endpoint": runtime.endpoint,
+            "image_id": runtime.image_id,
+        }
+
+
+@pytest.fixture
+def docker_image(pytestconfig: pytest.Config, monkeypatch: pytest.MonkeyPatch) -> str:
+    """Provide the prepared image on one explicitly selected local Docker engine."""
+    runtime = pytestconfig.stash.get(_DOCKER_RUNTIME, None)
+    if runtime is None:
+        try:
+            runtime = prepare_docker_runtime()
+        except DockerUnavailable as exc:
+            if pytestconfig.getoption("--require-docker"):
+                pytest.fail(f"Docker tests are required: {exc}", pytrace=False)
+            pytest.skip(f"Docker tests unavailable: {exc}")
+        except DockerPreparationError as exc:
+            pytest.fail(f"Docker test image preparation failed: {exc}", pytrace=False)
+        pytestconfig.stash[_DOCKER_RUNTIME] = runtime
+    monkeypatch.setenv("DOCKER_HOST", runtime.endpoint)
+    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
+    return runtime.image_id
 
 
 def _minio_unavailable(config: pytest.Config, reason: str) -> None:
@@ -291,7 +356,7 @@ def pytest_collection_modifyitems(
     config: pytest.Config,  # pytest hook signature
     items: list[pytest.Item],
 ) -> None:
-    """Auto-apply the ``s3`` resource marker to MinIO-backed tests.
+    """Auto-apply resource markers to Docker- and MinIO-backed tests.
 
     Any test whose fixture closure pulls in the MinIO-backed fixtures
     needs an S3 endpoint (Docker/MinIO, or ``ARTISAN_S3_ENDPOINT``).
@@ -304,5 +369,7 @@ def pytest_collection_modifyitems(
     s3_marker = pytest.mark.s3
     for item in items:
         fixtures = getattr(item, "fixturenames", ())
+        if "docker_image" in fixtures:
+            item.add_marker(pytest.mark.docker)
         if "s3_fs" in fixtures or "minio_endpoint" in fixtures:
             item.add_marker(s3_marker)

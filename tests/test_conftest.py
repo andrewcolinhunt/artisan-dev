@@ -3,13 +3,22 @@
 from __future__ import annotations
 
 import importlib.util
+import os
 import shutil
 import socket
+import subprocess
+import sys
 import tempfile
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
+from fixtures.docker_runtime import (
+    DockerPreparationError,
+    DockerRuntime,
+    DockerUnavailable,
+)
 
 
 def _load_root_conftest():
@@ -178,3 +187,234 @@ class TestMinioAvailability:
         factory.assert_called_once_with(image=root_conftest._MINIO_IMAGE)
         service.__exit__.assert_called_once()
         assert not root_conftest._MINIO_SKIP_REASON
+
+
+class _DockerConfig:
+    def __init__(self, *, required: bool = False, collectonly: bool = False) -> None:
+        self.option = SimpleNamespace(require_docker=required, collectonly=collectonly)
+        self.stash = pytest.Stash()
+
+    def getoption(self, name: str) -> bool:
+        option = name.removeprefix("--").replace("-", "_")
+        return getattr(
+            self.option, "collectonly" if option == "collect_only" else option
+        )
+
+
+class TestDockerQualification:
+    @pytest.mark.parametrize(
+        ("required", "collectonly"), [(False, False), (False, True), (True, True)]
+    )
+    def test_optional_and_collection_only_runs_do_not_prepare(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        required: bool,
+        collectonly: bool,
+    ) -> None:
+        prepare = MagicMock(side_effect=AssertionError("must not contact Docker"))
+        monkeypatch.setattr(root_conftest, "prepare_docker_runtime", prepare)
+
+        root_conftest.pytest_configure(
+            _DockerConfig(required=required, collectonly=collectonly)
+        )
+
+        prepare.assert_not_called()
+
+    def test_required_controller_prepares_once_and_workers_reuse_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runtime = DockerRuntime("unix:///selected-engine.sock", "sha256:" + "a" * 64)
+        prepare = MagicMock(return_value=runtime)
+        monkeypatch.setattr(root_conftest, "prepare_docker_runtime", prepare)
+        controller = _DockerConfig(required=True)
+        root_conftest.pytest_configure(controller)
+        for _ in range(2):
+            node = SimpleNamespace(config=controller, workerinput={})
+            root_conftest.pytest_configure_node(node)
+            assert node.workerinput["artisan_docker_runtime"] == {
+                "endpoint": runtime.endpoint,
+                "image_id": runtime.image_id,
+            }
+            worker = _DockerConfig(required=True)
+            worker.workerinput = node.workerinput
+            root_conftest.pytest_configure(worker)
+            monkeypatch.setenv("DOCKER_CONTEXT", "mutable-context")
+            monkeypatch.setenv("DOCKER_HOST", "unix:///other-engine.sock")
+            assert (
+                root_conftest.docker_image.__wrapped__(worker, monkeypatch)
+                == runtime.image_id
+            )
+            assert os.environ["DOCKER_HOST"] == runtime.endpoint
+            assert "DOCKER_CONTEXT" not in os.environ
+        prepare.assert_called_once_with()
+
+    def test_optional_fixture_prepares_lazily_and_reuses_session_result(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        runtime = DockerRuntime("unix:///selected-engine.sock", "sha256:" + "b" * 64)
+        prepare = MagicMock(return_value=runtime)
+        monkeypatch.setattr(root_conftest, "prepare_docker_runtime", prepare)
+        config = _DockerConfig()
+        root_conftest.pytest_configure(config)
+        prepare.assert_not_called()
+
+        for _ in range(2):
+            assert (
+                root_conftest.docker_image.__wrapped__(config, monkeypatch)
+                == runtime.image_id
+            )
+        prepare.assert_called_once_with()
+
+    @pytest.mark.parametrize("required", [False, True])
+    @pytest.mark.parametrize("preparation_error", [False, True])
+    def test_fixture_only_skips_unavailable_optional_docker(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        required: bool,
+        preparation_error: bool,
+    ) -> None:
+        error = (
+            DockerPreparationError("invalid proof image")
+            if preparation_error
+            else DockerUnavailable("Docker daemon is unavailable")
+        )
+        prepare = MagicMock(side_effect=error)
+        monkeypatch.setattr(root_conftest, "prepare_docker_runtime", prepare)
+        expected = (
+            (pytest.UsageError, pytest.fail.Exception)
+            if required or preparation_error
+            else pytest.skip.Exception
+        )
+        with pytest.raises(expected, match=str(error)):
+            root_conftest.docker_image.__wrapped__(
+                _DockerConfig(required=required), monkeypatch
+            )
+
+    @pytest.mark.parametrize("required", [False, True])
+    def test_required_run_fails_before_collection_without_real_docker(
+        self, tmp_path: Path, required: bool
+    ) -> None:
+        """Exercise actual pytest startup, with a collection side-effect sentinel."""
+        conftest_path = Path(__file__).with_name("conftest.py")
+        (tmp_path / "conftest.py").write_text(
+            "import importlib.util\n"
+            f"spec = importlib.util.spec_from_file_location('root_hooks', {str(conftest_path)!r})\n"
+            "root = importlib.util.module_from_spec(spec)\n"
+            "spec.loader.exec_module(root)\n"
+            "from fixtures.docker_runtime import DockerUnavailable\n"
+            "def unavailable():\n"
+            "    raise DockerUnavailable('sentinel Docker unavailable')\n"
+            "root.prepare_docker_runtime = unavailable\n"
+            "pytest_addoption = root.pytest_addoption\n"
+            "pytest_configure = root.pytest_configure\n"
+        )
+        collected = tmp_path / "collected"
+        (tmp_path / "test_sentinel.py").write_text(
+            "from pathlib import Path\n"
+            f"Path({str(collected)!r}).write_text('collected')\n"
+            "def test_sentinel():\n"
+            "    pass\n"
+        )
+        config_path = tmp_path / "pytest.ini"
+        config_path.write_text("[pytest]\n")
+        environment = dict(os.environ)
+        environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+        environment.pop("PYTEST_ADDOPTS", None)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            [str(conftest_path.parent), environment.get("PYTHONPATH", "")]
+        )
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-c",
+                str(config_path),
+                *(["--require-docker"] if required else []),
+                str(tmp_path / "test_sentinel.py"),
+                "-q",
+            ],
+            cwd=tmp_path,
+            env=environment,
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        if required:
+            assert result.returncode == pytest.ExitCode.USAGE_ERROR, result.stderr
+            assert "sentinel Docker unavailable" in result.stderr
+            assert not collected.exists()
+        else:
+            assert result.returncode == pytest.ExitCode.OK, result.stderr
+            assert collected.exists()
+
+
+def test_required_xdist_workers_share_single_controller_preparation(
+    tmp_path: Path,
+) -> None:
+    """Verify worker startup and fixture use through the real xdist hooks."""
+    conftest_path = Path(__file__).with_name("conftest.py")
+    prepared = tmp_path / "preparations"
+    image_id = "sha256:" + "c" * 64
+    endpoint = "unix:///shared-test-engine.sock"
+    (tmp_path / "conftest.py").write_text(
+        "import importlib.util\n"
+        "from pathlib import Path\n"
+        f"spec = importlib.util.spec_from_file_location('root_hooks', {str(conftest_path)!r})\n"
+        "root = importlib.util.module_from_spec(spec)\n"
+        "spec.loader.exec_module(root)\n"
+        "from fixtures.docker_runtime import DockerRuntime\n"
+        "def prepare():\n"
+        f"    with Path({str(prepared)!r}).open('a') as handle:\n"
+        "        handle.write('prepared\\n')\n"
+        f"    return DockerRuntime({endpoint!r}, {image_id!r})\n"
+        "root.prepare_docker_runtime = prepare\n"
+        "pytest_addoption = root.pytest_addoption\n"
+        "pytest_configure = root.pytest_configure\n"
+        "pytest_configure_node = root.pytest_configure_node\n"
+        "docker_image = root.docker_image\n"
+    )
+    (tmp_path / "test_workers.py").write_text(
+        "import os\n"
+        "import pytest\n"
+        "@pytest.mark.parametrize('case', [0, 1])\n"
+        "def test_worker(case, docker_image):\n"
+        f"    assert docker_image == {image_id!r}\n"
+        f"    assert os.environ['DOCKER_HOST'] == {endpoint!r}\n"
+        "    assert 'DOCKER_CONTEXT' not in os.environ\n"
+    )
+    config_path = tmp_path / "pytest.ini"
+    config_path.write_text("[pytest]\n")
+    environment = dict(os.environ)
+    environment["PYTEST_DISABLE_PLUGIN_AUTOLOAD"] = "1"
+    environment.pop("PYTEST_ADDOPTS", None)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        [str(conftest_path.parent), environment.get("PYTHONPATH", "")]
+    )
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pytest",
+            "-p",
+            "xdist.plugin",
+            "-c",
+            str(config_path),
+            "--require-docker",
+            "-n",
+            "2",
+            str(tmp_path / "test_workers.py"),
+            "-q",
+        ],
+        cwd=tmp_path,
+        env=environment,
+        capture_output=True,
+        text=True,
+        timeout=45,
+        check=False,
+    )
+
+    assert result.returncode == pytest.ExitCode.OK, result.stdout + result.stderr
+    assert "2 passed" in result.stdout
+    assert prepared.read_text().splitlines() == ["prepared"]

@@ -65,7 +65,9 @@ jobs:
           ~/.pixi/bin/pixi run --locked -e dev python - <<'PY'
           import runpy
           import subprocess
+          import sys
 
+          sys.path.insert(0, "tests")
           image = runpy.run_path("tests/conftest.py")["_MINIO_IMAGE"]
           subprocess.run(["docker", "pull", image], check=True)
           subprocess.run(["docker", "run", "--rm", image, "--version"], check=True)
@@ -224,7 +226,6 @@ jobs:
         shell: bash
     env:
       PIXI_LOCKED: "true"
-      DOCKER_PROOF_IMAGE: docker.io/library/alpine@sha256:5291449c3df73caf6ed85e649dec1b9e818b39a5d8c871e97afc13e9cd5e8fa8
     steps:
       - uses: actions/checkout@v6
 
@@ -239,20 +240,13 @@ jobs:
           mkdir -p docker-cancellation-results
           git rev-parse HEAD > docker-cancellation-results/commit.txt
           docker version > docker-cancellation-results/docker-version.txt
-          docker pull "$DOCKER_PROOF_IMAGE"
-          docker build --network=none --build-arg BASE="$DOCKER_PROOF_IMAGE" \
-            --iidfile docker-cancellation-results/image-id.txt - <<'DOCKERFILE'
-          ARG BASE
-          FROM ${BASE}
-          WORKDIR /image-default
-          DOCKERFILE
+          ~/.pixi/bin/pixi run --locked -e dev prepare-docker-tests \
+            --image-id-file docker-cancellation-results/image-id.txt
           echo "ARTISAN_DOCKER_CWD_TEST_IMAGE=$(cat docker-cancellation-results/image-id.txt)" >> "$GITHUB_ENV"
 
       - name: Verify owned container cancellation and working directory
         run: |
-          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
-            tests/integration/test_docker_cancellation.py \
-            tests/integration/test_docker_working_directory.py \
+          ~/.pixi/bin/pixi run --locked -e dev test-docker \
             -q -ra --junitxml=docker-cancellation-results/junit.xml \
             2>&1 | tee docker-cancellation-results/pytest.log
           ~/.pixi/bin/pixi run --locked -e dev python - <<'PY'
