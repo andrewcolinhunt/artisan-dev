@@ -58,30 +58,6 @@ def _docker(*args: str) -> subprocess.CompletedProcess[str]:
     )
 
 
-@pytest.fixture
-def docker_image(monkeypatch: pytest.MonkeyPatch) -> str:
-    image = os.environ.get("ARTISAN_DOCKER_CWD_TEST_IMAGE")
-    if not image or shutil.which("docker") is None:
-        pytest.skip("Set ARTISAN_DOCKER_CWD_TEST_IMAGE to a cached Linux image with sh")
-    endpoint = (
-        os.environ.get("DOCKER_HOST") if not os.environ.get("DOCKER_CONTEXT") else None
-    )
-    if endpoint is None:
-        context = _docker(
-            "context", "inspect", "--format", "{{json .Endpoints.docker}}"
-        )
-        assert context.returncode == 0, context.stderr
-        endpoint = json.loads(context.stdout)["Host"]
-    assert endpoint.startswith("unix://"), (
-        "Live qualification requires a local Unix Docker endpoint"
-    )
-    monkeypatch.setenv("DOCKER_HOST", endpoint)
-    monkeypatch.delenv("DOCKER_CONTEXT", raising=False)
-    inspected = _docker("image", "inspect", image)
-    assert inspected.returncode == 0, inspected.stderr
-    return json.loads(inspected.stdout)[0]["Id"]
-
-
 class DockerWork:
     def __init__(self, image: str, root: Path) -> None:
         self.root = root

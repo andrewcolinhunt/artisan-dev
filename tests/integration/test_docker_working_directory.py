@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -16,13 +14,10 @@ from artisan.utils.external_tools import run_command
 pytestmark = pytest.mark.integration
 
 
-def test_docker_working_directory(tmp_path: Path) -> None:
-    """Run an explicitly selected local image without pulling or building it."""
-    image = os.environ.get("ARTISAN_DOCKER_CWD_TEST_IMAGE")
-    if not image or shutil.which("docker") is None:
-        pytest.skip("Set ARTISAN_DOCKER_CWD_TEST_IMAGE to an existing image with sh")
+def test_docker_working_directory(docker_image: str, tmp_path: Path) -> None:
+    """Override the prepared image WORKDIR with the runner working directory."""
     inspected = subprocess.run(
-        ["docker", "image", "inspect", image],
+        ["docker", "image", "inspect", docker_image],
         capture_output=True,
         text=True,
         check=True,
