@@ -39,8 +39,19 @@ def mock_modal(monkeypatch) -> MagicMock:
 
 
 class TestOptionalModalDependency:
-    def test_tool_endpoint_modules_import_without_modal(self) -> None:
+    @pytest.mark.parametrize(
+        "first_module",
+        [
+            "artisan.execution.tool_endpoint.client",
+            "artisan.execution.compute.invoke",
+        ],
+        ids=["client-first", "invoke-first"],
+    )
+    def test_tool_endpoint_modules_import_without_modal(
+        self, first_module: str
+    ) -> None:
         code = """
+import importlib
 import sys
 
 class BlockModal:
@@ -50,12 +61,13 @@ class BlockModal:
         return None
 
 sys.meta_path.insert(0, BlockModal())
+importlib.import_module(sys.argv[1])
 import artisan.execution.tool_endpoint
 import artisan.execution.tool_endpoint.client
 import artisan.execution.tool_endpoint.deploy
 assert 'modal' not in sys.modules
 """
-        subprocess.run([sys.executable, "-c", code], check=True)
+        subprocess.run([sys.executable, "-c", code, first_module], check=True)
 
     def test_build_app_translates_missing_modal(self) -> None:
         missing = ModuleNotFoundError("No module named 'modal'", name="modal")

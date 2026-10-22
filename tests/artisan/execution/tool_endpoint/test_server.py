@@ -556,14 +556,10 @@ class TestRunToolRequest:
         ids=["no_credentials", "bad_endpoint", "service_error"],
     )
     def test_botocore_root_fetch_failure_returns_envelope(self, monkeypatch, exc):
-        # These untranslated botocore errors are not OSError subclasses;
-        # preserve input-resolution classification rather than a worker crash.
-        def boom(self, refs, dest, policy=None):
+        def resolve(target: Any, **options: Any) -> Any:
             raise exc
 
-        monkeypatch.setattr(
-            server_mod.InlineTransport, "unpack_inputs", boom, raising=True
-        )
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolve)
         result = run_tool_request(
             WaitTool,
             ToolRequest(
@@ -584,6 +580,7 @@ class TestRunToolRequest:
         assert error is not None
         assert error.code == "input_resolution_failed"
         assert error.recovery_hint == "CHECK_INPUT"
+        assert str(exc) not in result.manifest.model_dump_json()
 
     def test_input_failure_removes_job_dir(self, capture_tempdirs):
         # warm-container reuse: an input-resolution failure still cleans up
@@ -804,13 +801,8 @@ class TestRunToolRequestStoredOutputs:
                 "store unavailable",
                 request=httpx.Request("PUT", "https://store.example/obj"),
             ),
-            NoCredentialsError(),
-            ClientError(
-                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
-                "PutObject",
-            ),
         ],
-        ids=["filesystem", "http_status", "request", "credentials", "service"],
+        ids=["filesystem", "http_status", "request"],
     )
     def test_delivery_failure_returns_envelope_with_outputs(self, monkeypatch, exc):
         # Delivery failure preserves completed output names and the tool log.
@@ -843,7 +835,10 @@ class TestRunToolRequestStoredOutputs:
         assert error.recovery_hint == "CHECK_INPUT"
         assert result.manifest.output_names == ["in_waited.csv"]
 
-    @pytest.mark.parametrize("failure", ["dependency", "signing", "transfer"])
+    @pytest.mark.parametrize(
+        "failure",
+        ["dependency", "signing", "transfer", "credentials", "endpoint", "service"],
+    )
     def test_real_output_transport_preserves_error_category(self, monkeypatch, failure):
         secret = "signed-capability-secret"
 
@@ -859,6 +854,14 @@ class TestRunToolRequestStoredOutputs:
         def resolve(target, **options):
             if failure == "dependency":
                 raise ImportError(secret)
+            if failure == "credentials":
+                raise NoCredentialsError()
+            if failure == "endpoint":
+                raise EndpointConnectionError(endpoint_url=f"https://{secret}.example")
+            if failure == "service":
+                raise ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": secret}}, "PutObject"
+                )
             return Storage(), "bucket/result.tar.gz"
 
         monkeypatch.setattr(transport_mod, "_resolve_s3", resolve)
@@ -868,7 +871,7 @@ class TestRunToolRequestStoredOutputs:
         result = run_tool_request(WaitTool, self._REQUEST, data_policy=policy)
         error = result.manifest.error
         assert error is not None
-        if failure == "transfer":
+        if failure in {"transfer", "credentials", "endpoint", "service"}:
             assert error.code == "output_delivery_failed"
             assert error.error_type == "io"
             assert error.recovery_hint == "RETRY_LATER"
