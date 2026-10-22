@@ -54,11 +54,11 @@ curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.66.0 bash
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
-pixi install --locked
-pixi run --locked setup
+pixi install
+pixi run setup
 
 # Verify
-pixi run --locked python -c "import artisan; print('Artisan installed successfully')"
+pixi run python -c "import artisan; print('Artisan installed successfully')"
 ```
 
 → **[Installation](docs/getting-started/installation.md)** for Graphviz verification
@@ -121,34 +121,36 @@ Pixi manages three environments, all sharing a single dependency solve:
 
 | Environment | Activate with | Purpose |
 | ----------- | ------------- | ------- |
-| `default` | `pixi run --locked …` | Core runtime — everything needed to run pipelines |
-| `dev` | `pixi run --locked -e dev …` | Testing, linting, formatting, notebooks, read-only MCP server |
-| `docs` | `pixi run --locked -e docs …` | Documentation building (Jupyter Book 2) |
+| `default` | `pixi run …` | Core runtime — everything needed to run pipelines |
+| `dev` | `pixi run -e dev …` | Testing, linting, formatting, notebooks, read-only MCP server |
+| `docs` | `pixi run -e docs …` | Documentation building (Jupyter Book 2) |
 
 Prepare the dev environment and explicitly install the repository's Git hooks:
 
 ```bash
-pixi install --locked -e dev
-pixi run --locked -e dev setup
-pixi run --locked -e dev install-hooks
+pixi install -e dev
+pixi run -e dev setup
+pixi run -e dev install-hooks
 ```
 
 `setup` prepares Graphviz in the selected environment. To use that environment
-in notebooks, run `pixi run --locked -e dev install-kernel` separately. Kernel
+in notebooks, run `pixi run -e dev install-kernel` separately. Kernel
 registration sets the **Artisan** kernel to the environment that ran the task.
 
-### Pixi locked mode
+### Pixi lockfile workflow
 
-Use `pixi install --locked` and `pixi run --locked ...` for routine work so
-manifest drift stops with an error instead of rewriting `pixi.lock`. Use an
-unlocked Pixi dependency command only for deliberate dependency maintenance,
-then commit `pyproject.toml` and `pixi.lock` together.
+Use ordinary `pixi install` and `pixi run` for local development. CI and agent
+tasks unrelated to environment changes use `--locked` to prevent incidental
+lockfile updates. Review lockfile changes alongside relevant `pyproject.toml`
+edits, including tooling edits, and commit them together. See
+[reviewing lockfile changes](docs/getting-started/using-pixi.md#reviewing-lockfile-changes)
+for the refresh and review workflow.
 
 ### Running tests
 
 ```bash
-pixi run --locked -e dev test
-pixi run --locked -e dev test-unit
+pixi run -e dev test
+pixi run -e dev test-unit
 ```
 
 `test` includes local notebooks and S3 tests; it needs Docker/MinIO or a
@@ -159,7 +161,7 @@ focused suites and their resource requirements.
 ### Formatting and linting
 
 ```bash
-pixi run --locked -e dev fmt
+pixi run -e dev fmt
 ```
 
 ### Shell completions
@@ -183,9 +185,9 @@ Restart your shell or `source` the file to activate.
 See the [changelog](CHANGELOG.md) for release changes and upgrade requirements.
 
 ```bash
-pixi run --locked -e docs docs-build
-pixi run --locked -e docs docs-serve
-pixi run --locked -e docs docs-clean
+pixi run -e docs docs-build
+pixi run -e docs docs-serve
+pixi run -e docs docs-clean
 ```
 
 - **[Getting Started](docs/getting-started/index.md)** — Installation and first
@@ -227,8 +229,8 @@ environment can access the selected store. Base Artisan includes these readers,
 offline guidance and request/response schemas. No MCP server is needed:
 
 ```bash
-pixi run --locked artisan guide show pipeline-operate
-pixi run --locked artisan inspect list --json
+pixi run artisan guide show pipeline-operate
+pixi run artisan inspect list --json
 ```
 
 The guidance identifies the executing package version and the exact text being

@@ -18,7 +18,7 @@ Unlike the sibling ``test_tool_endpoint.py`` (which assumes a prior
 deploy), this module deploys in its fixture — the deployment must carry
 the R2 secret. Run explicitly:
 
-    ~/.pixi/bin/pixi run --locked -e dev test-modal-endpoint
+    ~/.pixi/bin/pixi run -e dev test-modal-endpoint
 
 Requirements (each missing one skips with a reason):
 

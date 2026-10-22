@@ -1,6 +1,6 @@
 # Installation
 
-Install Artisan from a checkout using the repository's locked Pixi environment.
+Install Artisan from a checkout using the repository's Pixi environment.
 The same environment supplies Python, Graphviz, and the notebook kernel.
 
 ---
@@ -29,13 +29,13 @@ Restart your terminal after installing Pixi so it appears on your `PATH`.
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
-# Install the locked runtime dependencies
-pixi install --locked
-pixi run --locked setup
+# Install the runtime dependencies
+pixi install
+pixi run setup
 ```
 
 :::{note}
-The first `pixi install --locked` downloads Python and all dependencies, which
+The first `pixi install` downloads Python and all dependencies, which
 may take several minutes. `setup` registers Graphviz's layout plugins in the
 selected environment and is safe to repeat. It does not install Git hooks or
 register a Jupyter kernel.
@@ -44,21 +44,22 @@ register a Jupyter kernel.
 Verify the installation:
 
 ```bash
-pixi run --locked python -c "import artisan; print('Installation OK')"
-pixi run --locked python -c "from graphviz import Source; assert b'<svg' in Source('digraph { source -> result }').pipe(format='svg'); print('Graphviz OK')"
+pixi run python -c "import artisan; print('Installation OK')"
+pixi run python -c "from graphviz import Source; assert b'<svg' in Source('digraph { source -> result }').pipe(format='svg'); print('Graphviz OK')"
 ```
 
 You should see `Installation OK` and `Graphviz OK` printed to the terminal.
-Use `--locked` for routine work so manifest drift stops with an error instead
-of rewriting the lockfile.
+Use ordinary Pixi commands for local work. See
+[reviewing lockfile changes](using-pixi.md#reviewing-lockfile-changes) when
+editing the project's configuration.
 
 :::{tip}
 **Contributors:** prepare the dev environment, then install Git hooks explicitly:
 
 ```bash
-pixi install --locked -e dev
-pixi run --locked -e dev setup
-pixi run --locked -e dev install-hooks
+pixi install -e dev
+pixi run -e dev setup
+pixi run -e dev install-hooks
 ```
 
 Run `setup` in each environment you use to render graphs. The hook suite
@@ -106,7 +107,7 @@ and workspaces.
 Set the Pixi environment as your VSCode Python interpreter:
 
 ```bash
-pixi run --locked which python
+pixi run which python
 # Example output: /home/user/artisan/.pixi/envs/default/bin/python
 ```
 
@@ -119,13 +120,13 @@ Register the Pixi environment as a Jupyter kernel so notebooks use the correct
 packages:
 
 ```bash
-pixi run --locked install-kernel
+pixi run install-kernel
 ```
 
 In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
 
 This registers a user kernel pointing to the environment that ran the task.
-To use the dev environment, run `pixi run --locked -e dev install-kernel`;
+To use the dev environment, run `pixi run -e dev install-kernel`;
 this replaces the same **Artisan** kernel registration with the dev interpreter.
 Environment setup does not choose or overwrite your kernel.
 
@@ -154,10 +155,10 @@ setup and usage.
 | Problem | Cause | Fix |
 |---------|-------|-----|
 | `pixi: command not found` | Pixi not on `PATH` | Restart your terminal, or add `~/.pixi/bin` to your `PATH` manually |
-| Thread-spawn panic during `pixi install` | Too many threads on constrained node | `RAYON_NUM_THREADS=4 pixi install --locked` |
+| Thread-spawn panic during `pixi install` | Too many threads on constrained node | `RAYON_NUM_THREADS=4 pixi install` |
 | `pixi install` is very slow | First run downloads Python + all deps | Expected on first install — subsequent runs are fast |
-| `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run --locked setup` in the selected environment; use `-e dev` for dev |
-| Jupyter kernel missing "Artisan" option | Kernel not registered | Run `pixi run --locked install-kernel` and restart your notebook |
+| `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run setup` in the selected environment; use `-e dev` for dev |
+| Jupyter kernel missing "Artisan" option | Kernel not registered | Run `pixi run install-kernel` and restart your notebook |
 
 ---
 

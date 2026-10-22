@@ -10,9 +10,11 @@ Artisan needs Python packages and system tools, including Graphviz for graphs
 and Node.js for the documentation build. Pixi resolves conda and PyPI dependencies
 into one lockfile with runtime, development, and documentation environments.
 
-Locked commands use the recorded resolution for each supported platform and
-stop when the manifest disagrees with it. Dependency changes update the manifest
-and lockfile together. The cost is an additional development tool to install.
+The committed lockfile records the resolution for each supported platform.
+Local commands can refresh it when needed; CI and agent tasks unrelated to
+environment changes use `--locked` to stop when the manifest disagrees with it.
+Relevant manifest edits, including tooling edits, include reviewed lockfile
+updates. The cost is an additional development tool to install.
 See [installation](../getting-started/installation.md) and
 [using Pixi](../getting-started/using-pixi.md).
 

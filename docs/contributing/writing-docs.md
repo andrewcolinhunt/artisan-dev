@@ -129,8 +129,8 @@ State the condition and what the reader should do about it.
 From the repository root:
 
 ```bash
-pixi run --locked -e docs docs-build
-pixi run --locked -e docs docs-serve
+pixi run -e docs docs-build
+pixi run -e docs docs-serve
 ```
 
 Open `http://localhost:8000`. Check the changed pages, their examples and diagrams,
@@ -140,7 +140,7 @@ execute all notebook examples.
 For code changes in local tutorials, run:
 
 ```bash
-pixi run --locked -e dev test-notebook
+pixi run -e dev test-notebook
 ```
 
 See [development tasks](../getting-started/using-pixi.md#dev-environment) for the
@@ -150,7 +150,7 @@ cloud checks when a changed example depends on a live service.
 Run the published-example syntax/import check after changing Python snippets:
 
 ```bash
-pixi run --locked -e dev pytest -q tests/test_published_imports.py
+pixi run -e dev pytest -q tests/test_published_imports.py
 ```
 
 For a changed how-to example, execute the complete example in a temporary

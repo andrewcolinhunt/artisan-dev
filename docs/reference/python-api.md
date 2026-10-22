@@ -62,10 +62,10 @@ From a terminal, Python's documentation viewer is available in the project
 environment:
 
 ```bash
-pixi run --locked python -m pydoc artisan.orchestration.PipelineManager.run
+pixi run python -m pydoc artisan.orchestration.PipelineManager.run
 ```
 
-Use `pixi run --locked artisan --help` to find CLI commands, then append
+Use `pixi run artisan --help` to find CLI commands, then append
 `--help` to a command for its options.
 
 ## Find a working example

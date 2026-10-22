@@ -57,7 +57,7 @@ because it exists. Keep internal helpers private.
 - Use Ruff for formatting and import order:
 
 ```bash
-pixi run --locked -e dev fmt
+pixi run -e dev fmt
 ```
 
 ## Operation contracts
