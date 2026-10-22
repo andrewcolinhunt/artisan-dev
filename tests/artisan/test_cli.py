@@ -629,3 +629,176 @@ def test_store_repair_rejected_application_performs_no_repair(
     assert payload["code"] == "application_registration_failed"
     assert "corrupt" not in json.dumps(payload)
     repair.assert_not_called()
+
+
+@pytest.mark.parametrize(
+    ("command", "expected_code", "expected_name"),
+    [
+        (["op", "list", "--query", "cli_runner_op_test"], 0, "cli_runner_op_test"),
+        (["op", "describe", "cli_runner_op_test"], 0, "cli_runner_op_test"),
+        (["op", "describe", "no_such_op_anywhere"], 1, None),
+    ],
+)
+def test_operation_diagnostics_leave_one_json_response(
+    command: list[str],
+    expected_code: int,
+    expected_name: str | None,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    from artisan import registry
+
+    discover = registry.discover
+
+    def noisy_discover(*args: Any, **kwargs: Any) -> Any:
+        print("python discovery diagnostic", end="")
+        os.write(1, b"native discovery diagnostic\n")
+        return discover(*args, **kwargs)
+
+    monkeypatch.setattr(registry, "discover", noisy_discover)
+    assert main([*command, "--json"]) == expected_code
+    output = capfd.readouterr()
+    assert "python discovery diagnostic" in output.err
+    assert "native discovery diagnostic" in output.err
+    assert output.out.count("\n") == 1
+    payload = json.loads(output.out)
+    if expected_code:
+        assert payload["code"] == "unknown_operation"
+    elif command[1] == "list":
+        assert [item["name"] for item in payload["items"]] == [expected_name]
+    else:
+        assert payload["name"] == expected_name
+
+
+@pytest.mark.parametrize("failure", [False, True])
+def test_store_bootstrap_diagnostics_leave_one_json_response(
+    failure: bool,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    from artisan.registry import discovery
+
+    _seed_steps(tmp_path, ["bootstrap-run"])
+    bootstrap = discovery.bootstrap_applications
+
+    def noisy_bootstrap(*args: Any, **kwargs: Any) -> Any:
+        print("python bootstrap diagnostic", end="")
+        os.write(1, b"native bootstrap diagnostic\n")
+        if failure:
+            message = "missing test store"
+            raise FileNotFoundError(message)
+        return bootstrap(*args, **kwargs)
+
+    monkeypatch.setattr(discovery, "bootstrap_applications", noisy_bootstrap)
+    assert main(["runs", "--delta-root", str(tmp_path), "--json"]) == int(failure)
+    output = capfd.readouterr()
+    assert "python bootstrap diagnostic" in output.err
+    assert "native bootstrap diagnostic" in output.err
+    assert output.out.count("\n") == 1
+    payload = json.loads(output.out)
+    if failure:
+        assert payload["code"] == "store_not_found"
+        assert payload["recovery_hint"] == "CHECK_INPUT"
+    else:
+        assert [item["pipeline_run_id"] for item in payload["items"]] == [
+            "bootstrap-run"
+        ]
+
+
+def test_serialization_diagnostics_stay_on_stderr(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    from artisan import cli
+
+    render = cli._render
+
+    def noisy_render(*args: Any, **kwargs: Any) -> Any:
+        print("python serializer diagnostic")
+        os.write(1, b"native serializer diagnostic\n")
+        return render(*args, **kwargs)
+
+    monkeypatch.setattr(cli, "_render", noisy_render)
+    assert main(["op", "describe", "cli_runner_op_test", "--json"]) == 0
+    output = capfd.readouterr()
+    assert "python serializer diagnostic" in output.err
+    assert "native serializer diagnostic" in output.err
+    assert json.loads(output.out)["name"] == "cli_runner_op_test"
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+def test_image_diagnostics_preserve_container_output(
+    json_mode: bool, monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    from artisan.execution.tool_endpoint import spec
+    from artisan.registry import discovery
+
+    discover = discovery.discover
+    endpoint_spec = spec.endpoint_spec
+
+    def noisy_discover(*args: Any, **kwargs: Any) -> Any:
+        print("python image discovery diagnostic")
+        os.write(1, b"native image discovery diagnostic\n")
+        return discover(*args, **kwargs)
+
+    def noisy_spec(*args: Any, **kwargs: Any) -> Any:
+        print("python image spec diagnostic")
+        os.write(1, b"native image spec diagnostic\n")
+        return endpoint_spec(*args, **kwargs)
+
+    monkeypatch.setattr(discovery, "discover", noisy_discover)
+    monkeypatch.setattr(spec, "endpoint_spec", noisy_spec)
+    assert main(["op", "image", "wait_tool", *(["--json"] if json_mode else [])]) == 0
+    output = capfd.readouterr()
+    for phase in ("discovery", "spec"):
+        for source in ("python", "native"):
+            assert f"{source} image {phase} diagnostic" in output.err
+    if json_mode:
+        payload = json.loads(output.out)
+        assert set(payload) == set(_CONTAINER_VIEW_FIELDS)
+        assert payload["image"] == ARTISAN_WORKER_IMAGE
+    else:
+        assert output.out == f"{ARTISAN_WORKER_IMAGE}\n"
+
+
+@pytest.mark.parametrize(
+    ("operation", "message"),
+    [
+        ("no_such_op_anywhere", "no_such_op_anywhere"),
+        ("data_generator", "not a command op"),
+    ],
+)
+def test_image_json_errors_remain_on_stderr(
+    operation: str, message: str, capfd: pytest.CaptureFixture[str]
+) -> None:
+    assert main(["op", "image", operation, "--json"]) == 1
+    output = capfd.readouterr()
+    assert output.out == ""
+    assert message in output.err
+
+
+def test_unexpected_cli_failure_restores_python_and_native_stdout(
+    monkeypatch: pytest.MonkeyPatch, capfd: pytest.CaptureFixture[str]
+) -> None:
+    from artisan import registry
+
+    failure = RuntimeError("reader bug")
+
+    def broken_describe(*args: Any, **kwargs: Any) -> Any:
+        print("python failure diagnostic", end="")
+        os.write(1, b"native failure diagnostic\n")
+        raise failure
+
+    monkeypatch.setattr(registry, "describe", broken_describe)
+    with pytest.raises(RuntimeError) as exc_info:
+        main(["op", "describe", "cli_runner_op_test", "--json"])
+    assert exc_info.value is failure
+    output = capfd.readouterr()
+    assert output.out == ""
+    assert "python failure diagnostic" in output.err
+    assert "native failure diagnostic" in output.err
+    print("restored python stdout", flush=True)
+    os.write(1, b"restored native stdout\n")
+    restored = capfd.readouterr()
+    assert restored.out == "restored python stdout\nrestored native stdout\n"
+    assert restored.err == ""

@@ -5,30 +5,15 @@ from __future__ import annotations
 import json
 import os
 import sys
-from contextlib import contextmanager, redirect_stdout
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+from artisan._cli_output import _diagnostics_to_stderr
+
 if TYPE_CHECKING:
     import argparse
-    from collections.abc import Iterator
 
     from pydantic import BaseModel
-
-
-@contextmanager
-def _diagnostics_to_stderr() -> Iterator[None]:
-    """Keep Python and native application import chatter off machine stdout."""
-    sys.stdout.flush()
-    saved = os.dup(1)
-    try:
-        os.dup2(2, 1)
-        with redirect_stdout(sys.stderr):
-            yield
-            sys.stdout.flush()
-    finally:
-        os.dup2(saved, 1)
-        os.close(saved)
 
 
 def run_command(args: argparse.Namespace) -> int:
