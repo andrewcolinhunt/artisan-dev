@@ -159,11 +159,19 @@ count, for example, derive it in `draft()`, persist it, and validate it against
 
 ## Externally backed types
 
-For external bytes, first consider `FileRefArtifact` or `LargeFileArtifact`
-from `artisan.schemas`, or a compatible subclass inheriting verified I/O. Read
-the relevant implementation:
-[file references](../../src/artisan/schemas/artifact/file_ref.py) or
-[large files](../../src/artisan/schemas/artifact/large_file.py).
+For a complete external file of any size, use `FileRefArtifact` from
+`artisan.schemas`; it supports both existing inputs and generated outputs.
+Write generated files under the operation's `files_dir` so the creator lifecycle
+relocates them to `files_root` and updates `path`. Other external locators stay
+where they are. Use `AppendableArtifact` for independently addressed JSONL
+records in a shared file. Read the
+[file reference implementation](../../src/artisan/schemas/artifact/file_ref.py)
+before introducing a domain-specific external type or subclass.
+
+FileRef hydration streams integrity verification without caching all bytes.
+Materialization streams to an artifact-ID subdirectory while preserving the
+source basename; use its returned path. Only `read_content()` loads and caches
+the complete file in memory.
 
 A new external implementation must declare `EXTERNALLY_BACKED = True` and
 exactly one real model field in `LOCATOR_FIELDS`. Keep the locator out of

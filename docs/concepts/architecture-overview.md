@@ -175,8 +175,8 @@ Identical typed semantic artifacts share a stored content row. Cache keys also
 include the declared operation and effective configuration. Provenance edges
 refer to finalized artifact IDs, so later changes produce new identities.
 
-The framework ships six built-in artifact types (metric, file ref, config,
-data, large file, and appendable) and supports registering custom types through
+The framework ships five built-in artifact types (metric, file ref, config,
+data, and appendable) and supports registering custom types through
 the artifact type registry. External artifact locations live in a separate
 relation so verified bytes can move or be replicated without changing identity.
 

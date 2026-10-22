@@ -472,9 +472,11 @@ definition so the mixin's methods are resolved first.
 (metadata-only-types-no-embedded-content)=
 ### Metadata-only types (no embedded content)
 
-Some artifact types reference external data rather than storing content inline.
-`FileRefArtifact` is the built-in example. External identity must describe the
-verified bytes without including their location:
+Use the built-in `FileRefArtifact` for a complete external file of any size,
+whether it is an existing input or a generated output. `AppendableArtifact`
+addresses individual records in a shared JSONL file. Create another external
+type only when its content semantics need a different contract. External
+identity must describe the verified bytes without including their location:
 
 ```python
 import json

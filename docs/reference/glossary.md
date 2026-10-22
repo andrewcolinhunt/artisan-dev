@@ -24,8 +24,9 @@ fundamental data units flowing through pipelines. External locations are kept
 outside identity and verified against the artifact's digest and size.
 Artifacts follow a [draft/finalize](#glossary-draft-finalize) lifecycle: they
 are created as mutable drafts; finalization protects durable fields and snapshots
-them for later integrity checks. The six built-in artifact types are `data`, `metric`, `file_ref`, `config`,
-`large_file`, and `appendable`.
+them for later integrity checks. The five built-in artifact types are `data`,
+`metric`, `file_ref`, `config`, and `appendable`. `file_ref` represents a complete
+external file of any size; `appendable` represents one record in a shared file.
 
 ---
 
@@ -267,12 +268,15 @@ unmatched and ambiguous inputs.
 (glossary-hydration)=
 ## Hydration
 
-The process of loading an artifact's full content from storage. `hydrate=True`
-(default) loads all fields including content bytes. `hydrate=False` loads only
-the artifact ID and type, which is sufficient for passthrough operations like
-Filter and Merge that route artifacts without consuming their content.
+The process of loading an artifact's content or external content descriptors
+from storage. `hydrate=True` (default) loads embedded bytes for content-bearing
+artifacts. For file references, it loads metadata and a verified `path`, streaming
+the file for integrity checks without caching all its bytes. `hydrate=False`
+delivers only the artifact ID and type, which is sufficient for passthrough
+operations like Filter and Merge that route artifacts without consuming content.
 Orchestration still reads and verifies inputs before cache lookup or dispatch;
 ID-only delivery is not a guarantee that pipeline preparation avoids content I/O.
+See [Hydration](../concepts/artifacts-and-content-addressing.md#hydration-controlling-what-gets-loaded).
 
 ---
 
