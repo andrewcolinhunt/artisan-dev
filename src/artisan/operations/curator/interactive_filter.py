@@ -714,13 +714,8 @@ class InteractiveFilter:
         """Commit one interactive selection and its terminal snapshot."""
         from artisan.execution.recording.recorder import record_passthrough
         from artisan.operations.curator.filter import Filter
+        from artisan.orchestration.engine.terminal_commit import commit_terminal_result
         from artisan.schemas.execution.execution_context import ExecutionContext
-        from artisan.storage.io.commit import DeltaCommitter
-        from artisan.storage.io.commit_plan import (
-            prepare_commit_evidence,
-            publish_commit_plan,
-        )
-        from artisan.storage.io.staging import StagingManager
 
         diagnostics = sanitize_metadata(redactor, self._build_diagnostics(filtered))
         operation = Filter()
@@ -751,13 +746,6 @@ class InteractiveFilter:
             params={"criteria": [c.model_dump() for c in self._criteria]},
             result_metadata={"diagnostics": diagnostics},
         )
-        staging_manager = StagingManager(staging_root, self._fs)
-        committer = DeltaCommitter(
-            self._delta_root,
-            staging_manager,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        )
         result = StepResult(
             step_name=step_name,
             step_number=step_number,
@@ -771,34 +759,18 @@ class InteractiveFilter:
             metadata={"diagnostics": diagnostics},
             step_run_id=step_run_id,
         )
-        candidate = tracker.prepare_terminal_candidate(
-            step_run_id,
-            StepStatus.RUNNING,
-            StepStatus.SUCCEEDED,
-            step_spec_id=step_spec_id,
+        return commit_terminal_result(
+            tracker=tracker,
             result=result,
-        )
-        staging_manager.stage_orchestrator_dataframe(
-            candidate,
-            TablePath.STEPS.value,
-            commit_kind="step_result",
-            step_run_id=step_run_id,
-            step_number=step_number,
-            operation_name=type(operation).name,
-        )
-        staged = prepare_commit_evidence(
+            execution_run_ids=(execution_run_id,),
+            delta_root=self._delta_root,
             staging_root=staging_root,
             fs=self._fs,
-            commit_kind="step_result",
-            step_run_id=step_run_id,
-            step_number=step_number,
+            storage_options=self._storage_options,
+            step_spec_id=step_spec_id,
             operation_name=type(operation).name,
-            execution_run_ids=(execution_run_id,),
+            preserve_staging=False,
         )
-        prepared = committer.prepare_logical(staged.plan, staged=staged)
-        publish_commit_plan(self._delta_root, self._fs, staged.plan)
-        committer.commit_logical(staged.plan, prepared=prepared)
-        return tracker.current_state(step_run_id).to_step_result()
 
     def _build_diagnostics(self, filtered: list[str]) -> dict[str, Any]:
         """Build v4 diagnostics dict matching Filter's format.
