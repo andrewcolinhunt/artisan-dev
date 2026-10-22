@@ -22,6 +22,8 @@ import tempfile
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from artisan._cli_output import _diagnostics_to_stderr
+
 if TYPE_CHECKING:
     from collections.abc import Callable, Sequence
 
@@ -314,13 +316,19 @@ def _emit(args: argparse.Namespace, payload_fn: Callable[[], Any]) -> int:
     from artisan.errors import ArtisanError, ErrorCode
 
     try:
-        if hasattr(args, "load_module"):
-            from artisan.registry.discovery import bootstrap_applications
-            from artisan.utils.application_modules import resolve_application_modules
+        with _diagnostics_to_stderr():
+            if hasattr(args, "load_module"):
+                from artisan.registry.discovery import bootstrap_applications
+                from artisan.utils.application_modules import (
+                    resolve_application_modules,
+                )
 
-            args.application_modules = resolve_application_modules(args.load_module)
-            bootstrap_applications(args.application_modules, purpose="CLI store access")
-        payload = payload_fn()
+                args.application_modules = resolve_application_modules(args.load_module)
+                bootstrap_applications(
+                    args.application_modules, purpose="CLI store access"
+                )
+            payload = payload_fn()
+            rendered = _render(payload, json_mode=args.json)
     except FileNotFoundError as exc:
         err = ArtisanError(
             ErrorCode.STORE_NOT_FOUND,
@@ -333,7 +341,7 @@ def _emit(args: argparse.Namespace, payload_fn: Callable[[], Any]) -> int:
         return _emit_error(args, err)
     except ArtisanError as exc:
         return _emit_error(args, exc)
-    sys.stdout.write(_render(payload, json_mode=args.json) + "\n")
+    sys.stdout.write(rendered + "\n")
     return 0
 
 
@@ -499,21 +507,13 @@ def _execution_replay(args: argparse.Namespace) -> int:
             failure_logs_root=str(debug / "logs"),
             storage=StorageConfig(protocol=protocol),
         )
-        sys.stdout.flush()
-        saved_stdout = os.dup(1)
-        try:
-            os.dup2(2, 1)
-            outcome = replay_execution(
-                args.execution_run_id,
-                runtime=runtime,
-                step_runner="local" if args.local_runner else None,
-                replacement_env=replacements,
-                allow_code_change=args.allow_code_change,
-            )
-        finally:
-            sys.stdout.flush()
-            os.dup2(saved_stdout, 1)
-            os.close(saved_stdout)
+        outcome = replay_execution(
+            args.execution_run_id,
+            runtime=runtime,
+            step_runner="local" if args.local_runner else None,
+            replacement_env=replacements,
+            allow_code_change=args.allow_code_change,
+        )
         return outcome
 
     code = _emit(args, payload)
@@ -595,21 +595,23 @@ def _modal_deploy(args: argparse.Namespace) -> int:
 
 def _op_image(args: argparse.Namespace) -> int:
     """Print the op's image ref, or the ``--json`` container view."""
-    from artisan.execution.tool_endpoint.spec import endpoint_spec
+    with _diagnostics_to_stderr():
+        from artisan.execution.tool_endpoint.spec import endpoint_spec
 
-    op_cls = _resolve_op_cls(args.operation)
-    if op_cls is None:
-        return 1
-    try:
-        spec = endpoint_spec(op_cls)
-    except ValueError as exc:
-        sys.stderr.write(f"{exc}\n")
-        return 1
-    if args.json:
-        view = {field: getattr(spec, field) for field in _CONTAINER_VIEW_FIELDS}
-        sys.stdout.write(json.dumps(view, indent=2) + "\n")
-    else:
-        sys.stdout.write(f"{spec.image}\n")
+        op_cls = _resolve_op_cls(args.operation)
+        if op_cls is None:
+            return 1
+        try:
+            spec = endpoint_spec(op_cls)
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+        if args.json:
+            view = {field: getattr(spec, field) for field in _CONTAINER_VIEW_FIELDS}
+            rendered = json.dumps(view, indent=2)
+        else:
+            rendered = spec.image
+    sys.stdout.write(rendered + "\n")
     return 0
 
 
