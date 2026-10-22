@@ -18,7 +18,7 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import (
     DataGenerator,
-    LargeFileGenerator,
+    FileGenerator,
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
@@ -141,30 +141,30 @@ class TestS3PipelineEndToEnd:
         for uri in file_locations["uri"].to_list():
             assert uri.startswith("s3://"), f"Expected s3:// URI, got {uri!r}"
 
-    def test_large_file_outputs_uploaded_to_files_root(self, s3_pipeline_env):
-        """LargeFileGenerator on cloud files_root uploads via fs.put and rewrites external_path.
+    def test_file_outputs_uploaded_to_files_root(self, s3_pipeline_env):
+        """FileGenerator on cloud files_root uploads via fs.put and rewrites path.
 
         Without the upload step, the operation writes bytes into the
         local sandbox files_dir, records that local path as
-        external_path, and downstream materialization fails because
+        path, and downstream materialization fails because
         the bytes don't exist at the path the consumer resolves. This
         test is the regression guard for PR 7 (files_root cloud
         uploads).
         """
         env = s3_pipeline_env
-        pipeline = _make_pipeline(env, "s3_large_file")
+        pipeline = _make_pipeline(env, "s3_file")
 
         pipeline.run(
-            LargeFileGenerator,
+            FileGenerator,
             params={"count": 2, "file_size_bytes": 1024, "seed": 0},
             step_runner=Runner.LOCAL,
         )
         result = pipeline.finalize()
         assert result["overall_success"]
 
-        # Read the LargeFileArtifact rows from Delta.
+        # Read the FileRefArtifact rows from Delta.
         storage_options = env["storage"].delta_storage_options()
-        table_uri = f"{env['delta_root']}/artifacts/large_files"
+        table_uri = f"{env['delta_root']}/artifacts/file_refs"
         df = pl.read_delta(table_uri, storage_options=storage_options)
         assert df.height == 2
 

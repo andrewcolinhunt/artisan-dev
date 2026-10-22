@@ -36,7 +36,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-from artisan.schemas.artifact.large_file import LargeFileArtifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
@@ -474,13 +474,13 @@ def _make_runtime_env(
     )
 
 
-def _make_artifact(external_path: str) -> LargeFileArtifact:
-    return LargeFileArtifact(
+def _make_artifact(path: str) -> FileRefArtifact:
+    return FileRefArtifact(
         artifact_id="a" * 32,
         origin_step_number=1,
         content_hash="b" * 32,
         size_bytes=10,
-        external_path=external_path,
+        path=path,
         original_name="output",
         extension=".bin",
     )
@@ -517,14 +517,14 @@ class TestUploadFilesToRoot:
             sandbox_path=str(sandbox),
         )
 
-        assert artifact.external_path is not None
-        assert str(files_root) in artifact.external_path
-        assert artifact.external_path.endswith("output_00000.bin")
-        assert os.path.exists(artifact.external_path)
+        assert artifact.path is not None
+        assert str(files_root) in artifact.path
+        assert artifact.path.endswith("output_00000.bin")
+        assert os.path.exists(artifact.path)
         # shutil.move relocated the bytes — source no longer exists.
         assert not source.exists()
         # Local: materialized_path points at the new (final) location.
-        assert artifact.materialized_path == artifact.external_path
+        assert artifact.materialized_path == artifact.path
 
     def test_cloud_case_uploads_and_rewrites_to_uri(
         self, tmp_path: Path, clear_memory_fs: Any
@@ -551,18 +551,18 @@ class TestUploadFilesToRoot:
             sandbox_path=str(sandbox),
         )
 
-        assert artifact.external_path is not None
-        assert artifact.external_path.startswith("memory://bucket/files/")
-        assert artifact.external_path.endswith("output_00000.bin")
+        assert artifact.path is not None
+        assert artifact.path.startswith("memory://bucket/files/")
+        assert artifact.path.endswith("output_00000.bin")
         fs = runtime_env.storage.filesystem()
-        assert fs.exists(artifact.external_path)
+        assert fs.exists(artifact.path)
         # fs.put copied (didn't move): the sandbox source survives.
         assert source.exists()
         # Cloud: materialized_path keeps the local sandbox ref so
         # in-process consumers avoid an fs.get round-trip.
         assert artifact.materialized_path == str(source)
 
-    def test_already_cloud_external_path_left_alone(self, tmp_path: Path) -> None:
+    def test_already_cloud_path_left_alone(self, tmp_path: Path) -> None:
         sandbox = tmp_path / "sandbox"
         files_dir = sandbox / "files_outputs"
         files_dir.mkdir(parents=True)
@@ -571,7 +571,7 @@ class TestUploadFilesToRoot:
 
         # Passthrough reference to a pre-existing cloud URI.
         artifact = _make_artifact("s3://other-bucket/already/there.bin")
-        original_ext_path = artifact.external_path
+        original_path = artifact.path
         runtime_env = _make_runtime_env(
             str(files_root), StorageConfig(protocol="file"), tmp_path
         )
@@ -586,9 +586,9 @@ class TestUploadFilesToRoot:
             sandbox_path=str(sandbox),
         )
 
-        assert artifact.external_path == original_ext_path
+        assert artifact.path == original_path
 
-    def test_outside_sandbox_external_path_left_alone(self, tmp_path: Path) -> None:
+    def test_outside_sandbox_path_left_alone(self, tmp_path: Path) -> None:
         sandbox = tmp_path / "sandbox"
         files_dir = sandbox / "files_outputs"
         files_dir.mkdir(parents=True)
@@ -614,7 +614,7 @@ class TestUploadFilesToRoot:
             sandbox_path=str(sandbox),
         )
 
-        assert artifact.external_path == str(elsewhere)
+        assert artifact.path == str(elsewhere)
         assert elsewhere.exists()
 
     def test_shared_source_path_dedups_upload(
@@ -658,9 +658,9 @@ class TestUploadFilesToRoot:
             fs.put = original_put  # type: ignore[method-assign]
 
         assert len(put_calls) == 1, f"expected one fs.put, got {put_calls}"
-        assert art1.external_path == art2.external_path
-        assert art1.external_path is not None
-        assert art1.external_path.startswith("memory://bucket/files/")
+        assert art1.path == art2.path
+        assert art1.path is not None
+        assert art1.path.startswith("memory://bucket/files/")
 
     def test_upload_failure_raises_upload_failure_caught_as_postprocess(
         self, tmp_path: Path, clear_memory_fs: Any

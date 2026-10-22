@@ -14,7 +14,7 @@ from artisan.operations.examples import (
     DataGenerator,
     DataGeneratorWithMetrics,
     DataTransformerConfig,
-    LargeFileGenerator,
+    FileGenerator,
     MetricCalculator,
 )
 from artisan.orchestration import (
@@ -258,7 +258,7 @@ def test_replay_preserves_cloud_staging_and_external_files(
         )
     ) as manager:
         generated = manager.run(
-            LargeFileGenerator,
+            FileGenerator,
             params={"count": 1, "file_size_bytes": 128, "seed": 40},
             compact=False,
         )

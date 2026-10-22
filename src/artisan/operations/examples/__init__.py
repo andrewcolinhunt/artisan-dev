@@ -16,7 +16,7 @@ from artisan.operations.examples.data_transformer_config import (
     DataTransformerConfig,
 )
 from artisan.operations.examples.data_transformer_script import DataTransformerScript
-from artisan.operations.examples.large_file_generator import LargeFileGenerator
+from artisan.operations.examples.file_generator import FileGenerator
 from artisan.operations.examples.metric_calculator import MetricCalculator
 from artisan.operations.examples.slow_transformer import (
     SequentialSlowTransformer,
@@ -34,7 +34,7 @@ __all__ = [
     "DataTransformer",
     "DataTransformerConfig",
     "DataTransformerScript",
-    "LargeFileGenerator",
+    "FileGenerator",
     "MetricCalculator",
     "SequentialDataTransformer",
     "SequentialSlowTransformer",
