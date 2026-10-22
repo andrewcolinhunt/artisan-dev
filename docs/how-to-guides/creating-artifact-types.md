@@ -6,7 +6,7 @@ Artisan can then persist, materialize, and track instances of that type.
 **Prerequisites:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md) (draft/finalize lifecycle, content addressing), familiarity with Pydantic models.
 
 For coding-agent assistance, use the bundled `skills/artifact-write/SKILL.md`;
-see [skill discovery](../getting-started/using-claude-code.md#how-skills-are-discovered)
+see [skill discovery](../getting-started/using-coding-agents.md#how-skills-are-discovered)
 for setup.
 
 ---

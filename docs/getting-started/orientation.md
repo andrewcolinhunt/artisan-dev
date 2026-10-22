@@ -170,7 +170,7 @@ missing evidence, and apply explicit assessment or comparison criteria.
 
 | Goal | Page |
 |------|------|
-| AI-assisted development | [Using Claude Code](using-claude-code.md) |
+| Agent-assisted development | [Using Coding Agents](using-coding-agents.md) |
 | Build your first pipeline hands-on | [Tutorials](../tutorials/index.md) |
 | Learn the framework in depth | [Concepts](../concepts/index.md) |
 | Task-oriented recipes | [How-to Guides](../how-to-guides/index.md) |

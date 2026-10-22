@@ -112,7 +112,7 @@ Start the server through your client and inspect it in this order:
 | Diagnose failures | `artisan_diagnose_run`, run ID | A summary of execution failures and coverage; use `view="failures"` for their details. |
 
 For agent instructions that guide this inspection, install the
-[`pipeline-operate` skill](../getting-started/using-claude-code.md#artisan-skills)
+[`pipeline-operate` skill](../getting-started/using-coding-agents.md#artisan-skills)
 in your client. Installing the MCP Python extra does not install client skills.
 The server provides read-only evidence; the skill helps interpret it. When you
 also have access to the server's Artisan environment, run

@@ -204,11 +204,11 @@ pixi run -e docs docs-clean
 
 ## Coding agent integration
 
-Artisan includes portable Agent Skills for scaffolding artifact types,
-operations, composites, and pipelines, and for inspecting existing runs.
-Compatible agents discover them through
-`.agents/skills/`; Claude Code also receives them through the repository's
-published plugin.
+Start your coding agent in the repository and have it read
+[AGENTS.md](AGENTS.md) for shared project conventions. Artisan also includes
+portable Agent Skills for scaffolding artifact types, operations, composites,
+and pipelines, and for inspecting existing runs. The skill packages live under
+`skills/`; agents that support `.agents/skills/` discover the same files there.
 
 | Skill | Description |
 |-------|-------------|
@@ -218,11 +218,11 @@ published plugin.
 | `pipeline-write` | Scaffold a pipeline script composing operations |
 | `pipeline-operate` | Inspect runs, diagnose failures, trace outputs, and assess or compare available evidence |
 
-The canonical skill packages remain under `skills/`. Downstream Claude Code
-repositories can install the plugin by pointing their settings to this repo.
-See [Using Claude Code](docs/getting-started/using-claude-code.md) for details.
-Other compatible hosts can use the complete skill folder, including its
-references, through their documented skill installation mechanism.
+For another repository, install complete skill folders, including their
+references, through your agent's supported skill installation mechanism.
+Claude Code users can also use the repository's plugin distribution. See
+[Using Coding Agents](docs/getting-started/using-coding-agents.md) for setup,
+example prompts, and personal settings.
 
 `pipeline-operate` uses local Python or CLI inspection when the project's
 environment can access the selected store. Base Artisan includes these readers,

@@ -107,12 +107,17 @@ shows how to inspect them for the installed version.
 
 ## Coding assistance
 
-The skills under `skills/` guide artifact, operation and pipeline authoring, and
-inspection of existing runs. Compatible local agents discover the same files
-through `.agents/skills/`; Claude Code also has a plugin distribution path.
+`AGENTS.md` holds shared project conventions for coding agents. The portable
+skills under `skills/` guide artifact, operation, composite, and pipeline
+authoring, and inspection of existing runs. Agents that support
+`.agents/skills/` discover the same files there; other hosts can load complete
+skill folders through their own installation mechanisms. See
+[agent setup](../getting-started/using-coding-agents.md) for discovery and
+tool-specific options.
+
 Artisan packages the operating guide with the library so an agent can retrieve
 instructions for the version it is running. Retrieval does not install a skill
-in the agent's host. See [agent setup](../getting-started/using-claude-code.md).
+in the agent's host.
 
 Python, CLI and MCP inspection share request validation, response models and
 size limits in `artisan.inspection`. A local agent can discover schemas and

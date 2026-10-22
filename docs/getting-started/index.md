@@ -10,5 +10,5 @@ Everything you need to go from zero to a running pipeline.
   -- Build and run a pipeline in an interactive notebook
 - **[Orientation](orientation.md)** -- How the docs are organized, plus the
   mental model behind artifacts, operations, pipelines, provenance, and storage
-- **[Using Claude Code](using-claude-code.md)** -- AI-assisted development
-  within the repo
+- **[Using Coding Agents](using-coding-agents.md)** -- Shared project
+  instructions, skills, and agent-assisted development

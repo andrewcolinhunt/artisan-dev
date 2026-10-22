@@ -141,12 +141,13 @@ disable it to check whether the same issue explains your delay.
 
 ---
 
-## Claude Code
+## Coding agents
 
-Artisan ships with a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-configuration for AI-assisted development — scaffolding operations, building
-pipelines, and writing docs. See [Using Claude Code](using-claude-code.md) for
-setup and usage.
+Artisan provides shared project instructions in `AGENTS.md` and portable skills
+for scaffolding artifacts and operations, building pipelines, and inspecting
+results. Agents that support `.agents/skills/` can discover the bundled skills
+from a checkout. See [Using Coding Agents](using-coding-agents.md) for setup and
+usage with your agent.
 
 ---
 
