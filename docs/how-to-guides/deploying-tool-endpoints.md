@@ -139,7 +139,7 @@ budgets.
 (object-store-input-delivery)=
 ### Object-store input delivery
 
-Eligible externally stored `FileRefArtifact` and `LargeFileArtifact` inputs
+Eligible externally stored `FileRefArtifact` inputs
 travel by reference. The request carries a URI, digest, and byte count. The
 worker authorizes the URI, downloads the full file, and verifies integrity before
 invoking the tool. The referenced file is still downloaded at the worker; this

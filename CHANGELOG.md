@@ -7,7 +7,7 @@ User-facing changes are recorded here using
 
 This release changes the operation, runner, and storage contracts. Before
 upgrading, update downstream operations and start a new Delta root for store
-format 6. Existing Modal tool apps must be explicitly redeployed to adopt the
+format 7. Existing Modal tool apps must be explicitly redeployed to adopt the
 new endpoint behavior. See the breaking changes below.
 
 ### Added
@@ -113,11 +113,21 @@ new endpoint behavior. See the breaking changes below.
 - Ordinary reads use completion records for visibility and retain artifact checks
   on access. Historical effect verification is an explicit read-only store repair
   inspection; startup recovery validates only the work it must recover or clean.
-- **Breaking: store format 6.** The release uses typed artifact identity,
+- **Breaking: complete-file artifacts.** Use `FileRefArtifact` (`file_ref`,
+  locator `path`) for existing inputs and generated files of any size.
+  `LargeFileArtifact`, `large_file`, and their module are removed without
+  compatibility aliases. The example producer is now `FileGenerator`
+  (`file_generator`) in `artisan.operations.examples.file_generator`;
+  `LargeFileGenerator` and its module are removed. Generated outputs can feed
+  directly into `IngestFiles` consumers. FileRef materialization now writes
+  `directory/artifact_id/basename(path)` to prevent same-name collisions;
+  callers must use the returned path. Unfinalized drafts cannot be materialized.
+- **Breaking: store format 7.** The release uses typed artifact identity,
   independent artifact locations, current-run cache-reuse relations,
   completion-gated logical commits, inventoried immutable execution seals,
   batched recovery commits, canonical command/replay evidence, and exclusively
-  operation-declared artifact lineage.
+  operation-declared artifact lineage. Complete files share `artifacts/file_refs`;
+  the former `artifacts/large_files` table is no longer registered.
   Existing stores must use a new Delta root; there is no migration or
   compatibility reader. Artifact identity is version 1 and cache identity is
   version 2.

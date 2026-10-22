@@ -128,11 +128,12 @@ those files with the source's client first, then pass their local paths.
 
 ## External file outputs (`files_root`) on cloud
 
-`files_root` holds `LargeFileArtifact` and `AppendableArtifact` content —
-bytes too large to embed in Delta. Point it at a cloud URI and existing
+`files_root` holds generated `FileRefArtifact` and `AppendableArtifact` content.
+Point it at a cloud URI and existing
 creators keep working with no code change: they still write to the local
 `inputs.files_dir` sandbox, and the framework uploads each finalized file
-to `files_root` for you.
+to `files_root` for you. References to existing files outside `files_dir`
+keep their original locations.
 
 If an upload fails, the unit fails with a postprocess-style error and the
 local sandbox is preserved so the bytes are recoverable.
