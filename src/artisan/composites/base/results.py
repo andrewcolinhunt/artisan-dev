@@ -76,7 +76,6 @@ class CompositeResult:
 
     Attributes:
         _output_map: Composite output role to OutputReference.
-        _output_types: Composite output role to artifact type.
         _child_futures: Futures for direct children and nested descendants,
             excluding unrelated steps in the parent pipeline.
     """
@@ -84,11 +83,9 @@ class CompositeResult:
     def __init__(
         self,
         output_map: dict[str, OutputReference],
-        output_types: dict[str, str | None],
         child_futures: list[StepFuture] | None = None,
     ) -> None:
         self._output_map = output_map
-        self._output_types = output_types
         self._child_futures = child_futures if child_futures is not None else []
 
     @property

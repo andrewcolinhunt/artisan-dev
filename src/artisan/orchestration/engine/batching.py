@@ -21,19 +21,15 @@ def get_batch_config(
         operation: Fully configured OperationDefinition instance.
 
     Returns:
-        BatchConfig with artifacts_per_unit and units_per_worker.
+        BatchConfig with the effective artifacts_per_unit.
     """
     artifacts_per_unit = operation.batch_strategy.artifacts_per_unit
-    units_per_worker = operation.batch_strategy.units_per_worker
 
     max_artifacts = operation.batch_strategy.max_artifacts_per_unit
     if max_artifacts is not None and artifacts_per_unit > max_artifacts:
         artifacts_per_unit = max_artifacts
 
-    return BatchConfig(
-        artifacts_per_unit=max(1, artifacts_per_unit),
-        units_per_worker=max(1, units_per_worker),
-    )
+    return BatchConfig(artifacts_per_unit=max(1, artifacts_per_unit))
 
 
 def generate_execution_unit_batches(

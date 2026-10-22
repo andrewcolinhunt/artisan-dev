@@ -835,7 +835,7 @@ def _prepared(
         ]
         for role, artifact_ids in resolved.items()
     }
-    return PreparedInputs(resolved, artifact_types, group_ids, cache_inputs)
+    return PreparedInputs(resolved, group_ids, cache_inputs)
 
 
 class MockMultiInputCreatorOp(OperationDefinition):

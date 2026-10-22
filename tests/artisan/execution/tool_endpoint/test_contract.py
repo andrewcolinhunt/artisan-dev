@@ -523,7 +523,7 @@ def test_checked_execution_cache_needs_no_endpoint(
     monkeypatch.setattr(client_mod.httpx, "Client", endpoint)
     result = execute_step(
         operation,
-        PreparedInputs({}, {}, None, {}),
+        PreparedInputs({}, None, {}),
         StepOverrides(),
         Runner.LOCAL,
         config=pipeline.config,

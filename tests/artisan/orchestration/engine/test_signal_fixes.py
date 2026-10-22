@@ -38,7 +38,7 @@ def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
         ]
         for role, artifact_ids in inputs.items()
     }
-    return PreparedInputs(inputs, types, None, cache_inputs)
+    return PreparedInputs(inputs, None, cache_inputs)
 
 
 class TestCreatorBrokenProcessPool:

@@ -90,31 +90,6 @@ class TestGetBatchConfig:
 
         config = get_batch_config(MockOp())
         assert config.artifacts_per_unit == 5
-        assert config.units_per_worker == 1
-
-    def test_units_per_worker_from_instance(self):
-        """Test units_per_worker read from operation instance."""
-        from typing import ClassVar
-
-        from artisan.operations.base.operation_definition import OperationDefinition
-        from artisan.schemas.execution.batch_strategy import BatchStrategy
-        from artisan.schemas.specs.input_spec import InputSpec
-        from artisan.schemas.specs.output_spec import OutputSpec
-
-        class MockOp(OperationDefinition):
-            name: ClassVar[str] = "mock_upw_test"
-            inputs: ClassVar[dict[str, InputSpec]] = {}
-            outputs: ClassVar[dict[str, OutputSpec]] = {}
-            batch_strategy: BatchStrategy = BatchStrategy(
-                artifacts_per_unit=10, units_per_worker=4
-            )
-
-            def execute_function(self, inputs, output_dir):
-                pass
-
-        config = get_batch_config(MockOp())
-        assert config.artifacts_per_unit == 10
-        assert config.units_per_worker == 4
 
     def test_default_operation_gets_default_config(self):
         """Test operation with default BatchStrategy gets defaults."""
@@ -134,7 +109,6 @@ class TestGetBatchConfig:
 
         config = get_batch_config(MockOp())
         assert config.artifacts_per_unit == 1
-        assert config.units_per_worker == 1
 
     def test_max_artifacts_per_unit_cap(self):
         """max_artifacts_per_unit caps artifacts_per_unit."""

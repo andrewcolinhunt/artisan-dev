@@ -54,17 +54,13 @@ class TestCompositeStepHandle:
 
 class TestCompositeResult:
     def test_output_returns_reference(self):
-        out_ref = OutputReference(source_step=2, role="metrics")
-        result = CompositeResult(
-            output_map={"metrics": out_ref},
-            output_types={"metrics": "metric"},
-        )
+        out_ref = OutputReference(source_step=2, role="metrics", artifact_type="metric")
+        result = CompositeResult(output_map={"metrics": out_ref})
         assert result.output("metrics") is out_ref
 
     def test_output_unknown_role_raises(self):
         result = CompositeResult(
             output_map={"metrics": OutputReference(source_step=0, role="metrics")},
-            output_types={"metrics": "metric"},
         )
         with pytest.raises(ValueError, match="Unknown output role"):
             result.output("nonexistent")
@@ -75,7 +71,6 @@ class TestCompositeResult:
                 "data": OutputReference(source_step=0, role="data"),
                 "metrics": OutputReference(source_step=1, role="metrics"),
             },
-            output_types={"data": "data", "metrics": "metric"},
         )
         assert result.output_roles == frozenset({"data", "metrics"})
 
@@ -83,7 +78,6 @@ class TestCompositeResult:
         """CompositeResult.output() returns an OutputReference like StepFuture."""
         result = CompositeResult(
             output_map={"data": OutputReference(source_step=0, role="data")},
-            output_types={"data": "data"},
         )
         assert isinstance(result.output("data"), OutputReference)
 
@@ -125,29 +119,27 @@ class TestCompositeResultWait:
     def test_wait_drains_done_futures(self):
         f1 = self._make_done_future()
         f2 = self._make_done_future()
-        result = CompositeResult(output_map={}, output_types={}, child_futures=[f1, f2])
+        result = CompositeResult(output_map={}, child_futures=[f1, f2])
         returned = result.wait()
         assert returned is result
         assert f1.done is True
         assert f2.done is True
 
     def test_wait_returns_self_for_chaining(self):
-        result = CompositeResult(output_map={}, output_types={}, child_futures=[])
+        result = CompositeResult(output_map={}, child_futures=[])
         assert result.wait() is result
 
     def test_wait_with_no_children_is_noop(self):
-        result = CompositeResult(output_map={}, output_types={}, child_futures=None)
+        result = CompositeResult(output_map={}, child_futures=None)
         result.wait()
         assert result._child_futures == []
 
     def test_wait_timeout_raises(self):
         pending = self._make_pending_future()
-        result = CompositeResult(
-            output_map={}, output_types={}, child_futures=[pending]
-        )
+        result = CompositeResult(output_map={}, child_futures=[pending])
         with pytest.raises(TimeoutError):
             result.wait(timeout=0.05)
 
     def test_child_futures_default_empty(self):
-        result = CompositeResult(output_map={}, output_types={})
+        result = CompositeResult(output_map={})
         assert result._child_futures == []
