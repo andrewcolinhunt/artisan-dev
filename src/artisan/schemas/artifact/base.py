@@ -54,7 +54,6 @@ class Artifact(BaseModel):
         "None when no pipeline origin has been assigned.",
     )
 
-    _default_hydrate: ClassVar[bool] = True
     metadata: dict[str, Any] = Field(
         default_factory=dict,
         description="Additional metadata (JSON-serializable)",
