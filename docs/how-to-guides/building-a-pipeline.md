@@ -4,7 +4,12 @@ Create a pipeline, connect operation outputs to inputs, and check the completed
 results.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md)
-and at least one [operation type](writing-creator-operations.md).
+and operations to compose. The example below uses Artisan's built-in examples.
+
+Check the inputs, outputs, and parameters of your application's existing
+operations before writing a new integration. Use the
+[creator authoring guide](writing-creator-operations.md) when an operation is
+missing or needs improvement.
 
 **Key types:** `PipelineManager`, `StepResult`, `StepFuture`, `OutputReference`,
 `CompositeDefinition`, `FailurePolicy`, `CachePolicy`

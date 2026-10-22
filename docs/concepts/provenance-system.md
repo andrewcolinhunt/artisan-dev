@@ -2,7 +2,14 @@
 
 Artisan records which executions consumed and produced artifacts, and which
 exact parents an operation declared for each new output. These records support
-execution inspection and artifact lineage queries.
+execution inspection, artifact lineage queries, and later computations over the
+recorded relationships.
+
+For example, a pipeline transforms a dataset and then measures the transformed
+output. A later operation can use [lineage pairing](operations-model.md#pairing-strategies)
+to match that measurement with the original dataset. A
+[filter](../how-to-guides/building-a-pipeline.md#filtering-by-metrics) can use
+downstream measurements to select which datasets continue through the pipeline.
 
 ## Two complementary systems
 

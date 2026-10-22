@@ -1,15 +1,22 @@
 # Artisan
 
-A Python framework for building computational pipelines with typed artifacts,
-caching, and provenance tracking.
+A Python framework for composable, observable computational workflows.
 
-Operations declare typed inputs, outputs, and parameters. Artisan uses that
-contract to connect steps, track how results were produced, and store artifacts
-by content identity. Operations can wrap Python functions or external tools.
+Build workflows from reusable operations that wrap Python code and external
+tools. Once an integration has been tested, researchers and AI agents can compose
+it into new analyses. Add or improve operations when needed, with each
+integration's tests and fixes maintained in one place.
 
-Core includes local process execution. Optional runner providers and tool
-endpoints support other compute environments while retaining the operation
-contract.
+Artisan stores each operation's inputs, parameters, and outputs, along with the
+relationships it declares between individual results. These form a provenance
+graph you can inspect to understand how a result was produced. Later computations
+can use those relationships to match outputs with their sources or select inputs
+using measurements made several steps downstream.
+
+Artisan grew out of computational protein design, where we needed to combine
+tools and follow individual results through branching workflows. We built a
+domain-agnostic core so applications in other fields can use the same framework
+with their own tools and data types.
 
 > **Status:** This project is in early development. APIs may change between
 > releases.
@@ -18,10 +25,15 @@ contract.
 
 ## Why Artisan?
 
-- Define pipelines and reusable operations in Python.
-- Reuse eligible results through content-addressed caching.
+- Define pipelines from reusable operations and composites in Python.
 - Inspect artifacts, metrics, execution evidence, and provenance as dataframes.
+- Use recorded lineage to match inputs and select results.
 - Keep operation logic separate from runner and compute configuration.
+- Reuse eligible results through content-addressed caching.
+
+Core includes local process execution. Optional runner providers and tool
+endpoints support other compute environments while retaining the operation
+contract.
 
 See the [orientation](docs/getting-started/orientation.md) for the execution and
 storage model, including its limits.
@@ -56,6 +68,10 @@ your first pipeline and the mental model behind the framework.
 ---
 
 ## Quick example
+
+This pipeline reuses the built-in example operations to generate datasets,
+transform them, and compute metrics. `Filter` follows provenance from each
+transformed dataset to its metrics to select results.
 
 ```python
 from artisan.orchestration import PipelineManager

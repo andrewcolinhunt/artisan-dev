@@ -1,8 +1,17 @@
 # Artisan
 
-Build computational pipelines from operations with typed inputs and outputs.
-Artisan stores results, reuses eligible cached work, and records execution
-history and the artifact parents declared by each operation.
+Artisan is a Python framework for composable, observable computational workflows.
+
+Build workflows from reusable operations around Python code and external tools.
+Researchers and AI agents can compose tested integrations into new analyses and
+extend them when needed. Artisan records execution history and the relationships
+each operation declares between individual results, so you can inspect how an
+output was produced and use its lineage in later computations.
+
+Artisan grew out of computational protein design. Its core is domain-agnostic,
+so applications can supply their own tools and data types. Start with the
+[orientation](getting-started/orientation.md) to see how operations, artifacts,
+and provenance work together.
 
 ::::{grid} 2
 :::{grid-item-card} Getting Started

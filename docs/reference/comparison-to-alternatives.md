@@ -1,7 +1,7 @@
 # Comparison to Alternatives
 
-Choose Artisan when a Python pipeline needs typed artifacts, explicit
-per-artifact lineage, queryable results, and reuse of previous computations.
+Choose Artisan when a Python pipeline needs reusable tool integrations, typed
+artifacts, explicit per-artifact lineage, and queryable results.
 Artisan runs locally without an orchestration server. Cluster execution uses a
 separate runner provider; remote tools require deployed endpoints.
 

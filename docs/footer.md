@@ -3,7 +3,7 @@
 :::{grid-item}
 **Artisan**
 
-Reproducible, provenance-tracked computational pipelines.
+Composable, observable computational workflows.
 
 BSD-3-Clause License
 :::

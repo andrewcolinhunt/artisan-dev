@@ -4,6 +4,9 @@ Use a curator to route, filter, merge, or ingest artifacts in an isolated local
 subprocess. Use a [creator](writing-creator-operations.md) for heavy computation
 or external tools.
 
+Before writing a custom curator, check whether a
+[built-in operation](#built-in-curator-operations) already does what you need.
+
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Writing Creator Operations](writing-creator-operations.md).
 
@@ -13,7 +16,8 @@ or external tools.
 
 ## Minimal working example
 
-A curator operation that merges two artifact streams into one:
+This example implements a merge to show the curator contract. For ordinary
+pipeline merging, use the built-in `Merge` operation.
 
 ```python
 from __future__ import annotations
@@ -406,10 +410,8 @@ source-pipeline ancestry or create edges to foreign IDs.
 
 ---
 
+(built-in-curator-operations)=
 ## Built-in curator operations
-
-Before writing a custom curator, check whether a built-in one already does what
-you need.
 
 (filter)=
 ### Filter
