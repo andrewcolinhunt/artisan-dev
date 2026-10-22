@@ -1,9 +1,8 @@
 # Export Complete Evidence Reports
 
-Save an outcome assessment or run comparison with all its report details,
-including those omitted from a bounded inspection response. You can load the
-saved report later without opening its source store. Python and CLI exports
-work with the base Artisan installation; no MCP server is required.
+Save a complete outcome assessment or run comparison, then load it without
+reopening the source store. Python and CLI exports work with the base Artisan
+installation and include details omitted from bounded inspection responses.
 
 ## Save a report you already computed
 
@@ -34,10 +33,9 @@ assert receipt.collection_counts.observations == len(saved.observations)
 print(receipt.model_dump_json(indent=2))
 ```
 
-Pass a `RunComparison` from `compare_runs` to the same exporter to retain every
-pair, unmatched or invalid case, metric summary, and optional nested assessment.
-Both nested assessments retain their complete specifications and observations.
-Use a different destination for each export.
+The same exporter accepts a `RunComparison` from `compare_runs`, retaining all
+pairs, unmatched and invalid cases, summaries, and nested assessment details.
+Choose a new destination for each export.
 
 The exporter uses the report already in memory. It does not reread the store or
 reevaluate criteria. The report file retains null values, exact JSON integers
@@ -89,9 +87,8 @@ computing a complete report. It prints one receipt object on success. Use
 Add the application's trusted
 `--load-module` options when its store requires custom definitions.
 
-Do not include `cursor`, `limit` or `view`, even as null or default values. An
-export captures the complete selected report, and these page controls are
-rejected. Unknown request fields also fail validation.
+Omit `cursor`, `limit`, and `view`, even as null or default values. Exports reject
+page controls and unknown fields.
 
 Add `--expected-evidence-id` with a previously observed identity to reject a
 changed report before writing files. For assessments, retain the same complete
@@ -106,17 +103,15 @@ errors go to stderr and exit 2.
 
 ## Check what the receipt guarantees
 
-The receipt records the evidence and specification identities, resolved
-attempts, coverage and saved collection counts. Its `report_complete` flag means
-every field of the report was saved. Missing measurements, unavailable
-populations and ambiguous matches remain in the report. Keep those limits
-alongside any conclusion you share.
+The receipt records evidence and specification identities, resolved attempts,
+coverage, and collection counts. `report_complete` means every report field was
+saved; missing measurements, unavailable populations, and ambiguous matches
+still limit the conclusions you can draw.
 
-The receipt fits the shared 48 KiB JSON response budget. It includes the full
-summary when that fits. Otherwise `summary` is null and `summary_status` is
-`omitted_size_limit`; no values are shortened. If the mandatory
-receipt itself is too large, the export fails before creating its directory.
-The report file has no conversation-size limit.
+The receipt must fit the shared 48 KiB JSON budget. If its summary is too large,
+`summary` is null and `summary_status` is `omitted_size_limit`. If required receipt
+fields exceed the limit, export fails before creating a directory. The report
+file has no such size limit.
 
 Each completed bundle contains exactly three files:
 
@@ -134,11 +129,10 @@ execute it or follow its references. The recorded package version need not
 match the reader's exactly, but unsupported bundle or report versions fail to
 load.
 
-The bundle preserves the report as it was read. Reading several tables or runs
-does not create an atomic store snapshot. The export contains the report's
-selected measurements and diagnostics; raw metric artifacts, full logs and the
-original compute environment are outside its scope. Exporting and loading hold
-complete reports in memory, so large reports need sufficient memory and disk.
+The bundle preserves the selected measurements and diagnostics, not raw metric
+artifacts, full logs, or the compute environment. Reading several tables or runs
+does not create an atomic snapshot. Exporting and loading hold complete reports
+in memory; allow enough memory and disk for large reports.
 
 ## Recover from an interrupted export
 
@@ -164,9 +158,8 @@ directory or select a new destination. The exporter never deletes partial output
 adopts an existing directory or retries automatically. Extra files, nested
 directories, symlinks and interrupted publisher temporary files prevent loading.
 
-Copy the complete directory when sharing a report. Inspection calls and MCP
-tools do not create exports, and a path on a remote MCP server is not a download
-link. File transfer and retention are up to you.
+Share the complete directory. Artisan's MCP server has no export write tool or
+download link; arrange file transfer and retention separately.
 
 For selected result tables and individual artifact files, see
 [Export Pipeline Results](exporting-results.md). For public API inspection, see

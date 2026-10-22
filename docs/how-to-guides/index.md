@@ -1,7 +1,6 @@
 # How-to Guides
 
-Recipes for building operations, configuring pipelines, and working with results.
-Each guide explains the task, its prerequisites, and how to check the outcome.
+Build operations, configure pipelines, and work with results.
 
 ## Operations
 
@@ -17,7 +16,7 @@ Each guide explains the task, its prerequisites, and how to check the outcome.
 ## Pipelines
 
 - [Building a Pipeline](building-a-pipeline.md) -- Create, wire, and execute
-  a pipeline from scratch
+  a pipeline
 
 ## Configuration
 

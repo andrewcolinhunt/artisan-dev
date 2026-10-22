@@ -6,13 +6,8 @@ results.
 **Prerequisites:** [Operations Model](../concepts/operations-model.md)
 and operations to compose. The example below uses Artisan's built-in examples.
 
-Check the inputs, outputs, and parameters of your application's existing
-operations before writing a new integration. Use the
-[creator authoring guide](writing-creator-operations.md) when an operation is
-missing or needs improvement.
-
-**Key types:** `PipelineManager`, `StepResult`, `StepFuture`, `OutputReference`,
-`CompositeDefinition`, `FailurePolicy`, `CachePolicy`
+Check your application's existing operations before writing a new one. Use the
+[creator authoring guide](writing-creator-operations.md) if none fits your task.
 
 ---
 
@@ -75,12 +70,12 @@ node-local scratch to avoid shared filesystem contention.
 
 ## Add steps
 
-Every step calls `pipeline.run()` with an operation class. There are three
-patterns depending on whether the step has inputs.
+Pass an operation class to `pipeline.run()`. Inputs can come from upstream steps
+or external files; source operations need no inputs.
 
 ### Source (no inputs)
 
-A generative step creates artifacts from nothing:
+A source step creates artifacts without upstream inputs:
 
 ```python
 pipeline.run(operation=DataGenerator, name="generate", params={"count": 10})
@@ -136,10 +131,6 @@ pipeline.run(
 )
 ```
 
-`output(name, role)` returns an `OutputReference` — a lazy pointer resolved
-to concrete artifact IDs at dispatch time. Bind it once after creating the
-pipeline with `output = pipeline.output` for concise wiring throughout.
-
 When a pipeline contains multiple steps with the same name, `output()` returns
 the most recent one by default. To reference a specific instance, pass
 `step_number`:
@@ -194,8 +185,7 @@ downstream with `.output("role")`. Use `submit()` to keep the caller available
 while execution runs, then call `finalize()` to wait and clean up. The current
 manager executes steps serially; workers within a step can run concurrently.
 
-For composites, the equivalent surface is `submit_composite()` /
-`run_composite()`.
+For composites, use `submit_composite()` / `run_composite()`.
 
 ```python
 output = pipeline.output
@@ -230,24 +220,10 @@ cells, keep the manager open and call `finalize()` in the last cell.
 
 ### Step-level overrides
 
-Both `run()` and `submit()` accept override parameters beyond `operation`,
-`inputs`, `params`, and `name`:
-
-| Parameter | Purpose |
-|-----------|---------|
-| `step_runner` | Override the pipeline's default step runner for this step |
-| `runner_resources` | Override runner resource allocation (CPUs, memory, GPUs, time limit) |
-| `batch_strategy` | Override batching settings (`artifacts_per_unit`, `max_workers`) |
-| `compute_provider` | Override the compute provider — local, modal, etc. |
-| `compute_resources` | Patch the operation’s compute configuration; deployed hardware still requires redeployment |
-| `environment` | Override the operation's runtime environment |
-| `tool` | Override the operation's external tool configuration |
-| `failure_policy` | Override the pipeline's failure policy for this step |
-| `cache_policy` | Decide whether a prior partial step may supply a whole-step cache hit |
-| `skip_cache` | Bypass both step and execution caching for this step |
-| `compact` | Control Delta Lake compaction after commit |
-
-See [Configuring Execution](configuring-execution.md) for details on each.
+Both `run()` and `submit()` accept per-step resource, batching, environment,
+cache, and failure-policy overrides. See
+[Configuring Execution](configuring-execution.md) for examples and inheritance
+rules, and [Python API lookup](../reference/python-api.md) for exact arguments.
 
 ### Branching
 
@@ -307,21 +283,16 @@ pipeline.run(
 # Downstream uses: output("filter", "passthrough")
 ```
 
-- `"passthrough"` is both the input and output role name. Filter auto-discovers
-  associated metrics via forward provenance walk.
-- Criteria use bare field names (e.g., `"distribution.median"`).
-- When field names collide across metric sources, add `step` or `step_number`
-  to the criterion to disambiguate.
-- All criteria are AND'd.
+`"passthrough"` names both the input and output role. `Filter` discovers descendant
+metrics and requires every criterion to pass. See the
+[Filter guide](writing-curator-operations.md#filter) for ambiguous metric names
+and threshold previews.
 
 ### Composing operations with composites
 
-A composite exposes a sequence of operations as one reusable definition. Use the
-`TransformAndScore` class from [Write Composite Operations](writing-composite-operations.md),
-which transforms a dataset and scores the result:
-
-Run a composite with `pipeline.run_composite()`. Each internal operation
-becomes its own pipeline step with independent caching and dispatch:
+Run a reusable sequence with `pipeline.run_composite()`. This example uses
+`TransformAndScore` from [Write Composite Operations](writing-composite-operations.md).
+Each child becomes a pipeline step with independent caching and dispatch:
 
 ```python
 output = pipeline.output
@@ -335,10 +306,8 @@ pipeline.run_composite(
 )
 ```
 
-Composite-level execution overrides (`step_runner`, `runner_resources`,
-`batch_strategy`, …) become the default for every child step. For the full
-guide on writing composites, see
-[Writing Composite Operations](writing-composite-operations.md).
+Composite-level execution overrides become defaults for child steps. See
+[override inheritance](writing-composite-operations.md#forward-execution-overrides).
 
 ### Optional SLURM execution
 

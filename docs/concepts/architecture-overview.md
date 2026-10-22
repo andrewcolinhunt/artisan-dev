@@ -9,10 +9,9 @@ orchestrator sequences steps and commits accepted results.
 ## The core idea
 
 A pipeline is a sequence of steps. Each step runs an operation on a batch of
-artifacts and creates or routes artifacts. The framework handles
-the operation: resolving inputs, dispatching work, tracking provenance,
-caching, and committing results to durable storage. The operation itself is
-responsible for its computation, output names, and exact parent declarations.
+artifacts and creates or routes artifacts. Artisan resolves inputs, dispatches
+work, tracks provenance, checks caches, and commits results to durable storage.
+The operation supplies its computation, output names, and exact parent declarations.
 
 ```
 You write:   "Run this operation on these datasets"
@@ -60,9 +59,8 @@ pipeline tests also exercise dispatch, validation, and persistence.
 
 ## The orchestrator-worker split
 
-The system has two distinct runtime roles: the **orchestrator** (one per
-pipeline run) and **workers** (many, potentially on different machines). They
-exchange execution requests and staged results. Workers write isolated staging
+The **orchestrator** coordinates one pipeline run. **Workers** execute its
+operations, potentially on different machines. Workers write isolated staging
 files; the orchestrator owns shared store writes.
 
 ```
@@ -89,10 +87,8 @@ its rows only after completion. See
 
 ### Step runners
 
-The dispatch mechanism is pluggable through the step-runner abstraction.
-A step runner bundles three concerns: how to dispatch work, how workers behave
-(filesystem sharing, worker IDs), and how the orchestrator handles post-
-dispatch verification (NFS attribute caching, staging timeouts).
+A step runner defines dispatch, worker behavior (filesystem sharing and worker
+IDs), and post-dispatch verification (NFS attribute caching and staging timeouts).
 
 Core ships one step runner. External packages can implement the same public
 `RunnerBase` and `LifecycleRouter` contract:
@@ -102,26 +98,20 @@ Core ships one step runner. External packages can implement the same public
 | Local | ProcessPool on the orchestrator machine | Local (no sharing) | Development, small jobs |
 | `artisan-submitit` (optional) | SLURM arrays or srun via Submitit | Shared NFS | HPC clusters and existing allocations |
 
-The native lifecycle router owns dispatch, polling, ordered result collection,
-and cancellation. Local execution uses Python's `ProcessPoolExecutor` directly.
-Provider runners receive the same `ExecutionUnit` objects and return the same
-ordered `UnitResult` records, so everything above and below that boundary stays
-the same.
+Runners receive `ExecutionUnit` objects and return ordered `UnitResult` records.
+The native lifecycle router handles dispatch, polling, collection, and cancellation;
+the local runner uses Python's `ProcessPoolExecutor`.
 
-Managed native commands have a separate owner that tracks their process groups
-before launch. Docker commands also register an exact container identity.
-Cancellation requests bounded cleanup and reports uncertainty when termination
-cannot be proved. Remote providers have their own cancellation evidence; an
-accepted request alone does not prove termination. See
-[Error Handling](error-handling.md) for the user-visible contract.
+Confirmed cancellation requires evidence that work never started, or that
+workers and managed commands stopped.
+An accepted remote cancellation request alone does not prove termination. See
+[Error Handling](error-handling.md#cancellation-and-uncertain-cleanup).
 
 ---
 
 ## How a step executes
 
-Each pipeline step follows three phases: **dispatch**, **execute**, **commit**.
-The separation ensures that coordination, computation, and persistence are
-cleanly isolated.
+Each pipeline step follows three phases: **dispatch**, **execute**, and **commit**.
 
 ```
          Orchestrator                 Worker                    Orchestrator
@@ -138,17 +128,11 @@ cleanly isolated.
   └──────────────────────┘  └───────────────────────┘  └────────────────────────┘
 ```
 
-**Dispatch** (orchestrator) resolves input references into concrete artifact
-IDs, validates their stored type and content, applies grouping, computes cache
-keys from the same prepared snapshot, and dispatches work to workers.
-**Execute** (workers) creates an isolated sandbox, materializes inputs to disk,
-runs the operation lifecycle, captures lineage, and stages results as Parquet
-files. **Commit** (orchestrator) verifies staged files, writes table effects in
-dependency order, and marks the logical commit complete last. Each Delta table
-write is atomic; Artisan's completion filter coordinates visibility across the
-tables. Reading raw Delta tables bypasses that filter.
-
-For the full phase-by-phase breakdown, see [Execution Flow](execution-flow.md).
+Dispatch validates stored inputs before cache lookup or worker execution.
+Commit verifies staged results and marks the logical commit complete last.
+Each Delta table write is atomic; Artisan's completion filter coordinates
+visibility across tables. Raw Delta reads bypass that filter.
+See [Execution Flow](execution-flow.md) for each phase.
 
 The execution layer also routes where an operation's computation runs. A plain
 `execute_function` runs in the lifecycle worker. A local command operation or
@@ -166,21 +150,12 @@ surrounding pipeline. See
 
 ### Artifacts: immutable, content-addressed data
 
-Every piece of data in the system — metrics, configurations, datasets, file
-references — is an **artifact** identified by a versioned hash of its registered
-type, canonical content, and semantic metadata. Runtime locations and producing
-step numbers stay outside that identity.
+An **artifact** is typed data identified by a hash of its type, canonical content,
+and semantic metadata. Identical artifacts share a stored content row; changing
+their content creates a new identity. Runtime locations and producing step
+numbers stay outside that identity.
 
-Identical typed semantic artifacts share a stored content row. Cache keys also
-include the declared operation and effective configuration. Provenance edges
-refer to finalized artifact IDs, so later changes produce new identities.
-
-The framework ships six built-in artifact types (metric, file ref, config,
-data, large file, and appendable) and supports registering custom types through
-the artifact type registry. External artifact locations live in a separate
-relation so verified bytes can move or be replicated without changing identity.
-
-For artifact types and the draft/finalize lifecycle, see
+For built-in and custom types, external locations, and finalization, see
 [Artifacts and Content Addressing](artifacts-and-content-addressing.md).
 
 ### Operations: computation with declared I/O
@@ -189,83 +164,40 @@ An operation declares its inputs, outputs, parameters, and the exact parents of
 its new artifacts. Pipeline code selects its runner and scheduling configuration.
 The framework provides two types:
 
-**Creators** wrap heavy computation (external tools, ML inference, file
-transforms). They follow a three-phase lifecycle — `preprocess` adapts inputs,
-the execute phase (`execute_function` or `execute_command`) runs the
-computation, `postprocess` constructs output artifacts. Each phase runs in its
-own sandbox directory.
+- **Creators** run computation through `preprocess`, an execute phase, and
+  `postprocess`, with a working directory for each phase.
+- **Curators** filter, merge, or ingest artifacts through `execute_curator` in
+  an isolated local subprocess.
 
-**Curators** perform lightweight metadata manipulation (filtering, merging,
-ingesting). They run a single `execute_curator` method in an isolated local
-subprocess. They skip creator sandbox phases and configurable creator-runner
-dispatch.
-
-The framework detects the type automatically: if a class overrides
-`execute_curator()`, it is a curator. Otherwise, it is a creator.
-
-For the full model including specs, lifecycle phases, and pairing strategies,
-see [Operations Model](operations-model.md).
+See [Operations Model](operations-model.md) for their contracts and lifecycle.
 
 ### Provenance: dual tracking system
 
-The framework maintains two complementary provenance systems:
+**Execution provenance** records an execution's configuration, inputs, and
+outputs. **Artifact provenance** records each output's exact parents. A batch's
+input and output lists do not reveal those relationships, so the operation
+must declare them.
 
-**Execution provenance** records what happened — which operation ran, with
-what parameters, consuming which artifacts and producing which others. This
-is the activity log.
-
-**Artifact provenance** records derivation chains — which specific input
-artifact produced which specific output artifact. This cannot be derived from
-execution provenance because operations process batches, and the individual
-correspondence must be supplied explicitly by the operation during execution.
-
-The framework also includes a `provenance` package with graph traversal
-utilities — forward and backward BFS walks through provenance edges using
-DataFrame joins. These are used for metric discovery, lineage matching, and
-multi-input pairing.
-
-For mandatory declarations, optional operation-called matching, and parent groups, see
+For declarations, matching helpers, parent groups, and traversal, see
 [Provenance System](provenance-system.md).
 
 ### Storage: Delta Lake and artifact locations
 
-Artifact-type tables hold typed content and metadata. Framework tables track
-artifact identities and locations, executions and provenance, run membership,
-cache reuse, and logical commit completion. External artifact bytes remain at
-their recorded locations rather than being embedded in table rows.
+Delta Lake tables store artifact content, metadata, provenance, and execution
+history as Parquet files on local or object storage. Local pipelines need no
+database service. External artifact bytes remain at separately recorded,
+verified locations.
 
-Tables use Parquet files on a local filesystem or configured object storage.
-Local pipelines need no database service. Delta Lake provides atomic
-transactions and version history for each individual table. A logical Artisan
-commit spans several table writes; supported Artisan readers expose its rows
-only after completion. Raw per-table time travel does not by itself reconstruct
-a complete historical pipeline or its external files.
-
-The storage layer is split into three concerns:
-
-- **Core** — `ArtifactStore` and `ProvenanceStore` for reading artifacts and
-  provenance edges, with shared completion filtering and table schemas.
-- **Cache** — deterministic cache lookup using step specification hashes.
-- **I/O** — staging, verification, and coordinated logical commits to Delta Lake.
-
-For table layout, partitioning, and the staging-commit pattern, see
+`ArtifactStore` and `ProvenanceStore` expose accepted results. For table layout,
+commit visibility, and recovery, see
 [Storage and Delta Lake](storage-and-delta-lake.md).
 
 ### Composites: reusable compositions of operations
 
-When multiple operations are tightly coupled — for example, transform then
-score where you always score immediately after transforming — copying that
-wiring into every pipeline duplicates it, and the copies drift. A
-**composite** names the wiring once as a reusable unit.
-
-A `CompositeDefinition` declares inputs, outputs, and a `compose()` method
-that wires operations together using a `CompositeContext`. Running a
-composite with `pipeline.run_composite()` expands it into real pipeline
-steps — each internal `ctx.run()` becomes its own step.
-
-Each internal operation has its own persistence boundary, caching, and
-provenance. See [Composites and Composition](composites-and-composition.md) for
-how grouping and overrides work, and
+A **composite** declares reusable wiring, such as transform-then-score, in a
+`CompositeDefinition.compose()` method. It expands into ordinary pipeline
+steps, each with its own caching, persistence, and provenance.
+See [Composites and Composition](composites-and-composition.md) for overrides and
 [Writing Composite Operations](../how-to-guides/writing-composite-operations.md)
 for a complete example.
 
@@ -292,20 +224,15 @@ See [Build a Pipeline](../how-to-guides/building-a-pipeline.md) for usage and
 
 ## Support packages
 
-Other packages provide inspection, analysis, traversal, and shared utilities:
+Supporting packages provide:
 
-- **`utils`** — shared utilities: content hashing (xxh3_128), subprocess
-  wrappers (`run_command`), path helpers, DataFrame utilities, error
-  formatting, and logging configuration.
-- **`visualization`** — provenance graph rendering (macro and micro views via
-  Graphviz), pipeline and step inspection helpers, outcome assessment, run
-  comparison, and execution timing analysis.
-- **`inspection`** — a shared set of validated, size-limited queries for Python,
-  the CLI, and the optional MCP server. It uses the existing readers and also
-  provides installed operating guidance and local exports of complete reports.
-- **`provenance`** — graph traversal algorithms (forward and backward BFS
-  walks through provenance edges) used to pair inputs through existing ancestry
-  and to render provenance graphs.
+- **`utils`** — hashing, managed commands, paths, and logging.
+- **`visualization`** — provenance graphs, result inspection, outcome assessment,
+  run comparison, and timing analysis.
+- **`inspection`** — size-limited queries shared by Python, the CLI, and the
+  optional MCP server, plus operating guidance and report exports.
+- **`provenance`** — graph traversal for ancestry queries, input pairing, and
+  visualization.
 
 Inspection reads recorded evidence; it does not schedule work. Python and CLI
 callers need no MCP server. The MCP adapter exposes the same queries to clients
@@ -324,24 +251,14 @@ For a pipeline that generates and transforms three datasets:
 DataGenerator → three data artifacts → DataTransformer → three transformed artifacts
 ```
 
-What happens:
-
-1. **Orchestration** creates step 0, sees no inputs to resolve, dispatches
-   `DataGenerator` to workers.
-2. **Execution** creates an isolated sandbox. `DataGenerator.execute_function()`
-   produces three datasets. `postprocess()` wraps them as draft artifacts and
-   declares them as roots with an empty lineage list. The worker validates the
-   result, finalizes artifact IDs, and stages it as Parquet.
-3. **Orchestration** completes step 0's logical commit, including its terminal
-   snapshot, then returns a `StepResult` with output references.
-4. **Orchestration** creates step 1. Resolves `output("generate", "datasets")`
-   into three concrete artifact IDs. Computes cache key. No cache hit.
-   Dispatches `DataTransformer` to workers.
-5. **Execution** materializes the three input artifacts to disk. Runs
-   `preprocess` → `execute_function` → `postprocess`. The operation declares
-   A→D, B→E, C→F using the exact input IDs carried with its output records.
-   The worker validates those declarations and stages the resulting edges.
-6. **Orchestration** completes step 1's logical commit. Pipeline complete.
+1. The orchestrator dispatches `DataGenerator` as step 0. Its worker produces
+   datasets A, B, and C, declares them as roots, and stages the validated artifacts.
+2. The orchestrator commits step 0 and returns output references.
+3. Step 1 resolves those references to three artifact IDs, verifies the inputs,
+   checks the cache, and dispatches `DataTransformer` on a miss.
+4. The transformer produces D, E, and F and declares their exact parents:
+   A→D, B→E, and C→F. Its worker stages the artifacts and edges together.
+5. The orchestrator commits step 1. The transformed artifacts become available.
 
 On a rerun, matching accepted work may be reused according to the cache policy.
 See [Build a Pipeline](../how-to-guides/building-a-pipeline.md) for the runnable

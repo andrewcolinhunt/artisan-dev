@@ -10,8 +10,6 @@ Before writing a custom curator, check whether a
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Writing Creator Operations](writing-creator-operations.md).
 
-**Key types:** `OperationDefinition`, `ArtifactResult`, `PassthroughResult`
-
 ---
 
 ## Minimal working example
@@ -88,9 +86,6 @@ pipeline.run(
 
 ## Choose curator vs creator
 
-Curator and creator operations solve different problems. Pick the right one
-before you start writing code.
-
 | | Creator | Curator |
 |---|---------|---------|
 | **Purpose** | Heavy computation, file I/O | Route, filter, merge, or ingest artifacts |
@@ -99,24 +94,15 @@ before you start writing code.
 | **Dispatch** | Built-in local runner or an external provider instance | Local spawned subprocess; step-runner overrides do not relocate it |
 | **Returns** | `ArtifactResult` containing any new artifacts | `ArtifactResult` or `PassthroughResult` |
 
-**Choose curator when** the operation routes, filters, merges, or annotates
-existing artifacts without heavy computation.
-
-**Choose creator when** the operation runs external tools, processes files, or
-needs compute dispatched through an external provider such as a SLURM runner.
-Curators stay local even when the pipeline's default step runner is external.
-
 ---
 
 ## Choose a return type
 
-Curator operations return one of two result types. This choice shapes the rest
-of your implementation.
+Return existing IDs with `PassthroughResult` or new drafts with `ArtifactResult`.
 
 ### `PassthroughResult` — route existing artifacts
 
-No new artifacts are created. The output is a subset or union of input artifact
-IDs. Used by operations like Filter and Merge.
+Return a subset or union of input IDs, as `Filter` and `Merge` do:
 
 ```python
 from artisan.schemas import PassthroughResult
@@ -131,9 +117,8 @@ The `passthrough` dict maps output role names to lists of artifact ID strings.
 
 ### `ArtifactResult` — create new artifacts
 
-New draft artifacts are created and returned. Used by ingest operations that
-bring external data into the pipeline. In this fragment, `file_ref` is the
-input whose bytes were read into `file_bytes`; the output spec declares
+Ingest operations return new drafts. In this fragment, `file_ref` is the
+input read into `file_bytes`; the output spec declares
 `derives_from={"inputs": ["file"]}`.
 
 ```python
@@ -185,10 +170,8 @@ remains non-cacheable and performs a fresh source read each time it runs.
 
 ## Define the operation class
 
-A curator operation is an `OperationDefinition` subclass that overrides
-`execute_curator`. The framework detects curator operations automatically — if
-`execute_curator()` is overridden, the operation is treated as a curator.
-No operation-type flag is needed. The module must still be imported in every
+A curator subclasses `OperationDefinition` and overrides `execute_curator`;
+no operation-type flag is needed. Import its module in every
 process that uses the operation; see
 [application loading](configuring-execution.md#load-application-definitions-in-every-process).
 
@@ -208,7 +191,7 @@ When `outputs` is non-empty, you must define an `OutputRole(StrEnum)` inner
 class whose values match the `outputs` dict keys. The framework validates this
 match at class definition time.
 
-Curator operations skip several validations that apply to creators:
+For curator input and output validation:
 
 - `derives_from=None` is valid for passthrough outputs. When a curator returns
   drafts in `ArtifactResult`, it must declare parent roles and exact parents,
@@ -227,14 +210,9 @@ def execute_curator(
     ...
 ```
 
-`inputs` is a dict mapping role names to Polars DataFrames, each with at least
-an `artifact_id` column. Operations that need full artifact content hydrate
-them from `artifact_store`.
-
-`step_number` is needed when creating draft artifacts.
-
-`artifact_store` provides access to the Delta Lake store for loading artifact
-content, metrics, provenance edges, etc.
+`inputs` maps roles to Polars DataFrames with at least an `artifact_id` column.
+Load content, metrics, or provenance through `artifact_store`. Use `step_number`
+when creating drafts.
 
 ---
 
@@ -244,9 +222,7 @@ The following classes use the imports from the `SimpleMerge` example.
 
 ### Pattern A: Filter (passthrough)
 
-Accept a stream, evaluate each artifact, return the IDs that pass. This
-example loads artifact content from the store and keeps only those whose
-`original_name` matches a pattern:
+Return the IDs of artifacts whose `original_name` matches a pattern:
 
 ```python
 from enum import StrEnum, auto
@@ -348,8 +324,8 @@ class TaggedMerge(OperationDefinition):
 
 ### Pattern C: Ingest (new artifacts)
 
-Create new artifacts from external data. The `IngestFiles` abstract base class
-handles the iteration pattern — subclass it and implement `convert_file()`:
+Subclass `IngestFiles` and implement `convert_file()` to create artifacts from
+external files. The base class iterates over inputs:
 
 ```python
 from artisan.operations.curator import IngestFiles
@@ -416,8 +392,7 @@ source-pipeline ancestry or create edges to foreign IDs.
 (filter)=
 ### Filter
 
-Conditional passthrough with structured criteria. Evaluates metrics against
-thresholds and returns the artifact IDs that pass.
+Keep artifacts whose metrics pass all criteria:
 
 ```python
 from artisan.operations.curator import Filter
@@ -434,10 +409,8 @@ pipeline.run(
 )
 ```
 
-Criteria use bare field names — Filter auto-discovers associated metrics via
-forward provenance walk from the passthrough artifacts. When metrics come from
-multiple sources with non-colliding field names, no extra wiring is needed.
-When field names collide, add `step` or `step_number` to disambiguate:
+Use bare metric field names. `Filter` finds descendant metrics through provenance;
+add `step` or `step_number` when field names collide:
 
 ```python
 pipeline.run(
@@ -453,10 +426,9 @@ pipeline.run(
 )
 ```
 
-All criteria are AND'd. Supported operators: `gt`, `ge`, `lt`, `le`, `eq`, `ne`.
+Supported operators: `gt`, `ge`, `lt`, `le`, `eq`, `ne`.
 
-Set `passthrough_failures=True` to preview what a filter *would* remove without
-actually removing anything — useful for debugging filter thresholds:
+Set `passthrough_failures=True` to preview removals while retaining every artifact:
 
 ```python
 pipeline.run(
@@ -525,10 +497,10 @@ cached and passthrough results. Failed executions contribute no artifacts;
 successful executions of a partial step do. The boundary must exist, and
 selected pending or running attempts fail the import.
 
-Through-N imports the union of outputs through the boundary, with duplicates
-removed. If step 0 produces A and B and step 1 filters to A, importing only
-step 1 gives A; importing through step 1 gives A and B. Select the final filter
-step alone when you want its surviving set.
+With `include_prior_steps=True`, the import combines outputs through the selected
+step and removes duplicates. If step 0 produces A and B and step 1 filters to A,
+importing only step 1 gives A; importing through step 1 gives A and B. Select the
+final filter step alone when you want its surviving set.
 
 Each invocation reads the source again, even when its parameters match an
 earlier import. Restoring an already accepted destination step with `resume()`
@@ -545,10 +517,8 @@ credentials or copy file ownership. Missing or modified bytes fail the import.
 
 ### InteractiveFilter
 
-Explore metric distributions in a notebook, set thresholds interactively, and
-commit the result as a pipeline step. Unlike `Filter` (which requires upfront
-criteria), `InteractiveFilter` lets you inspect data before committing to
-thresholds.
+Inspect metric distributions in a notebook, choose thresholds, then commit the
+filtered result as a pipeline step:
 
 ```python
 from artisan.operations.curator import InteractiveFilter

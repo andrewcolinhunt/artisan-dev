@@ -8,8 +8,8 @@ The same environment supplies Python, Graphviz, and the notebook kernel.
 ## Prerequisites
 
 - **Platform:** Linux (x86_64 or aarch64) or macOS (Apple Silicon)
-- [Pixi](https://pixi.sh) **0.66.0** (installs Python 3.12 and all other
-  dependencies for you)
+- [Pixi](https://pixi.sh) **0.66.0**, which installs Python 3.12 and the other
+  dependencies
 
 ---
 
@@ -35,10 +35,9 @@ pixi run setup
 ```
 
 :::{note}
-The first `pixi install` downloads Python and all dependencies, which
-may take several minutes. `setup` registers Graphviz's layout plugins in the
-selected environment and is safe to repeat. It does not install Git hooks or
-register a Jupyter kernel.
+The first `pixi install` may take several minutes to download dependencies.
+`setup` registers Graphviz's layout plugins in the selected environment and is
+safe to repeat. Git hooks and Jupyter kernels have separate setup commands below.
 :::
 
 Verify the installation:
@@ -48,13 +47,13 @@ pixi run python -c "import artisan; print('Installation OK')"
 pixi run python -c "from graphviz import Source; assert b'<svg' in Source('digraph { source -> result }').pipe(format='svg'); print('Graphviz OK')"
 ```
 
-You should see `Installation OK` and `Graphviz OK` printed to the terminal.
+Both commands should print their `OK` message.
 Use ordinary Pixi commands for local work. See
 [reviewing lockfile changes](using-pixi.md#reviewing-lockfile-changes) when
 editing the project's configuration.
 
 :::{tip}
-**Contributors:** prepare the dev environment, then install Git hooks explicitly:
+**Contributors:** prepare the dev environment and install Git hooks:
 
 ```bash
 pixi install -e dev
@@ -68,34 +67,25 @@ commit; the same suite is enforced in CI. Customize via `.pre-commit-config.yaml
 :::
 
 :::{dropdown} What is Pixi?
-Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
-it creates an isolated environment — but Pixi also handles Python itself and
-non-Python dependencies such as Graphviz from a single lockfile.
-Each clone gets its own environment.
-
-**Why Pixi for this project?** Artisan needs Graphviz alongside Python (plus
-Node.js for documentation builds). Pixi resolves them from conda-forge and PyPI in one
-lockfile (`pixi.lock`), with a recorded resolution for each supported platform.
-See [Tooling Decisions](../contributing/tooling-decisions.md)
-for the full rationale.
+Pixi manages environments, dependencies, and tasks. Each clone gets an isolated
+environment containing Python and system tools such as Graphviz. The lockfile
+records package versions for each supported platform. See
+[Tooling Decisions](../contributing/tooling-decisions.md) for why Artisan uses it.
 :::
 
 ---
 
 ## Optional cluster runners
 
-Artisan includes a native local process-pool runner and requires no orchestration
-server. Install a runner provider only when the target infrastructure needs it.
-For example, the separate `artisan-submitit` package supplies SLURM job-array
-and intra-allocation runners while reusing the same Artisan execution contract.
-Provider installation and cluster setup live with that package so a local
-Artisan installation does not carry scheduler dependencies.
+Artisan's local process-pool runner requires no orchestration server. For SLURM,
+install the separate `artisan-submitit` package and follow its cluster setup
+instructions. It supplies job-array and intra-allocation runners.
 
 ---
 
 ## Using Pixi day-to-day
 
-See [Using Pixi](using-pixi.md) for a full guide to environments, tasks, shells,
+See [Using Pixi](using-pixi.md) for environments, tasks, shells,
 and workspaces.
 
 ---
@@ -116,8 +106,7 @@ Interpreter" → paste the path above.
 
 ### Jupyter kernel
 
-Register the Pixi environment as a Jupyter kernel so notebooks use the correct
-packages:
+Register the Pixi environment as a Jupyter kernel:
 
 ```bash
 pixi run install-kernel
@@ -143,11 +132,8 @@ disable it to check whether the same issue explains your delay.
 
 ## Coding agents
 
-Artisan provides shared project instructions in `AGENTS.md` and portable skills
-for scaffolding artifacts and operations, building pipelines, and inspecting
-results. Agents that support `.agents/skills/` can discover the bundled skills
-from a checkout. See [Using Coding Agents](using-coding-agents.md) for setup and
-usage with your agent.
+See [Using Coding Agents](using-coding-agents.md) to load Artisan's project
+instructions and skills for authoring code and inspecting runs.
 
 ---
 
@@ -166,4 +152,4 @@ usage with your agent.
 ## Next steps
 
 - [Your First Pipeline](../tutorials/01-getting-started/01-first-pipeline.ipynb) — Build and run a pipeline in an interactive notebook
-- [Orientation](orientation.md) — The mental model behind the framework
+- [Orientation](orientation.md) — How the framework's concepts fit together

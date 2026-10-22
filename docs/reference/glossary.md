@@ -17,15 +17,11 @@ individual tables. Artisan coordinates multi-table result visibility through
 (glossary-artifact)=
 ## Artifact
 
-An immutable, content-addressed data node identified by an `xxh3_128` hash over
-a typed identity envelope: the concrete artifact type, its canonical payload,
-and common semantic metadata such as its lineage-visible name. Artifacts are the
-fundamental data units flowing through pipelines. External locations are kept
-outside identity and verified against the artifact's digest and size.
-Artifacts follow a [draft/finalize](#glossary-draft-finalize) lifecycle: they
-are created as mutable drafts; finalization protects durable fields and snapshots
-them for later integrity checks. The six built-in artifact types are `data`, `metric`, `file_ref`, `config`,
-`large_file`, and `appendable`.
+Typed pipeline data identified by a hash of its type, canonical content, and
+semantic metadata. Artifacts start as mutable drafts;
+[finalization](#glossary-draft-finalize) protects their durable state.
+External storage locations do not affect
+identity. See [artifact types](../concepts/artifacts-and-content-addressing.md#artifact-types).
 
 ---
 
@@ -54,14 +50,10 @@ Lazily initializes a `ProvenanceStore` for graph queries.
 (glossary-artifact-type-def)=
 ## ArtifactTypeDef
 
-A registry entry describing an artifact type. Each concrete subclass declares a
-`key` (e.g. `"data"`), a `table_path` for its Delta Lake table, and a `model`
-derived from `Artifact` with a `POLARS_SCHEMA`. Registration validates the concrete
-type key, unique non-reserved table path, and the verification/materialization
-contract for external types. It is automatic at class definition time via
-`__init_subclass__` when the defining module is imported. Configure trusted
-application modules so workers, inspection, repair, and replay load the same
-definitions.
+A registry entry binding a type key, Delta table path, and `Artifact` model.
+Importing the defining module validates and registers the type. Every worker
+and reader that uses it must load the definition; see
+[Create Artifact Types](../how-to-guides/creating-artifact-types.md).
 
 ---
 
@@ -100,11 +92,10 @@ and skipped attempts never qualify.
 (glossary-cancellation-status)=
 ## CancellationStatus
 
-The state of a cancellation request: `requested`, then one of `confirmed`,
-`rejected`, or `unknown`. Confirmation requires evidence that the affected work
-never started or stopped; accepting a request is insufficient. Rejected work may
-finish naturally.
-An unknown outcome produces a failed step because cleanup could not be proven.
+The state of a cancellation request: `requested`, then `confirmed`, `rejected`,
+or `unknown`. Confirmation requires evidence that work never started or has
+stopped. After a rejected request, work may finish naturally. Unknown cleanup
+fails the step.
 See [cancellation](../concepts/error-handling.md#cancellation-and-uncertain-cleanup).
 
 ---
@@ -123,31 +114,21 @@ dispatch, and provenance.
 (glossary-compute-provider)=
 ## Compute provider
 
-The routing target for an [operation](#glossary-operation)'s execute phase,
-selected per operation or per step via `compute_provider`. `"local"` (the
-default) runs an ordinary Python execute function inside the worker process;
-command operations use a managed subprocess on that host.
-`"modal"` ships it to the operation's deployed tool endpoint: the worker submits
-params and input files over HTTP, polls until the tool finishes, and downloads
-the outputs. Only command operations (a [ToolSpec](#glossary-tool-spec) with an
-`execute_command()`, or `execute_as_tool=True`) can route to `"modal"`. The
-compute provider is independent of the [step runner](#glossary-backend): the
-runner controls where the worker process runs; the compute provider controls where the
-execute phase runs inside that worker. See
-[Compute Routing](../tutorials/07-compute-backends/01-compute-routing.ipynb) and
-[Execution Flow](../concepts/execution-flow.md).
+The target for an operation's execute phase, selected with `compute_provider`.
+`"local"` runs on the worker's host; `"modal"` invokes a deployed tool endpoint
+and requires a command operation. The [step runner](#glossary-backend) separately
+places the worker process. See
+[Compute routing](../concepts/execution-flow.md#compute-routing).
 
 ---
 
 (glossary-content-addressing)=
 ## Content addressing
 
-A storage strategy where semantic data is identified independently of its
-storage location. In Artisan, a versioned, length-framed envelope combines the
-artifact type, canonical payload, and identity metadata. Identical envelopes
-produce the same ID, while equal bytes belonging to different types or carrying
-different semantic names remain distinct. This enables safe deduplication and
-deterministic caching.
+Identifying data by a hash of its content rather than its storage location.
+Artisan includes the artifact type and semantic metadata in that hash, so equal
+bytes with different types or semantic names remain distinct. See
+[Content addressing](../concepts/artifacts-and-content-addressing.md#content-addressing).
 
 ---
 
@@ -188,13 +169,10 @@ pruning without requiring an external database server.
 (glossary-draft-finalize)=
 ## Draft/finalize
 
-The artifact lifecycle pattern. A **draft** artifact has `artifact_id=None` and
-is mutable -- created via `Subclass.draft()`. Calling `artifact.finalize()`
-computes the typed identity hash, sets the `artifact_id`, and protects durable
-fields from reassignment. It also snapshots durable state so later serialization
-or materialization can detect nested changes. Creators return drafts from
-`postprocess`; curators can return them from `execute_curator`. The framework
-finalizes drafts before commitment.
+The artifact lifecycle. `Subclass.draft()` creates a mutable artifact with
+`artifact_id=None`. `finalize()` validates it, assigns its ID, protects durable
+fields, and snapshots them to detect later nested changes. Artisan finalizes
+returned drafts before commitment.
 
 ---
 
@@ -211,21 +189,17 @@ as the `batch_strategy` attribute on an [OperationDefinition](#glossary-operatio
 (glossary-execution-context)=
 ## ExecutionContext
 
-An immutable (frozen) dataclass carrying all runtime state for a single
-execution: run ID, spec ID, step number, worker ID, artifact store reference,
-staging root, and sandbox path. Created once at execution start and threaded
-through the entire execution flow.
+A frozen dataclass carrying one execution's identities, worker and step details,
+store reference, and working paths. Artisan creates it at execution start.
 
 ---
 
 (glossary-execution-record)=
 ## Execution record
 
-A row in the executions Delta Lake table logging a single execution attempt.
-Carries dual identity: `execution_spec_id` (deterministic cache key, computed
-from operation configuration and the ordered role/group/position/type/ID input
-occurrences) and
-`execution_run_id` (unique per attempt, used for provenance edges).
+A stored record of one execution attempt, with a deterministic cache key
+(`execution_spec_id`) and a unique attempt ID (`execution_run_id`). See
+[Dual identity for executions](../concepts/provenance-system.md#dual-identity-for-executions).
 
 ---
 
@@ -253,14 +227,10 @@ failed execution and finished sibling work remain persisted for audit.
 (glossary-group-by-strategy)=
 ## GroupByStrategy
 
-Strategy for pairing artifacts from multiple input
-[roles](#glossary-role) before dispatch. `ZIP` matches by position (first with
-first). `LINEAGE` matches a candidate to its nearest target ancestor along
-directed provenance edges; sibling branches do not match merely by sharing a
-root. `CROSS_PRODUCT` generates all combinations. `NAME` matches exact filename
-stems across roles. Set via `OperationDefinition.group_by`. See
-[Pairing strategies](../concepts/operations-model.md#pairing-strategies) for
-unmatched and ambiguous inputs.
+The strategy for pairing input [roles](#glossary-role) before dispatch, set via
+`OperationDefinition.group_by`: `ZIP`, `LINEAGE`, `CROSS_PRODUCT`, or `NAME`.
+See [Pairing strategies](../concepts/operations-model.md#pairing-strategies) for
+matching rules, unmatched inputs, and ambiguity handling.
 
 ---
 
@@ -279,28 +249,19 @@ ID-only delivery is not a guarantee that pipeline preparation avoids content I/O
 (glossary-input-spec)=
 ## InputSpec
 
-A declarative specification on an operation class that describes one named
-input: its artifact type, whether it is required, and how it should be
-delivered. Key options include `materialize` (write to disk vs. pass in memory),
-`hydrate` (full content vs. ID-only), and `with_associated` (auto-resolve
-related artifacts via provenance). For config artifacts,
-`resolve_references=True` makes typed dependencies available through
-`inputs.referenced_artifacts(config)` without replacing their JSON markers.
-Defined in the operation's `inputs` class variable keyed by
-[role](#glossary-role) name. See
-[typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
+An input role's artifact type, required status, and delivery settings, declared
+in an operation's `inputs` mapping. See
+[Input specs](../concepts/operations-model.md#input-specs) for hydration,
+materialization, and typed config dependencies.
 
 ---
 
 (glossary-lineage-mapping)=
 ## LineageMapping
 
-An operation-authored parent relationship in `ArtifactResult.lineage`.
-The dictionary key identifies the target role; `draft_index` addresses its
-output occurrence. `source_role` and either `source_artifact_id` (input) or
-`source_output_index` (sibling output) identify the exact parent. Every derived
-output requires these declarations. The optional `add_artifact` method builds
-the same mappings while appending a draft.
+An exact parent relationship declared in `ArtifactResult.lineage`. It identifies
+an output by role and index, and its parent by input ID or sibling-output index.
+See [Explicit lineage](../concepts/provenance-system.md#explicit-lineage).
 
 ---
 
@@ -361,12 +322,9 @@ concrete artifact IDs during downstream input preparation.
 (glossary-output-spec)=
 ## OutputSpec
 
-A declarative specification on an operation class that describes one named
-output: its artifact type and required/allowed parent roles (`derives_from`).
-The operation supplies exact parents at runtime. The contract can name input roles
-(`{"inputs": ["data"]}`), output roles (`{"outputs": ["data"]}`), or declare
-no parents (`{"inputs": []}`). Defined in the operation's `outputs` class
-variable keyed by [role](#glossary-role) name.
+An output role's artifact type and parent-role contract (`derives_from`),
+declared in an operation's `outputs` mapping. The operation supplies exact
+parents at runtime. See [Output specs](../concepts/operations-model.md#output-specs).
 
 ---
 
@@ -394,12 +352,9 @@ steps serially and can parallelize worker batches within a creator step.
 (glossary-pipeline-manager)=
 ## PipelineManager
 
-The main user-facing interface for defining and executing pipelines. Provides
-`run()` (waits for step completion), `submit()` (returns a
-[StepFuture](#glossary-step-future) after preparation and predecessor waits), `run_composite()` / `submit_composite()`
-(expand a [composite](#glossary-composite) into separate steps), and `output()`
-(reference a step's outputs). Configured with a `PipelineConfig`
-specifying the Delta Lake root, staging root, failure policy, and cache policy.
+The interface for submitting operations and composites, connecting their
+outputs, and managing a run. `PipelineConfig` supplies its storage roots and
+execution defaults. See [Build a Pipeline](../how-to-guides/building-a-pipeline.md).
 
 ---
 
@@ -417,11 +372,10 @@ See [Provenance System](../concepts/provenance-system.md).
 (glossary-resource-config)=
 ## RunnerResources
 
-Portable hardware resource requirements declared on an operation. Specifies
-`cpus`, `memory_gb`, `gpus`, `time_limit`, and an `extra` dict for
-provider-specific settings (e.g. `{"slurm_partition": "gpu"}`). A scheduler
-runner translates these into an allocation. The local runner uses GPU requests
-to assign devices and constrain concurrency; it does not reserve CPU or memory.
+Hardware requirements for a step runner, including CPUs, memory, GPUs, and time
+limit. A scheduler runner translates them into an allocation. The local runner
+uses GPU requests to assign devices and constrain concurrency; it does not
+reserve CPU or memory.
 See [resource placement](../how-to-guides/configuring-execution.md#allocate-resources-at-the-right-layer).
 
 ---
@@ -468,12 +422,10 @@ verification polls for readable worker evidence before commit.
 (glossary-stem-matching)=
 ## Stem matching
 
-An optional operation-author helper for matching output names to explicitly
-supplied candidate names and artifact IDs. Import
-`match_outputs_to_inputs_by_stem` from `artisan.operations.lineage`. It tries
-exact stems and longest eligible prefixes, protects numeric boundaries, and
-raises on ambiguity or no match. Operations choose when to call it and declare
-the returned IDs as parents. Executors never invoke it.
+Matching output filenames to candidate names and artifact IDs with
+`artisan.operations.lineage.match_outputs_to_inputs_by_stem`. An operation may
+call it to choose parents; executors never do. See
+[Optional filename matching](../concepts/provenance-system.md#optional-filename-matching).
 
 ---
 

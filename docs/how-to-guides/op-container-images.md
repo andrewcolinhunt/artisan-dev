@@ -9,9 +9,9 @@ local builds, and registry access if you intend to publish the image. See
 
 ## The image-content contract
 
-A production operation image should contain its tool binaries, dependencies,
-Artisan, and operation package. Include the package in the Dockerfile so a
-consumer can run it without source files from the deployment machine.
+Include tool binaries, dependencies, Artisan, and the operation package in the
+Dockerfile so consumers can run the image without source files from the
+deployment machine.
 
 Keep required nonsecret tool settings in the image's `ENV` declarations. Supply
 credentials at runtime. Modal adds its declared environment, secrets, and volume
@@ -29,8 +29,8 @@ Modal's environment, credentials, or mounted files.
 
 ## Point an operation at its image
 
-Add the image setting to your existing command operation. This fragment omits
-its input/output declarations and execution methods. Both deployment and
+Set the image on your command operation. This fragment omits input/output
+declarations and execution methods. Both deployment and
 `artisan op image` read the class-level setting:
 
 ```python
@@ -81,8 +81,7 @@ and hardware settings:
 artisan op image process_data --json
 ```
 
-For example, an operation that also declares a weights volume and an A100 GPU
-would report those settings:
+For an operation declaring a weights volume and A100 GPU:
 
 ```json
 {

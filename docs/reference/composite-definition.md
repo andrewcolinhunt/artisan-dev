@@ -1,6 +1,7 @@
 # CompositeDefinition Reference
 
-Public entry points for defining, submitting, and connecting composites. The
+Import composite types from `artisan.composites` and submit them through
+`artisan.orchestration.PipelineManager`. The
 [writing guide](../how-to-guides/writing-composite-operations.md) contains a
 complete example; [Composites and Composition](../concepts/composites-and-composition.md)
 explains the execution model and override precedence.
@@ -11,9 +12,6 @@ Exact signatures, fields, and defaults live in the source and docstrings. Use
 ---
 
 ## Public entry points
-
-Import the composite types from `artisan.composites` and `PipelineManager` from
-`artisan.orchestration`.
 
 | Entry point | Purpose | Definition |
 |-------------|---------|------------|
@@ -37,27 +35,22 @@ handle's `.output(role)` supplies wiring for another child. `ctx.output(role,
 ref)` maps an internal output onto the composite's public output contract.
 
 Outside the composite, `CompositeResult.output(role)` provides an
-`OutputReference` for ordinary pipeline wiring. Each child is independently
-persisted and inspected as a step; there is no aggregate composite cache entry
-or separate composite execution record.
+`OutputReference` for pipeline wiring. See
+[How a composite executes](../concepts/composites-and-composition.md#how-a-composite-executes)
+for child persistence and caching.
 
 ## Submission and overrides
 
-`submit_composite()` runs composition and child submission synchronously,
-including preparation and predecessor waits. The returned `CompositeResult`
-can wait for remaining children with `.wait()`. `run_composite()` also waits
-for every child before returning. Current step execution is serialized;
-parallel worker batches belong to individual creator steps.
+`submit_composite()` returns after composition and child submission, which can
+block during preparation. Call the result's `.wait()` or use `run_composite()`
+to wait for every child. See
+[Submission and waiting](../concepts/composites-and-composition.md#submission-and-waiting).
 
-Composite execution overrides become child defaults. An explicit `ctx.run()`
-override wins for that setting as a whole, without merging nested dictionaries.
-This includes `cache_policy`, which inherits from the nearest composite default
-and then the pipeline. Algorithm parameters must be forwarded explicitly by
-`compose()`.
-
-See [Composite-level overrides](../concepts/composites-and-composition.md#composite-level-overrides-are-step-defaults)
-for precedence and [Forward execution overrides](../how-to-guides/writing-composite-operations.md#forward-execution-overrides)
-for usage.
+Execution overrides provide defaults for child steps. See
+[Composite-level overrides](../concepts/composites-and-composition.md#composite-level-overrides-are-step-defaults)
+for precedence and
+[Forward execution overrides](../how-to-guides/writing-composite-operations.md#forward-execution-overrides)
+for an example.
 
 ---
 

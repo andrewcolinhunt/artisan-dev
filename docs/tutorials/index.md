@@ -5,9 +5,9 @@ reusable operations. Complete [Installation](../getting-started/installation.md)
 first, including the source checkout and Jupyter kernel. Some tutorials read
 fixtures or companion modules from that checkout.
 
-Follow the sections below for the **local learning path**. You can skip all three
-cloud tutorials until you have the required accounts and credentials. They are
-listed separately at the end in prerequisite order.
+Follow the sections below for the local learning path. The three optional cloud
+tutorials appear at the end in prerequisite order; each needs accounts and
+credentials.
 
 Each notebook creates a named directory under `runs/`. Rerunning its
 `tutorial_setup` cell deletes that tutorial's previous results unless the call
@@ -69,11 +69,10 @@ The optional cloud batching comparison is listed under Cloud tutorials below.
 
 ## Cloud tutorials (optional)
 
-These tutorials make billable cloud calls. Start with Running on Modal, which
-sets up the account, authentication, and endpoint used by the batching example.
-The object-storage tutorial also needs a bucket, storage credentials, and its
-own endpoint deployment. Deployments are explicit setup steps: remote execution
-requires an existing compatible app, and a pipeline never creates one.
+These tutorials make billable cloud calls. Running on Modal sets up authentication
+and the endpoint used by the batching example. Object storage also needs a bucket,
+storage credentials, and its own endpoint. Deploy each endpoint before running
+the tutorial; pipelines require an existing compatible app.
 
 1. [Running on Modal](07-compute-backends/04-modal-execution.ipynb) (~15 min) — Deploy a command operation, compare local and remote execution, and inspect remote markers
 2. [Per-Artifact Batch Execute](04-batching/02-batch-execute.ipynb) (~10 min) — Compare concurrent and sequential endpoint calls within the same unit size

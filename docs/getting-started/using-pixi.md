@@ -1,15 +1,14 @@
 # Using Pixi
 
-Pixi manages Artisan's environments, dependencies, and tasks. This page covers
-what you need for day-to-day development. For general Pixi documentation, see the
+Pixi manages Artisan's environments, dependencies, and tasks. For general Pixi
+documentation, see the
 [official getting started guide](https://pixi.sh/latest/getting_started/).
 
 ---
 
 ## Running commands in an environment
 
-Artisan defines three environments. Each bundles the dependencies needed for a
-specific workflow.
+Choose the environment for your task:
 
 | Environment | Flag | What it includes | When to use it |
 |-------------|------|------------------|----------------|
@@ -28,10 +27,9 @@ pixi run -e docs docs-build
 
 All environments share a single solve group, so package versions are consistent
 across them. `mcp` is a feature included in `dev`, not a separate environment.
-Use ordinary Pixi commands for local development. They use the existing
-lockfile when it is up to date and can refresh it when needed. CI and agent
-tasks unrelated to environment changes use `--locked` to stop if a refresh is
-needed. See [reviewing lockfile changes](#reviewing-lockfile-changes).
+For local development, ordinary Pixi commands use or refresh the lockfile as
+needed. CI and agents use `--locked` for tasks unrelated to environment changes;
+see [reviewing lockfile changes](#reviewing-lockfile-changes).
 
 After installing an environment, run `setup` there to prepare Graphviz. Git
 hooks and notebook kernels have separate tasks with explicit side effects:
@@ -52,8 +50,7 @@ running it again from another environment replaces that kernel registration.
 
 ## Opening an interactive shell
 
-`pixi run` is best for one-off commands. For interactive work — debugging,
-exploring data, running multiple commands — open a shell instead:
+Use `pixi run` for one command or open a shell for interactive work:
 
 ```bash
 pixi shell                 # Default environment
@@ -70,15 +67,13 @@ $ pixi shell -e dev
 (artisan-dev) $ exit                # Return to your regular shell
 ```
 
-You can have multiple shells open in different terminals — each can use a
-different environment.
+Each terminal can use a different environment.
 
 ---
 
 ## Working across multiple projects with workspaces
 
-If you work across multiple Pixi projects, workspaces let you run tasks in one
-project from another without changing directories.
+Workspaces let you run tasks across Pixi projects without changing directories.
 
 ```bash
 # Register a workspace member (name comes from pyproject.toml)
@@ -122,6 +117,7 @@ After adding a dependency, `pixi.lock` updates automatically. Commit both
 
 ---
 
+(reviewing-lockfile-changes)=
 ## Reviewing lockfile changes
 
 Keep `pixi.lock` in version control. After editing `pyproject.toml`, refresh the
@@ -156,21 +152,15 @@ and review it using the commands above, then rerun the check.
 
 ## Using a local copy of a dependency
 
-If you need to edit a dependency's source code — to debug an issue, develop a
-feature, or test a fix — you can point Pixi at a local clone instead of the
-published package.
-
-Open `pyproject.toml` and add a path dependency override in the
-`[tool.pixi.pypi-dependencies]` section:
+To work on a dependency's source, point Pixi at a local clone. Add a path
+override to `pyproject.toml`:
 
 ```toml
 [tool.pixi.pypi-dependencies]
 some-package = { path = "/path/to/your/local-clone", editable = true }
 ```
 
-With `editable = true`, Python picks up your local changes immediately — no
-reinstall needed. This is the same concept as `pip install -e .` but managed
-through Pixi.
+With `editable = true`, Python picks up source changes without a reinstall.
 
 Run `pixi install` to resolve the intentional dependency change. When you're
 done, remove the override and run `pixi install` again to resolve the published

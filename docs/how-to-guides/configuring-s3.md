@@ -11,9 +11,8 @@ explains how storage and execution settings fit together.
 
 ## Configure AWS S3
 
-When running on EC2 (or anywhere with an IAM role / `~/.aws/credentials` /
-`AWS_*` env vars set), pass `protocol="s3"` and let `delta-rs` and `s3fs`
-read credentials from the environment:
+Pass `protocol="s3"` to use credentials from an IAM role,
+`~/.aws/credentials`, or `AWS_*` environment variables:
 
 ```python
 from uuid import uuid4
@@ -38,9 +37,8 @@ Direct `PipelineConfig` construction needs an explicit run ID; the UUID above
 keeps this run separate from other runs in the same store. Call
 `pipeline.finalize()` when you finish submitting work.
 
-`working_root` and `failure_logs_root` (derived from `working_root` when
-`storage` is cloud) **must** stay local — they're used for sandbox dirs
-and human-readable failure logs. For cloud stores, failure files live under
+Keep `working_root` and `failure_logs_root` local for sandboxes and failure logs.
+For cloud storage, Artisan derives `failure_logs_root` from `working_root`:
 `<working_root>/logs/failures/YYYYMMDD/YYYYMMDDTHHMMSSffffffZ_executionID.log`,
 using each source execution's UTC start time.
 
@@ -83,12 +81,8 @@ storage = StorageConfig(
 )
 ```
 
-Pass this `storage` object to `PipelineConfig(storage=storage, ...)` when
-creating the manager. fsspec and delta-rs use different option schemas, so
-`StorageConfig` carries both side by side. See
-[Pipeline Configuration](../concepts/pipeline-configuration.md) for why.
-Leave `delta_options={}` (the default) on AWS to fall back to env-var
-discovery.
+Pass this object to `PipelineConfig(storage=storage, ...)`. On AWS, leave
+`delta_options={}` (the default) to use environment credential discovery.
 
 ---
 
@@ -128,17 +122,15 @@ those files with the source's client first, then pass their local paths.
 
 ## External file outputs (`files_root`) on cloud
 
-`files_root` holds `LargeFileArtifact` and `AppendableArtifact` content —
-bytes too large to embed in Delta. Point it at a cloud URI and existing
-creators keep working with no code change: they still write to the local
-`inputs.files_dir` sandbox, and the framework uploads each finalized file
-to `files_root` for you.
+Point `files_root` at a cloud URI to store `LargeFileArtifact` and
+`AppendableArtifact` content there. Creators still write to local
+`inputs.files_dir`; Artisan uploads finalized files to `files_root`.
 
 If an upload fails, the unit fails with a postprocess-style error and the
 local sandbox is preserved so the bytes are recoverable.
 
-See [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for the
-external-file storage model in depth.
+See [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for external
+file storage.
 
 ---
 

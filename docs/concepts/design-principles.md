@@ -36,15 +36,11 @@ Artifact provenance records the exact parents of each new output. A batch that
 consumes A and B and produces C and D does not reveal whether C came from A,
 B, or both. The operation supplies that relationship explicitly.
 
-Every emitted artifact role has a lineage entry. Derived outputs name exact
-input IDs or co-produced output indices; roots have an empty lineage list.
-Artisan validates these declarations before accepting the result. It does not
-infer missing parents from names, config references, or dispatch positions.
+Artisan validates declared parents before accepting outputs. It does not infer
+missing parents from names, config references, or dispatch positions.
 
-For an output with several jointly necessary parents, Artisan labels the declared
-parent set with a group ID. That group describes the derivation. Input pairing
-has its own grouping for dispatch and cache identity, which does not supply
-missing lineage.
+Several jointly necessary parents form one derivation group. Input pairing
+groups work for dispatch and caching separately; it does not supply lineage.
 
 The framework can verify that a declared parent belongs to the allowed input
 role. It cannot determine whether that parent is scientifically correct. Test
@@ -141,10 +137,9 @@ call shape before accepting a step attempt, and validates stored input content
 before cache lookup or dispatch. These checks catch different errors at the
 point where the relevant evidence becomes available.
 
-For example, creator output contracts must declare `derives_from`, role enums
-must match the declared roles, and algorithm configuration must use the matched
-nested `Params` model. Runtime lineage validation then checks the actual parent
-IDs and output indices, which are not known at class definition time.
+For example, class validation checks parent-role contracts; runtime validation
+checks the actual parent IDs and output indices, which are not yet known when
+the class is defined.
 
 An accepted attempt that fails records the available error and phase context.
 Whether the pipeline continues depends on its failure policy. Cleanup reports

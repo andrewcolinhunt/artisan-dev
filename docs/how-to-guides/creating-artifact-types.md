@@ -113,8 +113,7 @@ store.
 
 ## Create the artifact model
 
-Create a model file in your domain package's artifact directory. The model must subclass `Artifact` and provide
-these members:
+Subclass `Artifact` in your application package and provide these members:
 
 | Member | Kind | Purpose |
 |--------|------|---------|
@@ -124,15 +123,11 @@ these members:
 | `_materialize_content()` | method | Write content to disk, return the path string |
 | `_validate_identity_descriptors()` | method | Validate durable fields derived from canonical content, when present |
 
-The base `Artifact` class provides `finalize()`, `materialize_to()`,
-`to_row()`, `from_row()`, and several fields your model inherits
-automatically. Do not redeclare inherited model fields. Include the durable
-fields your type stores in `POLARS_SCHEMA`; runtime paths stay out of it.
-
-The base model supplies IDs, origin metadata, serialization, finalization, and
-runtime materialization state. Consult the [Python API entry points](../reference/python-api.md)
-for inherited fields rather than redeclaring them. Pydantic rejects undeclared
-fields, so a misspelled custom descriptor fails early.
+The base class supplies IDs, origin metadata, serialization, finalization, and
+materialization state. Do not redeclare its fields; consult
+[Python API lookup](../reference/python-api.md) for their definitions. Include
+durable fields in `POLARS_SCHEMA`, leaving runtime paths out. Pydantic rejects
+undeclared fields, including misspelled custom descriptors.
 
 ### Set the artifact type
 
@@ -140,14 +135,10 @@ fields, so a misspelled custom descriptor fails early.
 artifact_type: str = Field(default="data_record", frozen=True)
 ```
 
-The value is a plain string that uniquely identifies this type. `frozen=True`
-prevents mutation after creation. Built-in types use `ArtifactTypes` constants
-(e.g., `default=ArtifactTypes.METRIC`), but a plain string works identically
-for custom types.
+Choose a unique string; `frozen=True` prevents changes after creation. Built-in
+types use `ArtifactTypes` constants; custom types can use plain strings.
 
-The base class validates that `artifact_type` is never set to
-`ArtifactTypes.ANY`, which is a spec-only sentinel that cannot appear on
-concrete artifacts.
+`ArtifactTypes.ANY` is valid only in specs, never on concrete artifacts.
 
 ### Define the Polars schema
 
@@ -178,8 +169,7 @@ and compound extension separately.
 
 ### Understand finalize (base class)
 
-You do not need to implement `finalize()`. The base `Artifact.finalize()`
-method:
+Inherit `Artifact.finalize()`. It:
 
 - Checks saved identity and returns `self` when already finalized
 - Validates content-derived descriptor fields
@@ -189,10 +179,9 @@ method:
   `extension` when declared, and `metadata`)
 - Sets the 32-character `artifact_id` and snapshots protected state
 
-The default `_identity_payload()` returns `getattr(self, "content", None)`. If
-your artifact has a `content: bytes | None` field, identity works out of the
-box. For descriptor-based types without a `content` field, override
-`_identity_payload()` instead -- see
+The default `_identity_payload()` returns `getattr(self, "content", None)`, so
+types with a `content: bytes | None` field need no override. For types whose
+identity comes from descriptors, override `_identity_payload()`; see
 [Metadata-only types](#metadata-only-types-no-embedded-content).
 
 After finalization, all durable fields are protected. Direct assignment fails,
@@ -202,11 +191,9 @@ declared by an externally backed type remain mutable.
 
 ### Serialization is automatic
 
-You do not implement `to_row()` / `from_row()`. The base class serializes
-every `POLARS_SCHEMA` column by reading the same-named field via `getattr`,
-and `from_row()` reverses it. Because all of `DataRecordArtifact`'s columns
-are plain fields with matching names -- and `metadata` is JSON-encoded by the
-base encoder -- the round-trip works with no serialization code at all.
+Inherit `to_row()` and `from_row()`. They map `POLARS_SCHEMA` columns to
+same-named fields and JSON-encode `metadata`. `DataRecordArtifact` needs no
+custom serialization.
 
 Override `_row_encoders()` / `_row_decoders()` only for columns whose stored
 form differs from the raw field value, such as a `list` field stored as a JSON
@@ -242,11 +229,9 @@ The `fs` parameter is an optional fsspec filesystem for reading source content
 from cloud storage. Artifacts that hold their content in memory accept it for
 signature parity and ignore it, as this example does.
 
-The base class `materialize_to()` rejects format conversion by default and
-delegates to your `_materialize_content()`. For most artifact types,
-implementing `_materialize_content()` is sufficient. Override
-`materialize_to()` only if you need custom logic beyond writing content to
-disk -- for example, `ExecutionConfigArtifact` overrides it to resolve
+The base `materialize_to()` rejects format conversion and calls
+`_materialize_content()`. Override it only for additional behavior; for example,
+`ExecutionConfigArtifact` resolves
 `{"$artifact": id}` reference patterns into filesystem paths before writing.
 
 ---
@@ -263,7 +248,7 @@ class DataRecordTypeDef(ArtifactTypeDef):
     model = DataRecordArtifact
 ```
 
-When Python loads this class, `__init_subclass__` fires and:
+Importing the class:
 
 - Validates that `key`, `table_path`, and `model` are set
 - Requires the model to subclass `Artifact` and its concrete default
@@ -274,8 +259,7 @@ When Python loads this class, `__init_subclass__` fires and:
   verification and materialization hooks
 - Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works at runtime)
 
-If any validation fails, you get an immediate `TypeError` or `ValueError` at
-import time.
+Invalid definitions raise `TypeError` or `ValueError` during import.
 
 ---
 
@@ -293,9 +277,8 @@ __all__ = [
 ]
 ```
 
-The `ArtifactTypeDef` subclass must be importable for registration to happen.
-Keeping the type definition in the same file as the model means importing the
-model from your domain package is sufficient.
+Keep the definition beside the model so importing the model registers its type.
+If you use a separate registration module, import that too.
 
 (load-the-type-in-every-process)=
 ## Load the type in every process
@@ -437,12 +420,10 @@ metadata={"record_count": 42}
 
 ### Using JsonContentMixin for JSON-based artifacts
 
-If your artifact stores JSON-encoded content (like `MetricArtifact` and
-`ExecutionConfigArtifact` do), use the `JsonContentMixin` from
-`artisan.schemas`. Its `values` property decodes the JSON content and returns
-an independent value on each access. This fragment shows the JSON-specific
-parts; supply the type declaration, schema, registration, and materialization
-method as in the complete example:
+Use `JsonContentMixin` for JSON content, as `MetricArtifact` and
+`ExecutionConfigArtifact` do. This fragment shows the JSON-specific parts;
+supply the type declaration, schema, registration, and materialization method
+as in the complete example:
 
 ```python
 import json
@@ -466,8 +447,7 @@ of manually decoding `artifact.content`. Each access decodes the content again;
 changing the returned value does not change the artifact's content. It raises
 `ValueError` if the artifact is not hydrated.
 
-Note the MRO: list `JsonContentMixin` before `Artifact` in the class
-definition so the mixin's methods are resolved first.
+List `JsonContentMixin` before `Artifact` so its methods take precedence.
 
 (metadata-only-types-no-embedded-content)=
 ### Metadata-only types (no embedded content)
@@ -502,13 +482,9 @@ digest-and-size-checked reads. You do not override `finalize()` itself.
 
 ### Domain-layer types
 
-Domain types can live in a separate package outside `artisan`. The pattern is
-identical -- subclass `Artifact`, define an `ArtifactTypeDef`, and the
-framework discovers it at import time when its definition is imported.
-
-Declare the package's registration module through
-[application loading](#load-the-type-in-every-process). The definition must be
-available in workers and inspection processes, not only in the driver.
+Keep domain types outside `artisan` in a separate application package. Load its
+registration module in workers and inspection processes through
+[application loading](#load-the-type-in-every-process).
 
 ### Placing the type definition
 
@@ -518,8 +494,6 @@ Keep application definitions in the application package. Two layouts work:
   registration together. Preferred for domain-layer types.
 - **In a registration module:** imports and registers the package's types in
   one place.
-
-Both work identically. Pick whichever keeps your import graph cleaner.
 
 ---
 
@@ -572,9 +546,6 @@ stored schemas.
 | `src/.../artifact/data_record.py` | **New:** model class + type definition |
 | `src/.../artifact/__init__.py` | Add `DataRecordArtifact` to exports |
 | `tests/.../test_data_record.py` | **New:** unit tests |
-
-No changes to the storage layer, staging functions, dispatch chains, or enum
-definitions. The registry connects your type to those framework paths.
 
 ---
 

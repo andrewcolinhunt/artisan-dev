@@ -10,10 +10,9 @@ Use `snake_case` for files, directories, functions, and variables; `PascalCase`
 for classes; and `UPPER_SNAKE_CASE` for constants. Name directories after their
 responsibility, such as `execution/context` or `storage/cache`.
 
-Keep closely related models together when they form one contract. Otherwise,
-prefer one primary class per file. Start with a flat package and introduce a
-sub-package when several files share a distinct responsibility. Avoid new
-abstractions for a single caller.
+Keep models that form one contract together; otherwise, prefer one primary
+class per file. Start with a flat package and add a sub-package when several
+files share a responsibility. Avoid abstractions for a single caller.
 
 Place domain operations in their own downstream package. Framework operations
 belong under `operations/curator`, generic demonstration operations under
@@ -130,8 +129,8 @@ between lifecycle runners and tool compute, see
 
 ## Error handling
 
-Operations should raise useful exceptions when execution cannot continue or
-return the appropriate unsuccessful operation result for an expected failure.
+Raise an exception when execution cannot continue, or return an unsuccessful
+operation result for an expected failure.
 Do not catch an exception merely to discard it. Include relevant operation,
 artifact, or input context in the error.
 
@@ -153,10 +152,9 @@ See [error handling](../concepts/error-handling.md) for user-visible outcomes an
 
 ## Docstrings
 
-Document purpose, parameters that need explanation, returned values, and relevant
-exceptions beside their implementation. Use Google-style `Args`, `Returns`,
-and `Raises` sections where applicable. Explain constraints and meaning without
-restating every type annotation in prose.
+Document purpose, constraints, return values, and exceptions beside their
+implementation. Use Google-style `Args`, `Returns`, and `Raises` sections where
+needed; do not restate type annotations in prose.
 
 When an API changes, update its docstring in the same change. Do not maintain
 another copy of its signature or complete parameter list in a guide. See

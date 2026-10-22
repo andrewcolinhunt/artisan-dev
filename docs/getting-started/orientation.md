@@ -2,22 +2,18 @@
 
 Artisan connects reusable operations through typed artifacts. It records
 execution history and declared lineage so you can inspect results and use their
-relationships in later computations. This page introduces the concepts used in
-the tutorials and guides.
+relationships in later computations.
 
 ---
 
 ## How these docs are organized
 
-The documentation provides four kinds of content, each designed for a different
-situation:
-
 | Kind | When to use it | What you'll find |
 |------|---------------|------------------|
-| **Tutorials** | "I want to learn" | Interactive notebooks that walk you through complete examples step by step. Start here if you're new. |
-| **How-to Guides** | "I need to do X" | Focused recipes for specific tasks. Assumes you already know the basics. |
-| **Concepts** | "I want to understand why" | Design decisions, mental models, and architecture. No code to run — explanation only. |
-| **Reference** | "I need to look something up" | Terminology, public API entry points, and links to source and docstrings for exact contracts. |
+| **Tutorials** | Learn by running examples | Interactive notebooks; start here if you're new |
+| **How-to Guides** | Complete a specific task | Recipes that assume you know the basics |
+| **Concepts** | Understand behavior and tradeoffs | Explanations of the framework's design |
+| **Reference** | Look up a fact | Terminology, public APIs, and links to source and docstrings |
 
 ---
 
@@ -25,12 +21,11 @@ situation:
 
 ### Artifacts
 
-An **artifact** is a content-addressed data node. The framework computes a
-unique ID from a typed envelope containing canonical payload and semantic
-identity metadata. Identical envelopes produce the same ID, while equal bytes
-in different types remain distinct. Artifacts follow a draft/finalize pattern:
-drafts are mutable while being assembled, and finalization snapshots durable
-state so tampering is detectable.
+An **artifact** is data identified by its content. Artisan computes its ID from
+its type, canonical payload, and metadata that defines its identity. Identical
+artifacts produce the same ID; equal bytes in different types remain distinct.
+You can edit a draft until finalization records its durable state, allowing later
+changes to be detected.
 
 Artisan provides six built-in artifact types:
 
@@ -47,7 +42,8 @@ Custom artifact types use the `ArtifactTypeDef` registry. Configure their
 application modules so workers and readers can load the registrations; see
 [creating artifact types](../how-to-guides/creating-artifact-types.md).
 
-> **Deep dive:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md)
+See [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md)
+for identity and finalization rules.
 
 ### Operations
 
@@ -70,21 +66,18 @@ The framework ships with example creators (`DataGenerator`, `DataTransformer`,
 `IngestData`, `IngestPipelineStep`). There is also an `InteractiveFilter` tool
 for exploratory filtering in notebooks, though it is not a pipeline operation.
 
-When operations are tightly coupled — for example, always running transform
-immediately followed by scoring — you can bundle them into a **composite**.
-A `CompositeDefinition` declares its own inputs and outputs and wires
-internal operations together via a `compose()` method, creating a reusable
-building block. Running it expands each internal operation into its own
-pipeline step.
+Bundle operations you repeatedly run together, such as transform followed by
+scoring, into a **composite**. A `CompositeDefinition` declares inputs and outputs
+and connects its operations through `compose()`. Each internal operation runs
+as its own pipeline step.
 
-> **Deep dive:** [Operations Model](../concepts/operations-model.md) | [Composites and Composition](../concepts/composites-and-composition.md)
+See [Operations Model](../concepts/operations-model.md) and
+[Composites and Composition](../concepts/composites-and-composition.md).
 
 ### Pipelines
 
-A **pipeline** is a directed acyclic graph (DAG) of steps. You build one by
-calling `pipeline.run()` to execute steps and `pipeline.output(name, role)` to
-wire outputs from earlier steps into inputs of later ones. `PipelineManager`
-handles dispatch, caching, and publishing completed results.
+A **pipeline** is a directed acyclic graph (DAG) of steps. `PipelineManager`
+handles dispatch, caching, and publishing completed results:
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -111,7 +104,7 @@ lazy reference that connects one step's outputs to another step's inputs. Core
 uses the native `"local"` process runner; optional packages provide runner
 instances for cluster dispatch. Configure either per pipeline or per step.
 
-> **Deep dive:** [Execution Flow](../concepts/execution-flow.md)
+See [Execution Flow](../concepts/execution-flow.md) for how a step runs.
 
 ### Provenance
 
@@ -127,7 +120,8 @@ exact parents for every derived output in `ArtifactResult.lineage`. Artisan
 validates and records those declarations. Root outputs explicitly have no
 parents. Optional matching helpers are called by operations, never executors.
 
-> **Deep dive:** [Provenance System](../concepts/provenance-system.md)
+See [Provenance System](../concepts/provenance-system.md) for lineage declarations
+and queries.
 
 ### Storage
 
@@ -162,7 +156,8 @@ For queries with validated inputs and size-limited responses, use
 or the CLI. The installed operating guide helps an agent select runs, interpret
 missing evidence, and apply explicit assessment or comparison criteria.
 
-> **Deep dive:** [Storage and Delta Lake](../concepts/storage-and-delta-lake.md)
+See [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for persistence
+and recovery guarantees.
 
 ---
 

@@ -1,8 +1,8 @@
 # Concepts
 
-These pages explain the ideas, design decisions, and trade-offs behind the
-Artisan framework. Start with the Architecture Overview for the big picture,
-then explore topics relevant to your work.
+Start with [Architecture Overview](architecture-overview.md) to understand how
+Artisan runs operations and stores results. The pages below explain each
+component's behavior and limits.
 
 ## System architecture
 
@@ -29,8 +29,8 @@ then explore topics relevant to your work.
 
 - [Design Principles](design-principles.md) -- Motivating goals and the
   design decisions behind the framework
-- [Error Handling](error-handling.md) -- Fail-fast philosophy and error
-  propagation
+- [Error Handling](error-handling.md) -- Failure policies, diagnostics, and
+  output availability
 
 ## Cross-references
 

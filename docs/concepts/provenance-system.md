@@ -13,21 +13,9 @@ downstream measurements to select which datasets continue through the pipeline.
 
 ## Two complementary systems
 
-The framework maintains two provenance systems because they answer
-fundamentally different questions.
-
-**Execution provenance** records what ran: which operation, with what
-parameters, consuming which artifacts and producing which artifacts. It is
-an activity log of recorded execution participation.
-
-**Artifact provenance** records where things came from: which specific input
-produced which specific output. It captures the individual derivation chains
-(A->D, B->E, C->F) that execution provenance cannot express.
-
-| System | Question it answers | Perspective |
-|--------|---------------------|-------------|
-| Execution provenance | "What computation happened?" | Activity-centric |
-| Artifact provenance | "Where did this artifact come from?" | Entity-centric |
+**Execution provenance** records an operation's configuration and the artifacts
+it consumed and produced. **Artifact provenance** records each output's exact
+parents.
 
 ## Why both systems are necessary
 
@@ -47,12 +35,11 @@ Executions row                    A ──→ D
 "What went in and out"          "Which produced which"
 ```
 
-**Why execution records are insufficient.** A batch's input and output lists
-do not encode each output's exact parents. The operation must retain that
-association while computing and return it explicitly. Reconstructing it later
-from filenames or grouping positions can record the wrong relationship.
+The operation must retain each output's parent association while computing
+and return it explicitly. Reconstructing it later from filenames or grouping
+positions can record the wrong relationship.
 
-**The framework's responsibility:** After postprocess, Artisan validates the
+After postprocess, Artisan validates the
 declarations, resolves exact output references, and stages the resulting edges
 alongside artifacts. Both become visible through the same completed logical
 commit. There is no separate lineage reconstruction step.
@@ -61,8 +48,7 @@ commit. There is no separate lineage reconstruction step.
 
 ## Dual identity for executions
 
-Each execution carries two identities because caching and provenance have
-conflicting requirements.
+Each execution has a deterministic cache key and a separate attempt ID:
 
 | Identity | Purpose | Computed from |
 |----------|---------|---------------|
@@ -193,9 +179,7 @@ duplicate exact declarations. Two different parents in one role are valid.
 
 Completeness validation requires every derived output occurrence to have a
 parent from every listed role. Roots must have no mappings. These checks run
-before recording success or staging artifact edges. A perfectly matching filename
-cannot rescue an omitted declaration; an unrelated filename does not invalidate
-a correct one.
+before recording success or staging artifact edges and do not consider filenames.
 
 Structural validation cannot decide whether the author selected the scientifically
 correct parents. That responsibility belongs to the operation and its tests.
@@ -225,9 +209,8 @@ config parents. Config edges support “what configs used this artifact?” quer
 
 ## Co-input edges and joint derivation
 
-Some outputs cannot be produced from any single input alone. When you compare
-two datasets, both are jointly necessary -- neither by itself could produce the
-comparison result. Co-input edges represent this joint derivation.
+Co-input edges record jointly necessary parents. A comparison of two datasets,
+for example, depends on both datasets.
 
 The author declares the complete parent set for each output occurrence. Artisan
 labels every set of several unique parents as one joint derivation. Independent
@@ -248,9 +231,8 @@ One unique parent has no group ID. Several parents share the hash of their
 sorted tuples, so declaration order does not change the label. Equivalent
 finalized sibling parents collapse before this choice. Multiple
 `ArtifactProvenanceEdge` records with the same
-`group_id` and `target_artifact_id` represent a single joint derivation. This
-allows queries like "what were ALL the inputs to this derivation?" without
-requiring intermediate aggregate artifacts.
+`group_id` and `target_artifact_id` represent a single joint derivation. Queries
+can retrieve its complete parent set without an intermediate aggregate artifact.
 
 ### How multi-input pairing works
 
@@ -265,17 +247,9 @@ retain distinct derivations even when P has the same semantic artifact ID.
 
 ## Composite provenance
 
-A composite expands into real pipeline steps — each internal `ctx.run()`
-runs as an ordinary step. Its provenance is therefore ordinary
-step-to-step provenance: the edges linking a composite's internal
-operations are the same `ArtifactProvenanceEdge` records that any sequence
-of steps produces, and pipeline-level queries see the composite's data
-flow exactly as they see any other steps.
-
-Because every internal operation is a real step, there is no separate
-composite-internal edge kind. The grouping is expressed through the
-composite's step-name prefix (`composite_name.operation`), not through a
-special provenance edge.
+A composite expands into ordinary pipeline steps with ordinary provenance
+edges. The step-name prefix (`composite_name.operation`) groups its children;
+queries traverse their artifacts and executions like any other steps.
 
 ---
 
@@ -307,8 +281,7 @@ Raw Delta reads bypass that boundary and can show incomplete physical writes.
 
 ## Visualization
 
-The framework provides two graph views built from provenance data, each
-answering a different question about pipeline structure.
+Two graph views show pipeline structure and individual artifact history.
 
 **Macro graphs** show the pipeline at the step level. Each step appears as an
 execution node, each output role as a data node, and edges trace the data flow
@@ -325,16 +298,11 @@ Both graphs use left-to-right layout with strict column ordering
 readability. Backward edges (such as passthrough artifacts consumed by a later
 step) are rendered as dashed lines to avoid breaking the layout.
 
-For interactive exploration in Jupyter, a stepper widget lets you navigate
-the micro graph one step at a time, so you can watch the provenance graph
-build up as the pipeline progresses.
+In Jupyter, a stepper widget adds each step to the micro graph as you navigate.
 
 ---
 
 ## Querying provenance
-
-The provenance graph supports several query patterns, from simple one-hop
-lookups to full transitive walks.
 
 **Backward queries** ("where did this come from?") start from a target artifact
 and follow edges to its sources. A single hop returns direct parents; a
@@ -362,31 +330,14 @@ for run selection and practical queries.
 
 ## Terminology
 
-The provenance system uses two distinct vocabularies to avoid confusion between
-execution-level and artifact-level perspectives:
-
 | Context | Terms | Example |
 |---------|-------|---------|
 | Execution provenance | **inputs** and **outputs** | "The operation consumed inputs A, B and produced outputs D, E" |
 | Artifact provenance | **source** and **target** | "Artifact D has source artifact A" (A is the parent, D is derived) |
 
-This distinction matters when reading code and querying provenance tables. An
-"input" is always relative to an execution. A "source" is always relative to a
-derivation edge.
-
 ---
 
 ## Cross-references
 
-- [Composites and Composition](composites-and-composition.md) -- How composites
-  handle provenance for internal operations
-- [Operations Model](operations-model.md) -- How operations declare
-  inputs/outputs and lineage configuration
-- [Execution Flow](execution-flow.md) -- When and how provenance is captured
-  during the three execution phases
-- [Storage and Delta Lake](storage-and-delta-lake.md) -- Table layout and the
-  staging-commit pattern
-- [Design Principles](design-principles.md) -- The "provenance is always
-  captured, never reconstructed" principle
 - [Inspect Pipeline Results and Provenance](../how-to-guides/inspecting-provenance.md) -- Practical guide to querying and visualizing provenance
 - [Provenance Graphs Tutorial](../tutorials/08-analysis/01-provenance-graphs.ipynb) -- Interactive macro and micro provenance visualization

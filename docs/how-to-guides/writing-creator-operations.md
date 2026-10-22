@@ -6,9 +6,6 @@ explicit parents.
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Orientation](../getting-started/orientation.md)
 
-**Key types:** `OperationDefinition`, `PreprocessInput`, `ExecuteInput`,
-`PostprocessInput`, `ArtifactResult`
-
 ---
 
 ## Minimal working examples
@@ -131,15 +128,10 @@ Build drafts from those files in postprocess and explicitly return roots:
 
 ## How data flows through the three phases
 
-For how data flows between the three phases, see
-[Operations Model](../concepts/operations-model.md#the-creator-lifecycle).
-The summary: `preprocess` adapts inputs (receives `PreprocessInput`, returns a
-plain dict), `execute` runs computation (receives `ExecuteInput`, writes files
-to `execute_dir`), `postprocess` constructs artifacts from results (receives
-`PostprocessInput`, returns `ArtifactResult`).
-
-The framework passes each phase's output to the next. You never call one
-phase from another.
+Artisan passes prepared inputs to execute, then passes its files and return
+value to postprocess. Do not call one phase from another. See
+[Operations Model](../concepts/operations-model.md#the-creator-lifecycle) for
+the lifecycle and execution boundaries.
 
 ---
 
@@ -183,15 +175,13 @@ By default, inputs are hydrated and materialized to files. Use `required=False`
 for an optional role. See the [Python API](../reference/python-api.md) for the
 complete input contract and available materialization options.
 
-Set `materialize=False` for inputs you process in Python without needing a
-file on disk (metrics, configs). When `materialize=False`, access content
-directly via `artifact.content` instead of `artifact.materialized_path`.
+Set `materialize=False` for inputs you read directly through `artifact.content`,
+such as metrics or configs.
 
 ### Outputs
 
-Each entry maps a role name to an `OutputSpec`. Every creator output must set
-`derives_from`, specifying the required and allowed parent roles for every
-output. It does not select the parents:
+Map each output role to an `OutputSpec`. Set `derives_from` to declare its
+required and allowed parent roles; select exact parents in postprocess:
 
 ```python
 outputs: ClassVar[dict[str, OutputSpec]] = {
@@ -259,13 +249,12 @@ replace both together. Flat algorithm fields on an operation are rejected.
 (creator-preprocess)=
 ## Implement preprocess
 
-**Required** for operations with inputs. The framework raises `TypeError` at
-class definition time if missing. Generative operations need no override; the
-framework calls the default method, which returns `{}`.
+Operations with inputs must implement `preprocess`; omitting it raises
+`TypeError` at class definition. For generative operations, the default method
+returns `{}`.
 
-`preprocess` receives `PreprocessInput` containing the materialized artifacts
-and returns a plain dict. Carry the exact source ID and the chosen human name
-alongside each file path, as in `ScaleData`:
+Return a dict of prepared values from `PreprocessInput`. Carry the exact source
+ID and chosen name alongside each file path, as in `ScaleData`:
 
 ```python
 def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
@@ -317,13 +306,9 @@ for association access and grouping methods.
 
 ## Implement execute
 
-**Required** for all creator operations. Receives `ExecuteInput` with the dict
-from preprocess and a working directory.
-
-Write output files to `inputs.execute_dir`. Access parameters via
-`self.params`. The return value is passed to postprocess as
-`inputs.memory_outputs` — return computed data when your outputs are in-memory
-rather than file-based.
+Every creator implements execute. It receives the prepared dict in `ExecuteInput`.
+Write output files to `inputs.execute_dir` and read parameters from `self.params`.
+Return in-memory results for postprocess to read through `inputs.memory_outputs`.
 
 ```python
 def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
@@ -343,22 +328,21 @@ def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
     return {"outputs": outputs}
 ```
 
-`ExecuteInput` is frozen. Write outputs into its `execute_dir`; do not mutate
-the input model or use the working directory from another phase.
+`ExecuteInput` is frozen. Do not mutate it or use another phase's working directory.
 
 ---
 
 ## Implement postprocess
 
-**Optional.** The default returns `ArtifactResult(success=True)` with no
-artifacts. Override when your operation produces output artifacts.
+Override `postprocess` when the operation produces artifacts; the default returns
+`ArtifactResult(success=True)` with none.
 
 `postprocess` receives `PostprocessInput` with two sources of data:
+
 - `inputs.file_outputs` — all files found in `execute_dir` after execute ran
 - `inputs.memory_outputs` — whatever `execute` returned
 
-Build draft artifacts and return them under the declared output role, as in
-`ScaleData` above. Leave finalization to the framework.
+Build drafts under the declared output roles, as in `ScaleData`.
 
 `original_name` is the human name you choose. The framework preserves it and
 never derives parents from it. Include a lineage declaration for every emitted
@@ -677,9 +661,8 @@ execution, follow [Deploy Tool Endpoints](deploying-tool-endpoints.md).
 (execute-as-tool)=
 ### Python body as a command (`execute_as_tool`)
 
-A function op can only run where the lifecycle worker runs. To make a
-Python body deployable like a tool — a subprocess locally, a Modal tool
-endpoint remotely, a standalone container CLI — set one flag:
+Set `execute_as_tool=True` to run a Python body as a local subprocess, Modal
+endpoint, or standalone container command:
 
 ```python
 class EmbedSequences(OperationDefinition):
@@ -700,34 +683,31 @@ class EmbedSequences(OperationDefinition):
 The framework supplies the command
 (`artisan op run <module:Qualname> --params … --inputs …`) and uses the command
 execution path: `artisan modal deploy` accepts it,
-`compute_provider='modal'` routes it, and a container with the op's
-package baked in runs it with no orchestration at all.
+`compute_provider='modal'` routes it, and a container with the operation's
+package installed can run it without a pipeline.
 
-The flag declares a **file-shaped contract**, enforced at class
-definition where possible:
+This mode exchanges files across process boundaries. Validation happens at
+class definition where possible:
 
 - Prepared inputs are file paths, JSON-serializable. Wrap per-artifact
   values in `PerArtifact` — raw lists pass through whole, as shared
   data, to every per-artifact subprocess. Scalars belong in `Params`.
 - Outputs are files written to `execute_dir`; `execute_function`
   returns `None` (a non-`None` return is a runtime error).
-- All per-run config lives in the nested `Params` model — it is the
-  only payload that crosses the process and wire boundaries. Top-level
+- Put per-run configuration in the nested `Params` model. Top-level
   fields, a `params` field not typed as the nested `Params` class, a
   `ToolSpec`, or an `execute_command` override all fail at import.
-- `ExecuteInput.metadata` and `files_dir` are unavailable, and
-  `log_path` is a throwaway — log to stdout/stderr, which the framework
+- `ExecuteInput.metadata` and `files_dir` are unavailable. Do not use
+  `log_path`; log to stdout/stderr, which the framework
   captures to the unit log.
-- The op's module and artisan must be importable wherever the command
-  runs: baked into the container image (see
+- The operation's module and Artisan must be importable wherever the command
+  runs: installed in the container image (see
   [Op Container Images](op-container-images.md)), installed in the
   active environment locally.
 
-When to choose what:
-
 | Op shape | Use |
 |----------|-----|
-| Python body, results used in-process, no remote story needed | Plain function op |
+| Python body that runs in the lifecycle worker | Plain function op |
 | External binary with its own CLI | `tool` + `execute_command()` |
 | Python body that should deploy like a tool (GPU model, heavy transform) | `execute_as_tool = True` |
 
@@ -777,11 +757,8 @@ class AlignOp(OperationDefinition):
 
 #### Pairing by name
 
-Use `NAME` when two (or more) input roles come from independent ingest
-operations — no shared ancestry — but their artifacts share filename
-conventions. Stems are computed by stripping all extensions
-(`data.tar.gz` → `data`, `data.csv` → `data`), so artifacts that
-represent the same logical entity in different formats pair naturally.
+Use `NAME` for independent input streams with matching filename stems. Artisan
+strips all extensions: `data.tar.gz` and `data.csv` both have the stem `data`.
 
 ```python
 class JoinByName(OperationDefinition):
@@ -793,10 +770,9 @@ class JoinByName(OperationDefinition):
         annotations = "annotations"
 ```
 
-Each role must have unique stems among artifacts with an
-`original_name`; duplicates raise `ValueError` at the pairing phase.
-Note that `run.log` and `run.cfg` collide to the stem `run` and will
-trip the uniqueness check — encode semantic suffixes in the base name
+Each role must have unique stems among artifacts with an `original_name`;
+duplicates raise `ValueError` during pairing. Both `run.log` and `run.cfg` have
+the stem `run`. Encode their distinction in the base name
 (`run_log.txt`, `run_cfg.txt`) when they need to coexist within one
 role.
 

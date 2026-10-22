@@ -10,9 +10,8 @@ and [Op Container Images](op-container-images.md) before deploying a new operati
 
 ## Declare deployment settings on the operation
 
-Deployment reads class-level defaults. Set `compute_provider.modal` for the
-image and runtime, and `compute_resources` for hardware. For example, these
-fields belong on your command operation:
+Set class-level `compute_provider.modal` for the image and runtime, and
+`compute_resources` for hardware:
 
 ```python
 from artisan.schemas import ComputeProvider, ComputeResources, ModalComputeConfig
@@ -48,11 +47,9 @@ named `artisan-tool-<operation-name>`. For development, `--overlay my_package`
 adds local source over the worker image. Production images should contain the
 code they execute.
 
-Changing hardware, image, runtime secrets, or data policy requires redeployment.
-Per-step changes to deployment settings are rejected before both whole-step
-and execution-level cache lookup.
-Change the operation declaration and explicitly redeploy it, then select that
-endpoint. Calls never create an app or alter its infrastructure.
+To change hardware, image, runtime secrets, or data policy, update the operation
+declaration and redeploy. Per-step deployment changes fail before either cache
+lookup. Calls never create an app or alter its infrastructure.
 
 Every new invocation checks the endpoint's declared operation source identity
 and command prefix before packaging inputs. Matching `ToolSpec` overrides are
@@ -92,8 +89,8 @@ step = pipeline.run(
 )
 ```
 
-The lifecycle worker prepares inputs and handles outputs. Only execute runs at
-the endpoint. Plain function operations cannot use this route; command operations
+The lifecycle worker prepares inputs and handles outputs; execute runs at the
+endpoint. Plain function operations cannot use this route; command operations
 use `ToolSpec` plus `execute_command`, or `execute_as_tool=True`.
 
 Check `step.status`, inspect the accepted outputs, and review Modal worker logs
@@ -107,9 +104,9 @@ HTTP 500, 502, 503, or 504, selected network disconnections, or request timeouts
 Recovery does not submit another computation. `ModalComputeConfig.retries`
 controls worker retries and does not change this HTTP recovery policy.
 
-Each continuous retrieval outage has a five-minute recovery budget measured
-with a monotonic clock. The budget includes the first failed request, subsequent
-requests, and waits. Retries wait 1, 2, 4, 8, then at most 10 seconds between
+Each continuous retrieval outage has a five-minute recovery budget, including
+the first failed request, subsequent requests, and waits. Retries wait
+1, 2, 4, 8, then at most 10 seconds between
 requests, capped by the remaining budget. A valid `pending` response resets
 the recovery budget. Healthy pending polls have no overall native polling
 deadline; an outage that exhausts the budget fails the execution.
@@ -139,15 +136,13 @@ budgets.
 (object-store-input-delivery)=
 ### Object-store input delivery
 
-Eligible externally stored `FileRefArtifact` and `LargeFileArtifact` inputs
-travel by reference. The request carries a URI, digest, and byte count. The
-worker authorizes the URI, downloads the full file, and verifies integrity before
-invoking the tool. The referenced file is still downloaded at the worker; this
-avoids sending it through the lifecycle worker. `AppendableArtifact` inputs instead send the selected,
+Eligible external `FileRefArtifact` and `LargeFileArtifact` inputs travel as a
+URI, digest, and byte count. The endpoint worker authorizes the URI, downloads
+the file, and verifies integrity before invoking the tool. The lifecycle worker
+does not transfer those bytes. `AppendableArtifact` inputs send the selected,
 locally verified record inline.
 
-Remote reads are disabled until you declare allowed sources on the operation
-before deploying:
+Enable remote reads by declaring allowed sources before deployment:
 
 ```python
 from artisan.schemas import ToolEndpointDataPolicy
@@ -225,12 +220,11 @@ credential's earlier expiry can shorten access further.
 
 ### Deploy the R2 wait example
 
-The repository includes a small operation for the
-[R2 output tutorial](../tutorials/07-compute-backends/05-modal-r2-outputs.ipynb):
-[r2_wait.py](../tutorials/07-compute-backends/r2_wait.py) subclasses `WaitTool` as
-`R2WaitTool`, named `r2_wait_tool`. It declares the `r2-artisan` runtime secret,
-the `artisan-tutorial` output prefix, and the R2 HTTP origin from your environment.
-The notebook imports this same class, so deployment and invocation agree.
+The [R2 output tutorial](../tutorials/07-compute-backends/05-modal-r2-outputs.ipynb)
+uses `R2WaitTool` from [r2_wait.py](../tutorials/07-compute-backends/r2_wait.py).
+Named `r2_wait_tool`, it subclasses `WaitTool` and declares the `r2-artisan`
+runtime secret, `artisan-tutorial` output prefix, and R2 HTTP origin from your
+environment.
 
 Set `ARTISAN_S3_BUCKET` and `ARTISAN_S3_ENDPOINT_URL` in your environment or
 repository `.env`. Configure the `r2-artisan` Modal Secret with

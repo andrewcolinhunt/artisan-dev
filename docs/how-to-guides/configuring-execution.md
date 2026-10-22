@@ -58,8 +58,8 @@ pipeline = PipelineManager.create(
 ```
 
 `ARTISAN_LOAD_MODULES` accepts comma-separated module names. Pipeline factories
-and store-reading CLI commands resolve environment names first, then explicit names, removing
-duplicates. The resolved selection travels unchanged to creator and curator
+and store-reading CLI commands combine environment names, then explicit names,
+removing duplicates. The selection travels unchanged to creator and curator
 workers. Direct `PipelineConfig` and `RuntimeEnvironment` instances contain an
 explicit selection and do not merge the environment again.
 
@@ -81,13 +81,13 @@ artisan store repair --delta-root runs/delta --staging-root runs/staging \
     --load-module my_application --json
 ```
 
-An absent artifact definition produces a configuration error. It does not prove
-that the store is corrupt. Correct the installed package or selected module and
+An absent artifact definition produces a configuration error, not evidence of
+store corruption. Correct the installed package or selected module and
 retry in a fresh interpreter after a failed import. Repair and startup recovery
 check registration before changing selected evidence.
 
-Resume and replay require trusted configuration again. Recorded module names are
-audit context; they cannot authorize an import. Replay uses
+Resume and replay require trusted configuration again; recorded module names
+cannot authorize imports. Replay uses
 `RuntimeEnvironment.application_modules` and automatically resolves only builtin
 operations or operations within those authorized modules. An explicitly supplied,
 already imported `operation_class` still undergoes identity checks. Neither a
@@ -198,7 +198,7 @@ child setting takes precedence. See
 
 ### Patch configuration without replacing defaults
 
-All model-valued step options use the same patch behavior:
+These model-valued step options share patch behavior:
 `runner_resources`, `batch_strategy`, `environment`, `tool`,
 `compute_provider`, and `compute_resources`.
 
@@ -377,8 +377,7 @@ pipeline.run(
 | `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only for a `succeeded` attempt |
 | `CachePolicy.STEP_COMPLETED` | Cache hit for a `succeeded` or `partial` attempt |
 
-Failed, cancelled, and skipped attempts never qualify under either policy. The
-difference is whether a `partial` attempt counts as a hit.
+Failed, cancelled, and skipped attempts never qualify under either policy.
 
 Use `STEP_COMPLETED` when you want to skip re-running a step that mostly
 succeeded, even if a few artifacts failed. `submit()` accepts the same argument.
@@ -439,10 +438,10 @@ pipeline default from prior child policies.
 
 ## Submit work while keeping the caller available
 
-`run()` waits for a step result. `submit()` returns a future after synchronous
-input preparation and any wait for referenced predecessors. It lets the caller
-continue while execution runs; it does not promise immediate return or parallel
-execution of independent steps. The current manager serializes step execution.
+`submit()` lets the caller continue while a step executes. It prepares inputs
+and waits for referenced predecessors before returning a future. The current
+manager executes steps serially; see
+[`run()` vs `submit()`](building-a-pipeline.md#run-vs-submit).
 
 ```python
 future = pipeline.submit(MyOp, inputs=...)

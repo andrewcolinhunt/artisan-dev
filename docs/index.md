@@ -23,20 +23,19 @@ Install Artisan and run your first pipeline.
 :::{grid-item-card} Tutorials
 :link: tutorials/index.md
 
-Interactive notebooks that walk you through complete examples step by step.
+Run complete examples in interactive notebooks.
 :::
 
 :::{grid-item-card} Concepts
 :link: concepts/index.md
 
-Design decisions, mental models, and architecture for operations,
-orchestration, storage, and provenance.
+Understand operations, orchestration, storage, and provenance.
 :::
 
 :::{grid-item-card} How-to Guides
 :link: how-to-guides/index.md
 
-Focused recipes for specific tasks. Assumes you already know the basics.
+Complete specific tasks once you know the basics.
 :::
 
 :::{grid-item-card} Reference

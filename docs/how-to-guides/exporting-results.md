@@ -1,7 +1,7 @@
 # Export Pipeline Results
 
-Save accepted data and metrics from a selected run, or materialize known artifact
-IDs as files. These recipes assume a completed run in `delta_root`. For custom artifact
+Save accepted data and metrics from a completed run in `delta_root`, or
+materialize known artifact IDs as files. For custom artifact
 types, [load the application's trusted definitions](configuring-execution.md#load-application-definitions-in-every-process)
 before opening its store.
 
@@ -31,9 +31,8 @@ data = inspect_data(delta_root, step_number=step_number, pipeline_run_id=run_id)
 data.write_csv(output_dir / f"step_{step_number}.csv")
 ```
 
-The CSV combines accepted datasets from that step and retains `_source` to
-identify their original names. It includes cached and passthrough outputs
-accepted at that logical step, even when their content originated elsewhere.
+The CSV combines accepted datasets, including cached and passthrough outputs,
+with `_source` identifying their original names.
 `inspect_data` raises if no matching data artifacts exist. Run-scoped selection
 uses the newest attempt at each logical step; a newer failed attempt does not
 fall back to older successful outputs. To export a historical attempt, pass its
@@ -103,15 +102,12 @@ when all evaluated values pass. An empty population remains unassessed. A
 count-only criterion tests the number of accepted artifacts; it does not prove
 that the intended upstream cases produced them.
 
-The JSON file above contains the report. To save it with its schema and a
-completion manifest, then verify it when loading, use
-[complete evidence exports](exporting-evidence.md). The same exporter accepts
-the comparison report below.
+Use [complete evidence exports](exporting-evidence.md) to save this report or
+the comparison below with a schema and verifiable completion manifest.
 
-Each observation is a unique accepted artifact in that attempt and role.
-Identical outputs can share one artifact identity. Cached and passthrough
-outputs retain their original artifact origin while belonging to the selected
-attempt. Partial execution can pass over its accepted outputs without showing
+Each observation is a unique accepted artifact in the selected attempt and
+role; identical outputs can share an identity. Cached and passthrough artifacts
+retain their origin. A partial execution can pass assessment without establishing
 that the whole workflow succeeded.
 
 The report returns the resolved attempt ID. Supply that `step_run_id` in
@@ -129,9 +125,9 @@ large integers must parse them without losing precision.
 
 ## Compare the same declared cases
 
-Choose both runs explicitly and supply correspondence. This example continues
-the assessment example, using a second run ID supplied by you. It assumes each
-metric artifact has a `case` metadata key identifying the measured subject:
+Select both runs and declare how their cases match. Continuing the assessment
+example, supply a second run ID. Each metric artifact must have a `case` metadata
+key identifying its subject:
 
 ```python
 from artisan.visualization import (
@@ -173,11 +169,10 @@ comparison = compare_runs(
 )
 ```
 
-Verify that the measurement declaration is appropriate for both runs. Artisan
-checks stored identity and exact matching keys; your declaration supplies the
-meaning, version and unit. Integer and string keys remain distinct. Duplicate
-keys make correspondence ambiguous and suppress numeric comparison rather than
-choosing a representative. When no shared key exists, use `ExplicitPairsMatch`
+Verify that both runs use the declared measurement, version, and unit. Artisan
+checks stored identity and exact keys, treating integers and strings as distinct.
+Duplicate keys make correspondence ambiguous and suppress numeric comparison.
+When no shared key exists, use `ExplicitPairsMatch`
 with known artifact IDs and unique case labels.
 
 Read pair coverage, unmatched cases and regressions before interpreting a mean
@@ -194,9 +189,9 @@ handling. Response limits do not reduce the population assessed or compared.
 
 ## Materialize an artifact by ID
 
-When you already have artifact IDs, use `ArtifactStore` to load the objects and
-write their content. IDs can come from recorded operation inputs, provenance
-queries, or [local evidence inspection](inspecting-evidence.md).
+Use `ArtifactStore` to load known IDs and write their content. Find IDs in
+recorded operation inputs, provenance queries, or
+[local evidence inspection](inspecting-evidence.md).
 
 ```python
 from artisan.storage import ArtifactStore
