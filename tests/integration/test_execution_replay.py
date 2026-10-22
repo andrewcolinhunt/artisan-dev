@@ -22,7 +22,6 @@ from artisan.operations.examples.data_transformer import DataTransformer
 from artisan.orchestration import PipelineManager, StepStatus, replay_execution
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.enums import CachePolicy, TablePath
-from artisan.schemas.execution.cache_result import CacheMiss
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.core.committed_scan import read_committed
@@ -352,13 +351,13 @@ def test_replay_secret_replacement_absent_from_diagnostic_framework_rows(
     assert "unique-new-replay-secret" not in str(execution.to_dicts())
     assert "unique-new-replay-secret" not in str(steps.to_dicts())
     assert "unique-new-replay-secret" not in result.model_dump_json()
-    assert isinstance(
+    assert (
         cache_lookup(
             runtime.delta_root,
             execution["execution_spec_id"][0],
             runtime.storage.filesystem(),
-        ),
-        CacheMiss,
+        )
+        is None
     )
     tracker = StepTracker(runtime.delta_root)
     for policy in CachePolicy:

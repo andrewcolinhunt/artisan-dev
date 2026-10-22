@@ -11,8 +11,8 @@ from __future__ import annotations
 import polars as pl
 from fsspec import AbstractFileSystem
 
-from artisan.schemas.enums import CacheValidationReason, TablePath
-from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
+from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.cache_result import CacheHit
 from artisan.storage.core.committed_scan import scan_committed
 from artisan.utils.path import uri_join
 
@@ -22,7 +22,7 @@ def cache_lookup(
     execution_spec_id: str,
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
-) -> CacheHit | CacheMiss:
+) -> CacheHit | None:
     """Look up a cached execution by its deterministic spec ID.
 
     Query committed, non-diagnostic executions for a prior success matching
@@ -38,17 +38,13 @@ def cache_lookup(
 
     Returns:
         ``CacheHit`` identifying the prior execution when a successful
-        match exists, or ``CacheMiss`` with a reason of
-        ``NO_PREVIOUS_EXECUTION`` or ``EXECUTION_FAILED``.
+        match exists, or None otherwise.
     """
     storage_options = storage_options or {}
     executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
 
     if not fs.exists(executions_path):
-        return CacheMiss(
-            execution_spec_id,
-            reason=CacheValidationReason.NO_PREVIOUS_EXECUTION,
-        )
+        return None
 
     result = (
         scan_committed(
@@ -66,25 +62,7 @@ def cache_lookup(
     )
 
     if result.is_empty():
-        # Check if there's a failed execution (for better error message)
-        any_exec = (
-            scan_committed(
-                delta_root,
-                TablePath.EXECUTIONS,
-                fs=fs,
-                storage_options=storage_options,
-            )
-            .filter(pl.col("execution_spec_id") == execution_spec_id)
-            .filter(pl.col("replay_of_execution_run_id").is_null())
-            .limit(1)
-            .collect()
-        )
-        reason = (
-            CacheValidationReason.EXECUTION_FAILED
-            if not any_exec.is_empty()
-            else CacheValidationReason.NO_PREVIOUS_EXECUTION
-        )
-        return CacheMiss(execution_spec_id, reason=reason)
+        return None
 
     row = result.row(0, named=True)
 

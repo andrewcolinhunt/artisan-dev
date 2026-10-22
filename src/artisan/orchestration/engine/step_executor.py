@@ -237,13 +237,12 @@ def check_cache_for_batch(
     fs = storage.filesystem()
     storage_options = storage.delta_storage_options()
 
-    result = cache_lookup(
+    return cache_lookup(
         delta_root,
         execution_spec_id,
         fs=fs,
         storage_options=storage_options,
     )
-    return result if isinstance(result, CacheHit) else None
 
 
 def build_step_result(
