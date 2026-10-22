@@ -11,16 +11,13 @@ operation; a composite adds no computation lifecycle of its own.
 
 ## Anatomy of a CompositeDefinition
 
-A composite is a subclass of `CompositeDefinition`. It looks similar to
-an `OperationDefinition` in structure — `name`, `InputRole`, `OutputRole`,
-`inputs`, `outputs` — but instead of implementing a computation lifecycle,
-it implements `compose()`.
+A composite subclasses `CompositeDefinition` and declares `name`, `InputRole`,
+`OutputRole`, `inputs`, and `outputs`. Its `compose()` method connects child
+operations.
 
-For example, a transform-and-score composite connects its dataset input to a
-transformer, connects the transformer's output to a metric calculator, and
-exposes the calculator's metrics as its own output. `compose()` declares that
-wiring; the child operations perform the computation. The
-[writing guide](../how-to-guides/writing-composite-operations.md) provides the
+The transform-and-score example connects its dataset input to a transformer,
+passes the transformed data to a metric calculator, and exposes the metrics.
+The [writing guide](../how-to-guides/writing-composite-operations.md) provides the
 complete implementation.
 
 ### compose() vs the operation lifecycle
@@ -36,17 +33,12 @@ complete implementation.
 
 ## How compose() wires operations
 
-`compose()` receives a `CompositeContext`, the wiring surface it uses to
-connect operations through three actions:
+`compose()` receives a `CompositeContext` with methods to connect operations:
 
-- **Referencing inputs.** `ctx.input(role)` hands back a reference to one
-  of the composite's declared inputs, ready to feed into a step.
-- **Running steps.** `ctx.run(operation, ...)` runs an operation (or a
-  nested composite) as a real pipeline step and returns a handle. Asking
-  that handle for one of its outputs yields a reference you wire into the
-  next step.
-- **Mapping outputs.** `ctx.output(role, ref)` maps an internal result
-  onto one of the composite's declared outputs.
+- `ctx.input(role)` references a declared input.
+- `ctx.run(operation, ...)` submits an operation or nested composite and returns
+  a handle. Its `.output(role)` references an output for the next child.
+- `ctx.output(role, ref)` exposes an internal result as a composite output.
 
 The composite's `.output(role)` exposes refs mapped through `ctx.output()`.
 Child steps remain visible in pipeline inspection and provenance. See the [composite API entry points](../reference/composite-definition.md)
@@ -56,10 +48,9 @@ for the public classes and current definitions.
 
 ## How a composite executes
 
-A composite has one execution model: **macro-expansion**. When the
-pipeline runs a composite, `compose()` runs, and each `ctx.run()` call
-submits a *real pipeline step*. There is no separate composite runtime,
-no in-worker mini-engine, and no whole-composite cache entry.
+Running a composite calls `compose()`, which submits its children as ordinary
+pipeline steps. This is **macro-expansion**: there is no separate worker runtime
+or whole-composite cache entry.
 
 ```
     generate ──▶ transform_and_score.data_transformer ──▶ transform_and_score.metric_calculator
@@ -80,14 +71,8 @@ such as `failure_policy` and `cache_policy`. A value set explicitly on a
 `ctx.run()` call wins for that setting; anything the child leaves unset falls
 back to the composite-level default.
 
-| | Composite-level override | Per-op `ctx.run()` override |
-|---|---|---|
-| Scope | Default for every child step | One specific child step |
-| Precedence | Loses to a per-op value for the same knob | Wins for the knob it sets |
-| Granularity | Whole knob (no deep merge) | Whole knob |
-
-This mirrors the default-then-explicit-override shape used by ordinary steps.
-The source of an ordinary step's default depends on the knob: for example,
+Each override replaces a setting as a whole; nested dictionaries are not merged.
+For ordinary steps, the default depends on the setting:
 `step_runner` falls back to the pipeline default, while `compute_provider`
 falls back to the operation declaration. `cache_policy` inherits from the
 nearest composite default, then the pipeline default. Algorithm `params` are
@@ -112,8 +97,7 @@ parallel step execution. See
 Use a runner when creator steps need to share one compute allocation. The
 choice applies to ordinary steps and to composite children alike.
 
-The runner layer answers placement directly. The optional
-`artisan-submitit` package's `SlurmIntraRunner` dispatches creator steps via
+The optional `artisan-submitit` package's `SlurmIntraRunner` dispatches creator steps via
 `srun` inside an existing allocation, whether or not they are wrapped in a
 composite. Because composite-level overrides are child-step defaults, passing
 `step_runner=SlurmIntraRunner()` to the composite forwards it to creator
@@ -137,18 +121,10 @@ execution or persistence model. See the
 
 ## Relationship to operations
 
-A composite is **not** a subclass of `OperationDefinition`. It does not
-compute — it composes. The two share structural similarities
-(`InputRole`, `OutputRole`, `inputs`, `outputs`) because both need to
-declare their data contract, but they are distinct abstractions:
-
-| | Operation | Composite |
-|---|---|---|
-| Base class | `OperationDefinition` | `CompositeDefinition` |
-| Registry | Operation registry | Composite registry |
-| Implements | Computation (lifecycle phases or `execute_curator`) | Wiring (`compose`) |
-| Can be nested in composites | Yes | Yes |
-| Run as pipeline step via | `pipeline.run` / `submit` | `pipeline.run_composite` / `submit_composite` |
+A composite and an operation both declare input and output roles, but have
+separate base classes and registries. Submit operations with `pipeline.run()`
+or `submit()`; submit composites with `run_composite()` or `submit_composite()`.
+Either can be a child of another composite.
 
 ---
 

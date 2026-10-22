@@ -1,6 +1,6 @@
 # Contributing
 
-Project-level conventions and integration guides for contributors.
+Conventions for changing Artisan and writing extensions.
 
 - **[Writing Documentation](writing-docs.md)** -- Page purpose, maintainability,
   examples, and verification

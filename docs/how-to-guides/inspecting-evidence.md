@@ -26,15 +26,12 @@ artisan guide list --json
 artisan guide show pipeline-operate
 ```
 
-The catalog identifies the installed version and available inspections. Each
-description contains the complete request and response JSON schemas. Use these
-schemas to construct requests; a remembered version number does not establish
-which capabilities are installed.
+The catalog identifies the installed version and available inspections. Build
+requests from each description's request and response JSON schemas.
 
-The operating guide explains how to select a store and attempt, inspect evidence,
-and assess outcomes against explicit criteria. It comes from the installed
-Artisan distribution or editable checkout and records its version, origin and
-content digest. Read it before applying instructions saved from another version.
+The operating guide covers store and attempt selection, inspection, and outcome
+assessment. Its version, origin, and digest identify the installed distribution
+or editable checkout. Read it before reusing instructions from another version.
 
 These commands do not import application modules or read a store. To discover
 registered operations, load the application's trusted modules explicitly:
@@ -59,10 +56,9 @@ printf '%s\n' '{"limit":1}' | artisan inspect run list_runs \
   --request - --delta-root /absolute/path/to/runs/delta --json
 ```
 
-The response's `items` contain the available `pipeline_run_id` values. Confirm
-that the run you intend to inspect appears before requesting its status or
-outputs. The one-row request demonstrates paging; it may not include that run
-until you [follow the continuation](#continue-and-interpret-evidence).
+Choose a `pipeline_run_id` from the response's `items` before requesting status
+or outputs. The one-row request may require
+[continuation](#continue-and-interpret-evidence) to reach your run.
 
 `--request` accepts a UTF-8 JSON object file or `-` for stdin. Omitting it supplies
 an empty object. Invalid JSON, duplicate keys, non-finite numbers, undeclared
@@ -141,13 +137,13 @@ complete assessment or comparison, [export the evidence](exporting-evidence.md).
 
 ## Handle errors and changing evidence
 
-Known query errors are typed `ArtisanError` exceptions in Python and structured
-errors in the CLI. The CLI writes one JSON object to stdout with `--json`,
-including on handled failure (exit 1); argument parsing errors exit 2. Application diagnostics go to
-stderr. Unexpected implementation failures remain visible as exceptions.
-A successfully returned failure report is evidence about a failed execution.
-It does not make the inspection request itself fail. MCP adds protocol-level
-validation; see [MCP error handling](connecting-mcp.md#handle-query-errors-and-slow-reads).
+Known query errors raise typed `ArtisanError` exceptions in Python. With `--json`,
+the CLI writes one JSON object to stdout, including for handled failures (exit 1).
+Argument parsing errors exit 2; application diagnostics go to stderr. Unexpected
+implementation failures remain visible as exceptions. A report describing a
+failed execution can still be a successful inspection. See
+[MCP error handling](connecting-mcp.md#handle-query-errors-and-slow-reads) for
+protocol validation.
 
 | Error code | Recovery |
 | --- | --- |

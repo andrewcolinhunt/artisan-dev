@@ -1,8 +1,7 @@
 # Python API Lookup
 
-Use the public packages below to find an interface. Inspect its signature and
-docstring in your installed version for exact arguments, defaults, return values,
-and exceptions. The guides explain how to use those interfaces together.
+Find an interface in the public packages below, then inspect its installed
+signature and docstring for arguments, defaults, return values, and exceptions.
 
 ## Find an interface
 
@@ -47,8 +46,8 @@ help(PipelineManager.run)
 print(inspect.getsourcefile(PipelineManager))
 ```
 
-For a Pydantic configuration model, its generated JSON schema lists fields,
-defaults, and constraints. It also includes descriptions declared on fields:
+For a Pydantic model, its JSON schema lists fields, defaults, constraints, and
+declared field descriptions:
 
 ```python
 from pprint import pprint

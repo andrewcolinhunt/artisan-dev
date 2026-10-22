@@ -1,11 +1,9 @@
 # Reference
 
-Use the API index to find supported interfaces and inspect their current
-docstrings. Workflow examples and explanations live in the linked guides.
+Find public interfaces, inspect installed API definitions, or look up a term.
 
 - [Python API Lookup](python-api.md) -- Public packages, signatures, docstrings,
   and schema inspection for your installed version
-
 - [Comparison to Alternatives](comparison-to-alternatives.md) -- How Artisan
   compares to Nextflow, Snakemake, Airflow, and Prefect
 - [Glossary](glossary.md) -- Key terms and definitions

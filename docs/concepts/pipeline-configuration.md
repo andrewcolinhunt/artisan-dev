@@ -7,7 +7,7 @@ a step can override that choice for one invocation.
 
 ## What the configuration captures
 
-The configuration separates run-wide settings from step-specific choices:
+Run-wide settings include:
 
 | Concern | Run-wide configuration |
 | --- | --- |
@@ -23,10 +23,10 @@ changing the rest of the pipeline. See
 [Configure Execution](../how-to-guides/configuring-execution.md) for runner,
 compute, and policy choices.
 
-Cache policy changes which prior outcomes are accepted, not computation
-identity. Resume retains accepted steps and applies its configured policy to
-new submissions. Recovery separately controls whether startup commits eligible
-finished work; see [Staging preservation and recovery](storage-and-delta-lake.md#staging-preservation).
+Cache policy selects acceptable prior outcomes without changing computation
+identity. Resume retains accepted steps and applies the policy to new
+submissions. Recovery controls whether startup commits eligible finished work;
+see [Staging preservation and recovery](storage-and-delta-lake.md#staging-preservation).
 
 For current fields, types, and defaults, use the `PipelineConfig` entry in
 [Python API](../reference/python-api.md).
@@ -47,10 +47,9 @@ external files, and deployed endpoints can change independently of the model.
 explicit `application_modules`, then pass the resolved selection to workers.
 Direct `PipelineConfig` construction uses only its explicit selection.
 
-Recorded module names are audit information, not permission to import code.
 Supply trusted modules again when inspecting, repairing, resuming, or replaying
-an application store. Missing registration is a configuration error; it does not
-mean the stored data is corrupt. See
+an application store. Recorded module names alone do not authorize imports.
+Missing registration is a configuration error, not evidence of corrupt data. See
 [Load application definitions](../how-to-guides/configuring-execution.md#load-application-definitions-in-every-process).
 
 (where-the-run-id-comes-from)=

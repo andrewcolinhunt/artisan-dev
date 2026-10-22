@@ -5,11 +5,9 @@ and inspect persisted results through read-only tools. If your agent already
 runs Python or shell commands in the Artisan environment, it can use the same
 [inspection contracts locally](inspecting-evidence.md) without a server.
 
-This guide uses stdio: your MCP client starts one Artisan server process and
-communicates through its stdin and stdout. The process uses the configured
-store, installed application modules and available credentials. It is not a
-shared service that other Artisan users automatically join. Each client needs
-its own configuration or an explicitly configured connection to a remote server.
+With stdio, your MCP client starts an Artisan server process and communicates
+through its stdin and stdout. Each client needs its own configuration selecting
+the store, installed application modules, and credentials.
 
 ## Prerequisites
 
@@ -36,8 +34,8 @@ to your client, replacing both absolute paths:
 }
 ```
 
-Your client's surrounding configuration syntax may differ. The executable,
-argument list, and environment settings are the portable parts of this entry.
+Adapt the surrounding configuration to your client; retain the executable,
+arguments, and environment settings.
 
 ---
 
@@ -114,8 +112,7 @@ Start the server through your client and inspect it in this order:
 For agent instructions that guide this inspection, install the
 [`pipeline-operate` skill](../getting-started/using-coding-agents.md#artisan-skills)
 in your client. Installing the MCP Python extra does not install client skills.
-The server provides read-only evidence; the skill helps interpret it. When you
-also have access to the server's Artisan environment, run
+When you have access to the server's Artisan environment, run
 `artisan guide show pipeline-operate` to retrieve the matching installed guidance.
 
 ## Continue a result page
@@ -164,17 +161,14 @@ async def inspect_runs():
 asyncio.run(inspect_runs())
 ```
 
-Cursors are opaque and bound to the query, selected fields, store and observed
-view. You may change `limit` between pages; keep the other selectors unchanged.
-Tokens remain usable after a server restart if the query and evidence are
-unchanged. On `evidence_view_changed`, discard collected pages and restart
-without a cursor. On `invalid_evidence_cursor`, restart the intended query
-without reusing that token. Active runs can change repeatedly; wait for a stable
-view or narrow the selection. Paging is not an atomic snapshot of the store.
+Cursors are bound to the query, selected fields, store, and observed view. You
+may change `limit` between pages; keep other selectors unchanged. Tokens survive
+server restarts if the query and evidence are unchanged. Follow the shared
+[cursor recovery rules](inspecting-evidence.md#handle-errors-and-changing-evidence)
+if a token is rejected or evidence changes; paging is not an atomic snapshot.
 
-JSON resources, such as `artisan://runs`, use the same default projections as
-their corresponding tools.
-Their returned continuations identify shared capabilities; do not construct
+JSON resources such as `artisan://runs` use the same default projections as
+their tools. Their continuations identify shared capabilities; do not construct
 additional resource URIs to retrieve later pages. Summary views and indivisible
 sections do not accept a cursor.
 
@@ -196,10 +190,9 @@ Use selectors to avoid transporting unrelated or oversized values:
 - Use capabilities `view="sources"`, `"errors"`, or `"name_collisions"` to
   inspect one discovery collection at a time.
 
-For clients upgrading from earlier MCP responses, update step-result consumers
-from type-grouped lists to flat `items`; read run steps and graph edges through
-their named pages; request diagnosis detail views explicitly; and request
-artifact metadata keys explicitly. For the current continuation format and cursor
+When upgrading an older client, read step results from flat `items`, run steps
+and graph edges from their named pages, and request diagnosis details and
+artifact metadata keys explicitly. For the continuation format and cursor
 migration, see [projection version 2](inspecting-evidence.md#update-clients-for-projection-version-2).
 The bounded Python API uses these same contracts; full analytical reader results
 remain unpaginated.
@@ -211,10 +204,8 @@ Discovery schemas and native framework errors raised before a tool runs are
 outside these limits. The limits bound returned evidence, not store-read memory
 or graph traversal cost.
 
-An `evidence_item_too_large` error means one whole row cannot fit; lowering
-`limit` will not fix it. Follow the error's supported field/section guidance or
-inspect that value through Python. `evidence_response_too_large` means the
-required response cannot fit. Values and schemas are never recursively clipped.
+Values and schemas remain whole. For size errors, follow the shared
+[error recovery guidance](inspecting-evidence.md#handle-errors-and-changing-evidence).
 Prompts also fit 48 KiB including their instructions and evidence framing.
 The macro-lineage resource returns complete DOT or an explicit valid-DOT
 placeholder when unavailable or too large; it has no pagination.
@@ -232,10 +223,9 @@ truncation. Null completeness flags mean seed evidence was unavailable. Graph
 queries separately expose `traversal_truncated`; `edges.has_more=false` only
 means the selected edge list is exhausted.
 
-A failed step can have no failed-execution row, for example after unconfirmed
-cleanup. Empty failures or edges do not establish that external work stopped,
-that retry is safe, or that no upstream cause exists. Status inspection also
-omits separate cancellation evidence.
+A failed step may lack a failed-execution row after unconfirmed cleanup. Empty
+failures or edges cannot establish that work stopped, retry is safe, or no
+upstream cause exists. Status inspection omits separate cancellation evidence.
 
 Use `artisan_assess_outcomes` for explicit criteria over one accepted metric
 role, and `artisan_compare_runs` for two explicitly selected populations with

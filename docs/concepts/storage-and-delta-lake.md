@@ -4,10 +4,6 @@ Artisan stores artifact content, provenance, and execution history in Delta
 Lake tables. Workers stage isolated outputs; the orchestrator commits them and
 records when the complete result is safe to read.
 
-This page explains the table layout, that visibility boundary, and what remains
-after an interrupted commit. These distinctions matter when inspecting results
-or recovering a store.
-
 ---
 
 ## The store format is explicit
@@ -20,18 +16,16 @@ contract:
 ```
 
 Format 6 requires operation-declared lineage. Format-5 stores and their sealed
-staging are rejected before cache reuse or recovery; use a new root. There is
-no migration, fallback reader, or manifest-edit upgrade. Deploy updated workers
+staging are rejected before cache reuse or recovery. Deploy updated workers
 and tool endpoints with the release. Within a format-6 store, cache reuse and
 replay preserve explicit edges; authors must still bump operation versions when
 changing lineage semantics.
 
 Writers publish this manifest only after initializing an empty root. Readers
 validate it before opening framework state. A missing, malformed, older, newer,
-or partially matching manifest fails closed. This clean release boundary avoids
-silently reading rows under the wrong identity or cache semantics. Start a new
-root for this release. Keep an older root with its matching Artisan version;
-opening it does not migrate or clean it.
+or partially matching manifest fails closed. Start a new root for this release;
+there is no migration, fallback reader, or manifest-edit upgrade. Keep an older
+root with its matching Artisan version. Opening it does not migrate or clean it.
 
 ---
 
@@ -55,8 +49,7 @@ may span several origin steps. See [Reading pipeline results](#reading-pipeline-
 
 ## Table architecture
 
-The storage layer organizes data into three groups of tables, each serving a
-distinct purpose:
+The store separates artifact content, provenance, and orchestration history:
 
 ```
 delta_root/
@@ -105,9 +98,8 @@ visible through their logical commit.
 The `index` table maps each `artifact_id` to its type and origin step number.
 This locates an artifact's content table without scanning every artifact type.
 
-The index is small (one row per artifact, no content bytes) and must support
-fast lookups across all steps. It also powers bulk queries like loading type
-maps and step maps for provenance graph rendering.
+The index has one row per artifact without content bytes. It also supplies type
+and step maps for provenance graphs.
 
 External locations form a separate global relation keyed by `(artifact_id,
 uri)`. Content tables keep digest and size descriptors but do not own paths.
@@ -127,11 +119,9 @@ traverse the edge tables without loading artifact payloads.
 
 ## Registry-driven extensibility
 
-Built-in artifact types include metrics, execution configs, tabular data, file
-references, appendable records, and large files. An application can register
-another type by defining its artifact model and type definition. The registered
-type participates in staging, content-addressed commitment, provenance, and
-cache reuse without modifying framework storage code.
+An application registers a type by defining its artifact model and type
+definition. The type participates in staging, content-addressed commitment,
+provenance, and cache reuse without modifying framework storage code.
 
 Registration happens when the defining module is imported. Install the
 application and select its trusted modules in every process that opens its
@@ -196,8 +186,6 @@ to read them. An unsealed shard remains incomplete evidence.
 
 ### Why not write directly to Delta Lake?
 
-Three reasons:
-
 **Concurrency.** Delta Lake uses optimistic concurrency control. Isolating
 worker staging avoids workers competing to update the same shared tables;
 the orchestrator coordinates those writes.
@@ -227,10 +215,9 @@ and commit-plan verification still check the actual staged evidence.
 
 ## Commit ordering
 
-A commit plan is Artisan's internal checklist for a write spanning several
-Delta tables. It records the exact staged files and expected rows before writing
-begins. If a crash interrupts that write, the same checklist identifies what is
-already present and what remains to write. You do not create plans yourself.
+A commit plan records the exact staged files and expected rows for a write
+spanning several Delta tables. After a crash, it identifies completed and
+remaining writes. Artisan creates the plan automatically.
 
 A plan alone does not prove that data was committed. The orchestrator applies
 the present tables in this order:
@@ -270,13 +257,8 @@ committer compares rows with the same artifact ID and reuses matching content
 from completed commits. Different content or semantic metadata under the same
 ID is an integrity error.
 
-This means:
-
-- If two workers produce identical output, only one copy is stored
-- Reproducing identical artifacts adds no new content rows; a new execution
-  still records its own attempt and provenance
-- Deduplication requires no configuration — it is a structural consequence of
-  content-addressed identity
+Reproducing an identical artifact adds no content row; the new execution still
+records its own attempt and provenance. Deduplication requires no configuration.
 
 The content row and artifact index retain the first committed
 `origin_step_number`, even when later steps produce or import the same artifact.
@@ -369,11 +351,8 @@ operator decision without deleting evidence.
 
 ## Compaction and maintenance
 
-Repeated appends to Delta Lake tables create many small Parquet files — one per
-commit. Over time this degrades read performance because each query must open
-many files.
-
-The framework provides two maintenance operations:
+Repeated appends create small Parquet files. Queries slow down as they need to
+open more files.
 
 **Compaction** merges small files into larger ones. It can optionally apply
 Z-ORDER clustering, which co-locates rows with similar values in key columns
@@ -399,22 +378,15 @@ Worker staging and orchestrator Delta writes use zstd compression.
 
 ## Caching at the execution level
 
-The `executions` table doubles as the cache store. Before dispatching work,
-the orchestrator computes a deterministic cache key from content-addressed
-artifact IDs and checks this table for a prior successful execution. A hit
-skips worker dispatch. It does not create another execution or copy artifact
-rows. Instead, the orchestrator commits one row to `cache_reuse` linking the
-current step attempt to each existing execution whose result it accepted.
+The `executions` table stores execution cache entries. On a hit, the orchestrator
+records a `cache_reuse` link from the current step attempt to each accepted
+execution. It skips that work without copying execution or artifact rows.
 
-That two-column relation keeps pipeline runs isolated even when they share
-step numbers or artifacts. A run-scoped reader starts from the run's own step
-IDs, unions directly owned executions with the linked cached executions, and
-then follows their execution edges to outputs. For current results it first
-selects the newest attempt at each logical step. A failed newer attempt does
-not expose an older success; an explicit `step_run_id` selects historical evidence. `origin_step_number` remains
-the artifact's original production location; it is not used to reconstruct
-which later runs reused the artifact. There is no cache service, TTL, or
-manual invalidation.
+Run-scoped readers combine directly owned executions with these reuse links
+and follow their output edges. They select the newest attempt at each logical
+step, so a failed newer attempt does not expose an older success. Select an
+explicit `step_run_id` for historical evidence. Artifact origin step numbers
+remain unchanged. There is no cache service, TTL, or manual invalidation.
 
 For the full two-level caching mechanism (step-level and execution-level), see
 [Execution Flow](execution-flow.md#two-level-caching).
@@ -454,34 +426,8 @@ for an interactive example.
 
 ---
 
-## Key design decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Delta Lake over a database | No external services required on HPC clusters |
-| Content in columns, not files | Prevents filesystem bloat from millions of small files |
-| Staging before commit | Isolates worker output and preserves evidence for recovery |
-| Sharded staging directories | Prevents single-directory performance degradation |
-| Immutable execution seal | Proves which payloads belong to a finished execution |
-| Registry-driven tables | Domain layers extend storage without framework changes |
-| Exact store manifest | Prevents cross-version identity and cache misreads |
-| Separate artifact locations | Keeps external availability independent of identity |
-| Verified completion and explicit audit | Keeps incomplete effects hidden without repeating historical checks on every read |
-| Partition by origin step number | Organizes content and execution files for queries by origin |
-| Separate provenance store | Keeps graph queries independent of artifact content |
-| Zstd compression everywhere | Good compression ratio with fast read/write performance |
-| Flush before seal publication | Makes the completion signal follow durable local payloads |
-
----
-
 ## Cross-references
 
 - [Artifacts and Content Addressing](artifacts-and-content-addressing.md) --
   Content hashing, deduplication, and the draft/finalize lifecycle
-- [Execution Flow](execution-flow.md) -- How staging fits into the
-  dispatch-execute-commit lifecycle
-- [Design Principles](design-principles.md) -- Foundational decisions that
-  shaped the storage architecture
-- [Exploring Results Tutorial](../tutorials/01-getting-started/02-exploring-results.ipynb) -- Query Delta Lake tables and inspect artifacts interactively
-- [Creating Artifact Types](../how-to-guides/creating-artifact-types.md) --
-  Step-by-step guide to registering new artifact types
+- [Execution Flow](execution-flow.md) -- Dispatch, execution, and step tracking

@@ -32,9 +32,8 @@ print(inspect_step(delta_root, step_number=0, pipeline_run_id=run_id))
 While building a pipeline, obtain this ID from
 `pipeline.config.pipeline_run_id`.
 
-**Accepted outputs and artifact origin answer different questions.** Suppose a
-run reuses three datasets at step 2 that were first created at step 0 of an
-older run. A run-scoped query at step 2 shows those three datasets. Their
+Suppose a run reuses three datasets at step 2 that were first created at step 0
+of an older run. A run-scoped query at step 2 shows those three datasets. Their
 `origin_step_number` remains 0.
 
 `inspect_pipeline` defaults to the latest run. In contrast, omitting
@@ -59,8 +58,6 @@ historical_metrics = inspect_metrics(
 
 This selector includes historical attempts. Any supplied run or step must match
 the selected attempt; unknown or inconsistent selectors raise `ValueError`.
-Omitting both run and attempt selectors retains the origin-wide view described
-above.
 
 The inspection helpers read accepted, integrity-checked results. Raw Delta
 queries inspect physical rows and can include incomplete writes; see
@@ -144,9 +141,8 @@ artifacts at the selected run's logical steps.
 
 ## Trace an artifact's lineage
 
-Artifact IDs identify content across runs. The store's lineage methods traverse
-the committed artifact graph across that history; they do not restrict results
-to a selected run.
+Lineage methods traverse the committed artifact graph across runs; a run selection
+does not restrict them.
 
 ```python
 from artisan.storage import ArtifactStore
@@ -179,8 +175,7 @@ shared = ancestors_a & ancestors_b
 
 ### Look up origin metadata
 
-Use origin queries when you deliberately want to investigate where content was
-first recorded:
+Use origin queries to find where content was first recorded:
 
 ```python
 artifact_type = store.get_artifact_type(artifact_id)

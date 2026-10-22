@@ -10,9 +10,9 @@ Changing those values creates a different artifact.
 
 An artifact's identity is a versioned hash of three things: its registered type,
 its type-owned canonical content, and common semantic metadata such as its name,
-extension, and `metadata` mapping. The result remains a 32-character hexadecimal
-string. Type separation prevents the same bytes in two artifact types from
-colliding, while semantic metadata keeps lineage-visible distinctions intact.
+extension, and `metadata` mapping. The result is a 32-character hexadecimal
+string. Equal bytes in different types or with different semantic metadata
+identify distinct artifacts.
 
 Runtime state does not enter identity. The producing step number, source URI,
 managed storage URI, and materialized path may change without changing what the
@@ -23,11 +23,8 @@ only one content row is stored. Commit verification checks that content and
 semantic metadata agree before reusing an existing ID; a conflict is an
 integrity error.
 
-**Deterministic caching.** Cache keys are computed from the operation, concrete
-typed input occurrences, parameters, and effective configuration. Roles, group
-identity, position, and duplicates remain visible to the key, so two different
-invocations cannot collapse into the same cache entry merely because they use
-the same set of IDs.
+**Deterministic caching.** Cache keys include artifact identities and the declared
+invocation. Input roles, order, grouping, and duplicates affect the key.
 
 **Stable provenance references.** Finalization prevents assignment to durable
 fields. Serialization, verification, and materialization also check for nested
@@ -75,9 +72,7 @@ embedded source-path fields and all other durable state do not.
 
 ## Artifact types
 
-The framework defines six built-in artifact types. Each represents a
-different category of pipeline data, with storage characteristics matched to
-its purpose.
+The framework defines six built-in artifact types:
 
 | Type | What it stores | Content format | Why a separate type |
 |------|---------------|----------------|---------------------|
@@ -88,32 +83,21 @@ its purpose.
 | **Large file** | External one-to-one files (model weights, matrices, simulation outputs) | Digest and size descriptor (bytes stay at a verified location) | Handles files too large to embed in a Parquet column |
 | **Appendable** | Individual records in a shared JSONL file | Metadata only (each record lives in the JSONL file) | Many records share one file; each is addressed by `record_id` |
 
-Each type maps to its own Delta Lake table (e.g., `artifacts/metrics`,
-`artifacts/configs`, `artifacts/data`, `artifacts/file_refs`). This means you
-can query all metrics across a pipeline with a single table scan, without
-filtering through unrelated artifact types.
+Each type has its own Delta Lake table, so a metrics query can scan
+`artifacts/metrics` without reading unrelated artifact types.
 
-In addition to the per-type content tables, the framework maintains an
-**artifact index** -- a global table mapping every `artifact_id` to its type
-and origin step number. This index enables fast type lookups without scanning
-each content table, which matters when resolving provenance graphs or loading
-artifacts by ID without knowing their type in advance.
+The global **artifact index** maps each `artifact_id` to its type and origin
+step number. Readers use it to locate content by ID without scanning every
+type's table.
 
 ### Shared fields
-
-All artifact types inherit a common set of fields from the base artifact model:
-
-- **artifact_id** -- the typed semantic hash (None for drafts, 32-char hex when finalized)
-- **artifact_type** -- a string discriminator identifying the type
-- **origin_step_number** -- the pipeline step that produced this artifact
-- **metadata** -- a JSON-serializable dict for extensibility
-- **external_path** -- an optional path to external content on disk
 
 Content tables store `artifact_id`, `origin_step_number`, `metadata`, and the
 type-specific fields added by each concrete type. `artifact_type` is implied by
 the table and recorded explicitly in the artifact index. External locators are
 stored separately in `artifacts/locations`, where one artifact may have more
-than one verified URI.
+than one verified URI. See the `Artifact` model through
+[Python API lookup](../reference/python-api.md) for field definitions.
 
 `origin_step_number` is global production metadata, not current-run ownership.
 When an artifact is served from cache, run-scoped queries derive its current
@@ -158,15 +142,11 @@ location fails closed rather than returning unverified bytes.
 
 ## Extensibility: adding new artifact types
 
-The artifact type system is open. Domain layers register new types without
-modifying the framework.
-
-Registration requires two things: an artifact model class (the data shape) and
-a type definition (the registry entry binding a key, table path, and model
-class together). Registration is automatic -- defining a type definition
-subclass triggers `__init_subclass__`, which requires an `Artifact` subclass
-with a matching concrete type, a unique non-reserved table path, and—when
-external—the common locator, verification, and materialization contract.
+Applications add types by defining an artifact model and a type definition
+that binds its key, table path, and model. Registration happens when the type
+definition class is imported. It requires a matching concrete artifact type,
+a unique non-reserved table path, and, for external types, the common locator,
+verification, and materialization contract.
 
 Keep these classes in the application package. Every worker, reader, repair
 process, and replay process that needs the type must load its definitions.
@@ -183,42 +163,27 @@ artifact's content; ID-only delivery supplies references for passthrough
 operations such as Filter and Merge. An input spec can choose a different mode
 for each role. Non-hydrated artifacts are not materialized to disk.
 
-This does not eliminate content reads during pipeline preparation. Before cache
-lookup or dispatch, the orchestrator loads input content to validate identities
-and verifies external bytes. Filter can route dataset IDs without consuming
-those datasets in its own logic, while preparation still reads them for
-integrity checks.
-
-Hydration settings describe operation input delivery, not a guarantee about
-total I/O or memory use. For supported result queries, see
+Before cache lookup or dispatch, the orchestrator still loads input content
+to validate identities and verifies external bytes. Filter can therefore route
+dataset IDs while pipeline preparation still reads their content.
+For supported result queries, see
 [Reading pipeline results](storage-and-delta-lake.md#reading-pipeline-results).
 
 ---
 
 ## How content addressing enables caching
 
-Content addressing makes caching deterministic. The framework computes cache
-keys at two levels:
-
-**Execution-level cache keys** are computed from the operation name, input
-occurrences for one batch, merged parameters, and effective configuration. Each
-occurrence includes its role, group, role-local position, concrete artifact
-type, and artifact ID. Role mapping order is irrelevant; occurrence order and
-multiplicity are preserved.
-
-**Step-level cache keys** use the full prepared concrete input snapshot rather
-than symbolic step references. They add the step number to distinguish pipeline
-position. Preparing once means both cache levels agree on type validation,
-external-byte verification, grouping, ordering, and duplicates.
+Cache keys combine artifact identities with the operation, parameters, and
+effective configuration. Execution keys describe one batch; step keys describe
+the full prepared input snapshot and include the step number. Both use the same
+validated inputs, preserving roles, grouping, order, types, and duplicates.
 
 Both levels identify the declared invocation. Reuse also depends on the
 operation's cacheability and the applicable cache policy. Operations that read
 mutable external state must declare that they are not cacheable.
 
-A hit reuses an existing execution and its output edges while the current step
-keeps its own fresh attempt ID. The small `cache_reuse` relation records that
-membership, allowing downstream resolution to union direct and cached outputs
-without inferring ownership from repeated step numbers.
+A hit reuses an existing execution and its output edges. The current step keeps
+its own attempt ID and records which executions it reused.
 
 For the full two-level caching mechanism, see
 [Execution Flow](execution-flow.md#two-level-caching).

@@ -4,10 +4,6 @@ Artisan records execution failures alongside successful work. A step's terminal
 status tells you whether downstream work can use its outputs; execution records
 and failure logs explain what failed.
 
-Most pipelines keep useful partial results with the `continue` policy.
-`fail_fast` instead makes any observed item failure fail the step, while
-preserving the failed execution and sibling work that already finished.
-
 ---
 
 ## Error boundaries
@@ -23,11 +19,6 @@ Failures have different outcomes depending on when they occur:
 | Step completion | Aggregates results under the failure policy and persists the terminal state |
 | Commit failure | Reports failure and retains incomplete commit evidence for inspection or repair |
 
-For example, under `continue`, nine successful executions and one failed
-execution produce a `partial` step. The successful output references remain
-usable, and the failed execution remains inspectable. If all executions fail,
-the step is `failed` and exposes no outputs.
-
 Recording can itself fail. If a worker cannot stage its failure record, it
 returns the original error together with the staging error. That preserves a
 diagnostic for the orchestrator, although the execution row may be absent.
@@ -37,27 +28,20 @@ Interrupted commits retain evidence for the recovery process described below.
 
 ## The structured result types
 
-Three data types carry error information through the system, one per scope.
-Each is a return value, separate from an exception. Use
+Execution, dispatch, and step results each carry error information. Use
 [Python API lookup](../reference/python-api.md) for the public step and runner
 result models; `StagingResult` is an internal worker model.
 
 ### StagingResult (single execution)
 
-The outcome of one creator or curator execution. Produced at the worker
-boundary, where exceptions are caught and converted into this type rather than
-raised. On failure it carries the error message; on success it carries the
-staging path -- where the run's Parquet files live -- and the IDs of the
-artifacts produced.
+The worker's result for one creator or curator execution. It carries an error
+message on failure, or the staged Parquet path and output artifact IDs on success.
 
 ### UnitResult (dispatch boundary)
 
-A frozen record the dispatch layer produces from each `StagingResult`. It
-captures whether the unit succeeded, the error message when it did not, how
-many items it processed, and the execution run IDs to commit. Runner providers
-can also attach a captured worker log, so stderr from a killed job survives
-back to the orchestrator. The step executor reads these records to tally
-successes and failures and to collect run IDs for the commit.
+A frozen dispatch result with the unit's outcome, error, item count, and
+execution run IDs to commit. Runner providers can attach captured worker logs,
+including stderr from a killed job. The step executor aggregates these results.
 
 ### StepResult (step aggregate)
 
@@ -117,7 +101,7 @@ for selecting a run and reading failures, or
 (you-control-the-response)=
 ## You control the response
 
-The framework distinguishes two failure policies. You choose which one applies.
+Choose a failure policy based on whether partial results are usable:
 
 | Policy | Behavior | When to use |
 |--------|----------|-------------|
@@ -144,9 +128,7 @@ Set the policy as a default or override:
 
 ## Failures and caching
 
-The framework's caching system interacts with failures through the cache
-policy. Two policies control whether a step with partial failures qualifies
-as a cache hit on re-run:
+Cache policy controls whether a partial step qualifies for whole-step reuse:
 
 | Cache policy | Behavior |
 |--------------|----------|
@@ -162,16 +144,14 @@ accepted successful subset is reused with `disposition="cache_hit"`.
 
 ## Empty inputs and pipeline stopping
 
-When a step receives no input artifacts -- because an upstream step produced
-nothing, or a filter removed all items -- the step is skipped rather than
-executed. This is not treated as a failure; it is recorded with
-`status="skipped"` and `skip_reason="empty_inputs"`.
+When a step's input roles contain no artifacts, Artisan records
+`status="skipped"` and `skip_reason="empty_inputs"`. This can happen after a
+filter removes every item or an upstream step produces nothing.
 
-When the manager detects empty inputs before dispatch, it stops accepting new
-work for that pipeline: later submissions are skipped with
-`skip_reason="pipeline_stopped"`, including independent steps. The first skipped
-step records `skip_reason="empty_inputs"`. A source operation with no input
-contract is still executable; having no inputs is its normal starting state.
+When the manager detects empty inputs before dispatch, it stops accepting work
+for that pipeline. Later submissions, including independent steps, are skipped
+with `skip_reason="pipeline_stopped"`. A source operation with no input contract
+can still start a pipeline normally.
 
 ---
 
@@ -203,8 +183,6 @@ point's documented exceptions.
 
 ## Subprocess and composite error handling
 
-Two execution modes have their own error containment strategies.
-
 ### Curator operations in subprocesses
 
 Curator operations run in a spawned subprocess for memory isolation. If it is
@@ -215,11 +193,8 @@ the step fails and retains its workspace instead of collecting outputs.
 
 ### Composite operations
 
-A composite expands into real pipeline steps: each internal `ctx.run()`
-runs as its own step and fails independently with standard step-level
-error handling. A failing internal step is recorded and counted like any
-other step failure; downstream steps that depend on its output receive
-empty inputs and skip.
+A composite's children use ordinary step error handling. A failed child exposes
+no outputs, so dependent steps receive empty inputs and skip.
 
 For the full composites model, see
 [Composites and Composition](composites-and-composition.md).
@@ -257,12 +232,6 @@ for inspecting evidence or applying recovery separately.
 
 ## Deciding how to respond
 
-The failure policy controls whether a step can expose a successful subset.
-Error codes and recovery hints provide diagnostic detail for deciding what to
-do next. A malformed input, a broken tool invocation, and a store-integrity
-failure can all leave a failed step, but they require different corrective
-actions.
-
 Inspect the terminal step state first, then execution failures where present.
 Use the preserved evidence to correct inputs or configuration, retry applicable
 work, or inspect the store before attempting repair.
@@ -277,12 +246,5 @@ work, or inspect the store before attempting repair.
   Cooperative cancellation, signal handling, and cancelled step metadata
 - [Resume and Caching tutorial](../tutorials/03-caching/01-resume-and-caching.ipynb) --
   How caching interacts with failures during re-runs
-- [Python API](../reference/python-api.md) -- Result models, structured errors,
-  and inspection entry points
-- [Execution Flow](execution-flow.md) -- Dispatch, execute, commit lifecycle
-  where error boundaries live
-- [Design Principles](design-principles.md) -- Foundational design decisions
-- [Architecture Overview](architecture-overview.md) -- Layer boundaries and
-  the orchestrator-worker split
 - [Coding Conventions: Error Handling](../contributing/coding-conventions.md#error-handling) --
   Implementation patterns and code examples

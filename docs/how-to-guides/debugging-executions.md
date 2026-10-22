@@ -11,8 +11,7 @@ See [Execution Flow](../concepts/execution-flow.md) for lifecycle terminology.
 
 ## Replay an execution
 
-The following example assumes you have selected an `execution_run_id` from
-the existing store. Use separate diagnostic destinations:
+Supply an `execution_run_id` from the store and separate diagnostic destinations:
 
 ```python
 from artisan.orchestration import replay_execution
@@ -33,12 +32,10 @@ print(result.execution_run_id)
 print(result.diagnostic_roots)
 ```
 
-Artisan adds a fresh UUID directory beneath each supplied destination. It
-retains the original step number, ordered input occurrences, repeated inputs,
-pairing groups, and captured associated artifacts. It appends a fresh pipeline,
-step, and execution attempt through the normal commit lifecycle. Original rows
-remain unchanged; diagnostic attempts never supply either execution or step
-cache hits.
+Artisan creates UUID directories beneath the diagnostic destinations and appends
+new pipeline, step, and execution attempts. Replay preserves the original step
+number, ordered and repeated inputs, pairing groups, and captured associations.
+Original records remain unchanged; diagnostic attempts cannot supply cache hits.
 
 ---
 
@@ -77,14 +74,13 @@ environment discovery. The Python API accepts a fresh `StorageConfig` through
 `RuntimeEnvironment.storage`. Diagnostic destinations cannot overlap the Delta
 root or original sandbox.
 
-Local lifecycle workers enable DEBUG logging and tool streaming. Driver logging
-remains caller-owned. Endpoint workers retain their server logging configuration;
-after managed command closure is confirmed, the returned diagnostic copy contains
-their full tool log and job-owned input and output files. Remote copies appear
-beneath `remote-debug/artifact_<index>/` in the local sandbox, before a remote tool
-failure is raised. If cleanup is uncertain, the endpoint reports diagnostic
-capture unavailable and retains its workspace without reading, uploading, or
-deleting its files.
+Local lifecycle workers enable DEBUG logging and tool streaming; you control
+driver logging. Endpoint workers keep their server logging configuration. Once
+managed command cleanup is confirmed, their full tool log and job-owned files are
+copied beneath `remote-debug/artifact_<index>/` in the local sandbox, before any
+remote tool failure is raised. If cleanup is uncertain, diagnostic capture is
+unavailable. The endpoint retains its workspace without reading, uploading, or
+deleting files.
 
 ## Supply omitted configuration explicitly
 
@@ -98,23 +94,21 @@ artisan execution replay EXECUTION_RUN_ID \
   --supply /environments/local/env/TOKEN=SERVICE_TOKEN --json
 ```
 
-Python uses `replacement_env={"/params/token": "SERVICE_TOKEN"}`. Values are read
-on the caller before validating the concrete operation. Valid JSON decodes to
-its scalar, object, or array value; other input remains a string. JSON-quote a
-string such as `"null"` when it must remain text. Suggested variable names are
-hints; every slot requires an explicit mapping. This argument accepts only
-recorded redacted slots.
+In Python, pass `replacement_env={"/params/token": "SERVICE_TOKEN"}`. The caller
+reads values before operation validation, decoding valid JSON and retaining
+other values as strings. JSON-quote text such as `"null"` to keep it a string.
+Explicitly map each omitted slot; suggested variable names are hints. Only
+recorded redacted slots accept replacements.
 
 Known replacement values are omitted from new framework diagnostic rows and
 error envelopes. Raw tool output and operation-produced files can contain what
 the operation writes; preserved files are outside that filtering guarantee.
 
-Ordinary attempts use the same secret policy for newly written parameter and
-override records, execution settings, literal input locations, errors, and
-authored result metadata. This includes the initial pending record, cache reuse,
-and interactive-filter commits. Artisan redacts diagnostic copies; operations
-receive the original values and cache identity still reflects their concrete
-configuration. Artifact content stays unchanged.
+The same policy applies to ordinary attempts' new parameter and override records,
+execution settings, literal input locations, errors, and authored result metadata,
+including pending records, cache reuse, and interactive-filter commits. Redaction
+affects diagnostic copies. Operations receive the original values; cache identity
+and artifact content remain unchanged.
 
 ### Declare ordinary environment configuration
 
@@ -174,9 +168,8 @@ supply the trusted registration modules again through
 names do not authorize imports. See
 [application loading](configuring-execution.md#load-application-definitions-in-every-process).
 
-Replay checks the concrete operation's name, version, module digest,
-configuration fields, and behavior.
-Use `allow_code_change=True` or `--allow-code-change` to acknowledge detected
+Replay checks the operation's name, version, module digest, configuration fields,
+and behavior. Use `allow_code_change=True` or `--allow-code-change` to acknowledge
 code differences. Notebook classes can be supplied through
 `operation_class=MyOperation`; unverifiable code also needs explicit allowance.
 The worker checks against the selected driver code, even with this allowance.
@@ -216,9 +209,8 @@ useful files. Cancellation retains uncommitted staging and may return
 staging is excluded from ordinary startup recovery and cache reuse. Commit
 failures raise a structured persistence error with diagnostic context.
 
-An error stating that command cleanup could not be confirmed means that Artisan
-could not prove the managed work stopped or that a command finished collecting
-its result. It preserves the original error or interruption, skips unsafe output
+Unconfirmed command cleanup means Artisan could not prove work stopped or result
+collection finished. It preserves the original error or interruption, skips output
 collection, and retains the workspace. Missing logs or diagnostic archives in
 this case do not establish that no command ran.
 Check the affected tool or external provider before reusing its files. Host
@@ -320,9 +312,8 @@ successful return values keep their original values. Raw tool output files and
 live stdout are not secret-filtered; arbitrary unknown positional secrets cannot
 be inferred reliably.
 
-Use this evidence to diagnose a run. Stored arguments can contain placeholders,
-and worker paths can disappear; command recording is not an executable replay
-script. Execution replay reconstructs an operation separately.
+Stored arguments can contain placeholders, and worker paths can disappear. Use
+command evidence for diagnosis; use execution replay to reconstruct an operation.
 
 ---
 

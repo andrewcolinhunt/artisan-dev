@@ -5,8 +5,7 @@ artifacts, explicit per-artifact lineage, and queryable results.
 Artisan runs locally without an orchestration server. Cluster execution uses a
 separate runner provider; remote tools require deployed endpoints.
 
-The other frameworks below provide different workflow models. The links point
-to their own documentation so you can check the behavior of the version you
+Use the linked framework documentation to check behavior for the version you
 plan to use.
 
 ## Choosing a framework
@@ -24,8 +23,6 @@ script's step execution, result storage, and provenance. It does not provide a
 scheduling service or a live orchestration dashboard.
 
 ## Caching and result storage
-
-Cache behavior depends on configuration and the data being tracked:
 
 - **Nextflow** resumes tasks with `-resume` when their task hashes match and the
   required outputs remain in the work directory. Its default file hash uses

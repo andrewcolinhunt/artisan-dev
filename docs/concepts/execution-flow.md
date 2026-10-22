@@ -26,9 +26,8 @@ Each pipeline step flows through three phases split across two runtime roles:
 └────────────────────┘  └──────────────────────────┘  └────────────────────────┘
 ```
 
-The orchestrator has a global view of the pipeline and exclusive write access
-to Delta Lake. Workers run in isolation, possibly on remote cluster nodes, with
-no shared mutable state. The staging directory is the contract between them.
+The orchestrator coordinates the pipeline and owns Delta Lake writes. Workers
+run in isolation, possibly on remote cluster nodes, and return staged files.
 For the rationale behind this split, see
 [Architecture Overview](architecture-overview.md#the-orchestrator-worker-split).
 
@@ -60,25 +59,11 @@ and resume logic know the step was attempted but produced no work.
 
 ### Multi-input pairing
 
-Operations consuming multiple input roles need their artifacts aligned. The
-orchestrator [pairs inputs](operations-model.md#pairing-strategies) according
-to the operation's `group_by` strategy before batching, so batch boundaries
-respect paired groups.
-
-Four strategies are available:
-
-- **ZIP** -- positional pairing (first with first, second with second). All
-  roles must have the same length.
-- **LINEAGE** -- matches a candidate to its nearest target ancestor along
-  directed provenance edges. Sharing a common ancestor is insufficient.
-  Ordinary pairing requires exactly two input roles.
-- **CROSS_PRODUCT** -- all combinations of artifacts across roles. Useful when
-  every combination is meaningful.
-- **NAME** -- exact filename-stem matching across roles, for corresponding
-  inputs that do not have directed ancestry.
-
-See [Pairing strategies](operations-model.md#pairing-strategies) for ancestor
-and sibling examples, unmatched inputs, and ambiguity handling.
+The orchestrator pairs multiple input roles before batching, so batch
+boundaries respect paired groups. The operation's `group_by` selects `ZIP`,
+`LINEAGE`, `CROSS_PRODUCT`, or `NAME`; see
+[Pairing strategies](operations-model.md#pairing-strategies) for their matching
+rules, unmatched inputs, and ambiguity handling.
 
 For operations with a primary input role (such as Filter), a variant called
 anchor-based matching pairs each primary artifact independently against every
@@ -86,8 +71,7 @@ other role, retaining only complete matches.
 
 ### Two-level caching
 
-The framework checks two caches before any computation runs. Each level exists
-because it skips different amounts of work.
+Artisan can reuse a whole step or individual execution batches.
 
 **Step-level cache** hashes the operation name, step number, the complete
 prepared input snapshot, parameters, and effective execution configuration. A
@@ -127,25 +111,18 @@ step_spec_id = hash(op_name | step_number | concrete_typed_occurrences | params 
                       └── MISS: dispatch to worker
 ```
 
-**Why two levels?** Step-level caching is coarse and can skip the whole step
-after preparation. Execution-level caching is finer-grained: it catches reuse
-when only some batches match. Both share one input truth, so they cannot disagree
-because one hashed symbolic references while the other hashed concrete data.
-
 Every submitted step has a fresh UUID-based attempt ID, regardless of whether
 it executes, is cached, is skipped, is cancelled, or fails. Step numbers remain
 the logical sequence within a pipeline run. Cache reuse changes neither: the
 current step owns its attempt ID and refers directly to existing execution IDs.
 
-**Why both keys are deterministic:** Artifact IDs identify typed semantic
-content, and the occurrence sequence captures invocation semantics. The same
-prepared invocation produces the same keys without depending on worker
+The same prepared invocation produces the same keys regardless of worker
 completion order or storage URI.
 
 ### Batching and dispatch
 
-Inputs that survive the cache check are partitioned into `ExecutionUnit`
-objects -- the sealed packages that travel to workers.
+Inputs that need execution are partitioned into `ExecutionUnit` objects for
+workers.
 
 **Level 1 batching** (`artifacts_per_unit`) controls how many artifacts each
 unit processes. An ML inference operation might set this to 1 (one structure per
@@ -223,19 +200,9 @@ commands still require cleanup before their files are safe to collect.
 
 ### Composite execution
 
-When multiple creator operations are composed into a
-[composite](composites-and-composition.md), running the composite expands it into
-real pipeline steps. Each `ctx.run()` call delegates to the parent
-pipeline as its own step, giving each internal operation its own
-dispatch-execute-commit cycle and independent failure handling. Steps execute
-serially in the current manager; each creator step can parallelize its batches.
-
-There is no separate composite runtime. A composite is a named grouping
-over ordinary steps, so every internal operation participates in the same
-caching, provenance, and cancellation machinery as any other step.
-
-For the full conceptual model of composites, see
-[Composites and Composition](composites-and-composition.md).
+A [composite](composites-and-composition.md) expands into ordinary steps, each
+with its own dispatch-execute-commit cycle. The current manager executes steps
+serially; each creator step can parallelize its batches.
 
 ### Compute routing
 
@@ -260,10 +227,8 @@ routed to a remote target.
 └──────────────────────────┘
 ```
 
-Compute routing is orthogonal to the step runner. A local worker can
-route the execute phase to Modal; a SLURM worker can also route the execute phase to Modal.
-The step runner controls where the worker process runs. The compute
-target controls where the execute phase runs inside that worker.
+The step runner places the worker process; the compute provider places its
+execute phase. Both local and SLURM workers can route execute to Modal.
 
 When compute is `"local"` (the default), an ordinary `execute_function` runs
 inside the lifecycle worker. Command operations, including `execute_as_tool`,
@@ -282,20 +247,11 @@ records, travel inline. See
 
 ## Lineage capture
 
-After postprocess, Artisan validates the operation’s explicit `ArtifactResult`
-declarations against each output’s `derives_from` contract. Every emitted role
-must have a lineage entry; every derived occurrence must name its required
-parents. Root roles explicitly contain an empty list.
-
-Finalization preserves output order and human names. The framework resolves
-role-local output indices to artifact IDs, looks up known types, and records
-only the declared edges. Group labels represent the declared unique parent
-sets; input pairing never supplies extra parents. Config materialization still
-resolves embedded artifact references to paths, while config ancestry comes
-from the producing operation’s declarations.
-
-See [Provenance System](provenance-system.md) for exact references, joint parent
-groups, and optional operation-called matching helpers.
+After postprocess, Artisan validates `ArtifactResult.lineage` against each
+output's `derives_from` contract. It finalizes drafts in their original order,
+resolves output indices to artifact IDs, and records the declared edges and
+joint parent groups. Input pairing and config materialization add no parents.
+See [Provenance System](provenance-system.md) for the declaration contract.
 
 ---
 
@@ -387,9 +343,7 @@ This table serves three purposes:
 
 ## Error handling across phases
 
-Errors are caught at different boundaries depending on where they occur, with a
-consistent principle: preserve as much information as possible and fail as
-early as possible.
+An error's phase determines where Artisan records it:
 
 | Where | What happens | What's preserved |
 |-------|-------------|-----------------|
@@ -412,13 +366,10 @@ runner, timestamp, traceback, and available tool output. These live in
 local Delta tables, named by the source execution's UTC start time. Cloud stores
 keep these files under the local working root.
 
-The `failure_policy` controls what happens when some batches fail within a step:
-
-- **`continue`** (default): A known mixture becomes `partial`. Failed batches
-  are recorded, and downstream steps can consume the successful results. If
-  every batch fails, the step becomes `failed`.
-- **`fail_fast`**: Any observed batch failure makes the step `failed` and its
-  outputs unavailable. Work that already finished remains recorded for audit.
+The default `continue` policy makes a mix of successes and failures `partial`;
+`fail_fast` makes an observed failure fail the step. See
+[failure policies](error-handling.md#you-control-the-response) for output
+availability and retained evidence.
 
 ---
 
@@ -477,35 +428,10 @@ is retained, and independently completed execution units can still be recovered
 and reused by a new run. Unknown cleanup does not make incomplete work eligible
 for recovery. See [Crash recovery](storage-and-delta-lake.md#storage-crash-recovery).
 
-## Key design decisions
-
-| Decision | Rationale |
-|----------|-----------|
-| Two-level caching (step + execution) | Step-level is fast but coarse; execution-level catches fine-grained reuse |
-| Two-level batching (artifacts per unit + units per worker) | Separates logical batching from cluster adaptation |
-| Curator subprocess isolation | Prevents memory leaks from accumulating in the long-lived orchestrator process |
-| Staging verification with close-to-open consistency | NFS attribute caching can hide files; `stat()` is not sufficient |
-| Default continue-on-failure | Large runs expect occasional failures; successful results should not be discarded |
-| Composites expand into real steps | A composite is a named grouping; each internal operation is an ordinary step, so caching, provenance, and cancellation need no parallel path |
-| Steps Delta table | Enables step-level caching, resume, and observability without additional infrastructure |
-
 ---
 
 ## Cross-references
 
-- [Architecture Overview](architecture-overview.md) -- System structure, five
-  layers, and the orchestrator-worker mental model
-- [Operations Model](operations-model.md) -- Two operation types, three-phase
-  lifecycle, spec system
-- [Provenance System](provenance-system.md) -- Dual provenance, explicit declarations,
-  joint parent groups
-- [Storage and Delta Lake](storage-and-delta-lake.md) -- Table layout, the
-  staging-commit pattern, querying with Polars
-- [Design Principles](design-principles.md) -- Foundational rationale for
-  content addressing, scale transparency, fail-fast validation
-- [Glossary](../reference/glossary.md) -- Definitions for the terms used
-  throughout this page
 - [First Pipeline Tutorial](../tutorials/01-getting-started/01-first-pipeline.ipynb) -- See the execution flow in action
-- `artisan-submitit` documentation -- Run operations on a SLURM cluster
 - [Pipeline Cancellation Tutorial](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb) -- Cooperative cancellation in action
 - [Compute Routing Tutorial](../tutorials/07-compute-backends/01-compute-routing.ipynb) -- Route the execute phase to local or remote compute targets

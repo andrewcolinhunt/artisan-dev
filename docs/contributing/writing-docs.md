@@ -15,9 +15,9 @@ Use the reader's task to decide what belongs on a page:
 | Concept | Understand behavior and tradeoffs | A concrete example, the relevant guarantees, and their limits |
 | Reference | Look up a fact | A short index, terminology, or information derived from the public API |
 
-These distinctions follow [Diátaxis](https://diataxis.fr/). Use them to keep a
-page focused. A short explanation within a recipe is useful when it helps the
-reader make the next decision; link to the concept page for more detail.
+These distinctions follow [Diátaxis](https://diataxis.fr/). Explain a choice in
+a recipe when it helps the reader take the next step; link to the concept page
+for more detail.
 
 Use only the sections a page needs. A short guide does not need a summary that
 repeats its opening or a table of pitfalls with no relevant entries.
@@ -49,18 +49,16 @@ maintain a second set of descriptions in the generator.
 
 ## Write directly
 
-Use plain, matter-of-fact language and address the reader as “you.” Lead with
-what the page helps them do or understand. Explain an unfamiliar term when it
-first matters, and use the same term throughout the docs.
+Use plain words and address the reader as “you.” Lead with the answer or task.
+Explain unfamiliar terms when they first matter, and use them consistently.
 
 Describe observable behavior. For example, say “The failed attempt remains
 available for inspection” instead of claiming that the architecture makes all
 failure modes impossible. State relevant limits alongside the behavior they
 qualify.
 
-Avoid promotional claims, rhetorical introductions, filler, and claims that a
-task is easy. Prefer short sentences, but keep the context needed to understand
-why a setting or step matters.
+Cut promotional claims, rhetorical introductions, filler, and claims that a
+task is easy. Keep the context needed to understand why a setting or step matters.
 
 ## Write examples that prove the point
 

@@ -6,9 +6,6 @@ remains a pipeline step with its own results, cache, and provenance.
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Writing Creator Operations](writing-creator-operations.md)
 
-**Key types:** `CompositeDefinition`, `CompositeContext`,
-`CompositeStepHandle`, `CompositeRef`, `CompositeResult`
-
 ---
 
 ## Minimal working example
@@ -64,10 +61,8 @@ class TransformAndScore(CompositeDefinition):
 
 ## Run the composite in a pipeline
 
-Run a composite with `pipeline.run_composite()`. Each internal
-`ctx.run()` becomes its own pipeline step with independent caching,
-batching, and worker dispatch. Step names are prefixed with the
-composite name.
+Call `pipeline.run_composite()`. Each `ctx.run()` creates a step whose name is
+prefixed with the composite name.
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -95,9 +90,8 @@ downstream steps and whose `.wait()` waits for the children. Composition can
 wait while preparing dependent children, so submission is not guaranteed to
 return immediately. The current manager executes child steps serially.
 
-As an alternative to the blocking call above, submit the composite and wire its
-output into a downstream step before finalizing the pipeline. Use this in place
-of the blocking call in the previous example:
+To wire a submitted composite's output downstream, replace the blocking call
+and finalization above with:
 
 ```python
 scored = pipeline.submit_composite(
@@ -119,10 +113,9 @@ Composites run only through `run_composite`/`submit_composite`. Passing a
 
 ## Define metadata and role enums
 
-Every composite needs a `name`. The following fragments illustrate parts of a
-class; the complete `TransformAndScore` definition above includes all required
-members. Composites with inputs define
-`InputRole(StrEnum)` whose values match the `inputs` dict keys.
+Every composite needs a `name`. The following fragments show parts of a class;
+use `TransformAndScore` above for a complete definition. Composites with inputs
+define `InputRole(StrEnum)` whose values match the `inputs` dict keys.
 Composites with outputs define `OutputRole(StrEnum)` whose values match
 the `outputs` dict keys. The framework validates this match at class
 definition time.
@@ -157,9 +150,8 @@ inputs: ClassVar[dict[str, InputSpec]] = {
 
 ### Outputs
 
-Each entry maps a role name to an `OutputSpec`. Unlike creator
-operations, composites do not set `derives_from` — lineage is
-handled by the internal operations:
+Map each output role to an `OutputSpec`. Internal operations declare lineage,
+so composite outputs omit `derives_from`:
 
 ```python
 outputs: ClassVar[dict[str, OutputSpec]] = {
@@ -238,13 +230,10 @@ pipeline.run_composite(
 
 ## Forward execution overrides
 
-`run_composite`/`submit_composite` accept the same execution overrides an
-ordinary step takes: `step_runner`, `runner_resources`, `batch_strategy`,
-`environment`, `tool`, `compute_provider`, `compute_resources`,
-`failure_policy`, `cache_policy`, `compact`, and `skip_cache`. Each becomes the
-**default for every child step**. A value set explicitly on a `ctx.run()`
-call wins for that step and that knob; anything the child leaves unset
-falls back to the composite-level default.
+`run_composite` and `submit_composite` accept the same
+[execution overrides](configuring-execution.md) as ordinary steps. They become
+defaults for child steps. An explicit `ctx.run()` setting overrides the composite
+default for that setting; omitted settings inherit it.
 
 ```python
 # batch_strategy here is the default for every child step
@@ -344,8 +333,8 @@ class GenerateAndAnalyze(CompositeDefinition):
 (author-composite-nesting)=
 ### Nesting composites
 
-A composite can contain other composites. The inner composite's internal
-operations expand into their own steps, with dot-separated names:
+Pass a composite to `ctx.run()` to expand its children into steps with
+dot-separated names:
 
 ```python
 class FullPipeline(CompositeDefinition):
@@ -369,9 +358,8 @@ class FullPipeline(CompositeDefinition):
 
 ### Curator inside a composite
 
-Composites can run curator operations. A curator inside `compose()` runs
-as a real pipeline step, so its upstream artifacts are already committed
-and its provenance edges are recorded by the ordinary step path:
+A curator inside `compose()` runs as a pipeline step after its upstream
+artifacts commit, with the usual provenance recording:
 
 ```python
 from artisan.operations.curator import Filter
@@ -405,7 +393,7 @@ def compose(self, ctx: CompositeContext) -> None:
 | `ValueError: Unknown output role` | Typo in `ctx.output("role", ref)` | Check `OutputRole` enum values |
 | `TypeError: Invalid input type for role ...` | Passed a raw value instead of a `ctx.input()` or `handle.output()` result | Wire steps with the `CompositeRef` objects the context API returns |
 | `TypeError` from `pipeline.run()` | Passed a composite to `run`/`submit` | Use `run_composite`/`submit_composite` for composites |
-| A `ctx.run()` ignores a composite-level override | The child set the same knob explicitly | Per-op values win per knob; remove the child's value to inherit the default |
+| A `ctx.run()` ignores a composite-level override | The child set the same setting explicitly | Remove the child's setting to inherit the composite default |
 
 ---
 

@@ -5,26 +5,16 @@ the work. Artisan delivers inputs, dispatches workers, validates output lineage,
 and records results.
 
 An operation keeps a tool's input preparation, computation, and output handling
-in one reusable implementation. Test that integration independently, then compose
-it into pipelines or [composites](composites-and-composition.md). New workflows
-can reuse the same tested code while adding or improving operations where needed.
+together. Test that integration independently, then reuse it in pipelines or
+[composites](composites-and-composition.md).
 
 ---
 
 ## Two kinds of work
 
-**Creators** wrap heavy computation — running external tools, performing ML
-inference, transforming files. They need isolated working directories, input
-files written to disk, and the ability to run in process pools or through a
-remote-runner provider. The framework provides a three-phase lifecycle that separates
-input preparation from computation from output construction.
-
-**Curators** perform lightweight coordination — filtering artifacts, merging
-streams, ingesting external files. They receive DataFrames of artifact metadata,
-and run in an isolated local subprocess owned by the orchestrator. They never
-use an external step runner. A single method replaces the three-phase lifecycle
-because the sandbox and remote-dispatch overhead would add complexity with no
-benefit.
+**Creators** wrap computation such as external tools, ML inference, and file
+transforms. **Curators** filter, merge, or ingest artifacts using metadata
+queries. They use different lifecycles and input delivery:
 
 | Aspect | Creator | Curator |
 |--------|---------|---------|
@@ -35,7 +25,7 @@ benefit.
 | Worker dispatch | Built-in local runner or external provider instance | Local spawned subprocess only |
 | Return type | `ArtifactResult` (from postprocess) | `ArtifactResult` or `PassthroughResult` |
 
-**The framework detects the type automatically.** If your class overrides
+The framework detects the type from its methods. If your class overrides
 `execute_curator()`, it is a curator. A concrete class must override exactly one
 execute method. Its module must be imported before the operation can be used.
 
@@ -67,11 +57,10 @@ lets you test input adaptation without running the computation.
 
 ### Execute: compute
 
-Execute runs the core work through `execute_function` — a Python body that
-receives a frozen `ExecuteInput` containing the prepared dict from preprocess
-and a working directory. Write output files to that directory, call external
-tools, run inference — the framework treats this method as a black box. It does
-not inspect the return value. Any exception is caught and recorded as a failure.
+`execute_function` receives a frozen `ExecuteInput` containing the prepared
+dict and a working directory. It can write output files, call external tools,
+or run inference. Artisan passes its return value to postprocess without
+inspecting it and records exceptions as failures.
 
 Operations whose work should ship to a remote backend implement `execute_command`
 instead, returning an argv the framework runs as a subprocess or on a deployed
@@ -83,15 +72,11 @@ the computation; a pipeline test also checks dispatch and artifact handling.
 
 ### Postprocess: construct
 
-Postprocess builds draft artifacts from whatever `execute_function` produced. It
-receives the files written to the execute directory and whatever value
-`execute_function` returned. This is where you create typed artifact drafts and
-assign `original_name` for the artifact's human-readable name. Declare each
+Postprocess builds typed draft artifacts from the execute directory's files
+and the value returned by `execute_function`. Assign `original_name` for each
+artifact's human-readable name and declare each
 output's exact parents in `ArtifactResult.lineage`; the framework never uses
 that name to select parents.
-
-Postprocess owns artifact construction and lineage, so the computation can work
-with ordinary files and values.
 
 ### Generative creators
 
@@ -103,27 +88,18 @@ artifacts have no parents.
 
 ### Why this design matters
 
-Three properties fall directly out of the phase separation:
-
-- **Testability.** Each phase can be tested independently. Execute can be tested
-  without the framework. Preprocess and postprocess can be tested without
-  running the actual computation.
-- **Debuggability.** Each phase runs in its own sandbox subdirectory
-  (`preprocess/`, `execute/`, `postprocess/`). When something fails, the
-  relevant directory contains exactly the inputs and outputs for that phase.
-- **Portability.** External tools run inside the execute phase without knowing
-  about artifacts or lineage. Preprocess adapts inputs; postprocess interprets
-  outputs. The tool itself is unchanged.
+You can test each phase independently and inspect its files in the matching
+`preprocess/`, `execute/`, or `postprocess/` directory. External tools work with
+ordinary files; preprocess and postprocess handle their integration with
+artifacts and lineage.
 
 (command-operations-and-tool-endpoints)=
 ### Command operations and tool endpoints
 
-A creator ships its execute phase in one of two forms. A **function op**
-implements `execute_function` — a Python body that runs where the lifecycle
-worker is. A **command op** declares a `tool` and implements `execute_command`,
-which returns an argv the framework runs as a local subprocess or on a deployed
-tool endpoint. Command ops are how work reaches a remote backend like Modal,
-where the execute phase becomes an HTTP client of the operation's endpoint.
+A **function op** runs `execute_function` in the lifecycle worker. A **command
+op** declares a `tool` and returns an argv from `execute_command`. Artisan runs
+that command as a local subprocess or through a deployed tool endpoint, such
+as a Modal endpoint.
 
 A Python-body op opts into the same path by setting `execute_as_tool=True`: the
 framework supplies the argv (`artisan op run <module:Qualname>`), runs it as a
@@ -140,15 +116,13 @@ deployment mechanics.
 
 ## The curator lifecycle
 
-Curators skip the three-phase lifecycle entirely. A single `execute_curator`
-method receives DataFrames of artifact metadata (each with at least an
+Curators implement a single `execute_curator` method that receives DataFrames
+of artifact metadata (each with at least an
 `artifact_id` column, keyed by role name) and returns either new artifacts
 (`ArtifactResult`) or routed artifact IDs (`PassthroughResult`).
 
-Curators run in an isolated local subprocess without creator sandbox phases,
-input materialization, or configurable creator-runner dispatch. This keeps
-coordination separate from the orchestrator while avoiding the creator lifecycle
-for metadata work.
+They run in an isolated local subprocess without creator sandbox phases,
+input materialization, or configurable creator-runner dispatch.
 
 ### Two result shapes
 
@@ -158,23 +132,16 @@ role. Ingestion curators use this pattern — they read file references from
 storage, convert them to domain artifacts, and return the drafts for the
 framework to finalize.
 
-**`PassthroughResult`** forwards existing artifact IDs through the pipeline
-without creating new artifacts — the curator is routing, not transforming.
-Filter and Merge use this pattern: they decide which artifacts continue, not
-what new artifacts to create.
+**`PassthroughResult`** forwards existing artifact IDs without creating artifacts.
+Filter and Merge use this pattern to select which artifacts continue.
 
 ### Explicit lineage in ArtifactResult
 
-When a curator or creator returns an `ArtifactResult`, it must include a
-`lineage` dictionary with exactly the emitted artifact role keys. Each mapping
-addresses a target by its role-local index and names an exact input ID or
-sibling-output index. Root roles explicitly contain an empty list. The optional
-`add_artifact` method constructs the same records while appending a draft;
-manual construction remains supported.
-
-Names, config content, and dispatch positions never supply missing parents.
-The [provenance system](provenance-system.md#explicit-lineage) explains the
-contract and joint parent groups.
+Every `ArtifactResult` needs a `lineage` entry for each emitted artifact role.
+Derived outputs name exact input IDs or sibling-output indices; roots use an
+empty list. Build declarations manually or with `add_artifact`. The
+[provenance system](provenance-system.md#explicit-lineage) defines the contract
+and joint parent groups.
 
 ### Abstract curator bases
 
@@ -189,10 +156,8 @@ references, while subclasses like IngestData implement only the
 
 ## Declaring inputs and outputs
 
-Operations declare their data contract through `inputs` and `outputs`
-dictionaries. These declarations serve three purposes: validation at pipeline
-construction time, control over how artifacts are delivered, and configuration
-of lineage tracking.
+The `inputs` and `outputs` dictionaries declare types, delivery settings, and
+lineage requirements. Artisan validates calls and results against them.
 
 ### Input specs
 
@@ -200,14 +165,11 @@ Each entry in `inputs` maps a role name to an `InputSpec` that controls what
 type of artifact the role accepts, whether the artifact is materialized to disk
 or delivered in memory, and how much data is loaded from storage.
 
-Two choices stand out. **Materialization** determines whether the framework
-writes artifact content to a file in the sandbox (for external tools that read
-from disk) or delivers content bytes directly (faster for in-memory Python
-processing). **Hydration** controls whether the full artifact is loaded or only
-the artifact ID — passthrough operations like Filter that route artifacts
-without reading content receive ID-only inputs. This controls delivery to the
-operation; orchestration still verifies stored input content before cache lookup
-or dispatch. See [Hydration](artifacts-and-content-addressing.md#hydration-controlling-what-gets-loaded).
+**Materialization** writes content to a file for tools that read from disk.
+In-memory operations can receive content bytes instead. **Hydration** selects
+full content or ID-only delivery. Orchestration still verifies stored input
+content before cache lookup or dispatch; see
+[Hydration](artifacts-and-content-addressing.md#hydration-controlling-what-gets-loaded).
 
 See [Writing Creator Operations](../how-to-guides/writing-creator-operations.md)
 for usage and [Python API](../reference/python-api.md) for the spec definitions.
@@ -224,8 +186,8 @@ Each entry in `outputs` maps a role name to an `OutputSpec` that declares the
 artifact type produced, whether the output is required, and which roles must
 and may supply parents when the operation emits new drafts.
 
-The `derives_from` field constrains each output occurrence’s explicit parent
-declarations. It selects no artifacts. Three patterns:
+The `derives_from` field constrains the roles that may supply parents. The
+operation selects the exact artifacts:
 
 - `{"inputs": ["data"]}` — output derives from the named input role
 - `{"outputs": ["processed"]}` — output derives from another output role
@@ -247,11 +209,8 @@ Operations with inputs define an `InputRole(StrEnum)` inner class whose values
 match the `inputs` dict keys. Operations with outputs define an
 `OutputRole(StrEnum)` inner class whose values match the `outputs` dict keys.
 
-The framework validates this match at class definition time. If the enum values
-diverge from the dict keys, a `TypeError` is raised immediately. This
-constraint ensures role names are type-safe and discoverable via IDE
-autocomplete — you reference `MyOp.InputRole.DATASET` rather than a raw
-string.
+Mismatched enum values and dict keys raise `TypeError` at class definition time.
+Use `MyOp.InputRole.DATASET` to reference a role with IDE autocomplete.
 
 ---
 
@@ -274,9 +233,7 @@ For concrete classes (non-empty `name`):
 - Algorithm configuration must use a matched nested `Params` model and `params`
   field; operations without algorithm parameters omit both
 
-Violations raise `TypeError` at import time. A misconfigured operation cannot
-be instantiated, cannot be added to a pipeline, and cannot fail silently at
-runtime hours into a cluster job.
+Violations raise `TypeError` when the module is imported, before work can run.
 
 ### The operation registry
 
@@ -327,9 +284,8 @@ Built-in fields control how the framework runs the operation:
 - **`environments`** — execution environment selection: local, Docker,
   Apptainer, or Pixi
 
-Both `runner_resources` and `batch_strategy` can be overridden at the pipeline
-step level. The operation provides sensible defaults; the pipeline adapts them to
-specific cluster configurations.
+Override `runner_resources` and `batch_strategy` per step to adapt the
+operation's defaults to the available infrastructure.
 
 ### Algorithm parameters
 
@@ -354,9 +310,8 @@ for authoring examples.
 
 ## Multi-input operations
 
-Most operations consume a single input role — one stream of artifacts in, one
-stream out. Operations that consume multiple input roles need the framework to
-**pair** artifacts across roles before delivery.
+Operations with multiple input roles can **pair** artifacts across roles before
+delivery.
 
 ### Pairing strategies
 
@@ -393,7 +348,7 @@ and logged at WARNING.
 
 ### Behavioral flags
 
-Three ClassVar flags handle edge cases in input delivery:
+ClassVar flags control runtime input roles and independent streams:
 
 **`runtime_defined_inputs`** — when `True`, input roles are provided by the
 user at pipeline construction time instead of being declared in `inputs`. This

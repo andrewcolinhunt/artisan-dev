@@ -1,9 +1,8 @@
 # Using Coding Agents
 
 Use your coding agent with Artisan's shared project instructions and skills to
-write pipelines and inspect existing runs. The instructions are Markdown files
-that an agent can read from the repository. Local inspection uses the project's
-Python environment and needs no MCP server.
+write pipelines and inspect runs. Local inspection uses the project's Python
+environment and needs no MCP server.
 
 ---
 
@@ -25,16 +24,9 @@ For example:
 > skill to build a pipeline that generates data, transforms it, and filters by
 > median score. Run it and verify the results.
 
-Confirm that the agent can identify the project instructions and the relevant
-skill before it starts. If automatic skill discovery is unavailable, point it
-to the skill's `SKILL.md` as described below.
-
 ---
 
 ## Artisan skills
-
-The repo ships with framework-specific Agent Skills for authoring Artisan code
-and interpreting run evidence.
 
 | Skill | Description |
 |-------|-------------|
@@ -88,10 +80,10 @@ pixi run --locked artisan inspect list --json
 pixi run --locked artisan inspect describe assess_outcomes --json
 ```
 
-The guide reports the executing package version, where its text came from and a
-digest identifying that text. In an editable checkout, guide edits can change
-the digest without changing the package version. The installed request and
-response schemas determine which calls and arguments are supported.
+The guide reports the package version, text source, and digest. In an editable
+checkout, guide edits can change the digest without changing the package
+version. Check the installed request and response schemas for supported calls
+and arguments.
 
 Read another installed topic when the task needs it:
 
@@ -126,54 +118,37 @@ jobs.
 
 ## What you can do
 
-Start by asking the agent to inspect the operations and composites available in
-your project and its installed application packages. Check their contracts and
-tests, then compose those that fit the analysis. Add or improve an integration
-when the existing operations do not meet the requirement. See
+Ask the agent to inspect available operations, composites, and tests before
+writing new code. Reuse operations that fit the analysis; add or change an
+integration when needed. See
 [operation discovery](../how-to-guides/inspecting-evidence.md#find-the-installed-contract)
 for inspecting registered operations.
 
-A few examples of real workflows:
+Example requests:
 
-- **"Build a pipeline that generates data, transforms it, and filters by
-  median score using existing operations"** — the agent checks the available
-  operations, composes them, and verifies the output wiring and results.
-- **"Create a custom artifact type for binary content"** — the agent writes the
-  model, registration, and tests for persistence and hydration.
-- **"Write me an operation that takes CSV files and computes column
-  statistics"** — the agent scaffolds the class, tests, and docstrings following
-  Artisan conventions.
-- **"Explain how artifact lineage works in this codebase"** — the agent reads the
-  source and explains the provenance system.
-- **"Why did run `run-id` fail, and which outputs were accepted?"** — the agent
-  inspects the selected run and reports evidence and remaining gaps.
-- **"Run the tests and fix any failures"** — the agent runs pytest, reads errors,
-  and proposes fixes.
-
-The shared instructions point agents to Pixi tasks, test structure, and
-formatting rules. Review generated changes and check their behavior using the
-same project tasks you would use for handwritten code.
+- "Create a custom artifact type for binary content, with tests for persistence
+  and hydration."
+- "Write an operation that takes CSV files and computes column statistics."
+- "Explain how artifact lineage works in this codebase."
+- "Why did run `run-id` fail, and which outputs were accepted?"
 
 ---
 
 ## Tips for effective use
 
-- **Be specific** about what you want ("write an operation that computes
-  column statistics from CSV input" not "help me with operations").
-- **Review generated code** and its test results before committing.
-- **Use skills for scaffolding**, then refine the result against your
-  requirements and the project's existing patterns.
-- **Ask the agent to run checks** using the commands in `AGENTS.md` and report
-  which checks passed or could not run.
+- State the expected inputs and outputs in your request.
+- Use skills to scaffold code, then check it against your requirements and
+  existing project patterns.
+- Ask the agent to run the checks in `AGENTS.md` and report which passed or could
+  not run. Review the code and results before committing.
 
 ---
 
 ## Personal instructions
 
-Keep shared project conventions in `AGENTS.md`. Use your agent's personal
-settings or local instruction mechanism for preferences such as editor settings
-and branch conventions. Keep personal files out of version control; add an
-ignore rule when the filename is not already ignored.
+Keep shared conventions in `AGENTS.md` and personal preferences in your agent's
+local settings. Keep personal files out of version control; add an ignore rule
+when needed.
 
 For Claude Code, `CLAUDE.local.md` is already gitignored in this repository.
 
@@ -210,4 +185,4 @@ The plugin exposes the same skills with namespaced commands such as
 ## Cross-references
 
 - [Installation](installation.md) — Installing Artisan and configuring your environment
-- [Orientation](orientation.md) — The mental model behind the framework
+- [Orientation](orientation.md) — How the framework's concepts fit together

@@ -1,8 +1,8 @@
 # Tooling Decisions
 
-The tools below support local development, portable execution, and file-based
-storage. This page explains the choices and their limits; setup commands live
-in the linked guides.
+Artisan uses Pixi for environments, native runners for execution, and Delta Lake
+for storage. The sections below explain these and other tool choices; follow
+the linked guides for setup.
 
 ## Environment management: Pixi
 
@@ -10,11 +10,9 @@ Artisan needs Python packages and system tools, including Graphviz for graphs
 and Node.js for the documentation build. Pixi resolves conda and PyPI dependencies
 into one lockfile with runtime, development, and documentation environments.
 
-The committed lockfile records the resolution for each supported platform.
-Local commands can refresh it when needed; CI and agent tasks unrelated to
-environment changes use `--locked` to stop when the manifest disagrees with it.
-Relevant manifest edits, including tooling edits, include reviewed lockfile
-updates. The cost is an additional development tool to install.
+The lockfile records versions for each supported platform. Pixi adds a tool to
+install and a lockfile to maintain; see
+[reviewing lockfile changes](../getting-started/using-pixi.md#reviewing-lockfile-changes).
 See [installation](../getting-started/installation.md) and
 [using Pixi](../getting-started/using-pixi.md).
 
@@ -48,15 +46,10 @@ store. It does not require a database server. Polars supplies dataframe queries
 and CSV processing. This suits workloads that already have shared storage and
 need to inspect artifacts, metrics, and provenance together.
 
-Delta transactions are atomic within one table. Artisan adds a logical commit
-boundary across related tables: a completion record controls which effects
-supported readers accept. Raw Delta queries bypass that boundary.
-
-Supported readers gate table visibility on completed logical commits. Ordinary
-reads do not reverify every historical effect; artifact access still checks the
-requested payload. Use the explicit store repair inspection for a historical
-integrity audit. These visibility checks do not make every query a streaming
-read or guarantee low memory use.
+Delta transactions are atomic within one table. Artisan adds a completion record
+so supported readers expose related changes only after the logical commit
+finishes. Raw Delta queries bypass that boundary. These visibility checks do
+not audit historical integrity or guarantee low memory use.
 See [storage and Delta Lake](../concepts/storage-and-delta-lake.md) for the
 visibility guarantees, recovery behavior, and external-file handling.
 
@@ -88,10 +81,9 @@ Ruff formats Python and checks lint rules. Mypy checks types. Pytest covers
 runtime contracts and pipeline integration, with pytest-xdist for selected
 parallel suites. Notebook tests execute the tutorial cells.
 
-These checks have different scopes. Notebook execution catches code failures;
-assertions are needed to catch incorrect explanations of an otherwise successful
-result. A documentation build checks rendering but does not establish that an
-example is correct. The [task list](../getting-started/using-pixi.md#dev-environment)
+Notebook assertions check expected outcomes; execution alone catches only code
+failures. The docs build checks rendering. The
+[task list](../getting-started/using-pixi.md#dev-environment)
 and [documentation guide](writing-docs.md#building-and-previewing-docs) describe
 how to run the relevant checks.
 
@@ -107,24 +99,20 @@ shows how to inspect them for the installed version.
 
 ## Coding assistance
 
-`AGENTS.md` holds shared project conventions for coding agents. The portable
-skills under `skills/` guide artifact, operation, composite, and pipeline
-authoring, and inspection of existing runs. Agents that support
-`.agents/skills/` discover the same files there; other hosts can load complete
-skill folders through their own installation mechanisms. See
+`AGENTS.md` holds shared project conventions. Portable skills guide code
+authoring and run inspection; see
 [agent setup](../getting-started/using-coding-agents.md) for discovery and
-tool-specific options.
+installation.
 
 Artisan packages the operating guide with the library so an agent can retrieve
 instructions for the version it is running. Retrieval does not install a skill
 in the agent's host.
 
-Python, CLI and MCP inspection share request validation, response models and
-size limits in `artisan.inspection`. A local agent can discover schemas and
-query evidence without a server. The optional MCP adapter serves clients that
-use that protocol; it does not launch or cancel pipelines. Skills supply the
-procedure for selecting and interpreting evidence, while the API validates
-requests and responses. See [local inspection](../how-to-guides/inspecting-evidence.md)
+Python, CLI, and MCP inspection share validation, response models, and size
+limits in `artisan.inspection`. Skills guide evidence selection and
+interpretation. Local inspection needs no server; the optional adapter serves
+MCP clients. Neither interface launches or cancels pipelines. See
+[local inspection](../how-to-guides/inspecting-evidence.md)
 and [connecting MCP](../how-to-guides/connecting-mcp.md).
 
 Size limits keep responses small enough to return to an agent. They do not
