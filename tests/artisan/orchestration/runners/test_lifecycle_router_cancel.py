@@ -9,10 +9,8 @@ from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 from unittest.mock import MagicMock, patch
 
-from artisan.orchestration.runners.local import (
-    LocalLifecycleRouter,
-    _terminate_process_pool,
-)
+from artisan.orchestration.engine.native_pool import _terminate_process_pool
+from artisan.orchestration.runners.local import LocalLifecycleRouter
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
 
@@ -79,7 +77,7 @@ class TestLocalLifecycleRouterCancel:
             return True
 
         with patch(
-            "artisan.orchestration.runners.local._terminate_process_pool",
+            "artisan.orchestration.engine.native_pool._terminate_process_pool",
             side_effect=terminate,
         ) as terminate_pool:
             requested = handle.cancel()

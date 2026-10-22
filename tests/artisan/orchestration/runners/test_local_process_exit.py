@@ -16,7 +16,7 @@ from pathlib import Path
 
 import pytest
 
-from artisan.orchestration.runners.local import _terminate_process_pool
+from artisan.orchestration.engine.native_pool import _terminate_process_pool
 from artisan.utils.process_call import execute_process_call, serialize_process_call
 from artisan.utils.spawn import suppress_main_reimport
 
