@@ -47,6 +47,7 @@ from artisan.orchestration.engine.batching import (
 from artisan.orchestration.engine.dispatch import failure_results_for_units
 from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
+from artisan.orchestration.engine.native_pool import _NativePoolOwnership
 from artisan.orchestration.engine.results import (
     aggregate_results,
     classify_step_status,
@@ -54,7 +55,6 @@ from artisan.orchestration.engine.results import (
 )
 from artisan.orchestration.engine.worker_logs import persist_worker_logs
 from artisan.orchestration.runners.base import RunnerBase
-from artisan.orchestration.runners.local import _NativePoolOwnership
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.command_record import CommandRecording
@@ -950,30 +950,6 @@ def _execute_curator_step(
                     total_input,
                     total_input - succeeded,
                 )
-        except BrokenProcessPool:
-            if cancel_event is not None and cancel_event.is_set():
-                error_msg = "Curator subprocess killed during cancellation"
-            else:
-                error_msg = _format_subprocess_kill_error(unit)
-            logger.error("Step %d (%s): %s", step_number, operation.name, error_msg)
-
-            run_id = _synthesize_failure_record(
-                unit,
-                runtime_env,
-                error_msg,
-                timestamp_start,
-                user_overrides,
-                step_run_id=step_run_id,
-            )
-            results = [
-                UnitResult(
-                    success=False,
-                    error=error_msg,
-                    item_count=unit.get_batch_size() or 1,
-                    execution_run_ids=[run_id] if run_id else [],
-                )
-            ]
-            succeeded, failed = 0, unit.get_batch_size() or 1
         except Exception as exc:
             dispatch_error, results, succeeded, failed = _record_dispatch_failure(
                 exc,

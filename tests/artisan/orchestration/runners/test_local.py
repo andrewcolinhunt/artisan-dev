@@ -439,10 +439,12 @@ class TestLocalLifecycleRouter:
 
 
 def test_pending_owner_report_does_not_drop_later_cancellation_deadline():
-    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.orchestration.engine.native_pool import _NativePoolOwnership
     from artisan.utils.command_supervisor import OwnershipOutcome
 
-    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+    with patch(
+        "artisan.orchestration.engine.native_pool.CommandSupervisor.start"
+    ) as start:
         ownership = _NativePoolOwnership()
     ownership._command_outcome = OwnershipOutcome("pending")
     ownership.deadline = time.monotonic() + 10
@@ -454,12 +456,14 @@ def test_pending_owner_report_does_not_drop_later_cancellation_deadline():
 def test_cancellation_shortens_deadline_during_ordinary_owner_finish():
     import threading
 
-    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.orchestration.engine.native_pool import _NativePoolOwnership
     from artisan.utils.command_supervisor import OwnershipOutcome
 
     finishing = threading.Event()
     release = threading.Event()
-    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+    with patch(
+        "artisan.orchestration.engine.native_pool.CommandSupervisor.start"
+    ) as start:
         owner = _NativePoolOwnership()
     supervisor = start.return_value
     supervisor.request_finish.side_effect = lambda deadline: finishing.set()
@@ -588,10 +592,12 @@ def test_cancellation_reaches_owner_during_blocked_serialization():
 
 
 def test_pending_dispatch_cannot_confirm_empty_workers_or_block_on_shutdown():
-    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.orchestration.engine.native_pool import _NativePoolOwnership
     from artisan.utils.command_supervisor import OwnershipOutcome
 
-    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+    with patch(
+        "artisan.orchestration.engine.native_pool.CommandSupervisor.start"
+    ) as start:
         owner = _NativePoolOwnership()
     start.return_value.poll.return_value = OwnershipOutcome("closed")
     start.return_value.finish.return_value = OwnershipOutcome("closed")
@@ -614,7 +620,7 @@ def test_pending_dispatch_cannot_confirm_empty_workers_or_block_on_shutdown():
 def test_cancellation_reaches_owner_during_blocked_pool_construction():
     import threading
 
-    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.orchestration.engine.native_pool import _NativePoolOwnership
     from artisan.utils.command_supervisor import OwnershipOutcome
 
     entered = threading.Event()
@@ -630,7 +636,9 @@ def test_cancellation_reaches_owner_during_blocked_pool_construction():
         assert release.wait(3)
         return executor
 
-    with patch("artisan.orchestration.runners.local.CommandSupervisor.start") as start:
+    with patch(
+        "artisan.orchestration.engine.native_pool.CommandSupervisor.start"
+    ) as start:
         owner = _NativePoolOwnership()
     start.return_value.poll.return_value = OwnershipOutcome("closed")
     start.return_value.finish.return_value = OwnershipOutcome("closed")
@@ -666,9 +674,9 @@ def test_cancellation_reaches_owner_during_blocked_pool_construction():
 def test_late_worker_dispatch_keeps_original_deadline_and_exact_handles():
     import os
 
-    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.orchestration.engine.native_pool import _NativePoolOwnership
 
-    with patch("artisan.orchestration.runners.local.CommandSupervisor.start"):
+    with patch("artisan.orchestration.engine.native_pool.CommandSupervisor.start"):
         owner = _NativePoolOwnership()
     assert owner.begin_dispatch()
     owner.deadline = time.monotonic() - 1
@@ -679,7 +687,7 @@ def test_late_worker_dispatch_keeps_original_deadline_and_exact_handles():
     owner.executor._processes = {123: worker}
     try:
         with patch(
-            "artisan.orchestration.runners.local._terminate_process_pool"
+            "artisan.orchestration.engine.native_pool._terminate_process_pool"
         ) as terminate:
             owner.end_dispatch()
         assert terminate.call_args.kwargs["deadline"] == owner.deadline

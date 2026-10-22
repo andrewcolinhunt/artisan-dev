@@ -2768,10 +2768,10 @@ class TestCuratorSubprocessIsolation:
     def test_cloudpickles_locally_defined_curator_for_spawn(self, tmp_path) -> None:
         from artisan.execution.models.execution_unit import ExecutionUnit
         from artisan.execution.recording.parquet_writer import StagingResult
+        from artisan.orchestration.engine.native_pool import _NativePoolOwnership
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
-        from artisan.orchestration.runners.local import _NativePoolOwnership
         from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 
         class NotebookCurator(OperationDefinition):
@@ -2860,6 +2860,7 @@ class TestCuratorSubprocessIsolation:
                 failed=True, cancel_event=None
             )
 
+    @pytest.mark.parametrize("failure_boundary", ["dispatch", "worker"])
     @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
     @patch("artisan.orchestration.engine.step_executor.build_execution_context")
     @patch("artisan.orchestration.engine.step_executor._format_subprocess_kill_error")
@@ -2867,18 +2868,21 @@ class TestCuratorSubprocessIsolation:
         "artisan.orchestration.engine.step_executor._curator_summary",
         new=_empty_curator_summary,
     )
-    @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
+    @patch("artisan.orchestration.engine.step_executor._dispatch_curator")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     def test_curator_subprocess_death_records_failure(
         self,
         mock_cache,
-        mock_subprocess,
+        mock_dispatch,
         mock_format_error,
         mock_build_ctx,
         mock_record_failure,
         tmp_path,
+        failure_boundary,
+        mock_native_ownership,
     ) -> None:
         """BrokenProcessPool should record failure and return failed StepResult."""
+        from concurrent.futures import Future
         from concurrent.futures.process import BrokenProcessPool
 
         from artisan.execution.recording.parquet_writer import StagingResult
@@ -2893,9 +2897,15 @@ class TestCuratorSubprocessIsolation:
         )
 
         mock_cache.return_value = None
-        mock_subprocess.side_effect = BrokenProcessPool(
-            "A process in the process pool was terminated abruptly"
-        )
+        error = BrokenProcessPool("worker terminated")
+        dispatched: Future[Future[StagingResult]] = Future()
+        if failure_boundary == "dispatch":
+            dispatched.set_exception(error)
+        else:
+            failed: Future[StagingResult] = Future()
+            failed.set_exception(error)
+            dispatched.set_result(failed)
+        mock_dispatch.return_value = dispatched
         mock_format_error.return_value = (
             "Curator subprocess killed (likely OOM). Child peak RSS: 4096 MB."
         )
@@ -2906,17 +2916,24 @@ class TestCuratorSubprocessIsolation:
             execution_run_id="killed-abc",
         )
 
-        result = _execute_curator_step(
-            operation=MockNoGroupByCuratorOp(),
-            inputs=_prepared({"data": [_ID_S1, _ID_S2]}),
-            step_number=1,
-            config=config,
-            failure_policy=FailurePolicy.CONTINUE,
-        )
+        with patch(
+            "artisan.orchestration.engine.step_executor._NativePoolOwnership",
+            return_value=mock_native_ownership,
+        ):
+            result = _execute_curator_step(
+                operation=MockNoGroupByCuratorOp(),
+                inputs=_prepared({"data": [_ID_S1, _ID_S2]}),
+                step_number=1,
+                config=config,
+                failure_policy=FailurePolicy.CONTINUE,
+            )
 
+        assert result.status is StepStatus.FAILED
+        assert result.error == mock_format_error.return_value
         assert result.failed_count == 2
         assert result.succeeded_count == 0
         mock_record_failure.assert_called_once()
+        assert mock_record_failure.call_args.kwargs["error"] == result.error
 
     def test_subprocess_kill_error_message_format(self) -> None:
         """_format_subprocess_kill_error should include RSS and input count."""
@@ -2959,13 +2976,13 @@ class TestCuratorSubprocessIsolation:
     )
     @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
-    def test_regular_exception_not_caught_by_broken_executor(
+    def test_unexpected_dispatch_exception_records_failure(
         self,
         mock_cache,
         mock_subprocess,
         tmp_path,
     ) -> None:
-        """ValueError should be caught by except Exception, not BrokenProcessPool."""
+        """Unexpected dispatch errors retain failed-step evidence."""
         from artisan.orchestration.engine.step_executor import _execute_curator_step
         from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 

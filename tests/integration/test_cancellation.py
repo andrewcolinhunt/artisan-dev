@@ -210,7 +210,7 @@ def test_cancelled_creator_retains_sealed_work_until_verified_commit(
     import polars as pl
     from fsspec.implementations.local import LocalFileSystem
 
-    from artisan.orchestration.runners.local import _NativePoolOwnership
+    from artisan.orchestration.engine.native_pool import _NativePoolOwnership
     from artisan.schemas.enums import TablePath
     from artisan.schemas.orchestration.step_lifecycle import StepDisposition
     from artisan.storage.core.committed_scan import read_committed

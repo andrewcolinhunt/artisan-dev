@@ -15,7 +15,7 @@ from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.orchestration.engine import step_executor
-from artisan.orchestration.runners.local import _NativePoolOwnership
+from artisan.orchestration.engine.native_pool import _NativePoolOwnership
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
