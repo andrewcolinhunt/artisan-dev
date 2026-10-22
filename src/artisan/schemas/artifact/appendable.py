@@ -74,8 +74,6 @@ class AppendableArtifact(Artifact):
         description="File extension (.jsonl typically).",
     )
 
-    _default_hydrate: ClassVar[bool] = False
-
     def _identity_payload(self) -> bytes | None:
         """Return the container-independent record descriptor."""
         if (
@@ -121,10 +119,6 @@ class AppendableArtifact(Artifact):
             f.write(json.dumps(record, indent=2))
         self.materialized_path = path
         return path
-
-    def _read_record(self, *, fs: Any = None) -> dict[str, Any]:
-        """Return the unique record after verifying its digest and size."""
-        return self._read_verified_record(fs=fs)
 
     def _read_verified_record(self, *, fs: Any = None) -> dict[str, Any]:
         """Scan the container and return one verified matching record."""

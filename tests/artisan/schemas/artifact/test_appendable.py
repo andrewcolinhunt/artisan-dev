@@ -206,8 +206,8 @@ class TestMaterialize:
             art.materialize_to(str(tmp_path / "out"))
 
 
-class TestReadRecordAutoInferFs:
-    """When fs=None, _read_record infers fs from external_path via url_to_fs."""
+class TestMaterializeAutoInferFs:
+    """Materialization infers the source filesystem unless explicitly supplied."""
 
     def test_auto_infers_memory_fs_from_uri(self, tmp_path: Path) -> None:
         """memory:// path → MemoryFileSystem auto-resolved, record found."""
@@ -225,7 +225,7 @@ class TestReadRecordAutoInferFs:
         art = _draft_record(
             records[1], "memory:///test_appendable/auto/data.jsonl"
         ).finalize()
-        record = art._read_record()
+        record = json.loads(Path(art.materialize_to(str(tmp_path))).read_text())
         assert record == {"record_id": "rec_000001", "x": 2}
 
         mem_fs.rm("/test_appendable/auto/data.jsonl")
@@ -240,7 +240,9 @@ class TestReadRecordAutoInferFs:
         ).finalize()
         from fsspec.implementations.local import LocalFileSystem
 
-        record = art._read_record(fs=LocalFileSystem())
+        record = json.loads(
+            Path(art.materialize_to(str(tmp_path), fs=LocalFileSystem())).read_text()
+        )
         assert record == {"record_id": "rec_000000", "x": 7}
 
 
