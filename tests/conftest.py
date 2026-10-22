@@ -61,7 +61,7 @@ sys.unraisablehook = _quiet_socket_resourcewarning_hook
 # the binary's Go VCS metadata: 0d7408fc9969caf07de6a8c3a84f9fbb10a6739e,
 # vcs.modified=false. Its immutable index supports linux/amd64 and linux/arm64.
 # Build recipe: https://github.com/coollabsio/minio
-# When updating this pin, run `pixi run --locked -e dev test-s3` for the smoke
+# When updating this pin, run `pixi run -e dev test-s3` for the smoke
 # metadata-request sentinel (catches unintended credential-provider I/O) and the
 # parametrized [local, s3] tests (catches checksum-handling regressions
 # in DeleteObjects — older MinIO releases require Content-MD5 while
@@ -133,7 +133,7 @@ def _detect_minio_unavailable() -> str | None:
     except ImportError as exc:
         return (
             f"testcontainers package not installed ({exc.name}). "
-            f"Install dev deps (`pixi install --locked -e dev`), or set "
+            f"Install dev deps (`pixi install -e dev`), or set "
             f"ARTISAN_S3_ENDPOINT to a long-lived MinIO/S3 instance."
         )
 

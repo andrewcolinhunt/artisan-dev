@@ -18,18 +18,28 @@ commands. The short `pixi` form is for user-facing docs only.
 
 ### Pixi lock discipline
 
-Use `--locked` for routine installs and tasks so Pixi stops instead of silently
-rewriting `pixi.lock`. Run an unlocked Pixi command only when intentionally
-changing dependencies, and commit `pyproject.toml` and `pixi.lock` together.
+Use ordinary `pixi run` and `pixi install` for local development. Keep `--locked`
+in CI and for agent tasks unrelated to environment changes, so those commands
+stop instead of incidentally rewriting `pixi.lock`.
 
-If `pixi.lock` becomes dirty unexpectedly, inspect the diff. When the only
-changes are the editable project's Git-derived `version` and `sha256`, and no
-dependency change was intended, restore `pixi.lock`. Do not discard it when
-`pyproject.toml` or dependencies were intentionally changed.
+After relevant `pyproject.toml` edits, refresh the lock with
+`~/.pixi/bin/pixi lock`, review the diff, and commit the manifest and lockfile
+changes together. Tooling edits can also require a refresh: Pixi hashes the
+entire `pyproject.toml` for the editable package, including tasks and comments.
+Keep Hatch's Git-derived package versions and the committed lockfile.
+
+If `pixi.lock` becomes dirty unexpectedly, inspect the diff and its cause.
+Changes limited to the editable project's `version` and `sha256` can be
+necessary; do not discard them solely because dependencies did not change.
+Restore only changes confirmed to be incidental to the task, preserving any
+existing user changes and lock updates required by manifest edits.
 
 ---
 
 ## Commands
+
+These agent commands retain `--locked` to prevent incidental lockfile changes.
+Local development examples in the README and docs use ordinary Pixi commands.
 
 ```bash
 ~/.pixi/bin/pixi install --locked

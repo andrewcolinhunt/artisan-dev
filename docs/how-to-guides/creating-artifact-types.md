@@ -553,7 +553,7 @@ assert "data_record" in ArtifactTypes
 Run the tests:
 
 ```bash
-pixi run --locked -e dev test-unit -k test_data_record
+pixi run -e dev test-unit -k test_data_record
 ```
 
 Also run a local pipeline with a fresh store and a creator that emits the type.

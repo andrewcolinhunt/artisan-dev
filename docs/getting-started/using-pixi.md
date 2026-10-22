@@ -19,26 +19,28 @@ specific workflow.
 
 ```bash
 # Run a command in the default environment
-pixi run --locked python script.py
+pixi run python script.py
 
 # Run a command in a named environment
-pixi run --locked -e dev pytest
-pixi run --locked -e docs docs-build
+pixi run -e dev pytest
+pixi run -e docs docs-build
 ```
 
 All environments share a single solve group, so package versions are consistent
 across them. `mcp` is a feature included in `dev`, not a separate environment.
-Use `--locked` for routine installs and tasks so manifest drift stops with an
-error instead of rewriting `pixi.lock`.
+Use ordinary Pixi commands for local development. They use the existing
+lockfile when it is up to date and can refresh it when needed. CI and agent
+tasks unrelated to environment changes use `--locked` to stop if a refresh is
+needed. See [reviewing lockfile changes](#reviewing-lockfile-changes).
 
 After installing an environment, run `setup` there to prepare Graphviz. Git
 hooks and notebook kernels have separate tasks with explicit side effects:
 
 ```bash
-pixi install --locked -e dev
-pixi run --locked -e dev setup
-pixi run --locked -e dev install-hooks
-pixi run --locked -e dev install-kernel  # Only when using notebooks
+pixi install -e dev
+pixi run -e dev setup
+pixi run -e dev install-hooks
+pixi run -e dev install-kernel  # Only when using notebooks
 ```
 
 `setup` is safe to repeat and only prepares the selected environment.
@@ -54,15 +56,15 @@ running it again from another environment replaces that kernel registration.
 exploring data, running multiple commands — open a shell instead:
 
 ```bash
-pixi shell --locked                 # Default environment
-pixi shell --locked -e dev          # Dev environment (pytest, ruff, ipython)
-pixi shell --locked -e docs         # Docs environment (jupyter-book, node)
+pixi shell                 # Default environment
+pixi shell -e dev          # Dev environment (pytest, ruff, ipython)
+pixi shell -e docs         # Docs environment (jupyter-book, node)
 ```
 
 Inside a Pixi shell, commands run directly without the `pixi run` prefix:
 
 ```bash
-$ pixi shell --locked -e dev
+$ pixi shell -e dev
 (artisan-dev) $ pytest tests/artisan/storage/
 (artisan-dev) $ ruff check src/
 (artisan-dev) $ exit                # Return to your regular shell
@@ -87,8 +89,8 @@ pixi workspace register
 pixi workspace register --name custom-name
 
 # Run tasks or open a shell from anywhere
-pixi run --locked -w workspace-name task-name
-pixi shell --locked -w workspace-name
+pixi run -w workspace-name task-name
+pixi shell -w workspace-name
 ```
 
 ---
@@ -120,6 +122,38 @@ After adding a dependency, `pixi.lock` updates automatically. Commit both
 
 ---
 
+## Reviewing lockfile changes
+
+Keep `pixi.lock` in version control. After editing `pyproject.toml`, refresh the
+lockfile and review the changes:
+
+```bash
+pixi lock
+git diff -- pyproject.toml pixi.lock
+```
+
+Tooling edits can require a refresh even when dependencies stay the same. Pixi
+0.66 hashes the entire `pyproject.toml` for Artisan's editable package, so
+changing a task, lint setting, or comment can change its recorded `sha256`.
+Refreshing package metadata can also record a newer Git-derived version.
+
+Check that the lockfile changes match the manifest edits, and review any
+dependency version or source changes. Commit required lockfile updates with
+the corresponding manifest edits. Do not discard a diff solely because it
+only changes Artisan's `version` or `sha256`; a hash update may be necessary.
+For unexpected changes, investigate the cause before restoring anything.
+
+CI and agent tasks that should not rewrite the lockfile use `--locked`:
+
+```bash
+pixi run --locked -e dev test-unit
+```
+
+If this reports a stale lockfile after an intentional manifest edit, refresh
+and review it using the commands above, then rerun the check.
+
+---
+
 ## Using a local copy of a dependency
 
 If you need to edit a dependency's source code — to debug an issue, develop a
@@ -141,7 +175,7 @@ through Pixi.
 Run `pixi install` to resolve the intentional dependency change. When you're
 done, remove the override and run `pixi install` again to resolve the published
 dependency. Review and commit `pyproject.toml` and `pixi.lock` together for each
-dependency change you keep. Return to `--locked` for routine commands.
+dependency change you keep.
 
 ---
 
@@ -149,7 +183,7 @@ dependency change you keep. Return to `--locked` for routine commands.
 
 Tasks are defined in `pyproject.toml`. Run `pixi task list` to see the available
 tasks; the [project manifest](https://github.com/dexterity-systems/artisan/blob/main/pyproject.toml)
-contains their exact commands. Invoke a task with `pixi run --locked -e ENV TASK`.
+contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 
 ### Default environment
 
@@ -181,7 +215,7 @@ contains their exact commands. Invoke a task with `pixi run --locked -e ENV TASK
 To use an already-running local MinIO service for S3 checks:
 
 ```bash
-ARTISAN_S3_ENDPOINT=http://127.0.0.1:9000 pixi run --locked -e dev test-s3
+ARTISAN_S3_ENDPOINT=http://127.0.0.1:9000 pixi run -e dev test-s3
 ```
 
 The tests create and remove isolated buckets. Set `ARTISAN_S3_ACCESS_KEY` and

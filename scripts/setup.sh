@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Prepare Graphviz in the selected Pixi environment after installation.
-# Invoked by `pixi run --locked setup`; safe to rerun.
+# Invoked by `pixi run setup`; safe to rerun.
 
 set -euo pipefail
 

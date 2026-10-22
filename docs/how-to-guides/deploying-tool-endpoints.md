@@ -242,7 +242,7 @@ From the repository root, deploy the example:
 
 ```bash
 cd docs/tutorials/07-compute-backends
-ARTISAN_LOAD_MODULES=r2_wait PYTHONPATH=. pixi run --locked -e dev artisan modal deploy r2_wait_tool
+ARTISAN_LOAD_MODULES=r2_wait PYTHONPATH=. pixi run -e dev artisan modal deploy r2_wait_tool
 ```
 
 The helper declares source overlays for `artisan` and `r2_wait`, so this is a

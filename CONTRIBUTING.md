@@ -33,22 +33,22 @@ Wait for feedback on the proposal before implementing it.
 ```bash
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
-pixi install --locked -e dev
-pixi run --locked -e dev setup
+pixi install -e dev
+pixi run -e dev setup
 ```
 
 ### Environments
 
 | Environment | Activate with | Purpose |
 | --- | --- | --- |
-| `default` | `pixi run --locked …` | Core runtime for pipelines |
-| `dev` | `pixi run --locked -e dev …` | Testing, linting, formatting, notebooks |
-| `docs` | `pixi run --locked -e docs …` | Documentation building (Jupyter Book 2) |
+| `default` | `pixi run …` | Core runtime for pipelines |
+| `dev` | `pixi run -e dev …` | Testing, linting, formatting, notebooks |
+| `docs` | `pixi run -e docs …` | Documentation building (Jupyter Book 2) |
 
 ### Install pre-commit hooks
 
 ```bash
-pixi run --locked -e dev install-hooks
+pixi run -e dev install-hooks
 ```
 
 This ensures linting, formatting, and type checks run automatically on every
@@ -69,7 +69,7 @@ commit.
 ### Running tests
 
 ```bash
-pixi run --locked -e dev test
+pixi run -e dev test
 ```
 
 This runs unit, integration, S3, and local notebook tests. S3 tests need
@@ -85,13 +85,13 @@ guides should explain tasks and relevant behavior.
 ### Formatting and linting
 
 ```bash
-pixi run --locked -e dev fmt               # Ruff format + lint with auto-fix
+pixi run -e dev fmt               # Ruff format + lint with auto-fix
 ```
 
 ### Pre-commit (all checks)
 
 ```bash
-pixi run --locked -e dev pre-commit run --all-files
+pixi run -e dev pre-commit run --all-files
 ```
 
 ---
