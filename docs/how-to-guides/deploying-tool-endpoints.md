@@ -136,10 +136,10 @@ budgets.
 (object-store-input-delivery)=
 ### Object-store input delivery
 
-Eligible external `FileRefArtifact` and `LargeFileArtifact` inputs travel as a
-URI, digest, and byte count. The endpoint worker authorizes the URI, downloads
-the file, and verifies integrity before invoking the tool. The lifecycle worker
-does not transfer those bytes. `AppendableArtifact` inputs send the selected,
+Eligible external `FileRefArtifact` inputs travel as a URI, digest, and byte
+count. The endpoint worker authorizes the URI, downloads the file, and verifies
+integrity before invoking the tool. The lifecycle worker does not transfer
+those bytes. `AppendableArtifact` inputs send the selected,
 locally verified record inline.
 
 Enable remote reads by declaring allowed sources before deployment:

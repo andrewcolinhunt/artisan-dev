@@ -122,9 +122,10 @@ those files with the source's client first, then pass their local paths.
 
 ## External file outputs (`files_root`) on cloud
 
-Point `files_root` at a cloud URI to store `LargeFileArtifact` and
+Point `files_root` at a cloud URI to store generated `FileRefArtifact` and
 `AppendableArtifact` content there. Creators still write to local
-`inputs.files_dir`; Artisan uploads finalized files to `files_root`.
+`inputs.files_dir`; Artisan uploads finalized files to `files_root`. References
+to existing files outside `files_dir` keep their original locations.
 
 If an upload fails, the unit fails with a postprocess-style error and the
 local sandbox is preserved so the bytes are recoverable.

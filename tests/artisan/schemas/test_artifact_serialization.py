@@ -10,7 +10,6 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
-from artisan.schemas.artifact.large_file import LargeFileArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 
@@ -153,15 +152,6 @@ _ALL_TYPE_INSTANCES = [
         extension=".dat",
         metadata={"k": "v"},
     ).finalize(),
-    LargeFileArtifact.draft(
-        content_hash="0" * 32,
-        size_bytes=2048,
-        step_number=4,
-        original_name="w",
-        extension=".bin",
-        metadata={"k": "v"},
-        external_path="/ext/w.bin",
-    ).finalize(),
     AppendableArtifact.draft(
         record_id="r1",
         content_hash="2" * 32,
@@ -178,7 +168,7 @@ class TestBaseRowSerialization:
     """Base-derived to_row/from_row across every concrete artifact type.
 
     Supersedes the per-type key-match guards: now that the base derives
-    rows from POLARS_SCHEMA, one parametrized check covers all six types.
+    rows from POLARS_SCHEMA, one parametrized check covers all five types.
     """
 
     @pytest.mark.parametrize(

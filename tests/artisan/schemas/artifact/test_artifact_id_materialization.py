@@ -3,7 +3,7 @@
 Verifies that DataArtifact, MetricArtifact, and ExecutionConfigArtifact
 materialize using artifact_id as the filename stem, preventing collisions
 when parallel workers produce artifacts with the same original_name.
-FileRefArtifact is excluded (uses path-based materialization).
+FileRefArtifact preserves its basename inside an artifact-ID directory.
 """
 
 from __future__ import annotations
@@ -180,8 +180,8 @@ class TestExecutionConfigArtifactMaterialization:
         assert os.path.basename(path) == f"{artifact.artifact_id}.yaml"
 
 
-class TestFileRefArtifactExcluded:
-    """FileRefArtifact still uses path-based materialization, not artifact_id."""
+class TestFileRefArtifactMaterialization:
+    """FileRefArtifact preserves basenames in collision-safe directories."""
 
     def test_materialize_uses_original_path_name(self, tmp_path: Path):
         """FileRefArtifact materializes using the original file path name."""
@@ -201,5 +201,41 @@ class TestFileRefArtifactExcluded:
         output_dir.mkdir()
         path = artifact.materialize_to(str(output_dir))
 
-        # FileRefArtifact uses os.path.basename(self.path), not artifact_id
         assert os.path.basename(path) == "my_file.dat"
+        assert Path(path).parent == output_dir / artifact.artifact_id
+
+    def test_duplicate_basenames_preserve_both_files(self, tmp_path: Path) -> None:
+        artifacts = []
+        for index, content in enumerate((b"first", b"second")):
+            source = tmp_path / str(index) / "output.bin"
+            source.parent.mkdir()
+            source.write_bytes(content)
+            artifacts.append(
+                FileRefArtifact.draft(
+                    path=str(source),
+                    content_hash=compute_content_digest(content),
+                    size_bytes=len(content),
+                    step_number=index,
+                ).finalize()
+            )
+
+        paths = [
+            Path(artifact.materialize_to(str(tmp_path / "inputs")))
+            for artifact in artifacts
+        ]
+
+        assert paths[0] != paths[1]
+        assert [path.name for path in paths] == ["output.bin", "output.bin"]
+        assert [path.read_bytes() for path in paths] == [b"first", b"second"]
+
+    def test_draft_rejected_before_creating_destination(self, tmp_path: Path) -> None:
+        artifact = FileRefArtifact.draft(
+            path="/unused/output.bin",
+            content_hash=compute_content_digest(b"data"),
+            size_bytes=4,
+            step_number=0,
+        )
+        destination = tmp_path / "output"
+        with pytest.raises(ValueError, match="not finalized"):
+            artifact.materialize_to(str(destination))
+        assert not destination.exists()

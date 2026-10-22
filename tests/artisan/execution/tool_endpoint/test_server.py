@@ -143,7 +143,7 @@ class NoopTool(OperationDefinition):
 
 
 class _CloudInputTool(OperationDefinition):
-    """Endpoint-routed command op with a cloud ``large_file`` input.
+    """Endpoint-routed command op with a cloud ``file_ref`` input.
 
     Names its output from the input file stem (``<stem>_waited.csv``) and
     explicitly matches output names to transported input names in postprocess.
@@ -159,7 +159,7 @@ class _CloudInputTool(OperationDefinition):
     name: ClassVar[str] = "cloud_input_tool_test"
     description: ClassVar[str] = "Echo a cloud input into <stem>_waited.csv"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.source: InputSpec(artifact_type="large_file", required=True),
+        InputRole.source: InputSpec(artifact_type="file_ref", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
@@ -1051,7 +1051,7 @@ class TestEndpointRoutedLineageMinIO:
 
         from artisan.execution.executors.creator import run_creator_lifecycle
         from artisan.execution.models.execution_unit import ExecutionUnit
-        from artisan.schemas.artifact.large_file import LargeFileArtifact
+        from artisan.schemas.artifact.file_ref import FileRefArtifact
         from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
         from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
@@ -1060,13 +1060,13 @@ class TestEndpointRoutedLineageMinIO:
         # the cloud input: bytes in MinIO, metadata in a local Delta store.
         # The files_root object name preserves original_name, so the worker
         # materializes under a basename whose stem is the artifact's name.
-        external_path = f"{uri_prefix}/files/dataset_00001.bin"
+        path = f"{uri_prefix}/files/dataset_00001.bin"
         fs.pipe_file(f"{bucket}/files/dataset_00001.bin", b"weights")
-        art = LargeFileArtifact.draft(
+        art = FileRefArtifact.draft(
             content_hash=compute_content_digest(b"weights"),
             size_bytes=7,
             step_number=0,
-            external_path=external_path,
+            path=path,
             original_name="dataset_00001",
             extension=".bin",
         ).finalize()
@@ -1078,14 +1078,14 @@ class TestEndpointRoutedLineageMinIO:
             staging,
             fs,
             {
-                "artifacts/large_files": pl.DataFrame(
-                    [art.to_row()], schema=LargeFileArtifact.POLARS_SCHEMA
+                "artifacts/file_refs": pl.DataFrame(
+                    [art.to_row()], schema=FileRefArtifact.POLARS_SCHEMA
                 ),
                 "artifacts/index": pl.DataFrame(
                     [
                         {
                             "artifact_id": art.artifact_id,
-                            "artifact_type": "large_file",
+                            "artifact_type": "file_ref",
                             "origin_step_number": 0,
                             "metadata": "{}",
                         }
@@ -1093,7 +1093,7 @@ class TestEndpointRoutedLineageMinIO:
                     schema=ARTIFACT_INDEX_SCHEMA,
                 ),
                 "artifacts/locations": pl.DataFrame(
-                    [{"artifact_id": art.artifact_id, "uri": external_path}],
+                    [{"artifact_id": art.artifact_id, "uri": path}],
                     schema={"artifact_id": pl.String, "uri": pl.String},
                 ),
             },
@@ -1110,7 +1110,7 @@ class TestEndpointRoutedLineageMinIO:
             files_root=f"{uri_prefix}/files",
             storage=storage,
         )
-        # ambient creds so the worker fetches external_path from MinIO
+        # ambient creds so the worker fetches path from MinIO
         configure_ambient_s3(storage)
 
         operation = _CloudInputTool(
@@ -1124,7 +1124,7 @@ class TestEndpointRoutedLineageMinIO:
         unit = ExecutionUnit(
             operation=operation,
             inputs={"source": [art.artifact_id]},
-            execution_spec_id="spec_lg" + "0" * 26,
+            execution_spec_id="spec_fr" + "0" * 26,
             step_number=1,
         )
         result = run_creator_lifecycle(
