@@ -3,14 +3,16 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from unittest.mock import Mock
 
 import pytest
 from fixtures.execution_records import executions_df
 from fixtures.logical_commit_store import commit_test_step
 
-from artisan.schemas.enums import CacheValidationReason, TablePath
-from artisan.schemas.execution.cache_result import CacheHit, CacheMiss
+from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.cache_result import CacheHit
 from artisan.storage.cache.cache_lookup import cache_lookup
+from artisan.storage.core.committed_scan import scan_committed
 
 
 def _seed_executions(
@@ -92,13 +94,21 @@ def cache_env(backend_fs):
     return _seed_executions(backend_fs, records_data)
 
 
+@pytest.fixture
+def execution_scan(monkeypatch: pytest.MonkeyPatch) -> Mock:
+    """Observe the cache's committed execution scans without replacing storage."""
+    scan = Mock(wraps=scan_committed)
+    monkeypatch.setattr("artisan.storage.cache.cache_lookup.scan_committed", scan)
+    return scan
+
+
 class TestCacheLookup:
     """Cache lookup behavior across successful, failed, and absent executions.
 
     Runs against both local and s3 backends via the ``cache_env`` fixture.
     """
 
-    def test_cache_hit(self, cache_env):
+    def test_cache_hit(self, cache_env, execution_scan):
         """Cache hit returns the matching successful execution."""
         delta_root, fs, opts = cache_env
         result = cache_lookup(delta_root, "spec_success", fs, storage_options=opts)
@@ -106,8 +116,9 @@ class TestCacheLookup:
         assert isinstance(result, CacheHit)
         assert result.execution_spec_id == "spec_success"
         assert result.execution_run_id == "run_success"
+        execution_scan.assert_called_once()
 
-    def test_cache_miss_no_execution(self, backend_fs):
+    def test_cache_miss_no_execution(self, backend_fs, execution_scan):
         """Cache miss when no execution exists."""
         fs, storage, root = backend_fs
         result = cache_lookup(
@@ -117,27 +128,28 @@ class TestCacheLookup:
             storage_options=storage.delta_storage_options(),
         )
 
-        assert isinstance(result, CacheMiss)
-        assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
+        assert result is None
+        execution_scan.assert_not_called()
 
-    def test_cache_miss_failed_execution(self, cache_env):
+    def test_cache_miss_failed_execution(self, cache_env, execution_scan):
         """Cache miss when execution exists but failed."""
         delta_root, fs, opts = cache_env
         result = cache_lookup(delta_root, "spec_failed", fs, storage_options=opts)
 
-        assert isinstance(result, CacheMiss)
-        assert result.reason == CacheValidationReason.EXECUTION_FAILED
+        assert result is None
+        execution_scan.assert_called_once()
 
-    def test_cache_miss_unknown_spec_id(self, cache_env):
+    def test_cache_miss_unknown_spec_id(self, cache_env, execution_scan):
         """Cache miss when spec_id not found in existing table."""
         delta_root, fs, opts = cache_env
         result = cache_lookup(delta_root, "nonexistent_spec", fs, storage_options=opts)
 
-        assert isinstance(result, CacheMiss)
-        assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
+        assert result is None
+        execution_scan.assert_called_once()
 
-    def test_cache_lookup_returns_most_recent_on_multiple_successes(self, backend_fs):
-        """When multiple successful executions exist, return most recent."""
+    @pytest.mark.parametrize("later_success", [True, False])
+    def test_cache_lookup_returns_most_recent_success(self, backend_fs, later_success):
+        """A later failure never hides an earlier reusable success."""
         earlier = datetime(2024, 1, 1, 10, 0, 0)
         later = datetime(2024, 1, 1, 12, 0, 0)
 
@@ -152,8 +164,8 @@ class TestCacheLookup:
             "timestamp_end": [earlier, later],
             "source_worker": [0, 0],
             "compute_backend": ["local", "local"],
-            "success": [True, True],
-            "error": [None, None],
+            "success": [True, later_success],
+            "error": [None, None if later_success else "Failed"],
             "tool_output": [None, None],
             "worker_log": [None, None],
             "metadata": ["{}", "{}"],
@@ -162,20 +174,7 @@ class TestCacheLookup:
         result = cache_lookup(delta_root, "same_spec", fs, storage_options=opts)
 
         assert isinstance(result, CacheHit)
-        assert result.execution_run_id == "run_new"
-
-    def test_cache_miss_reasons_for_different_scenarios(self, backend_fs):
-        """Report a missing execution when the table does not exist."""
-        fs, storage, root = backend_fs
-        # Non-existent table -> NO_PREVIOUS_EXECUTION
-        result = cache_lookup(
-            f"{root}/nonexistent",
-            "any_spec",
-            fs,
-            storage_options=storage.delta_storage_options(),
-        )
-        assert isinstance(result, CacheMiss)
-        assert result.reason == CacheValidationReason.NO_PREVIOUS_EXECUTION
+        assert result.execution_run_id == ("run_new" if later_success else "run_old")
 
 
 class TestCacheHitSchema:

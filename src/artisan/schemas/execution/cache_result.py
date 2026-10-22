@@ -1,14 +1,8 @@
-"""Cache lookup result models.
-
-``CacheHit`` and ``CacheMiss`` represent the two outcomes of a cache
-lookup during execution dispatch.
-"""
+"""Successful cache lookup result for execution dispatch."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
-
-from artisan.schemas.enums import CacheValidationReason
 
 
 @dataclass
@@ -22,16 +16,3 @@ class CacheHit:
 
     execution_run_id: str
     execution_spec_id: str
-
-
-@dataclass
-class CacheMiss:
-    """Cache lookup found no reusable result.
-
-    Attributes:
-        execution_spec_id: Deterministic cache key that was queried.
-        reason: Why the cache could not satisfy the request.
-    """
-
-    execution_spec_id: str
-    reason: CacheValidationReason

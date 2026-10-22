@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from artisan.schemas.enums import (
-    CacheValidationReason,
     FailurePolicy,
     GroupByStrategy,
     TablePath,
@@ -23,21 +22,6 @@ class TestGroupByStrategy:
     def test_enum_count(self):
         """Ensure exactly 4 strategies."""
         assert len(GroupByStrategy) == 4
-
-
-class TestCacheValidationReason:
-    """Tests for cache miss reasons."""
-
-    def test_reasons_defined(self):
-        """Verify the persisted cache miss reason values."""
-        assert (
-            CacheValidationReason.NO_PREVIOUS_EXECUTION.value == "no_previous_execution"
-        )
-        assert CacheValidationReason.EXECUTION_FAILED.value == "execution_failed"
-
-    def test_enum_count(self):
-        """Ensure exactly 2 reasons."""
-        assert len(CacheValidationReason) == 2
 
 
 class TestTablePath:

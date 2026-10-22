@@ -1,23 +1,12 @@
 """Framework-wide enumeration types.
 
-Defines enums for cache validation, failure handling, grouping
+Defines enums for cache policy, failure handling, grouping
 strategies, and Delta Lake table paths.
 """
 
 from __future__ import annotations
 
 from enum import Enum
-
-
-class CacheValidationReason(Enum):
-    """Reason a cache lookup produced a miss.
-
-    Used in ``CacheMiss`` to provide diagnostic detail about why a
-    cached result could not be reused.
-    """
-
-    NO_PREVIOUS_EXECUTION = "no_previous_execution"
-    EXECUTION_FAILED = "execution_failed"
 
 
 class FailurePolicy(Enum):
