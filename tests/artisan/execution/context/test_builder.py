@@ -32,18 +32,15 @@ def test_build_execution_context_snapshots_runtime(tmp_path: Path) -> None:
         timestamp_start=started,
         runtime_env=runtime,
         operation=operation,
-        sandbox_path=str(tmp_path / "sandbox"),
         step_run_id="step-run",
     )
     assert context.worker_id == 42
     assert context.compute_backend == "provider"
-    assert context.shared_filesystem is True
     assert context.execution_run_id == "a" * 32
     assert context.execution_spec_id == "b" * 32
     assert context.step_number == 3
     assert context.timestamp_start == started
     assert context.step_run_id == "step-run"
-    assert context.sandbox_path == str(tmp_path / "sandbox")
     assert context.operation is operation
     assert context.staging_root == runtime.staging_root
     assert context.fs.auto_mkdir is True

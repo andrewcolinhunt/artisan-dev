@@ -736,9 +736,7 @@ class InteractiveFilter:
             fs=self._fs,
             operation_name=type(operation).name,
             operation=operation,
-            sandbox_path=None,
             compute_backend="local",
-            shared_filesystem=False,
             step_run_id=step_run_id,
         )
         record_passthrough(

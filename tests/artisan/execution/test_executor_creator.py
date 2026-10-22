@@ -629,6 +629,7 @@ class TestRunExecutionFailureHandling:
         assert result.success is False
         assert result.error is not None
         assert "working_root" in result.error
+        assert result.staging_path is None
 
 
 class _EnvelopeReturningRouter(ExecuteRouter):

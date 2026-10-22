@@ -11,6 +11,7 @@ import os
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import Mock
 
 import polars as pl
 import pytest
@@ -311,7 +312,9 @@ class _StubRouter:
 
 
 class TestPerArtifactFailureSurfacing:
-    def test_exception_entries_raise_execute_failure(self, delta_with_two_inputs):
+    def test_exception_entries_raise_execute_failure(
+        self, delta_with_two_inputs, monkeypatch
+    ):
         """Exception entries surface as _ExecuteFailure with the N/M message."""
         from artisan.execution.executors.creator import _ExecuteFailure
 
@@ -323,12 +326,20 @@ class TestPerArtifactFailureSurfacing:
             step_number=1,
         )
 
-        with pytest.raises(_ExecuteFailure, match="1/2 artifact executions failed"):
+        postprocess = Mock()
+        monkeypatch.setattr(_SuffixOp, "postprocess", postprocess)
+        failure = ValueError("container died")
+        with pytest.raises(
+            _ExecuteFailure, match="1/2 artifact executions failed"
+        ) as caught:
             run_creator_lifecycle(
                 unit,
                 runtime_env,
-                execute_router=_StubRouter([{}, ValueError("container died")]),
+                execute_router=_StubRouter([{}, failure]),
             )
+
+        assert caught.value.__cause__ is failure
+        postprocess.assert_not_called()
 
 
 _seen_memory_outputs: list[Any] = []

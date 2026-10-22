@@ -297,26 +297,6 @@ class TestReassembleResults:
         memory, _ = _reassemble_results(results, [str(d0), str(d1)])
         assert memory == {"created_files": ["a.txt", "b.txt"]}
 
-    def test_filters_exceptions(self, tmp_path):
-        d0 = tmp_path / "artifact_0"
-        d0.mkdir()
-        d1 = tmp_path / "artifact_1"
-        d1.mkdir()
-
-        results = [
-            RuntimeError("boom"),
-            {"results": ["ok"]},
-        ]
-        memory, _ = _reassemble_results(results, [str(d0), str(d1)])
-        assert memory == {"results": ["ok"]}
-
-    def test_all_exceptions_returns_none(self, tmp_path):
-        d0 = tmp_path / "artifact_0"
-        d0.mkdir()
-        results = [RuntimeError("a"), ValueError("b")]
-        memory, _ = _reassemble_results(results, [str(d0), str(d0)])
-        assert memory is None
-
     def test_collects_files_from_all_dirs(self, tmp_path):
         d0 = tmp_path / "artifact_0"
         d0.mkdir()

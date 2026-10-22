@@ -1,8 +1,4 @@
-"""Execution context grouping runtime state for a single execution.
-
-``ExecutionContext`` is created once at execution start and threaded
-through the entire execution flow as a single immutable object.
-"""
+"""Immutable execution identity and resources used for staging records."""
 
 from __future__ import annotations
 
@@ -34,10 +30,7 @@ class ExecutionContext:
         fs: Filesystem implementation for staging I/O.
         operation_name: Operation name string.
         operation: Fully configured OperationDefinition instance.
-        sandbox_path: Creator sandbox directory. None for curators.
         compute_backend: Resolved step-runner name recorded for provenance.
-        shared_filesystem: Whether workers share a filesystem with
-            the orchestrator.
         step_run_id: Step run ID linking this execution to a specific
             step attempt. None when not associated with a step.
     """
@@ -52,7 +45,5 @@ class ExecutionContext:
     fs: AbstractFileSystem
     operation_name: str
     operation: OperationDefinition
-    sandbox_path: str | None  # None for curator operations
     compute_backend: str = "local"
-    shared_filesystem: bool = False
     step_run_id: str | None = None
