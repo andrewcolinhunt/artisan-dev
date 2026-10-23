@@ -13,6 +13,26 @@ The same environment supplies Python, Graphviz, and the notebook kernel.
 
 ---
 
+## Before upgrading to 0.2.0
+
+Start a **new Delta root for store format 7**. Earlier stores and their staging
+cannot be migrated or read by this release; keep each older root with its
+matching Artisan version. Do not edit its manifest to force an upgrade. See
+[the store format contract](../concepts/storage-and-delta-lake.md#the-store-format-is-explicit).
+
+Update downstream operations, pipelines, runner providers, and inspection
+clients using the [breaking changes in the changelog](../../CHANGELOG.md).
+The [public API index](../reference/python-api.md) links to supported imports and
+current examples; removed APIs have no compatibility aliases.
+
+Upgrade Modal clients and worker code together and
+[explicitly redeploy tool endpoints](../how-to-guides/deploying-tool-endpoints.md).
+For SLURM, use a compatible `artisan-submitit` provider and qualify it separately
+on your cluster. Core Artisan qualification does not qualify external runner
+packages; see [step runner configuration](../how-to-guides/configuring-execution.md#choose-a-step-runner).
+
+---
+
 ## Install Artisan
 
 ```bash

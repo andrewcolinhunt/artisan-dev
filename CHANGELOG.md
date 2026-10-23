@@ -5,6 +5,8 @@ User-facing changes are recorded here using
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-23
+
 This release changes the operation, runner, and storage contracts. Before
 upgrading, update downstream operations and start a new Delta root for store
 format 7. Existing Modal tool apps must be explicitly redeployed to adopt the
@@ -438,7 +440,8 @@ new endpoint behavior. See the breaking changes below.
 - Caching and resume support
 - Jupyter Book 2 documentation site
 
-[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a5...HEAD
+[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a5...v0.2.0
 [0.1.2a5]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a4...v0.1.2a5
 [0.1.2a4]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a3...v0.1.2a4
 [0.1.2a3]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a2...v0.1.2a3
