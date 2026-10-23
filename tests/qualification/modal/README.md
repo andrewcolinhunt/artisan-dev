@@ -29,8 +29,16 @@ and task records, acknowledgement/termination timings, JUnit, and cleanup
 status. `TaskGetInfo` is deliberately test-only. Neither a passing timing sample
 nor stopped logs establishes a general synchronous cancellation guarantee.
 The public cancellation response must remain `unknown`; positive provider
-termination is a separate qualification observation. For queued calls, the
-harness releases its occupied workers before requiring a terminal input record.
+termination is a separate qualification observation. An `unknown` acknowledgement
+does not prevent queued work from entering operation command construction before
+provider cancellation takes effect. For queued calls, the harness releases its
+occupied workers, requires a terminal input record and unavailable output, and
+checks a fresh successful call. It retains subsequent markers and requires exact
+task closure for every observed worker. `worker_ready` records entry into
+`execute_command`; `command_ready` records a launched tool after it starts its
+child. Missing markers do not prove that execution never started. Preserve any
+earlier failure of the stronger no-worker-entry assertion in the qualification
+record; passing this case does not establish that stronger guarantee.
 A natural-completion race may finish successfully after an accepted cancellation
 request; that outcome does not change the client's `unknown` acknowledgement.
 

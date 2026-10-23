@@ -130,6 +130,63 @@ def test_provider_observation_uses_required_retained_output_cursor(
     assert observed["call_statuses"] == []
 
 
+@pytest.mark.parametrize(
+    "outcome", ["closed", "no_worker", "running", "wrong_call", "wrong_source"]
+)
+def test_queued_cancellation_requires_each_observed_task_to_close(
+    monkeypatch, qualification_modules, outcome: str
+) -> None:
+    _, _, qualification = qualification_modules
+    state = {"token": "queued-token"}
+    harness = Mock(
+        manifest={"app_id": "ap-owned-test", "source_digest": "same-source"},
+        owned={"fc-queued": state},
+        started=0,
+    )
+    harness.submit.side_effect = ["fc-1", "fc-2", "fc-3", "fc-queued", "fc-fresh"]
+    harness.cancel.return_value = {"status": "unknown"}
+    markers = [
+        {
+            "event": "worker_ready",
+            "call_id": "fc-queued",
+            "source_digest": "same-source",
+            "task_id": task_id,
+        }
+        for task_id in ("ta-first", "ta-second")
+    ]
+    if outcome == "no_worker":
+        markers = []
+    elif outcome == "wrong_call":
+        markers[0]["call_id"] = "fc-unrelated"
+    elif outcome == "wrong_source":
+        markers[0]["source_digest"] = "other-source"
+    monkeypatch.setattr(qualification, "probe_logs", Mock(side_effect=[[], markers]))
+
+    def settle(call_id: str, *, require_task: bool = True) -> dict[str, str]:
+        if call_id == "fc-queued" and require_task:
+            if outcome == "running" and state["task_id"] == "ta-second":
+                msg = "second task has not closed"
+                raise AssertionError(msg)
+            return {"task_id": state["task_id"]}
+        return {}
+
+    harness.settled.side_effect = settle
+    run = qualification.test_cancel_queued_call_settles_without_delivering_output
+    if outcome in {"running", "wrong_call", "wrong_source"}:
+        with pytest.raises(AssertionError):
+            run(harness)
+    else:
+        run(harness)
+        assert state["post_cancel_task_observations"] == (
+            []
+            if outcome == "no_worker"
+            else [{"task_id": "ta-first"}, {"task_id": "ta-second"}]
+        )
+    assert state["post_cancel_markers"] == markers
+    harness.settled.assert_any_call("fc-queued", require_task=False)
+    harness.completed.assert_called_once_with("fc-fresh")
+
+
 def test_snapshot_copies_only_framework_sources_and_reviewed_harness(
     monkeypatch, tmp_path: Path, qualification_modules
 ) -> None:
