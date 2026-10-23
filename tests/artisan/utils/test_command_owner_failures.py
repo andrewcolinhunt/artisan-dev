@@ -283,6 +283,70 @@ def test_expired_owner_outcome_never_upgrades_from_late_closed_report(
         owner.finish(deadline)
 
 
+@pytest.mark.parametrize(
+    ("scenario", "expected"),
+    [
+        ("closed", "closed"),
+        ("reported-unknown", "unknown"),
+        ("missing-report", "unknown"),
+        ("partial-report", "unknown"),
+        ("expired-deadline", "unknown"),
+        ("prior-unknown", "unknown"),
+        ("external", "unknown"),
+    ],
+)
+def test_late_cancel_uses_buffered_owner_evidence_after_peer_exit(
+    tmp_path: Path, scenario: str, expected: str
+) -> None:
+    local, peer = socket.socketpair()
+    peer.settimeout(2)
+    owner = client.CommandSupervisor(
+        Mock(spec=subprocess.Popen, returncode=0),
+        local,
+        str(tmp_path / "owner"),
+        "test-capability",
+    )
+    deadline = time.monotonic() + (-1 if scenario == "expired-deadline" else 2)
+    try:
+        owner.request_finish(deadline)
+        assert receive(peer)["type"] == "shutdown"
+        if scenario == "prior-unknown":
+            send(peer, {"state": "unknown", "external": False})
+            assert owner.poll().state == "unknown"
+        frame = encode(
+            {
+                "state": "unknown" if scenario == "reported-unknown" else "closed",
+                "external": scenario == "external",
+            }
+        )
+        if scenario == "missing-report":
+            frame = b""
+        elif scenario == "partial-report":
+            frame = frame[:6]
+        peer.sendall(frame)
+        peer.close()
+
+        # The failed late write must not discard closure already in the socket.
+        owner.request_close(deadline)
+        assert owner.finish(deadline).state == expected
+    finally:
+        local.close()
+        peer.close()
+
+
+def test_late_cancel_preserves_reaped_empty_owner_closure() -> None:
+    owner = client.CommandSupervisor.start()
+    deadline = time.monotonic() + 5
+    try:
+        owner.request_finish(deadline)
+        assert owner.process.wait(timeout=2) == 0
+        owner.request_close(deadline)
+        assert owner.finish(deadline).state == "closed"
+        assert not Path(owner.root).exists()
+    finally:
+        owner.finish(deadline)
+
+
 def test_completed_external_command_survives_ordinary_worker_eof() -> None:
     owner = client.CommandSupervisor.start()
     invocation = None

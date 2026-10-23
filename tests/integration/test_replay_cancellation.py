@@ -18,10 +18,12 @@ from artisan.schemas.orchestration.step_lifecycle import (
 )
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.storage.core.committed_scan import read_committed
+from artisan.utils.command_supervisor import CommandSupervisor
 
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("owner_exits_before_cancel", [False, True])
 @pytest.mark.parametrize(
     ("evidence", "expected"),
     [
@@ -30,7 +32,7 @@ pytestmark = pytest.mark.integration
     ],
 )
 def test_curator_replay_cancellation_commits_no_worker_outputs(
-    tmp_path, monkeypatch, evidence, expected
+    tmp_path, monkeypatch, evidence, expected, owner_exits_before_cancel
 ):
     source_file = tmp_path / "input.csv"
     source_file.write_text("x,y\n1,2\n")
@@ -63,8 +65,17 @@ def test_curator_replay_cancellation_commits_no_worker_outputs(
         "artisan.orchestration.engine.step_executor._run_curator_in_subprocess",
         cancelled_curator,
     )
+    if owner_exits_before_cancel:
+        request_finish = CommandSupervisor.request_finish
+
+        def finish_before_cancel(owner: CommandSupervisor, deadline: float) -> None:
+            request_finish(owner, deadline)
+            # The closure report is buffered but unread when cancellation arrives.
+            owner.process.wait(timeout=5)
+
+        monkeypatch.setattr(CommandSupervisor, "request_finish", finish_before_cancel)
     result = replay_execution(before["execution_run_id"][0], runtime=runtime)
-    assert result.step_result.status is expected
+    assert result.step_result.status is expected, result.step_result.error
     assert result.step_result.cancellation_status is evidence
     assert result.execution_run_id is None
     assert result.diagnostic_status == "unavailable"
