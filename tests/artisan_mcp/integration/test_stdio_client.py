@@ -220,14 +220,16 @@ async def _inspect_run(
     assert tail["truncated"] is True
     assert _MARKER in tail["lines"][-1]
     # The advertised bound is rejected by MCP before the shared handler runs.
-    oversized = await session.call_tool(
-        "artisan_get_step_logs", {**log_args, "tail_lines": 1001}
-    )
-    assert oversized.isError is True
-    assert oversized.structuredContent is None
+    oversized = (
+        await session.call_tool(
+            "artisan_get_step_logs", {**log_args, "tail_lines": 1001}
+        )
+    ).model_dump(mode="json", by_alias=True)
+    assert oversized["isError"] is True
+    assert oversized["structuredContent"] is None
     assert any(
-        content.type == "text" and "tail_lines" in content.text
-        for content in oversized.content
+        content["type"] == "text" and "tail_lines" in content["text"]
+        for content in oversized["content"]
     )
     success_logs = await _call(
         session, "artisan_get_step_logs", {**run_args, "step_name": "ingest"}
