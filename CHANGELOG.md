@@ -223,6 +223,8 @@ new endpoint behavior. See the breaking changes below.
   results.
 - Native cancellation retains completed work and confirmed cleanup evidence
   across worker-exit races, later supervisor loss, and refused redundant signals.
+- Cancellation arriving as native cleanup completes preserves confirmed closure
+  instead of reporting a failed step when the supervisor has already exited.
 - Public replay configuration no longer overwrites secrets supplied for the new
   attempt, and deployment checks preserve secret precedence.
 - Strict store validation accepts registered artifact schemas containing

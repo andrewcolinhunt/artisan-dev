@@ -358,8 +358,29 @@ class CommandSupervisor:
         try:
             send(self.connection, {"type": kind, **values})
         except (OSError, ValueError):
+            # The owner may have sent its final report before this late request.
+            self._read_available()
             self._failed |= self._snapshot.get("state") not in {"closed", "unknown"}
             self.connection.close()
+
+    def _read_available(self) -> None:
+        """Drain bounded reports without discarding proof buffered before EOF."""
+        try:
+            for _ in range(64):
+                if not select.select([self.connection], [], [], 0)[0]:
+                    break
+                response = self.channel.read()
+                if response is not None:
+                    if (
+                        self.deadline is not None
+                        and time.monotonic() >= self.deadline
+                        and self._snapshot.get("state") != "closed"
+                    ):
+                        self._terminal_unknown = True
+                    self._snapshot = response
+        except (OSError, EOFError, ValueError):
+            if self._snapshot.get("state") not in {"closed", "unknown"}:
+                self._failed = True
 
     def request_close(self, deadline: float, *, immediate: bool = False) -> None:
         """Accept cancellation without waiting; repeated calls shorten its budget."""
@@ -390,22 +411,7 @@ class CommandSupervisor:
                 self._terminal_unknown = True
             if not self._finishing:
                 self._send("status")
-            try:
-                for _ in range(64):
-                    if not select.select([self.connection], [], [], 0)[0]:
-                        break
-                    response = self.channel.read()
-                    if response is not None:
-                        if (
-                            self.deadline is not None
-                            and time.monotonic() >= self.deadline
-                            and self._snapshot.get("state") != "closed"
-                        ):
-                            self._terminal_unknown = True
-                        self._snapshot = response
-            except (OSError, EOFError, ValueError):
-                if self._snapshot.get("state") not in {"closed", "unknown"}:
-                    self._failed = True
+            self._read_available()
             state = self._snapshot.get("state", "unknown")
             if self._failed or (
                 self.deadline is not None
