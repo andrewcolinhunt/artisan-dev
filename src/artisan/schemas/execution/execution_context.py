@@ -1,16 +1,12 @@
-"""Execution context grouping runtime state for a single execution.
-
-``ExecutionContext`` is created once at execution start and threaded
-through the entire execution flow, replacing ~13 individual parameters
-with a single immutable object.
-"""
+"""Immutable execution identity and resources used for staging records."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
-from pathlib import Path
 from typing import TYPE_CHECKING
+
+from fsspec import AbstractFileSystem
 
 if TYPE_CHECKING:
     from artisan.operations.base.operation_definition import OperationDefinition
@@ -30,13 +26,13 @@ class ExecutionContext:
         timestamp_start: Execution start time (UTC).
         worker_id: Worker identifier for distributed execution.
         artifact_store: ArtifactStore instance for artifact lookups.
-        staging_root: Root path for staging Parquet files.
+        staging_root: Root URI/path for staging Parquet files.
+        fs: Filesystem implementation for staging I/O.
         operation_name: Operation name string.
         operation: Fully configured OperationDefinition instance.
-        sandbox_path: Creator sandbox directory. None for curators.
-        compute_backend: Backend name (e.g. "local", "slurm").
-        shared_filesystem: Whether workers share a filesystem with
-            the orchestrator.
+        compute_backend: Resolved step-runner name recorded for provenance.
+        step_run_id: Step run ID linking this execution to a specific
+            step attempt. None when not associated with a step.
     """
 
     execution_run_id: str
@@ -45,10 +41,9 @@ class ExecutionContext:
     timestamp_start: datetime
     worker_id: int
     artifact_store: ArtifactStore
-    staging_root: Path
+    staging_root: str
+    fs: AbstractFileSystem
     operation_name: str
     operation: OperationDefinition
-    sandbox_path: Path | None  # None for curator operations
     compute_backend: str = "local"
-    shared_filesystem: bool = False
     step_run_id: str | None = None

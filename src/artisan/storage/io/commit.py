@@ -1,470 +1,708 @@
-"""Commit staged Parquet files to Delta Lake tables.
-
-The orchestrator is the single writer; workers stage Parquet files (see
-``staging.py``) and ``DeltaCommitter`` merges them into Delta tables
-with content-addressed deduplication, partitioning, and optional
-compaction/vacuum.
-"""
+"""Crash-safe logical commits for Artisan Delta tables."""
 
 from __future__ import annotations
 
-import logging
-from pathlib import Path
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from typing import Any
 
+import arro3.core as ac
 import polars as pl
-from deltalake import DeltaTable, WriterProperties
+from deltalake import DeltaTable, WriterProperties, write_deltalake
+from fsspec import AbstractFileSystem
 
-logger = logging.getLogger(__name__)
-
+from artisan.errors import CommitError, StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.orchestration.step_lifecycle import (
+    TERMINAL_STEP_STATUSES,
+    StepStatus,
+)
+from artisan.storage.core.committed_scan import (
+    read_committed,
+    read_logical_commits,
+    verify_plan_effect,
+)
+from artisan.storage.core.store_format import (
+    assert_store_format,
+    assert_store_manifest,
+    prepare_store_initialization,
+    publish_store_manifest,
+)
 from artisan.storage.core.table_schemas import (
     FRAMEWORK_SCHEMAS,
+    LOGICAL_COMMITS_SCHEMA,
     NON_PARTITIONED_TABLES,
+    get_physical_schema,
+    get_physical_schema_for_path,
+    is_global_artifact_table,
+)
+from artisan.storage.io.commit_plan import (
+    CommitPlan,
+    PlannedTable,
+    StagedPlanEvidence,
+    canonical_table_plan_key,
+    comparable_effect_rows,
+    read_commit_plan,
+    read_plan_evidence,
 )
 from artisan.storage.io.staging import StagingManager
+from artisan.utils.path import uri_join
 
-# Default writer properties for Delta Lake writes
-# Using zstd compression for good compression ratio and performance
 DEFAULT_WRITER_PROPERTIES = WriterProperties(compression="ZSTD")
 
 
-def _to_str(table: str) -> str:
-    """Coerce a TablePath enum or plain string to its string value."""
-    return table.value if hasattr(table, "value") else table
+def _normalize_table(table: str | TablePath) -> str:
+    return table.value if isinstance(table, TablePath) else table
 
 
-def _table_name_from_path(table_path: str) -> str:
-    """Extract table name (last segment) from a table path string."""
-    return Path(table_path).name
+def _table_name(table_path: str) -> str:
+    return table_path.rsplit("/", 1)[-1]
 
 
-def _get_commit_order() -> list[str]:
-    """Build the table commit order from the current artifact registry.
+@dataclass(frozen=True)
+class PreparedCommitEvidence:
+    """Validated staged snapshot, usable once by the writer that prepared it."""
 
-    Order ensures referential integrity on partial failure: content
-    tables first, then index, then provenance edges, then executions.
-    """
-    artifact_paths = [td.table_path for td in ArtifactTypeDef.get_all().values()]
-    framework_paths = [
-        TablePath.ARTIFACT_INDEX.value,
-        TablePath.ARTIFACT_EDGES.value,
-        TablePath.EXECUTION_EDGES.value,
-        TablePath.EXECUTIONS.value,
-    ]
-    return [*artifact_paths, *framework_paths]
+    staged: StagedPlanEvidence
+    delta_root: str
+    token: object
 
 
 class DeltaCommitter:
-    """Commit staged Parquet files to Delta Lake tables.
+    """Commit one immutable plan in dependency order and complete it last."""
 
-    Attributes:
-        delta_base_path (Path): Root directory for Delta Lake tables.
-        staging_manager (StagingManager): Manages staged Parquet files.
-    """
-
-    def __init__(self, delta_base_path: Path | str, staging_dir: Path | str):
-        """Initialize with Delta Lake root and staging directories.
-
-        Args:
-            delta_base_path: Root directory for Delta Lake tables.
-            staging_dir: Root directory containing worker-staged
-                Parquet files.
-        """
-        self.delta_base_path = Path(delta_base_path)
-        self.staging_manager = StagingManager(staging_dir)
-
-    def _table_path(self, table: str) -> Path:
-        """Resolve the filesystem path for a Delta table."""
-        return self.delta_base_path / table
-
-    def _is_non_partitioned(self, table: str) -> bool:
-        """Check if a table should not be partitioned."""
-        for npt in NON_PARTITIONED_TABLES:
-            if _to_str(npt) == _to_str(table):
-                return True
-        return False
-
-    def _has_artifact_id(self, table: str) -> bool:
-        """Check if the table supports artifact_id deduplication."""
-        if _to_str(table) == _to_str(TablePath.EXECUTION_EDGES):
-            return False
-        return True
-
-    # -------------------------------------------------------------------------
-    # Commit operations
-    # -------------------------------------------------------------------------
-
-    def commit_table(
+    def __init__(
         self,
-        table: str,
-        deduplicate: bool = True,
-        partition_by: list[str] | None = None,
-        step_number: int | None = None,
-        operation_name: str | None = None,
-    ) -> int:
-        """Commit staged Parquet data for one table to Delta Lake.
+        delta_base_path: str,
+        staging_manager: StagingManager,
+        *,
+        fs: AbstractFileSystem,
+        storage_options: dict[str, str] | None = None,
+        files_root: str | None = None,
+    ) -> None:
+        self.delta_base_path = delta_base_path
+        self.staging_manager = staging_manager
+        self._fs = fs
+        self._storage_options = storage_options or {}
+        self._files_root = files_root
+        self._prepared: dict[object, PreparedCommitEvidence] = {}
 
-        Args:
-            table: Table path (e.g. ``"artifacts/data"`` or a
-                ``TablePath`` member).
-            deduplicate: Skip rows whose ``artifact_id`` already
-                exists in the target table.
-            partition_by: Partition columns. Defaults to
-                ``["origin_step_number"]`` for partitioned tables.
-            step_number: Restrict to staged files from this step
-                directory. None commits from all directories.
-            operation_name: Human-readable step directory suffix used
-                alongside ``step_number``.
+    def prepare_logical(
+        self,
+        plan: CommitPlan,
+        *,
+        staged: StagedPlanEvidence | None = None,
+        source_rows: pl.DataFrame | None = None,
+        committed_frames: dict[str, pl.DataFrame] | None = None,
+    ) -> PreparedCommitEvidence:
+        """Validate exact staged evidence for one immediate application.
 
-        Returns:
-            Number of rows written. Zero when nothing was staged or
-            all rows were deduplicated.
+        A new plan may be prepared before publication. Applying the prepared
+        evidence still requires the identical durable plan under this root.
         """
-        table_name = _table_name_from_path(_to_str(table))
-
-        # Read all staged files for this table
-        staged_df = self.staging_manager.read_all_staged_for_table(
-            table_name, step_number=step_number, operation_name=operation_name
+        assert_store_manifest(self.delta_base_path, self._fs)
+        staged = staged or read_plan_evidence(
+            plan, self.staging_manager.staging_dir, self._fs
         )
-        if staged_df is None or staged_df.is_empty():
-            return 0
-
-        table_path = self._table_path(_to_str(table))
-
-        # Default partition: all tables use origin_step_number except
-        # non-partitioned tables
-        if partition_by is None:
-            if self._is_non_partitioned(table):
-                partition_by = None
-            else:
-                partition_by = ["origin_step_number"]
-
-        # Handle deduplication for artifact tables
         if (
-            deduplicate
-            and "artifact_id" in staged_df.columns
-            and self._has_artifact_id(table)
+            staged.plan != plan
+            or staged.staging_root != self.staging_manager.staging_dir
         ):
-            staged_df = self._deduplicate_artifacts(staged_df, table_path)
-            if staged_df.is_empty():
-                return 0
-
-        # Write to Delta Lake with zstd compression
-        if table_path.exists():
-            # Append to existing table (schema_mode=merge for column evolution)
-            staged_df.write_delta(
-                str(table_path),
-                mode="append",
-                delta_write_options={
-                    "writer_properties": DEFAULT_WRITER_PROPERTIES,
-                    "schema_mode": "merge",
-                },
+            msg = "Prepared staging evidence does not match this plan/root"
+            raise StoreIntegrityError(msg)
+        if plan.commit_kind == "execution_recovery":
+            self._validate_recovery(
+                plan, staged, source_rows=source_rows, committed_frames=committed_frames
             )
         else:
-            # Create new table with partitioning
-            write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
-            if partition_by:
-                write_opts["partition_by"] = partition_by
-            staged_df.write_delta(
-                str(table_path),
-                mode="overwrite",
-                delta_write_options=write_opts,
+            self._reject_terminal_attempt(plan, source_rows=source_rows)
+            self._validate_dynamic_result(staged, source_rows=source_rows)
+        prepared = PreparedCommitEvidence(staged, self.delta_base_path, object())
+        self._prepared[prepared.token] = prepared
+        return prepared
+
+    def _validate_dynamic_result(
+        self, staged: StagedPlanEvidence, *, source_rows: pl.DataFrame | None
+    ) -> None:
+        """Verify the immutable contract and summary before publishing effects."""
+        from artisan.orchestration.engine.step_tracker import StepTracker
+        from artisan.storage.core.curator_result import (
+            dynamic_output_roles,
+            read_result_evidence,
+            validate_dynamic_result,
+        )
+
+        candidates = staged.frames.get(TablePath.STEPS.value)
+        if candidates is None:
+            return
+        row = candidates.row(0, named=True)
+        if source_rows is None:
+            source_rows = read_committed(
+                self.delta_base_path,
+                TablePath.STEPS,
+                fs=self._fs,
+                storage_options=self._storage_options,
             )
+        history = (
+            source_rows.filter(pl.col("step_run_id") == row["step_run_id"])
+            .unique()
+            .sort("state_sequence")
+            .to_dicts()
+        )
+        history.append(row)
+        if not any(
+            dynamic_output_roles(item["compute_options_json"]) for item in history
+        ):
+            return
+        StepTracker._validate_history(history)
+        if row["status"] not in {"succeeded", "partial"}:
+            return
+        frames = read_result_evidence(
+            self.delta_base_path,
+            fs=self._fs,
+            storage_options=self._storage_options,
+            staged=staged.frames,
+        )
+        validate_dynamic_result(row, frames)
 
-        return staged_df.shape[0]
-
-    def commit_all_tables(
+    def commit_logical(
         self,
-        cleanup_staging: bool = True,
-        step_number: int | None = None,
-        operation_name: str | None = None,
+        plan: CommitPlan,
+        *,
+        preserve_staging: bool = False,
+        prepared: PreparedCommitEvidence | None = None,
     ) -> dict[str, int]:
-        """Commit all staged data across every table to Delta Lake.
+        """Apply one immutable batch, proving its effects before completion.
 
-        Each table is committed independently; Delta Lake does not
-        support multi-table transactions. The commit order (content
-        tables, index, edges, executions) minimises referential
-        integrity issues on partial failure.
-
-        Args:
-            cleanup_staging: Remove staging files after a successful
-                commit.
-            step_number: Restrict to staged files from this step
-                directory. None commits from all directories.
-            operation_name: Human-readable step directory suffix used
-                alongside ``step_number``.
-
-        Returns:
-            Mapping of table name to rows committed. Tables with zero
-            rows are omitted. A ``_failed_tables`` key is present when
-            any table commit raised an exception.
+        Prepared evidence is optional and can be consumed only once by this
+        writer. Retries prepare the persisted plan again. Already completed
+        plans are verified only when retained staging needs cleanup.
         """
-        results = {}
-        failed_tables = []
-
-        for table in _get_commit_order():
-            table_name = _table_name_from_path(_to_str(table))
+        assert_store_manifest(self.delta_base_path, self._fs)
+        self._require_persisted_plan(plan)
+        if prepared is not None:
+            self._consume_prepared(plan, prepared)
+        controls = self._controls()
+        control = self._control_for(plan, controls)
+        if control is not None and control["state"] == "complete":
+            if not preserve_staging and self._has_staging(plan):
+                self._cleanup_plan(plan)
+            return {}
+        if control is not None and control["state"] == "abandoned":
+            msg = f"Logical commit {plan.logical_commit_id} is abandoned"
+            raise StoreIntegrityError(msg)
+        if prepared is None:
+            prepared = self.prepare_logical(plan)
+            self._consume_prepared(plan, prepared)
+        frames = prepared.staged.frames
+        if control is None:
             try:
-                rows_committed = self.commit_table(
-                    table,
-                    step_number=step_number,
-                    operation_name=operation_name,
-                )
-                if rows_committed > 0:
-                    results[table_name] = rows_committed
+                controls = self._insert_planned(plan)
             except Exception as exc:
-                logger.error(
-                    "Failed to commit table %s: %s: %s",
-                    table_name,
-                    type(exc).__name__,
-                    exc,
+                msg = f"Commit {plan.logical_commit_id} failed at control planning"
+                raise CommitError(
+                    plan.logical_commit_id,
+                    TablePath.LOGICAL_COMMITS.value,
+                    plan.plan_digest,
+                    [],
+                    self._plan_objects(plan),
+                    msg,
+                ) from exc
+            self._checkpoint("planned", plan, None)
+
+        results: dict[str, int] = {}
+        verified: list[str] = []
+        for table in plan.tables:
+            try:
+                written = self._commit_table_effect(
+                    plan, table, frames[table.table_path], controls
                 )
-                failed_tables.append((table_name, str(exc)))
-
-        if failed_tables:
-            results["_failed_tables"] = failed_tables
-
-        if results:
-            parts = [
-                f"{name}={count}"
-                for name, count in results.items()
-                if not name.startswith("_")
-            ]
-            if parts:
-                logger.debug("Step %d commit: %s", step_number or 0, ", ".join(parts))
-
-        if cleanup_staging:
-            if step_number is not None:
-                self.staging_manager.cleanup_step(
-                    step_number, operation_name=operation_name
-                )
-            else:
-                self.staging_manager.cleanup_all()
-
+                verified.append(table.table_path)
+                if written:
+                    results[_table_name(table.table_path)] = written
+                self._checkpoint("table", plan, table.table_path)
+            except Exception as exc:
+                msg = f"Commit {plan.logical_commit_id} failed at {table.table_path}"
+                raise CommitError(
+                    plan.logical_commit_id,
+                    table.table_path,
+                    table.table_plan_key,
+                    verified,
+                    [file.relative_path for file in table.files],
+                    msg,
+                ) from exc
+        try:
+            self._complete(plan)
+            self._checkpoint("complete", plan, None)
+        except Exception as exc:
+            msg = f"Commit {plan.logical_commit_id} failed at logical completion"
+            raise CommitError(
+                plan.logical_commit_id,
+                TablePath.LOGICAL_COMMITS.value,
+                plan.plan_digest,
+                verified,
+                self._plan_objects(plan),
+                msg,
+            ) from exc
+        if not preserve_staging:
+            self._delete_planned_files(plan)
         return results
 
-    def recover_staged(self, *, preserve_staging: bool = False) -> dict[str, int]:
-        """Commit leftover staging files from a prior crashed run.
+    def _consume_prepared(
+        self, plan: CommitPlan, prepared: PreparedCommitEvidence
+    ) -> None:
+        issued = self._prepared.pop(prepared.token, None)
+        if (
+            issued is not prepared
+            or prepared.delta_root != self.delta_base_path
+            or prepared.staged.plan != plan
+            or prepared.staged.staging_root != self.staging_manager.staging_dir
+        ):
+            msg = "Prepared commit evidence is stale or belongs to another writer/plan/root"
+            raise StoreIntegrityError(msg)
 
-        Idempotent: content-addressed deduplication skips rows that
-        already exist in Delta.
-
-        Args:
-            preserve_staging: Keep staging files after commit instead
-                of cleaning them up.
-
-        Returns:
-            Mapping of table name to rows committed. Empty dict when
-            no leftover staging files are found.
-        """
-        if not self.staging_manager.staging_dir.exists():
-            return {}
-
-        probe = self.staging_manager.get_staged_files_for_table("executions")
-        if not probe:
-            return {}
-
-        logger.debug(
-            "Staged recovery: found %d leftover execution file(s), committing...",
-            len(probe),
+    def _has_staging(self, plan: CommitPlan) -> bool:
+        return any(
+            self._fs.exists(
+                uri_join(self.staging_manager.staging_dir, file.relative_path)
+            )
+            for table in plan.tables
+            for file in table.files
         )
 
-        results = self.commit_all_tables(
-            cleanup_staging=not preserve_staging,
-            step_number=None,
+    def _require_persisted_plan(self, plan: CommitPlan) -> None:
+        persisted = read_commit_plan(
+            self.delta_base_path,
+            self._fs,
+            plan.step_run_id,
+            plan.commit_kind,
+            plan.recovery_batch_id,
         )
+        if persisted != plan:
+            msg = f"Persisted plan disagrees for {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg)
 
-        committed = {k: v for k, v in results.items() if not k.startswith("_")}
-        if committed:
-            parts = [f"{name}={count}" for name, count in committed.items()]
-            logger.debug("Staged recovery committed: %s", ", ".join(parts))
-        else:
-            logger.debug("Staged recovery: no new rows to commit")
+    def _reject_terminal_attempt(
+        self, plan: CommitPlan, *, source_rows: pl.DataFrame | None = None
+    ) -> None:
+        """Prevent an incomplete plan from reviving an already terminal attempt."""
+        if source_rows is None:
+            source_rows = read_committed(
+                self.delta_base_path,
+                TablePath.STEPS,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+        rows = source_rows.filter(pl.col("step_run_id") == plan.step_run_id)
+        if rows.is_empty():
+            return
+        latest = rows.sort("state_sequence").row(-1, named=True)
+        try:
+            status = StepStatus(latest["status"])
+        except (TypeError, ValueError) as exc:
+            msg = f"Step attempt {plan.step_run_id} has an invalid visible status"
+            raise StoreIntegrityError(msg) from exc
+        if status in TERMINAL_STEP_STATUSES:
+            msg = (
+                f"Refusing to commit {plan.logical_commit_id}: step attempt is "
+                f"already {status.value}"
+            )
+            raise StoreIntegrityError(msg)
+        if plan.commit_kind == "step_result" and status is not StepStatus.RUNNING:
+            msg = (
+                f"Refusing to commit {plan.logical_commit_id}: step attempt must be "
+                f"running, found {status.value}"
+            )
+            raise StoreIntegrityError(msg)
 
-        return results
-
-    def commit_batch(self, batch_id: str, cleanup_after: bool = True) -> dict[str, int]:
-        """Commit a single staging batch to Delta Lake.
-
-        Args:
-            batch_id: Identifies the batch subdirectory to commit.
-            cleanup_after: Remove the batch staging directory after a
-                successful commit.
-
-        Returns:
-            Mapping of table name to rows committed. Tables with zero
-            rows are omitted.
-        """
-        results = {}
-        batch_dir = self.staging_manager.staging_dir / batch_id
-
-        if not batch_dir.exists():
-            return results
-
-        for table in _get_commit_order():
-            table_name = _table_name_from_path(_to_str(table))
-            parquet_path = batch_dir / f"{table_name}.parquet"
-            if parquet_path.exists():
-                df = pl.read_parquet(parquet_path)
-                if not df.is_empty():
-                    rows = self.commit_dataframe(df, table)
-                    if rows > 0:
-                        results[table_name] = rows
-
-        if cleanup_after:
-            self.staging_manager.cleanup_batch(batch_id)
-
-        return results
-
-    # -------------------------------------------------------------------------
-    # Helper methods
-    # -------------------------------------------------------------------------
-
-    def _deduplicate_artifacts(
-        self, df: pl.DataFrame, table_path: Path
-    ) -> pl.DataFrame:
-        """Remove rows whose artifact_id already exists in Delta."""
-        if not table_path.exists():
-            return df
-
-        existing_ids = pl.scan_delta(str(table_path)).select("artifact_id").collect()
-
-        if existing_ids.is_empty():
-            return df
-
-        return df.join(existing_ids, on="artifact_id", how="anti")
-
-    def commit_dataframe(
+    def _validate_recovery(
         self,
-        df: pl.DataFrame,
-        table: str,
-        deduplicate: bool = True,
-    ) -> int:
-        """Write a single DataFrame directly to a Delta table.
+        plan: CommitPlan,
+        staged: StagedPlanEvidence,
+        *,
+        source_rows: pl.DataFrame | None = None,
+        committed_frames: dict[str, pl.DataFrame] | None = None,
+    ) -> None:
+        """Validate all recovered workers through one shared source/artifact view."""
+        from artisan.storage.core.run_scope import validate_staged_executions
 
-        Args:
-            df: Data to write (appended to existing table or creates
-                a new one).
-            table: Target table path string or ``TablePath`` member.
-            deduplicate: Skip rows whose ``artifact_id`` already
-                exists in the target table.
-
-        Returns:
-            Number of rows written. Zero when the DataFrame is empty
-            or all rows were deduplicated.
-        """
-        table_path = self._table_path(_to_str(table))
-
-        if deduplicate and "artifact_id" in df.columns and self._has_artifact_id(table):
-            df = self._deduplicate_artifacts(df, table_path)
-            if df.is_empty():
-                return 0
-
-        partition_by = (
-            ["origin_step_number"] if not self._is_non_partitioned(table) else None
+        if source_rows is None:
+            source_rows = self._read_physical(TablePath.STEPS.value)
+        validate_staged_executions(
+            self.delta_base_path,
+            staged.frames,
+            step_run_id=plan.step_run_id,
+            step_number=plan.step_number,
+            operation_name=plan.operation_name,
+            source_rows=source_rows,
+            per_execution_artifact_ids=staged.per_execution_artifact_ids,
+            committed_frames=committed_frames,
+            fs=self._fs,
+            storage_options=self._storage_options,
+            files_root=self._files_root,
         )
 
-        if table_path.exists():
-            df.write_delta(
-                str(table_path),
-                mode="append",
-                delta_write_options={
-                    "writer_properties": DEFAULT_WRITER_PROPERTIES,
-                    "schema_mode": "merge",
-                },
+    @staticmethod
+    def _control_for(
+        plan: CommitPlan,
+        controls: pl.DataFrame,
+    ) -> dict[str, Any] | None:
+        matches = controls.filter(pl.col("logical_commit_id") == plan.logical_commit_id)
+        if matches.is_empty():
+            return None
+        row = matches.row(0, named=True)
+        if (
+            row["commit_kind"] != plan.commit_kind
+            or row["step_run_id"] != plan.step_run_id
+            or row["plan_digest"] != plan.plan_digest
+            or row["recovery_batch_id"] != plan.recovery_batch_id
+        ):
+            msg = f"Control row disagrees with plan {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg)
+        return row
+
+    def _controls(self) -> pl.DataFrame:
+        return read_logical_commits(
+            self.delta_base_path,
+            fs=self._fs,
+            storage_options=self._storage_options,
+        )
+
+    def _insert_planned(self, plan: CommitPlan) -> pl.DataFrame:
+        control = pl.DataFrame(
+            [
+                {
+                    "logical_commit_id": plan.logical_commit_id,
+                    "commit_kind": plan.commit_kind,
+                    "step_run_id": plan.step_run_id,
+                    "recovery_batch_id": plan.recovery_batch_id,
+                    "state": "planned",
+                    "plan_digest": plan.plan_digest,
+                    "created_at": datetime.now(UTC),
+                    "completed_at": None,
+                    "abandon_reason": None,
+                }
+            ],
+            schema=LOGICAL_COMMITS_SCHEMA,
+        )
+        self._append(control, TablePath.LOGICAL_COMMITS.value)
+        controls = self._controls()
+        row = self._control_for(plan, controls)
+        if row is None or row["state"] != "planned":
+            msg = f"Planned control row was not durable for {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg)
+        return controls
+
+    def _commit_table_effect(
+        self,
+        plan: CommitPlan,
+        table: PlannedTable,
+        expected: pl.DataFrame,
+        controls: pl.DataFrame,
+    ) -> int:
+        physical = self._read_physical(table.table_path)
+        missing = self._missing_rows(plan, table, expected, physical, controls)
+        if not missing.is_empty():
+            self._append(
+                self._inject_owner(missing, table.table_path, plan.logical_commit_id),
+                table.table_path,
+            )
+            physical = self._read_physical(table.table_path)
+        verify_plan_effect(plan, table.table_path, physical, controls)
+        return missing.height
+
+    def _missing_rows(
+        self,
+        plan: CommitPlan,
+        table: PlannedTable,
+        expected: pl.DataFrame,
+        physical: pl.DataFrame,
+        controls: pl.DataFrame,
+    ) -> pl.DataFrame:
+        keys = list(table.natural_key)
+        keyed = physical.join(
+            expected.select(keys),
+            on=keys,
+            how="inner",
+            nulls_equal=True,
+        )
+        self._reject_conflicting_values(
+            table.table_path, table.natural_key, expected, keyed
+        )
+        if table.table_path == TablePath.CACHE_REUSE.value:
+            owned = physical.filter(pl.col("current_step_run_id") == plan.step_run_id)
+        else:
+            owned = physical.filter(
+                pl.col("logical_commit_id") == plan.logical_commit_id
+            )
+            if keyed["logical_commit_id"].null_count():
+                msg = f"Table {table.table_path!r} contains unowned rows"
+                raise StoreIntegrityError(msg)
+        extras = owned.join(
+            expected.select(keys), on=keys, how="anti", nulls_equal=True
+        )
+        if not extras.is_empty():
+            msg = f"Commit {plan.logical_commit_id} owns unplanned {table.table_path} rows"
+            raise StoreIntegrityError(msg)
+        if (
+            "origin_step_number" in owned
+            and not owned.filter(
+                pl.col("origin_step_number").is_null()
+                | (pl.col("origin_step_number") != plan.step_number)
+            ).is_empty()
+        ):
+            msg = (
+                f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
+            )
+            raise StoreIntegrityError(msg)
+        if table.table_path == TablePath.CACHE_REUSE.value:
+            satisfied = keyed
+            if 0 < satisfied.height < expected.height:
+                self._raise_partial(table.table_path)
+        elif is_global_artifact_table(table.table_path):
+            complete = set(
+                controls.filter(pl.col("state") == "complete")[
+                    "logical_commit_id"
+                ].to_list()
+            )
+            satisfied = keyed.filter(
+                (pl.col("logical_commit_id") == plan.logical_commit_id)
+                | pl.col("logical_commit_id").is_in(complete)
             )
         else:
-            write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
-            if partition_by:
-                write_opts["partition_by"] = partition_by
-            df.write_delta(
-                str(table_path),
-                mode="overwrite",
-                delta_write_options=write_opts,
+            foreign = keyed.filter(
+                pl.col("logical_commit_id") != plan.logical_commit_id
+            )
+            if not foreign.is_empty():
+                msg = f"Natural key already belongs to another commit in {table.table_path}"
+                raise StoreIntegrityError(msg)
+            satisfied = keyed.filter(
+                pl.col("logical_commit_id") == plan.logical_commit_id
+            )
+            if 0 < satisfied.height < expected.height:
+                self._raise_partial(table.table_path)
+        if not satisfied.group_by(keys).len().filter(pl.col("len") != 1).is_empty():
+            msg = f"Duplicate natural key in table {table.table_path!r}"
+            raise StoreIntegrityError(msg)
+        missing = expected.join(
+            satisfied.select(keys).unique(),
+            on=keys,
+            how="anti",
+            nulls_equal=True,
+        )
+        if missing.is_empty():
+            self._verify_table_plan_key(plan, table, expected)
+        return missing
+
+    @staticmethod
+    def _reject_conflicting_values(
+        table_path: str,
+        natural_key: tuple[str, ...],
+        expected: pl.DataFrame,
+        keyed: pl.DataFrame,
+    ) -> None:
+        if keyed.is_empty():
+            return
+        expected = comparable_effect_rows(table_path, expected)
+        columns = expected.columns
+        ownerless = keyed.select(columns).unique(maintain_order=True)
+        intended = expected.join(
+            keyed.select(list(natural_key)).unique(),
+            on=list(natural_key),
+            how="inner",
+            nulls_equal=True,
+        )
+        if not _frames_equal(ownerless, intended, sort_by=list(natural_key)):
+            msg = f"Natural key has conflicting values in {table_path}"
+            raise StoreIntegrityError(msg)
+
+    @staticmethod
+    def _verify_table_plan_key(
+        plan: CommitPlan,
+        table: PlannedTable,
+        expected: pl.DataFrame,
+    ) -> None:
+        if (
+            canonical_table_plan_key(
+                plan.logical_commit_id,
+                table.table_path,
+                expected,
+            )
+            != table.table_plan_key
+        ):
+            msg = f"Table plan key disagrees for {table.table_path}"
+            raise StoreIntegrityError(msg)
+
+    @staticmethod
+    def _raise_partial(table_path: str) -> None:
+        msg = f"Only part of the planned effect exists in {table_path}"
+        raise StoreIntegrityError(msg)
+
+    @staticmethod
+    def _inject_owner(
+        frame: pl.DataFrame,
+        table_path: str,
+        logical_commit_id: str,
+    ) -> pl.DataFrame:
+        if table_path == TablePath.CACHE_REUSE.value:
+            return frame
+        return frame.with_columns(
+            pl.lit(logical_commit_id).cast(pl.String).alias("logical_commit_id")
+        )
+
+    def _complete(self, plan: CommitPlan) -> None:
+        table = DeltaTable(
+            self._table_path(TablePath.LOGICAL_COMMITS.value),
+            storage_options=self._storage_options,
+        )
+        predicate = (
+            f"logical_commit_id = '{plan.logical_commit_id}' AND state = 'planned'"
+        )
+        completed_at = datetime.now(UTC).isoformat()
+        metrics = table.update(
+            predicate=predicate,
+            updates={
+                "state": "'complete'",
+                "completed_at": f"CAST('{completed_at}' AS TIMESTAMP)",
+            },
+        )
+        if metrics.get("num_updated_rows") != 1:
+            msg = f"Control completion was not conditional for {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg)
+        control = self._control_for(plan, self._controls())
+        if control is None or control["state"] != "complete":
+            msg = f"Completion was not durable for {plan.logical_commit_id}"
+            raise StoreIntegrityError(msg)
+
+    def _validate_complete(
+        self, plan: CommitPlan, *, controls: pl.DataFrame | None = None
+    ) -> None:
+        """Verify only this batch before a later retained-staging cleanup."""
+        controls = self._controls() if controls is None else controls
+        control = self._control_for(plan, controls)
+        if control is None or control["state"] != "complete":
+            msg = (
+                f"Refusing verification before completion for {plan.logical_commit_id}"
+            )
+            raise StoreIntegrityError(msg)
+        for table in plan.tables:
+            verify_plan_effect(
+                plan, table.table_path, self._read_physical(table.table_path), controls
             )
 
-        return df.shape[0]
+    def _cleanup_plan(self, plan: CommitPlan) -> None:
+        """Reverify a completed batch before cleaning it in a later operation."""
+        self._validate_complete(plan)
+        self._delete_planned_files(plan)
 
-    # -------------------------------------------------------------------------
-    # Table management
-    # -------------------------------------------------------------------------
+    def _delete_planned_files(self, plan: CommitPlan) -> None:
+        """Delete unchanged evidence immediately after local completion proof."""
+        self.staging_manager.cleanup_plan(
+            [file for table in plan.tables for file in table.files]
+        )
+
+    @staticmethod
+    def _plan_objects(plan: CommitPlan) -> list[str]:
+        return [file.relative_path for table in plan.tables for file in table.files]
+
+    def _read_physical(self, table_path: str) -> pl.DataFrame:
+        try:
+            frame = pl.scan_delta(
+                self._table_path(table_path),
+                storage_options=self._storage_options,
+            ).collect()
+        except Exception as exc:
+            msg = f"Unreadable Delta table {table_path!r}"
+            raise StoreIntegrityError(msg) from exc
+        if dict(frame.schema) != get_physical_schema_for_path(table_path):
+            msg = f"Delta table {table_path!r} has an unexpected schema"
+            raise StoreIntegrityError(msg)
+        return frame
+
+    def _append(self, frame: pl.DataFrame, table_path: str) -> None:
+        expected = get_physical_schema_for_path(table_path)
+        frame = frame.cast(pl.Schema(expected))
+        if dict(frame.schema) != expected:
+            msg = f"Refusing a schema-changing write to {table_path!r}"
+            raise StoreIntegrityError(msg)
+        write_deltalake(
+            self._table_path(table_path),
+            _delta_arrow(frame),
+            mode="append",
+            storage_options=self._storage_options,
+            writer_properties=DEFAULT_WRITER_PROPERTIES,
+        )
+
+    @staticmethod
+    def _checkpoint(
+        boundary: str,
+        plan: CommitPlan,
+        table_path: str | None,
+    ) -> None:
+        """Fault-injection seam exercised by crash-recovery tests."""
 
     def initialize_tables(self) -> None:
-        """Create empty Delta tables for all framework and artifact types.
-
-        Skip tables that already exist. Useful for bootstrapping a new
-        pipeline database.
-        """
-        # Initialize framework tables
-        for table, schema in FRAMEWORK_SCHEMAS.items():
-            table_path = self._table_path(_to_str(table))
-            if not table_path.exists():
-                empty_df = pl.DataFrame(schema=schema)
-                if self._is_non_partitioned(table):
-                    partition_by = None
-                else:
-                    partition_by = ["origin_step_number"]
-                write_opts = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
-                if partition_by:
-                    write_opts["partition_by"] = partition_by
-                empty_df.write_delta(
-                    str(table_path),
-                    mode="overwrite",
-                    delta_write_options=write_opts,
+        """Create the exact release table set and publish its manifest last."""
+        publish_manifest = prepare_store_initialization(
+            self.delta_base_path,
+            self._fs,
+            self._storage_options,
+        )
+        for table in FRAMEWORK_SCHEMAS:
+            path = self._table_path(table.value)
+            if not self._fs.exists(path):
+                self._create_empty(
+                    pl.DataFrame(schema=get_physical_schema(table)),
+                    table.value,
                 )
+        for definition in ArtifactTypeDef.get_all().values():
+            path = self._table_path(definition.table_path)
+            if not self._fs.exists(path):
+                schema = {**definition.polars_schema(), "logical_commit_id": pl.String}
+                self._create_empty(pl.DataFrame(schema=schema), definition.table_path)
+        if publish_manifest:
+            publish_store_manifest(self.delta_base_path, self._fs)
 
-        # Initialize artifact content tables from registry
-        for type_def in ArtifactTypeDef.get_all().values():
-            table_path = self._table_path(type_def.table_path)
-            if not table_path.exists():
-                empty_df = pl.DataFrame(schema=type_def.polars_schema())
-                write_opts = {
-                    "writer_properties": DEFAULT_WRITER_PROPERTIES,
-                    "partition_by": ["origin_step_number"],
-                }
-                empty_df.write_delta(
-                    str(table_path),
-                    mode="overwrite",
-                    delta_write_options=write_opts,
-                )
+    def _create_empty(self, frame: pl.DataFrame, table_path: str) -> None:
+        non_partitioned = {table.value for table in NON_PARTITIONED_TABLES}
+        options: dict[str, Any] = {"writer_properties": DEFAULT_WRITER_PROPERTIES}
+        if table_path not in non_partitioned:
+            options["partition_by"] = ["origin_step_number"]
+        frame.write_delta(
+            self._table_path(table_path),
+            mode="overwrite",
+            delta_write_options=options,
+            storage_options=self._storage_options,
+        )
 
     def compact_table(
         self,
-        table: str,
+        table: str | TablePath,
         z_order_columns: list[str] | None = None,
         step_number: int | None = None,
     ) -> dict[str, int]:
-        """Compact a Delta table, optionally applying Z-ORDER clustering.
+        """Compact a table, optionally restricting a partition or Z-ordering.
 
-        Args:
-            table: Table path string or ``TablePath`` member.
-            z_order_columns: Columns to cluster by. None performs a
-                simple file compaction without ordering.
-            step_number: Restrict compaction to this partition. None
-                compacts the entire table.
-
-        Returns:
-            Dict with ``files_added`` and ``files_removed`` counts.
+        Callers must schedule maintenance after logical commits finish.
         """
-        table_path = self._table_path(_to_str(table))
-        if not table_path.exists():
-            return {"files_added": 0, "files_removed": 0}
-
-        dt = DeltaTable(str(table_path))
-
+        table_path = _normalize_table(table)
+        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
+        delta = DeltaTable(
+            self._table_path(table_path),
+            storage_options=self._storage_options,
+        )
+        non_partitioned = {member.value for member in NON_PARTITIONED_TABLES}
         partition_filters = None
-        if step_number is not None and not self._is_non_partitioned(table):
+        if step_number is not None and table_path not in non_partitioned:
             partition_filters = [("origin_step_number", "=", str(step_number))]
-
         if z_order_columns:
-            result = dt.optimize.z_order(
+            result = delta.optimize.z_order(
                 columns=z_order_columns,
                 partition_filters=partition_filters,
             )
         else:
-            result = dt.optimize.compact(partition_filters=partition_filters)
-
+            result = delta.optimize.compact(partition_filters=partition_filters)
         return {
             "files_added": result.get("numFilesAdded", 0),
             "files_removed": result.get("numFilesRemoved", 0),
@@ -475,60 +713,77 @@ class DeltaCommitter:
         z_order: bool = True,
         step_number: int | None = None,
     ) -> dict[str, dict[str, int]]:
-        """Compact every Delta table, optionally with Z-ORDER clustering.
-
-        Args:
-            z_order: Apply Z-ORDER clustering on each table's key
-                columns during compaction.
-            step_number: Restrict compaction to this partition. None
-                compacts all partitions.
-
-        Returns:
-            Mapping of table name to compaction statistics. Tables
-            with no file changes are omitted.
-        """
-        results = {}
-
-        # Build Z-ORDER config from registry + framework tables
-        zorder_config: dict[str, list[str]] = {}
-
-        # Artifact tables from registry
-        for type_def in ArtifactTypeDef.get_all().values():
-            zorder_config[type_def.table_path] = ["artifact_id"]
-
-        # Framework tables
-        zorder_config[_to_str(TablePath.EXECUTIONS)] = ["execution_spec_id"]
-        zorder_config[_to_str(TablePath.ARTIFACT_INDEX)] = ["artifact_id"]
-        zorder_config[_to_str(TablePath.ARTIFACT_EDGES)] = [
-            "source_artifact_id",
-            "target_artifact_id",
-        ]
-        zorder_config[_to_str(TablePath.EXECUTION_EDGES)] = ["execution_run_id"]
-        zorder_config[_to_str(TablePath.STEPS)] = ["step_spec_id"]
-
-        for table, z_order_cols in zorder_config.items():
-            table_name = _table_name_from_path(table)
+        """Compact every data table, propagating the first maintenance failure."""
+        config = {
+            definition.table_path: ["artifact_id"]
+            for definition in ArtifactTypeDef.get_all().values()
+        }
+        config.update(
+            {
+                TablePath.EXECUTIONS.value: ["execution_spec_id"],
+                TablePath.ARTIFACT_INDEX.value: ["artifact_id"],
+                TablePath.ARTIFACT_LOCATIONS.value: ["artifact_id", "uri"],
+                TablePath.ARTIFACT_EDGES.value: [
+                    "source_artifact_id",
+                    "target_artifact_id",
+                ],
+                TablePath.EXECUTION_EDGES.value: ["execution_run_id"],
+                TablePath.CACHE_REUSE.value: ["current_step_run_id"],
+                TablePath.STEPS.value: ["step_spec_id"],
+            }
+        )
+        results: dict[str, dict[str, int]] = {}
+        for table_path, columns in config.items():
             stats = self.compact_table(
-                table,
-                z_order_columns=z_order_cols if z_order else None,
+                table_path,
+                z_order_columns=columns if z_order else None,
                 step_number=step_number,
             )
-            if stats["files_added"] > 0 or stats["files_removed"] > 0:
-                results[table_name] = stats
-
+            if stats["files_added"] or stats["files_removed"]:
+                results[_table_name(table_path)] = stats
         return results
 
-    def vacuum_table(self, table: str, retention_hours: int = 168) -> None:
-        """Remove stale data files from a Delta table.
+    def vacuum_table(self, table: str | TablePath, retention_hours: int = 168) -> None:
+        """Run Delta's vacuum eligibility check without deleting files.
 
-        Args:
-            table: Table path string or ``TablePath`` member.
-            retention_hours: Keep files newer than this threshold.
-                Defaults to 168 (7 days).
+        This maintenance hook discards the dry-run candidate list. Actual
+        reclamation is not implemented.
         """
-        table_path = self._table_path(_to_str(table))
-        if not table_path.exists():
-            return
+        assert_store_format(self.delta_base_path, self._fs, self._storage_options)
+        delta = DeltaTable(
+            self._table_path(_normalize_table(table)),
+            storage_options=self._storage_options,
+        )
+        delta.vacuum(
+            retention_hours=retention_hours,
+            enforce_retention_duration=False,
+        )
 
-        dt = DeltaTable(str(table_path))
-        dt.vacuum(retention_hours=retention_hours, enforce_retention_duration=False)
+    def _table_path(self, table_path: str) -> str:
+        return uri_join(self.delta_base_path, table_path)
+
+
+def _frames_equal(
+    left: pl.DataFrame,
+    right: pl.DataFrame,
+    *,
+    sort_by: list[str],
+) -> bool:
+    return left.sort(sort_by).equals(
+        right.select(left.columns).sort(sort_by),
+        null_equal=True,
+    )
+
+
+def _delta_arrow(frame: pl.DataFrame) -> ac.Table:
+    """Use Arrow UTF-8, not string-view, for delta-rs predicate compatibility."""
+    table = ac.Table.from_arrow(frame)
+    columns: list[ac.ChunkedArray] = []
+    fields: list[ac.Field] = []
+    for index, name in enumerate(table.column_names):
+        column = table.column(index)
+        if ac.DataType.is_string_view(column.type):
+            column = column.cast(ac.DataType.string())
+        columns.append(column)
+        fields.append(ac.Field(name, column.type, nullable=True))
+    return ac.Table.from_arrays(columns, schema=ac.Schema(fields))

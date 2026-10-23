@@ -7,17 +7,20 @@ find_project_root (walk-up, editable install, env var).
 
 from __future__ import annotations
 
+import runpy
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 import artisan.utils.path as path_module
-from artisan.utils.path import find_project_root, get_caller_dir, shard_path
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+from artisan.utils.path import (
+    find_project_root,
+    get_caller_dir,
+    shard_uri,
+    uri_join,
+    uri_parent,
+)
 
 
 def _make_mock_frame(caller_globals: dict) -> MagicMock:
@@ -28,11 +31,6 @@ def _make_mock_frame(caller_globals: dict) -> MagicMock:
     current_frame = MagicMock()
     current_frame.f_back = caller_frame
     return current_frame
-
-
-# ===================================================================
-# get_caller_dir — Strategy 1: script __file__
-# ===================================================================
 
 
 class TestGetCallerDirScript:
@@ -87,11 +85,6 @@ class TestGetCallerDirScript:
         assert result == Path.cwd().resolve()
 
 
-# ===================================================================
-# get_caller_dir — Strategy 2: VS Code __vsc_ipynb_file__
-# ===================================================================
-
-
 class TestGetCallerDirVSCode:
     """Strategy 2: __vsc_ipynb_file__ injected by VS Code."""
 
@@ -125,11 +118,6 @@ class TestGetCallerDirVSCode:
             result = get_caller_dir()
 
         assert result == nb.resolve().parent
-
-
-# ===================================================================
-# get_caller_dir — Strategy 3: JupyterHub JPY_SESSION_NAME
-# ===================================================================
 
 
 class TestGetCallerDirJupyterHub:
@@ -183,11 +171,6 @@ class TestGetCallerDirJupyterHub:
         assert result == Path.cwd().resolve()
 
 
-# ===================================================================
-# get_caller_dir — Strategy 4: cwd fallback
-# ===================================================================
-
-
 class TestGetCallerDirFallback:
     """Strategy 4: Path.cwd() fallback when nothing else works."""
 
@@ -214,11 +197,6 @@ class TestGetCallerDirFallback:
             result = get_caller_dir()
 
         assert result == Path.cwd().resolve()
-
-
-# ===================================================================
-# get_caller_dir — priority ordering
-# ===================================================================
 
 
 class TestGetCallerDirPriority:
@@ -273,13 +251,20 @@ class TestGetCallerDirPriority:
         assert result == nb.parent.resolve()
 
 
-# ===================================================================
-# find_project_root — Strategy 1: walk up from caller dir
-# ===================================================================
-
-
 class TestFindProjectRootWalkUp:
     """Strategy 1: walk up directory tree from get_caller_dir()."""
+
+    def test_finds_root_from_real_caller_module(self, tmp_path: Path) -> None:
+        (tmp_path / "pyproject.toml").touch()
+        script = tmp_path / "scripts" / "nested" / "caller.py"
+        script.parent.mkdir(parents=True)
+        script.write_text(
+            "from artisan.utils import find_project_root\nroot = find_project_root()\n"
+        )
+
+        namespace = runpy.run_path(str(script))
+
+        assert namespace["root"] == tmp_path.resolve()
 
     def test_finds_root_from_test_directory(self):
         """Normal case: test file is inside the project tree."""
@@ -316,11 +301,6 @@ class TestFindProjectRootWalkUp:
         assert result == inner
 
 
-# ===================================================================
-# find_project_root — Strategy 2: editable install
-# ===================================================================
-
-
 class TestFindProjectRootEditableInstall:
     """Strategy 2: resolve from installed package __file__ location."""
 
@@ -339,11 +319,6 @@ class TestFindProjectRootEditableInstall:
             result = find_project_root()
 
         assert (result / "pyproject.toml").exists()
-
-
-# ===================================================================
-# find_project_root — Strategy 3: ARTISAN_ROOT env var
-# ===================================================================
 
 
 class TestFindProjectRootEnvVar:
@@ -399,11 +374,6 @@ class TestFindProjectRootEnvVar:
                 find_project_root()
 
 
-# ===================================================================
-# find_project_root — error case
-# ===================================================================
-
-
 class TestFindProjectRootError:
     """RuntimeError when all strategies fail."""
 
@@ -420,24 +390,90 @@ class TestFindProjectRootError:
                 find_project_root()
 
 
-# ===================================================================
-# Existing shard_path tests (regression)
-# ===================================================================
-
-
-class TestShardPath:
-    """Ensure existing shard_path behavior is not broken."""
+class TestShardUri:
+    """String-based sharding for fsspec URIs."""
 
     def test_basic_sharding(self):
-        result = shard_path(Path("/tmp"), "abcdef1234567890")
-        assert result == Path("/tmp/ab/cd/abcdef1234567890")
+        result = shard_uri("/tmp", "abcdef1234567890")
+        assert result == "/tmp/ab/cd/abcdef1234567890"
 
     def test_with_step_number(self):
-        result = shard_path(Path("/tmp"), "abcdef1234567890", step_number=3)
-        assert result == Path("/tmp/3/ab/cd/abcdef1234567890")
+        result = shard_uri("/tmp", "abcdef1234567890", step_number=3)
+        assert result == "/tmp/3/ab/cd/abcdef1234567890"
 
     def test_with_step_number_and_operation(self):
-        result = shard_path(
-            Path("/tmp"), "abcdef1234567890", step_number=3, operation_name="tool_c"
+        result = shard_uri(
+            "/tmp", "abcdef1234567890", step_number=3, operation_name="tool_c"
         )
-        assert result == Path("/tmp/3_tool_c/ab/cd/abcdef1234567890")
+        assert result == "/tmp/3_tool_c/ab/cd/abcdef1234567890"
+
+    def test_s3_uri(self):
+        result = shard_uri("s3://bucket/staging", "abcdef1234567890")
+        assert result == "s3://bucket/staging/ab/cd/abcdef1234567890"
+
+    def test_gcs_uri(self):
+        result = shard_uri("gcs://bucket/staging", "abcdef1234567890", step_number=1)
+        assert result == "gcs://bucket/staging/1/ab/cd/abcdef1234567890"
+
+    def test_handles_short_hash(self):
+        """shard_uri works with shorter hashes."""
+        root = "/tmp"
+        run_id = "abc"  # Short hash
+
+        result = shard_uri(root, run_id)
+
+        # Uses first 4 chars: ab/c/abc
+        assert result == f"{root}/ab/c/{run_id}"
+
+
+class TestUriJoin:
+    """URI-safe path joining for local and cloud URIs."""
+
+    def test_local_path(self):
+        assert uri_join("/data/delta", "executions") == "/data/delta/executions"
+
+    def test_local_path_multiple_parts(self):
+        assert uri_join("/data", "delta", "executions") == "/data/delta/executions"
+
+    def test_s3_uri(self):
+        assert (
+            uri_join("s3://bucket/delta", "executions")
+            == "s3://bucket/delta/executions"
+        )
+
+    def test_gcs_uri(self):
+        assert (
+            uri_join("gcs://bucket/delta", "executions")
+            == "gcs://bucket/delta/executions"
+        )
+
+    def test_trailing_slash_on_base(self):
+        assert uri_join("/data/delta/", "executions") == "/data/delta/executions"
+
+    def test_absolute_part_replaces_base(self):
+        """posixpath.join behavior: absolute part resets the path."""
+        assert uri_join("/data/delta", "/other") == "/other"
+
+
+class TestUriParent:
+    """URI-safe parent directory for local and cloud URIs."""
+
+    def test_local_path(self):
+        assert uri_parent("/data/pipelines/delta") == "/data/pipelines"
+
+    def test_s3_uri(self):
+        assert uri_parent("s3://bucket/project/delta") == "s3://bucket/project"
+
+    def test_gcs_uri(self):
+        assert uri_parent("gcs://bucket/project/delta") == "gcs://bucket/project"
+
+    def test_trailing_slash(self):
+        assert uri_parent("/data/delta/") == "/data/delta"
+
+    def test_root_path(self):
+        assert uri_parent("/") == "/"
+
+    def test_bare_s3_bucket(self):
+        # posixpath treats // as separator, so s3://bucket → s3:
+        # In practice, URIs always have a path component (s3://bucket/key)
+        assert uri_parent("s3://bucket") == "s3:"

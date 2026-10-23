@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import csv
+import os
 import statistics
 from enum import StrEnum, auto
-from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -41,11 +43,9 @@ class MetricCalculator(OperationDefinition):
         metrics (metric) -- Computed metric values (nested dict)
     """
 
-    # ---------- Metadata ----------
     name = "metric_calculator"
     description = "Calculate distribution statistics from CSV datasets"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
 
@@ -57,7 +57,6 @@ class MetricCalculator(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         metrics = auto()
 
@@ -65,50 +64,63 @@ class MetricCalculator(OperationDefinition):
         OutputRole.metrics: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
             description="Computed metric values",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="metric_calculator", artifacts_per_unit = 10000)
+    batch_strategy: BatchStrategy = BatchStrategy(
+        job_name="metric_calculator", artifacts_per_unit=10000
+    )  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Lifecycle ----------
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
+        """Carry each dataset's path, identity, and human name together."""
         return {
-            role: [a.materialized_path for a in artifacts]
-            for role, artifacts in inputs.input_artifacts.items()
+            "dataset": PerArtifact(
+                [
+                    {
+                        "path": artifact.materialized_path,
+                        "artifact_id": artifact.artifact_id,
+                        "original_name": artifact.original_name,
+                    }
+                    for artifact in cast(
+                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                    )
+                ]
+            )
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Compute score distribution statistics for each input CSV."""
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
-            raise ValueError("No dataset input provided")
-
-        if isinstance(dataset_input, (str, Path)):
-            input_files = [Path(dataset_input)]
-        else:
-            input_files = [Path(f) for f in dataset_input]
+            msg = "No dataset input provided"
+            raise ValueError(msg)
 
         calculated_metrics = []
 
-        for input_path in input_files:
-            input_path = Path(input_path)
-            if not input_path.exists():
-                raise FileNotFoundError(f"Input file not found: {input_path}")
+        for dataset in dataset_input:
+            input_path = dataset["path"]
+            if not os.path.exists(input_path):
+                msg = f"Input file not found: {input_path}"
+                raise FileNotFoundError(msg)
 
             metrics = _compute_csv_statistics(input_path)
-            metric_key = f"{input_path.stem}_metrics.json"
+            metric_key = f"{dataset['original_name']}_metrics.json"
 
-            calculated_metrics.append({
-                "input": str(input_path),
-                "metric_key": metric_key,
-                **metrics,
-            })
+            calculated_metrics.append(
+                {
+                    "input": input_path,
+                    "source_artifact_id": dataset["artifact_id"],
+                    "metric_key": metric_key,
+                    **metrics,
+                }
+            )
 
         return {"calculated_metrics": calculated_metrics}
 
@@ -117,23 +129,9 @@ class MetricCalculator(OperationDefinition):
         raw = inputs.memory_outputs
         calculated_metrics = raw.get("calculated_metrics", [])
 
-        drafts: dict[str, list[Artifact]] = {"metrics": []}
-
-        for metric_data in calculated_metrics:
-            drafts["metrics"].append(
-                MetricArtifact.draft(
-                    content={
-                        "distribution": metric_data["distribution"],
-                        "summary": metric_data["summary"],
-                    },
-                    original_name=metric_data["metric_key"],
-                    step_number=inputs.step_number,
-                )
-            )
-
-        return ArtifactResult(
-            success=True,
-            artifacts=drafts,
+        result = ArtifactResult(
+            artifacts={"metrics": []},
+            lineage={"metrics": []},
             metadata={
                 "operation": "metric_calculator",
                 "n_datasets": len(calculated_metrics),
@@ -141,8 +139,24 @@ class MetricCalculator(OperationDefinition):
             },
         )
 
+        for metric_data in calculated_metrics:
+            result.add_artifact(
+                "metrics",
+                MetricArtifact.draft(
+                    content={
+                        "distribution": metric_data["distribution"],
+                        "summary": metric_data["summary"],
+                    },
+                    original_name=metric_data["metric_key"],
+                    step_number=inputs.step_number,
+                ),
+                sources={"dataset": [metric_data["source_artifact_id"]]},
+            )
 
-def _compute_csv_statistics(path: Path) -> dict[str, dict[str, float]]:
+        return result
+
+
+def _compute_csv_statistics(path: str) -> dict[str, dict[str, float]]:
     """Compute distribution statistics from a CSV file.
 
     Focuses on score distribution (min, max, median, range, CV) to complement
@@ -155,7 +169,7 @@ def _compute_csv_statistics(path: Path) -> dict[str, dict[str, float]]:
         Nested dict with ``distribution`` (min, max, median, range) and
         ``summary`` (cv, row_count) groups.
     """
-    with path.open() as f:
+    with open(path) as f:
         reader = csv.DictReader(f)
         scores = [float(row["score"]) for row in reader]
 

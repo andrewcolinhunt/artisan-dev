@@ -6,7 +6,7 @@ is active at runtime.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from artisan.schemas.operation_config.environment_spec import (
     ApptainerEnvironmentSpec,
@@ -31,11 +31,30 @@ class Environments(BaseModel):
         pixi: Pixi execution config, or None if not configured.
     """
 
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
     active: str = "local"
     local: LocalEnvironmentSpec = Field(default_factory=LocalEnvironmentSpec)
     docker: DockerEnvironmentSpec | None = None
     apptainer: ApptainerEnvironmentSpec | None = None
     pixi: PixiEnvironmentSpec | None = None
+
+    @field_validator("active")
+    @classmethod
+    def _validate_active(cls, value: str) -> str:
+        """Constrain ``active`` to the known environment names.
+
+        A free-form value colliding with a method name (e.g. 'available')
+        would make ``current()`` resolve to a bound method instead of
+        failing fast.
+        """
+        if value not in ("local", "docker", "apptainer", "pixi"):
+            msg = (
+                f"Unknown environment {value!r}; expected one of "
+                "'local', 'docker', 'apptainer', 'pixi'"
+            )
+            raise ValueError(msg)
+        return value
 
     def current(self) -> EnvironmentSpec:
         """Return the active environment spec.
@@ -43,12 +62,13 @@ class Environments(BaseModel):
         Raises:
             ValueError: If the active environment is not configured.
         """
-        env = getattr(self, self.active, None)
+        env: EnvironmentSpec | None = getattr(self, self.active, None)
         if env is None:
-            raise ValueError(
+            msg = (
                 f"Environment '{self.active}' is not configured. "
                 f"Available: {self.available()}"
             )
+            raise ValueError(msg)
         return env
 
     def available(self) -> list[str]:

@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import json
 import logging
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import polars as pl
 import pytest
@@ -648,6 +648,113 @@ class TestFilterDiagnosticsMetadata:
         diag = result.metadata["diagnostics"]
         assert diag["total_evaluated"] == 2
 
+    def test_diagnostics_full_dict_golden(self, lineage_store):
+        """Full diagnostics dict is byte-for-byte stable (multi-criterion)."""
+        op = Filter(
+            params=Filter.Params(
+                criteria=[
+                    Criterion(metric="score", operator="ge", value=0.3),
+                    Criterion(metric="n_chainbreaks", operator="eq", value=0),
+                ]
+            )
+        )
+        result = op.execute_curator(
+            inputs=_make_inputs({"passthrough": ["pt_a", "pt_b"]}),
+            step_number=0,
+            artifact_store=lineage_store,
+        )
+        assert result.metadata["diagnostics"] == {
+            "version": 4,
+            "total_input": 2,
+            "total_evaluated": 2,
+            "total_metrics_discovered": 4,
+            "total_passed": 1,
+            "metric_sources": [
+                {"step_number": 2, "step_name": "metric_calc", "metric_count": 4}
+            ],
+            "criteria": [
+                {
+                    "metric": "score",
+                    "operator": "ge",
+                    "value": 0.3,
+                    "pass_count": 2,
+                    "resolved_from_step": 2,
+                    "stats": {"min": 0.3, "max": 0.9, "mean": 0.6},
+                },
+                {
+                    "metric": "n_chainbreaks",
+                    "operator": "eq",
+                    "value": 0,
+                    "pass_count": 1,
+                    "resolved_from_step": 2,
+                    "stats": {"min": 0.0, "max": 2.0, "mean": 1.0},
+                },
+            ],
+            "funnel": [
+                {"label": "All evaluated", "count": 2},
+                {"label": "+ score ge 0.3", "count": 2, "eliminated": 0},
+                {"label": "+ n_chainbreaks eq 0", "count": 1, "eliminated": 1},
+            ],
+        }
+
+    def test_diagnostics_empty_full_dict_golden(self, lineage_store):
+        """Full diagnostics dict is stable for the no-criteria path."""
+        op = Filter(params=Filter.Params(criteria=[]))
+        result = op.execute_curator(
+            inputs=_make_inputs({"passthrough": ["pt_a", "pt_b"]}),
+            step_number=0,
+            artifact_store=lineage_store,
+        )
+        assert result.metadata["diagnostics"] == {
+            "version": 4,
+            "total_input": 2,
+            "total_evaluated": 2,
+            "total_metrics_discovered": 0,
+            "total_passed": 2,
+            "metric_sources": [],
+            "criteria": [],
+            "funnel": [{"label": "All evaluated", "count": 2}],
+        }
+
+    def test_diagnostics_passthrough_failures_full_dict_golden(self, lineage_store):
+        """Full diagnostics dict is stable with passthrough_failures set."""
+        op = Filter(
+            params=Filter.Params(
+                criteria=[Criterion(metric="score", operator="gt", value=0.5)],
+                passthrough_failures=True,
+            )
+        )
+        result = op.execute_curator(
+            inputs=_make_inputs({"passthrough": ["pt_a", "pt_b"]}),
+            step_number=0,
+            artifact_store=lineage_store,
+        )
+        assert result.metadata["diagnostics"] == {
+            "version": 4,
+            "total_input": 2,
+            "total_evaluated": 2,
+            "total_metrics_discovered": 4,
+            "total_passed": 1,
+            "metric_sources": [
+                {"step_number": 2, "step_name": "metric_calc", "metric_count": 4}
+            ],
+            "criteria": [
+                {
+                    "metric": "score",
+                    "operator": "gt",
+                    "value": 0.5,
+                    "pass_count": 1,
+                    "resolved_from_step": 2,
+                    "stats": {"min": 0.3, "max": 0.9, "mean": 0.6},
+                }
+            ],
+            "funnel": [
+                {"label": "All evaluated", "count": 2},
+                {"label": "+ score gt 0.5", "count": 1, "eliminated": 1},
+            ],
+            "passthrough_failures": True,
+        }
+
 
 class TestForwardMetricDiscovery:
     """Tests for forward walk metric discovery."""
@@ -905,6 +1012,7 @@ class TestStepDisambiguation:
 
         assert result.success
         assert pt_id in result.passthrough["passthrough"]
+        assert result.metadata["diagnostics"]["criteria"][0]["resolved_from_step"] == 1
 
     def test_step_name_not_found_returns_empty(self):
         """Non-existent step name -> no metrics found, fails criteria."""
@@ -1154,11 +1262,17 @@ class TestFilterChunkedEvaluation:
         op = Filter(params=Filter.Params(chunk_size=50))
         assert op.params.chunk_size == 50
 
+    @pytest.mark.parametrize("chunk_size", [0, -1])
+    def test_chunk_size_must_be_positive(self, chunk_size: int) -> None:
+        """Zero and negative chunk sizes fail during parameter validation."""
+        with pytest.raises(ValueError, match="greater than 0"):
+            Filter.Params(chunk_size=chunk_size)
+
     def test_chunk_boundary_correct_results(self):
         """5 artifacts with chunk_size=2 gives same results as unchunked."""
         # Scores: 0.1, 0.6, 0.2, 0.8, 0.4 -> threshold 0.5 -> indices 1, 3 pass
         scores = [0.1, 0.6, 0.2, 0.8, 0.4]
-        store, pt_ids, m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
 
         criteria = [Criterion(metric="score", operator="gt", value=0.5)]
 
@@ -1189,7 +1303,7 @@ class TestFilterChunkedEvaluation:
     def test_chunk_size_1_correct(self):
         """chunk_size=1 processes each artifact individually, same result."""
         scores = [0.9, 0.3, 0.7]
-        store, pt_ids, m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
 
         criteria = [Criterion(metric="score", operator="ge", value=0.5)]
 
@@ -1205,7 +1319,7 @@ class TestFilterChunkedEvaluation:
     def test_diagnostics_equivalence_chunked_vs_full(self):
         """Diagnostics (pass_count, min, max, mean, funnel) match across chunk sizes."""
         scores = [0.1, 0.6, 0.2, 0.8, 0.4]
-        store, pt_ids, m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
 
         criteria = [Criterion(metric="score", operator="gt", value=0.3)]
 
@@ -1246,7 +1360,7 @@ class TestFilterChunkedEvaluation:
 
     def test_single_chunk_degenerate_case(self):
         """chunk_size > total -> behaves exactly like non-chunked."""
-        store, pt_ids, m_ids = _build_multi_artifact_store(
+        store, pt_ids, _m_ids = _build_multi_artifact_store(
             3, lambda i: [0.9, 0.3, 0.7][i]
         )
 
@@ -1264,7 +1378,7 @@ class TestFilterChunkedEvaluation:
     def test_passthrough_failures_with_chunking(self):
         """passthrough_failures=True + chunking -> all IDs pass through."""
         scores = [0.9, 0.3, 0.7]
-        store, pt_ids, m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(3, lambda i: scores[i])
 
         op = Filter(
             params=Filter.Params(
@@ -1291,7 +1405,7 @@ class TestFilterChunkedEvaluation:
     def test_chunk_preserves_input_order(self):
         """Passed IDs maintain input order across chunks."""
         scores = [0.9, 0.3, 0.7, 0.8, 0.1]
-        store, pt_ids, m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
+        store, pt_ids, _m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
 
         op = Filter(
             params=Filter.Params(
@@ -1309,3 +1423,239 @@ class TestFilterChunkedEvaluation:
         passed = result.passthrough["passthrough"]
         # Expected order: pt_0 (chunk 0), pt_2 (chunk 1), pt_3 (chunk 1)
         assert passed == [pt_ids[0], pt_ids[2], pt_ids[3]]
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 100])
+@pytest.mark.parametrize("by_name", [False, True])
+@pytest.mark.parametrize("reverse", [False, True])
+def test_qualified_criteria_keep_distinct_values_and_duplicate_order(
+    chunk_size: int, by_name: bool, reverse: bool
+) -> None:
+    primary = [pad_id(f"qualified_{i}") for i in range(3)]
+    first = [pad_id(f"first_{i}") for i in range(3)]
+    second = [pad_id(f"second_{i}") for i in range(3)]
+    values = {
+        **{
+            mid: {"score": score}
+            for mid, score in zip(first, [0.9, 0.8, 0.1], strict=True)
+        },
+        **{
+            mid: {"score": score}
+            for mid, score in zip(second, [0.2, 0.3, 0.7], strict=True)
+        },
+    }
+    if reverse:
+        values = dict(reversed(values.items()))
+    store = _build_forward_walk_store(
+        dict.fromkeys(primary, 0) | dict.fromkeys(first, 1) | dict.fromkeys(second, 2),
+        list(zip(primary, first, strict=True))
+        + list(zip(primary, second, strict=True)),
+        values,
+        step_name_map={1: "first", 2: "second"},
+    )
+    store.provenance.load_artifact_ids_by_type.side_effect = (
+        lambda _type, step_numbers: set(first if step_numbers == [1] else second)
+    )
+    criteria = [
+        {"metric": "score", "operator": "gt", "value": 0.5},
+        {"metric": "score", "operator": "lt", "value": 0.5},
+    ]
+    for index, criterion in enumerate(criteria, 1):
+        criterion.update(
+            {"step": "first" if index == 1 else "second"}
+            if by_name
+            else {"step_number": index}
+        )
+    expected_stats = [(1, 0.65), (2, 0.375)]
+    if reverse:
+        criteria.reverse()
+        expected_stats.reverse()
+    op = Filter(params={"criteria": criteria, "chunk_size": chunk_size})
+    input_ids = [primary[1], primary[0], primary[1], primary[2]]
+    result = op.execute_curator({"passthrough": _df(input_ids)}, 3, store)
+
+    assert result.passthrough["passthrough"] == input_ids[:3]
+    diagnostics = result.metadata["diagnostics"]
+    assert [row["count"] for row in diagnostics["funnel"]] == [4, 3, 3]
+    for row, (step, mean) in zip(diagnostics["criteria"], expected_stats, strict=True):
+        assert row["metric"] == "score"
+        assert row["resolved_from_step"] == step
+        assert row["pass_count"] == 3
+        assert row["stats"]["mean"] == pytest.approx(mean)
+
+
+@pytest.mark.parametrize("chunk_size", [1, 2, 100])
+@pytest.mark.parametrize(("operator", "expected"), [("eq", [0]), ("ne", [1])])
+def test_string_criteria_have_counts_without_numeric_statistics(
+    chunk_size: int, operator: str, expected: list[int]
+) -> None:
+    primary = [pad_id(f"string_{i}") for i in range(3)]
+    metrics = [pad_id(f"category_{i}") for i in range(3)]
+    store = _build_forward_walk_store(
+        dict.fromkeys(primary, 0) | dict.fromkeys(metrics, 1),
+        list(zip(primary, metrics, strict=True)),
+        {
+            mid: {"category": value}
+            for mid, value in zip(metrics, ["pass", "fail", None], strict=True)
+        },
+    )
+    op = Filter(
+        params={
+            "criteria": [{"metric": "category", "operator": operator, "value": "pass"}],
+            "chunk_size": chunk_size,
+        }
+    )
+    result = op.execute_curator({"passthrough": _df(primary)}, 2, store)
+    assert result.passthrough["passthrough"] == [primary[i] for i in expected]
+    assert result.metadata["diagnostics"]["criteria"][0]["stats"] == {}
+    assert result.metadata["diagnostics"]["criteria"][0]["pass_count"] == 1
+
+
+@pytest.mark.parametrize("chunk_size", [1, 100])
+def test_unqualified_collision_is_detected_across_chunks(chunk_size: int) -> None:
+    primary = [pad_id("collision_a"), pad_id("collision_b")]
+    metrics = [pad_id("collision_m1"), pad_id("collision_m2")]
+    store = _build_forward_walk_store(
+        dict.fromkeys(primary, 0) | {metrics[0]: 1, metrics[1]: 2},
+        list(zip(primary, metrics, strict=True)),
+        {metrics[0]: {"score": 0.9}, metrics[1]: {"score": 0.8}},
+        step_name_map={1: "first_metrics", 2: "second_metrics"},
+    )
+    op = Filter(
+        params={
+            "criteria": [{"metric": "score", "operator": "gt", "value": 0.5}],
+            "chunk_size": chunk_size,
+        }
+    )
+    with pytest.raises(ValueError, match="multiple steps") as caught:
+        op.execute_curator({"passthrough": _df(primary)}, 3, store)
+    assert 'step 1 ("first_metrics")' in str(caught.value)
+    assert 'step 2 ("second_metrics")' in str(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("selector", "expected"),
+    [
+        ({"step": "calc", "step_number": 1}, True),
+        ({"step": "wrong", "step_number": 1}, False),
+        ({"step": "missing"}, False),
+        ({"step_number": 99}, False),
+    ],
+)
+def test_selected_step_must_match(selector: dict, expected: bool) -> None:
+    primary, metric = pad_id("selected_primary"), pad_id("selected_metric")
+    store = _build_forward_walk_store(
+        {primary: 0, metric: 1},
+        [(primary, metric)],
+        {metric: {"score": 0.9}},
+        step_name_map={1: "calc"},
+    )
+    store.provenance.load_artifact_ids_by_type.side_effect = (
+        lambda _type, step_numbers: {metric} if step_numbers == [1] else set()
+    )
+    op = Filter(
+        params={
+            "criteria": [
+                {"metric": "score", "operator": "gt", "value": 0.5, **selector}
+            ]
+        }
+    )
+    result = op.execute_curator({"passthrough": _df([primary])}, 2, store)
+    assert result.passthrough["passthrough"] == ([primary] if expected else [])
+
+
+def test_ambiguous_step_name_requires_number() -> None:
+    primary, metric = pad_id("ambiguous_primary"), pad_id("ambiguous_metric")
+    store = _build_forward_walk_store(
+        {primary: 0, metric: 1},
+        [(primary, metric)],
+        {metric: {"score": 0.9}},
+        step_name_map={1: "calc", 2: "calc"},
+    )
+    op = Filter(
+        params={
+            "criteria": [
+                {"metric": "score", "operator": "gt", "value": 0.5, "step": "calc"}
+            ]
+        }
+    )
+    with pytest.raises(ValueError, match="matches multiple step numbers"):
+        op.execute_curator({"passthrough": _df([primary])}, 3, store)
+
+
+def test_qualified_discovery_does_not_pollute_default_values() -> None:
+    primary = [pad_id("default_a"), pad_id("default_b")]
+    first, second = pad_id("default_metric"), pad_id("target_metric")
+    store = _build_forward_walk_store(
+        dict.fromkeys(primary, 0) | {first: 1, second: 2},
+        [(primary[0], first), (primary[0], second), (primary[1], first)],
+        {first: {"score": 0.9, "quality": 0.8}, second: {"score": 0.2, "quality": 0.1}},
+    )
+    op = Filter(
+        params={
+            "criteria": [
+                {"metric": "quality", "operator": "gt", "value": 0.5},
+                {"metric": "score", "operator": "lt", "value": 0.5, "step_number": 2},
+            ]
+        }
+    )
+    with (
+        patch.object(
+            op,
+            "_discover_descendant_metrics",
+            return_value=pl.DataFrame(
+                {
+                    "passthrough_id": primary,
+                    "metric_id": [first, first],
+                }
+            ),
+        ),
+        patch.object(
+            op,
+            "_discover_step_metrics",
+            return_value=pl.DataFrame(
+                {
+                    "passthrough_id": [primary[0]],
+                    "metric_id": [second],
+                }
+            ),
+        ),
+    ):
+        result = op.execute_curator({"passthrough": _df(primary)}, 1, store)
+    assert result.passthrough["passthrough"] == [primary[0]]
+    assert [
+        row["pass_count"] for row in result.metadata["diagnostics"]["criteria"]
+    ] == [2, 1]
+
+
+@pytest.mark.parametrize(
+    ("values", "threshold", "mean"),
+    [
+        ([True, False, None], True, 0.5),
+        (["1", "3", None], "3", 2.0),
+    ],
+)
+def test_numeric_statistics_keep_scalar_conversion(values, threshold, mean) -> None:
+    primary = [pad_id(f"numeric_{i}") for i in range(3)]
+    metrics = [pad_id(f"numeric_metric_{i}") for i in range(3)]
+    store = _build_forward_walk_store(
+        dict.fromkeys(primary, 0) | dict.fromkeys(metrics, 1),
+        list(zip(primary, metrics, strict=True)),
+        {
+            mid: {"__criterion_0": value}
+            for mid, value in zip(metrics, values, strict=True)
+        },
+    )
+    op = Filter(
+        params={
+            "criteria": [
+                {"metric": "__criterion_0", "operator": "eq", "value": threshold}
+            ],
+            "chunk_size": 2,
+        }
+    )
+    result = op.execute_curator({"passthrough": _df(primary)}, 2, store)
+    diagnostic = result.metadata["diagnostics"]["criteria"][0]
+    assert diagnostic["pass_count"] == 1
+    assert diagnostic["metric"] == "__criterion_0"
+    assert diagnostic["stats"]["mean"] == mean

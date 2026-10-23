@@ -1,6 +1,10 @@
 """Tests for DataGenerator operation."""
 
+from __future__ import annotations
+
 import csv
+import glob
+import os
 from pathlib import Path
 
 from artisan.operations.examples import DataGenerator
@@ -9,12 +13,18 @@ from artisan.schemas import ExecuteInput, PostprocessInput
 
 class TestDataGenerator:
     def _run(self, output_dir: Path, count: int = 3, rows: int = 5, seed: int = 42):
-        op = DataGenerator(params=DataGenerator.Params(count=count, rows_per_file=rows, seed=seed))
-        execute_dir = output_dir / "execute"
-        execute_dir.mkdir(parents=True)
+        op = DataGenerator(
+            params=DataGenerator.Params(count=count, rows_per_file=rows, seed=seed)
+        )
+        execute_dir = str(output_dir / "execute")
+        os.makedirs(execute_dir, exist_ok=True)
 
-        result = op.execute(ExecuteInput(inputs={}, execute_dir=execute_dir))
-        files = sorted(f for f in execute_dir.glob("**/*.csv") if f.is_file())
+        result = op.execute_function(ExecuteInput(inputs={}, execute_dir=execute_dir))
+        files = sorted(
+            f
+            for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
+            if os.path.isfile(f)
+        )
 
         post_result = op.postprocess(
             PostprocessInput(
@@ -22,7 +32,7 @@ class TestDataGenerator:
                 memory_outputs=result,
                 input_artifacts={},
                 step_number=1,
-                postprocess_dir=output_dir / "postprocess",
+                postprocess_dir=str(output_dir / "postprocess"),
             )
         )
         return result, files, post_result
@@ -34,7 +44,7 @@ class TestDataGenerator:
 
     def test_csv_format(self, tmp_path: Path):
         _, files, _ = self._run(tmp_path, count=1, rows=3)
-        with files[0].open() as f:
+        with open(files[0]) as f:
             reader = csv.DictReader(f)
             assert reader.fieldnames == ["id", "x", "y", "z", "score"]
             rows = list(reader)
@@ -43,22 +53,24 @@ class TestDataGenerator:
     def test_reproducible_with_seed(self, tmp_path: Path):
         _, files_a, _ = self._run(tmp_path / "a", seed=42)
         _, files_b, _ = self._run(tmp_path / "b", seed=42)
-        for a, b in zip(files_a, files_b):
-            assert a.read_bytes() == b.read_bytes()
+        for a, b in zip(files_a, files_b, strict=True):
+            with open(a, "rb") as fa, open(b, "rb") as fb:
+                assert fa.read() == fb.read()
 
     def test_different_seeds_different_output(self, tmp_path: Path):
         _, files_a, _ = self._run(tmp_path / "a", count=1, seed=42)
         _, files_b, _ = self._run(tmp_path / "b", count=1, seed=99)
-        assert files_a[0].read_bytes() != files_b[0].read_bytes()
+        with open(files_a[0], "rb") as fa, open(files_b[0], "rb") as fb:
+            assert fa.read() != fb.read()
 
     def test_filenames(self, tmp_path: Path):
         _, files, _ = self._run(tmp_path, count=3)
-        names = [f.name for f in files]
+        names = [os.path.basename(f) for f in files]
         assert names == ["dataset_00000.csv", "dataset_00001.csv", "dataset_00002.csv"]
 
     def test_value_ranges(self, tmp_path: Path):
         _, files, _ = self._run(tmp_path, count=1, rows=100, seed=1)
-        with files[0].open() as f:
+        with open(files[0]) as f:
             reader = csv.DictReader(f)
             for row in reader:
                 assert 0.0 <= float(row["x"]) <= 10.0

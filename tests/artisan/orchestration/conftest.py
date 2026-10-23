@@ -1,26 +1,31 @@
-"""Shared fixtures for orchestration unit tests."""
+"""Shared release-format fixtures for orchestration tests."""
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from fixtures.store_format import publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 
 @pytest.fixture(autouse=True)
-def _mock_prefect_discovery():
-    """Auto-mock Prefect server discovery for all orchestration unit tests.
+def _format_common_delta_root(tmp_path: Path) -> None:
+    """Initialize both conventional orchestration-test roots with the supported format."""
+    fs = LocalFileSystem()
+    publish_test_store(str(tmp_path), fs)
+    publish_test_store(str(tmp_path / "delta"), fs)
 
-    PipelineManager.create() and resume() call discover_server() which requires
-    a running Prefect server. Unit tests don't need a real server, so we mock
-    both discover_server and activate_server.
-    """
-    fake_info = MagicMock(url="http://test:4200/api", source="test")
-    with (
-        patch(
-            "artisan.orchestration.prefect_server.discover_server",
-            return_value=fake_info,
-        ),
-        patch("artisan.orchestration.prefect_server.activate_server"),
-    ):
-        yield
+
+@pytest.fixture
+def mock_native_ownership() -> MagicMock:
+    """Supply settled ownership for routing tests that replace the actual pool."""
+    ownership = MagicMock()
+    ownership.supervisor.attachment = {"secret": "test-scope-capability"}
+    ownership.cancelled = False
+    ownership.closed = True
+    ownership.reason = None
+    ownership.advance.return_value = False
+    ownership.finish.return_value = True
+    return ownership

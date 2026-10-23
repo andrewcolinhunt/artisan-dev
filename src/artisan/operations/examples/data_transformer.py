@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import csv
+import os
 import random
-from enum import StrEnum, auto
-from pathlib import Path
-from typing import Any, ClassVar
+from enum import StrEnum
+from typing import Any, ClassVar, cast
 
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -38,11 +40,9 @@ class DataTransformer(OperationDefinition):
         dataset (data) -- Transformed CSV dataset file(s)
     """
 
-    # ---------- Metadata ----------
     name = "data_transformer"
     description = "Transform CSV datasets by scaling and adding noise"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
 
@@ -54,7 +54,6 @@ class DataTransformer(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         DATASET = "dataset"
 
@@ -62,11 +61,10 @@ class DataTransformer(OperationDefinition):
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
             description="Transformed CSV dataset file(s)",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataTransformer."""
 
@@ -91,58 +89,72 @@ class DataTransformer(OperationDefinition):
         )
         output_prefix: str = Field(
             default="",
-            description="Optional prefix prepended to output filenames",
+            description="Optional suffix appended to output filenames",
         )
 
     params: Params = Params()
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Lifecycle ----------
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
+        """Carry each dataset's path, identity, and human name together."""
         return {
-            role: [a.materialized_path for a in artifacts]
-            for role, artifacts in inputs.input_artifacts.items()
+            "dataset": PerArtifact(
+                [
+                    {
+                        "path": artifact.materialized_path,
+                        "artifact_id": artifact.artifact_id,
+                        "original_name": artifact.original_name,
+                    }
+                    for artifact in cast(
+                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                    )
+                ]
+            )
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Apply scale factor and noise to numeric columns of input CSVs."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
-            raise ValueError("No dataset input provided")
-
-        if isinstance(dataset_input, (str, Path)):
-            input_files = [Path(dataset_input)]
-        else:
-            input_files = [Path(f) for f in dataset_input]
+            msg = "No dataset input provided"
+            raise ValueError(msg)
 
         rng = random.Random(self.params.seed)
         created_files = []
+        outputs = []
         numeric_cols = {"x", "y", "z", "score"}
 
-        for input_path in input_files:
-            if not input_path.exists():
-                raise FileNotFoundError(f"Input file not found: {input_path}")
+        for dataset in dataset_input:
+            input_path = dataset["path"]
+            if not os.path.exists(input_path):
+                msg = f"Input file not found: {input_path}"
+                raise FileNotFoundError(msg)
 
-            with input_path.open() as f:
+            with open(input_path) as f:
                 reader = csv.DictReader(f)
                 headers = list(reader.fieldnames or [])
                 rows = list(reader)
 
-            stem = input_path.stem
+            stem = os.path.splitext(os.path.basename(input_path))[0]
 
             for variant_idx in range(self.params.variants):
-                suffix = f"_{self.params.output_prefix}" if self.params.output_prefix else ""
-                output_path = output_dir / f"{stem}_{variant_idx}{suffix}.csv"
-                with output_path.open("w", newline="") as f:
+                suffix = (
+                    f"_{self.params.output_prefix}" if self.params.output_prefix else ""
+                )
+                output_path = os.path.join(
+                    output_dir, f"{stem}_{variant_idx}{suffix}.csv"
+                )
+                with open(output_path, "w", newline="") as f:
                     writer = csv.DictWriter(f, fieldnames=headers)
                     writer.writeheader()
                     for row in rows:
@@ -159,28 +171,24 @@ class DataTransformer(OperationDefinition):
                                 new_row[col] = round(val, 4)
                         writer.writerow(new_row)
 
-                created_files.append(str(output_path))
+                created_files.append(output_path)
+                outputs.append(
+                    {
+                        "path": output_path,
+                        "original_name": f"{dataset['original_name']}_{variant_idx}{suffix}.csv",
+                        "source_artifact_id": dataset["artifact_id"],
+                    }
+                )
 
-        return {"created_files": created_files}
+        return {"created_files": created_files, "outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from transformed CSV files."""
         raw = inputs.memory_outputs
 
-        drafts: list[DataArtifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
-                drafts.append(
-                    DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
-                        step_number=inputs.step_number,
-                    )
-                )
-
-        return ArtifactResult(
-            success=True,
-            artifacts={"dataset": drafts},
+        result = ArtifactResult(
+            artifacts={"dataset": []},
+            lineage={"dataset": []},
             metadata={
                 "operation": "data_transformer",
                 "scale_factor": self.params.scale_factor,
@@ -190,3 +198,26 @@ class DataTransformer(OperationDefinition):
                 "created_files": raw.get("created_files", []),
             },
         )
+        for output in raw["outputs"]:
+            with open(output["path"], "rb") as f:
+                draft = DataArtifact.draft(
+                    content=f.read(),
+                    original_name=output["original_name"],
+                    step_number=inputs.step_number,
+                )
+            result.add_artifact(
+                "dataset", draft, sources={"dataset": [output["source_artifact_id"]]}
+            )
+        return result
+
+
+class SequentialDataTransformer(DataTransformer):
+    """DataTransformer with per-artifact dispatch disabled.
+
+    All artifacts in a unit are sent to a single execute_function() call.
+    Use this when the operation wraps an external tool that loads
+    model weights per invocation — batching amortizes the cost.
+    """
+
+    name: ClassVar[str] = "sequential_data_transformer"
+    per_artifact_dispatch: ClassVar[bool] = False

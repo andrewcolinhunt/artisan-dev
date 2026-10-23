@@ -1,0 +1,132 @@
+"""Curator that concatenates per-worker JSONL files into a single file.
+
+Consolidation step for AppendableGenerator: after parallel workers
+each produce their own JSONL files, this curator reads them all and
+writes a single combined.jsonl in files_root.
+"""
+
+from __future__ import annotations
+
+from enum import StrEnum, auto
+from typing import TYPE_CHECKING, ClassVar, cast
+
+import polars as pl
+
+from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.appendable import AppendableArtifact
+from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.specs.input_spec import InputSpec
+from artisan.schemas.specs.output_spec import OutputSpec
+
+if TYPE_CHECKING:
+    from artisan.storage.core.artifact_store import ArtifactStore
+
+
+class ConsolidateAppendables(OperationDefinition):
+    """Concatenate per-worker JSONL files into a single file.
+
+    Reads AppendableArtifacts from multiple worker files, concatenates
+    all JSONL content into one combined file, and produces new artifacts
+    pointing to the combined path. Relocation preserves semantic identity,
+    so finalized artifacts retain their original artifact IDs.
+
+    Input Roles:
+        records (appendable) -- Per-worker appendable artifacts
+
+    Output Roles:
+        records (appendable) -- Consolidated appendable artifacts
+    """
+
+    name = "consolidate_appendables"
+    description = "Concatenate per-worker JSONL files into a single file"
+
+    class InputRole(StrEnum):
+        records = auto()
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.records: InputSpec(
+            artifact_type="appendable",
+        ),
+    }
+
+    class OutputRole(StrEnum):
+        records = auto()
+
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.records: OutputSpec(
+            artifact_type="appendable",
+            description="Consolidated appendable artifacts",
+            derives_from={"inputs": ["records"]},
+        ),
+    }
+
+    def execute_curator(
+        self,
+        inputs: dict[str, pl.DataFrame],
+        step_number: int,
+        artifact_store: ArtifactStore,
+    ) -> ArtifactResult:
+        """Concatenate worker JSONL files and create consolidated artifacts.
+
+        Args:
+            inputs: Must contain a ``records`` key with a DataFrame of
+                appendable artifact IDs.
+            step_number: Current pipeline step number; also names the
+                subdirectory that holds the combined file.
+            artifact_store: Store for hydrating AppendableArtifact objects
+                and locating ``files_root``.
+
+        Returns:
+            ArtifactResult with consolidated appendable drafts keyed by the
+            ``records`` output role.
+
+        Raises:
+            ValueError: If the store has no ``files_root`` configured.
+        """
+        if artifact_store.files_root is None:
+            msg = "files_root required for ConsolidateAppendables"
+            raise ValueError(msg)
+
+        fs = artifact_store.filesystem
+        record_ids = inputs["records"]["artifact_id"].to_list()
+        # get_artifacts_by_type returns dict[str, Artifact]; "appendable" is the
+        # requested type, so the values are AppendableArtifact instances.
+        raw_artifacts = artifact_store.get_artifacts_by_type(record_ids, "appendable")
+        artifacts: dict[str, AppendableArtifact] = {
+            aid: art
+            for aid, art in raw_artifacts.items()
+            if isinstance(art, AppendableArtifact)
+        }
+
+        worker_files: set[str] = set()
+        for art in artifacts.values():
+            if art.external_path:
+                worker_files.add(art.external_path)
+
+        combined_uri = f"{artifact_store.files_root}/{step_number}/combined.jsonl"
+        combined_dir = f"{artifact_store.files_root}/{step_number}"
+        fs.makedirs(combined_dir, exist_ok=True)
+        with fs.open(combined_uri, "w") as out:
+            for worker_file in sorted(worker_files):
+                with fs.open(worker_file, "r") as f:
+                    out.write(f.read())
+
+        result = ArtifactResult(artifacts={"records": []}, lineage={"records": []})
+        for art in artifacts.values():
+            assert art.record_id is not None, "finalized appendable has record_id"
+            assert art.content_hash is not None, "finalized appendable has content_hash"
+            assert art.size_bytes is not None, "finalized appendable has size_bytes"
+            result.add_artifact(
+                "records",
+                AppendableArtifact.draft(
+                    record_id=art.record_id,
+                    content_hash=art.content_hash,
+                    size_bytes=art.size_bytes,
+                    step_number=step_number,
+                    external_path=combined_uri,
+                    original_name=art.original_name,
+                ),
+                sources={"records": [cast(str, art.artifact_id)]},
+            )
+
+        return result

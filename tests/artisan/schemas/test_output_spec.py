@@ -10,16 +10,16 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class TestOutputSpec:
-    """Tests for OutputSpec dataclass."""
+    """Tests for the OutputSpec model."""
 
     def test_create_data_output(self):
-        """Create OutputSpec for data output with default filename matching."""
+        """Create a data output without an explicit lineage declaration."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.DATA,
             description="Processed data files",
         )
         assert spec.artifact_type == ArtifactTypes.DATA
-        assert spec.infer_lineage_from is None  # Default filename matching
+        assert spec.derives_from is None
 
     def test_default_values(self):
         """Test default values."""
@@ -27,7 +27,7 @@ class TestOutputSpec:
         assert spec.artifact_type == ArtifactTypes.ANY
         assert spec.description == ""
         assert spec.required is True
-        assert spec.infer_lineage_from is None
+        assert spec.derives_from is None
 
     def test_metric_output(self):
         """OutputSpec for metric output."""
@@ -52,55 +52,55 @@ class TestOutputSpec:
             spec.artifact_type = ArtifactTypes.METRIC
 
 
-class TestInferLineageFrom:
-    """Tests for infer_lineage_from field validation."""
+class TestDerivesFrom:
+    """Tests for derives_from field validation."""
 
-    def test_infer_lineage_from_none(self):
-        """Test OutputSpec with default lineage (filename matching)."""
+    def test_derives_from_none(self):
+        """Allow an absent lineage declaration at the schema level."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.DATA,
         )
-        assert spec.infer_lineage_from is None
+        assert spec.derives_from is None
 
-    def test_infer_lineage_from_inputs(self):
+    def test_derives_from_inputs(self):
         """Test OutputSpec with explicit input lineage."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         )
-        assert spec.infer_lineage_from == {"inputs": ["data"]}
+        assert spec.derives_from == {"inputs": ["data"]}
 
-    def test_infer_lineage_from_outputs(self):
+    def test_derives_from_outputs(self):
         """Test OutputSpec with output->output lineage."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"outputs": ["data"]},
+            derives_from={"outputs": ["data"]},
         )
-        assert spec.infer_lineage_from == {"outputs": ["data"]}
+        assert spec.derives_from == {"outputs": ["data"]}
 
     def test_rejects_combined_inputs_outputs(self):
         """Test that combined inputs+outputs (old GROUP pattern) is rejected."""
         with pytest.raises(ValidationError) as exc_info:
             OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"inputs": ["data"], "outputs": ["data"]},
+                derives_from={"inputs": ["data"], "outputs": ["data"]},
             )
         assert "no longer supported" in str(exc_info.value)
 
-    def test_infer_lineage_from_generative(self):
+    def test_derives_from_generative(self):
         """Test OutputSpec with generative operation (no parents)."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": []},  # Explicit: no parents
+            derives_from={"inputs": []},  # Explicit: no parents
         )
-        assert spec.infer_lineage_from == {"inputs": []}
+        assert spec.derives_from == {"inputs": []}
 
     def test_rejects_empty_dict(self):
         """Test that empty dict {} is rejected as invalid."""
         with pytest.raises(ValidationError) as exc_info:
             OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={},
+                derives_from={},
             )
         assert "Empty dict {}" in str(exc_info.value)
 
@@ -109,7 +109,7 @@ class TestInferLineageFrom:
         with pytest.raises(ValidationError) as exc_info:
             OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"invalid_key": ["data"]},
+                derives_from={"invalid_key": ["data"]},
             )
         assert "Invalid keys" in str(exc_info.value)
         assert "invalid_key" in str(exc_info.value)
@@ -119,26 +119,41 @@ class TestInferLineageFrom:
         with pytest.raises(ValidationError) as exc_info:
             OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={
+                derives_from={
                     "inputs": ["a"],
                     "bad_key": ["b"],
                 },
             )
         assert "Invalid keys" in str(exc_info.value)
 
-    def test_hash_with_infer_lineage_from(self):
-        """Test that OutputSpec is hashable with infer_lineage_from."""
+    def test_rejects_empty_output_references(self) -> None:
+        with pytest.raises(ValidationError, match="at least one output role"):
+            OutputSpec(
+                artifact_type=ArtifactTypes.METRIC,
+                derives_from={"outputs": []},
+            )
+
+    @pytest.mark.parametrize("reference_kind", ["inputs", "outputs"])
+    def test_rejects_duplicate_lineage_roles(self, reference_kind: str) -> None:
+        with pytest.raises(ValidationError, match="Duplicate roles"):
+            OutputSpec(
+                artifact_type=ArtifactTypes.METRIC,
+                derives_from={reference_kind: ["data", "data"]},
+            )
+
+    def test_hash_with_derives_from(self):
+        """Test that OutputSpec is hashable with derives_from."""
         spec1 = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": ["a", "b"]},
+            derives_from={"inputs": ["a", "b"]},
         )
         spec2 = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": ["a", "b"]},
+            derives_from={"inputs": ["a", "b"]},
         )
         spec3 = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"inputs": ["b", "a"]},  # Different order
+            derives_from={"inputs": ["b", "a"]},  # Different order
         )
 
         # Same config should have same hash
@@ -149,7 +164,7 @@ class TestInferLineageFrom:
         assert hash(spec1) != hash(spec3)
 
     def test_hash_none_lineage(self):
-        """Test hash with None infer_lineage_from."""
+        """Test hash with None derives_from."""
         spec = OutputSpec(artifact_type=ArtifactTypes.METRIC)
         # Should not raise
         assert isinstance(hash(spec), int)
@@ -158,11 +173,48 @@ class TestInferLineageFrom:
         """Test hash with outputs key."""
         spec1 = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"outputs": ["b"]},
+            derives_from={"outputs": ["b"]},
         )
         spec2 = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            infer_lineage_from={"outputs": ["b"]},
+            derives_from={"outputs": ["b"]},
         )
 
         assert hash(spec1) == hash(spec2)
+
+
+class TestArtifactTypeValidator:
+    """Tests for the artifact_type field validator."""
+
+    def test_default_any_accepted(self):
+        """OutputSpec() constructs and defaults artifact_type to ANY."""
+        spec = OutputSpec()
+        assert spec.artifact_type == ArtifactTypes.ANY
+
+    @pytest.mark.parametrize(
+        "artifact_type",
+        [
+            ArtifactTypes.METRIC,
+            ArtifactTypes.FILE_REF,
+            ArtifactTypes.CONFIG,
+            ArtifactTypes.DATA,
+        ],
+    )
+    def test_registered_key_accepted(self, artifact_type: str):
+        """Each built-in registered key is accepted."""
+        spec = OutputSpec(artifact_type=artifact_type)
+        assert spec.artifact_type == artifact_type
+
+    def test_unregistered_string_rejected(self):
+        """Unregistered strings raise with a helpful message."""
+        with pytest.raises(ValidationError) as exc_info:
+            OutputSpec(artifact_type="totally_made_up")
+        msg = str(exc_info.value)
+        assert "totally_made_up" in msg
+        assert "metric" in msg
+        assert "ArtifactTypeDef" in msg
+
+
+def test_removed_lineage_keyword_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        OutputSpec(infer_lineage_from={"inputs": []})

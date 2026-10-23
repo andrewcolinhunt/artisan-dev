@@ -4,34 +4,58 @@ This package-level module exposes the stable entry points used by pipeline
 definitions:
 
 - PipelineManager: Main interface for defining and executing pipeline steps.
-- Backend: Namespace of pre-built backend instances (LOCAL, SLURM, SLURM_INTRA).
-- BackendBase: ABC for custom backends.
-- FailurePolicy: Enum controlling behavior after step failures.
-- CachePolicy: Enum controlling when completed steps qualify as cache hits.
+- PipelineConfig: Frozen configuration model returned by ``pipeline.config``.
+- Runner: Namespace of built-in step runner instances (currently LOCAL).
+- RunnerBase: ABC for custom runners.
+- list_runs: Module-level function that lists pipeline runs in a Delta root.
 
 Example:
-    from artisan.orchestration import PipelineManager, Backend
+    from artisan.orchestration import PipelineManager, Runner, list_runs
 
     pipeline = PipelineManager.create(
         name="my_pipeline",
         delta_root="/data/delta",
         staging_root="/data/staging",
-        backend=Backend.SLURM,
+        default_step_runner=Runner.LOCAL,
     )
     output = pipeline.output
 
     pipeline.run(operation=IngestData, name="ingest", inputs=files)
     pipeline.run(operation=ScoreOp, name="score", inputs={"data": output("ingest", "data")})
     result = pipeline.finalize()
+
+    df = list_runs("/data/delta")
 """
 
 from __future__ import annotations
 
-from artisan.orchestration.backends import Backend, BackendBase
 from artisan.orchestration.pipeline_manager import PipelineManager
+from artisan.orchestration.replay import replay_execution
+from artisan.orchestration.run_history import list_runs
+from artisan.orchestration.runners import Runner, RunnerBase
+from artisan.orchestration.step_future import StepFuture
+from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.replay_result import ReplayResult
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
+from artisan.schemas.orchestration.step_result import StepResult
 
 __all__ = [
-    "Backend",
-    "BackendBase",
+    "CancellationStatus",
+    "OutputReference",
+    "PipelineConfig",
     "PipelineManager",
+    "ReplayResult",
+    "Runner",
+    "RunnerBase",
+    "StepDisposition",
+    "StepFuture",
+    "StepResult",
+    "StepStatus",
+    "list_runs",
+    "replay_execution",
 ]

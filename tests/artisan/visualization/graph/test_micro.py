@@ -2,11 +2,16 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import graphviz
 import polars as pl
 import pytest
+from fixtures.cache_isolation_store import build_cache_isolation_store
+from fixtures.execution_records import executions_df
+from fixtures.store_format import commit_test_tables, publish_test_store
+from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -14,7 +19,6 @@ from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
     EXECUTION_EDGES_SCHEMA,
-    EXECUTIONS_SCHEMA,
 )
 from artisan.visualization.graph import (
     build_micro_graph,
@@ -30,11 +34,10 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     delta_root = tmp_path / "delta"
     delta_root.mkdir()
 
-    # Create executions
     exec_data = {
         "execution_run_id": ["exec_1", "exec_2"],
         "execution_spec_id": ["spec_1", "spec_2"],
-        "step_run_id": [None, None],
+        "step_run_id": ["seed-micro-1", "seed-micro-2"],
         "origin_step_number": [1, 2],
         "operation_name": ["data_parser", "metric_calc"],
         "params": ["{}", "{}"],
@@ -49,10 +52,8 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "worker_log": [None, None],
         "metadata": ["{}", "{}"],
     }
-    exec_df = pl.DataFrame(exec_data, schema=EXECUTIONS_SCHEMA)
-    exec_df.write_delta(str(delta_root / "orchestration/executions"), mode="overwrite")
+    exec_df = executions_df(**exec_data)
 
-    # Create artifact_index
     artifact_data = {
         "artifact_id": ["art_ext_1", "art_inter_1", "art_metric_1"],
         "artifact_type": ["file_ref", "metric", "metric"],
@@ -60,9 +61,7 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "metadata": ["{}", "{}", "{}"],
     }
     artifact_df = pl.DataFrame(artifact_data, schema=ARTIFACT_INDEX_SCHEMA)
-    artifact_df.write_delta(str(delta_root / "artifacts/index"), mode="overwrite")
 
-    # Create metrics (intermediate + final)
     metric_data = {
         "artifact_id": ["art_inter_1", "art_metric_1"],
         "origin_step_number": [1, 2],
@@ -70,27 +69,20 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "original_name": ["parsed_result", "energy"],
         "extension": [".json", ".json"],
         "metadata": ["{}", "{}"],
-        "external_path": [None, None],
     }
     metric_df = pl.DataFrame(metric_data, schema=MetricArtifact.POLARS_SCHEMA)
-    metric_df.write_delta(str(delta_root / "artifacts/metrics"), mode="overwrite")
 
-    # Create file_refs
     ext_data = {
         "artifact_id": ["art_ext_1"],
         "origin_step_number": [0],
         "content_hash": ["hash123"],
-        "path": ["/data/input/sample.csv"],
         "size_bytes": [200],
         "metadata": ["{}"],
         "original_name": ["sample"],
         "extension": [".csv"],
-        "external_path": [None],
     }
     ext_df = pl.DataFrame(ext_data, schema=FileRefArtifact.POLARS_SCHEMA)
-    ext_df.write_delta(str(delta_root / "artifacts/file_refs"), mode="overwrite")
 
-    # Create execution_edges
     exec_prov_data = {
         "execution_run_id": ["exec_1", "exec_1", "exec_2", "exec_2"],
         "direction": ["input", "output", "input", "output"],
@@ -98,11 +90,7 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "artifact_id": ["art_ext_1", "art_inter_1", "art_inter_1", "art_metric_1"],
     }
     exec_prov_df = pl.DataFrame(exec_prov_data, schema=EXECUTION_EDGES_SCHEMA)
-    exec_prov_df.write_delta(
-        str(delta_root / "provenance/execution_edges"), mode="overwrite"
-    )
 
-    # Create artifact_edges
     art_prov_data = {
         "execution_run_id": ["exec_1", "exec_2"],
         "source_artifact_id": ["art_ext_1", "art_inter_1"],
@@ -115,9 +103,46 @@ def delta_root_with_data(tmp_path: Path) -> Path:
         "step_boundary": [True, True],
     }
     art_prov_df = pl.DataFrame(art_prov_data, schema=ARTIFACT_EDGES_SCHEMA)
-    art_prov_df.write_delta(
-        str(delta_root / "provenance/artifact_edges"), mode="overwrite"
+    fs = LocalFileSystem()
+    staging_root = str(tmp_path / "staging")
+    commit_test_tables(
+        str(delta_root),
+        staging_root,
+        fs,
+        {
+            "artifacts/index": artifact_df.filter(pl.col("origin_step_number") == 0),
+            "artifacts/file_refs": ext_df,
+        },
+        step_run_id="seed-micro-0",
+        step_number=0,
+        operation_name="seed_file_ref",
     )
+    for step_number, execution_id in ((1, "exec_1"), (2, "exec_2")):
+        commit_test_tables(
+            str(delta_root),
+            staging_root,
+            fs,
+            {
+                "orchestration/executions": exec_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+                "artifacts/index": artifact_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+                "artifacts/metrics": metric_df.filter(
+                    pl.col("origin_step_number") == step_number
+                ),
+                "provenance/execution_edges": exec_prov_df.filter(
+                    pl.col("execution_run_id") == execution_id
+                ),
+                "provenance/artifact_edges": art_prov_df.filter(
+                    pl.col("execution_run_id") == execution_id
+                ),
+            },
+            step_run_id=f"seed-micro-{step_number}",
+            step_number=step_number,
+            operation_name=f"seed_micro_{step_number}",
+        )
 
     return delta_root
 
@@ -127,6 +152,7 @@ def empty_delta_root(tmp_path: Path) -> Path:
     """Create empty Delta Lake root directory."""
     delta_root = tmp_path / "delta_empty"
     delta_root.mkdir()
+    publish_test_store(str(delta_root), LocalFileSystem())
     return delta_root
 
 
@@ -142,7 +168,6 @@ class TestBuildMicroGraph:
         """Empty delta root produces a graph with no nodes/edges."""
         graph = build_micro_graph(empty_delta_root)
         assert isinstance(graph, graphviz.Digraph)
-        # Graph source should have minimal content (just header)
         source = graph.source
         assert "digraph" in source
 
@@ -189,7 +214,6 @@ class TestBuildMicroGraph:
         graph = build_micro_graph(delta_root_with_data)
         source = graph.source
 
-        # Should have edges (arrow notation in DOT format)
         assert "->" in source
 
     def test_graph_has_lineage_edges_in_orange(
@@ -223,13 +247,31 @@ class TestBuildMicroGraph:
 
     def test_accepts_path_or_string(self, delta_root_with_data: Path) -> None:
         """Function accepts both Path and string delta_root."""
-        # Test with Path
         graph1 = build_micro_graph(delta_root_with_data)
-        # Test with string
         graph2 = build_micro_graph(str(delta_root_with_data))
 
         assert isinstance(graph1, graphviz.Digraph)
         assert isinstance(graph2, graphviz.Digraph)
+
+    def test_run_scope_places_cached_participation_and_excludes_other_run(
+        self, tmp_path: Path
+    ) -> None:
+        store = build_cache_isolation_store(tmp_path)
+
+        source = build_micro_graph(
+            store.root,
+            pipeline_run_id=store.current_run,
+        ).source
+
+        assert "(0) current_data" in source
+        assert "(5) source_metric" in source
+        assert "other_data" not in source
+        assert "other_metric" not in source
+        participation = (
+            f"exec_{store.current_cache_step_id}_{store.source_metric_execution}"
+        )
+        assert participation in source
+        assert source.count(f"art_{store.metric_id}") >= 1
 
 
 class TestRenderMicroGraph:
@@ -239,22 +281,29 @@ class TestRenderMicroGraph:
         """Renders graph to SVG format."""
         output_path = tmp_path / "output" / "graph"
 
-        result = render_micro_graph(delta_root_with_data, output_path, format="svg")
+        result = render_micro_graph(
+            str(delta_root_with_data), output_path, format="svg"
+        )
 
-        assert result.exists()
-        assert result.suffix == ".svg"
-        assert result.read_text().startswith("<?xml") or "<svg" in result.read_text()
+        assert os.path.exists(result)
+        assert result.endswith(".svg")
+        with open(result) as f:
+            content = f.read()
+        assert content.startswith("<?xml") or "<svg" in content
 
     def test_renders_png_file(self, delta_root_with_data: Path, tmp_path: Path) -> None:
         """Renders graph to PNG format."""
         output_path = tmp_path / "output" / "graph"
 
-        result = render_micro_graph(delta_root_with_data, output_path, format="png")
+        result = render_micro_graph(
+            str(delta_root_with_data), output_path, format="png"
+        )
 
-        assert result.exists()
-        assert result.suffix == ".png"
+        assert os.path.exists(result)
+        assert result.endswith(".png")
         # PNG files start with specific magic bytes
-        content = result.read_bytes()
+        with open(result, "rb") as f:
+            content = f.read()
         assert content[:8] == b"\x89PNG\r\n\x1a\n"
 
     def test_creates_output_directory(
@@ -263,20 +312,18 @@ class TestRenderMicroGraph:
         """Creates parent directories if they don't exist."""
         output_path = tmp_path / "nested" / "deep" / "graph"
 
-        result = render_micro_graph(delta_root_with_data, output_path)
+        result = render_micro_graph(str(delta_root_with_data), output_path)
 
-        assert result.exists()
-        assert result.parent.exists()
+        assert os.path.exists(result)
+        assert os.path.exists(os.path.dirname(result))
 
-    def test_returns_path_object(
-        self, delta_root_with_data: Path, tmp_path: Path
-    ) -> None:
-        """Returns a Path object pointing to the rendered file."""
+    def test_returns_str(self, delta_root_with_data: Path, tmp_path: Path) -> None:
+        """Returns a str path pointing to the rendered file."""
         output_path = tmp_path / "graph"
 
-        result = render_micro_graph(delta_root_with_data, output_path)
+        result = render_micro_graph(str(delta_root_with_data), output_path)
 
-        assert isinstance(result, Path)
+        assert isinstance(result, str)
 
     def test_default_format_is_svg(
         self, delta_root_with_data: Path, tmp_path: Path
@@ -284,9 +331,9 @@ class TestRenderMicroGraph:
         """Default output format is SVG."""
         output_path = tmp_path / "graph"
 
-        result = render_micro_graph(delta_root_with_data, output_path)
+        result = render_micro_graph(str(delta_root_with_data), output_path)
 
-        assert result.suffix == ".svg"
+        assert result.endswith(".svg")
 
 
 class TestNodeLabeling:
@@ -344,7 +391,6 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=None)
         source = graph.source
 
-        # Should have all executions
         assert "(1) data_parser" in source
         assert "(2) metric_calc" in source
 
@@ -353,9 +399,7 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=1)
         source = graph.source
 
-        # Step 1 should be included
         assert "(1) data_parser" in source
-        # Step 2 should be excluded
         assert "(2) metric_calc" not in source
 
     def test_max_step_filters_artifacts(self, delta_root_with_data: Path) -> None:
@@ -367,7 +411,6 @@ class TestMaxStepFiltering:
         assert "sample" in source  # External file from step 0
         assert "parsed_result" in source  # Intermediate metric from step 1
 
-        # Step 2 execution and artifacts should be excluded
         assert "metric_calc" not in source
         assert "art_metric_1" not in source
 
@@ -401,9 +444,35 @@ class TestMaxStepFiltering:
         # Step 0 artifact (external file) should be included
         assert "sample" in source
 
-        # Step 1+ executions should not be included
         assert "data_parser" not in source
         assert "metric_calc" not in source
+
+    def test_run_scoped_max_step_uses_current_cached_participation(
+        self, tmp_path: Path
+    ) -> None:
+        store = build_cache_isolation_store(
+            tmp_path,
+            reuse_source_metric_at_step_zero=True,
+        )
+        steps = pl.read_delta(str(store.root / "orchestration/steps"))
+        current_step_id = (
+            steps.filter(
+                (pl.col("pipeline_run_id") == store.current_run)
+                & (pl.col("step_number") == 0)
+            )["step_run_id"]
+            .unique()
+            .item()
+        )
+        source = build_micro_graph(
+            store.root,
+            max_step=0,
+            pipeline_run_id=store.current_run,
+        ).source
+
+        participation = f"exec_{current_step_id}_{store.source_metric_execution}"
+        assert "(0) source_metric" in source
+        assert participation in source
+        assert f"art_{store.metric_id}" in source
 
 
 class TestGetMaxStepNumber:
@@ -429,13 +498,13 @@ class TestRenderMicroGraphSteps:
         """Renders one image for each step (cumulative)."""
         output_dir = tmp_path / "images"
 
-        result = render_micro_graph_steps(delta_root_with_data, output_dir)
+        result = render_micro_graph_steps(str(delta_root_with_data), output_dir)
 
         # Test data has steps 1 and 2, so max_step is 2, meaning steps 0, 1, 2
         assert len(result) == 3  # Steps 0, 1, 2
-        for path in result:
-            assert path.exists()
-            assert path.suffix == ".svg"
+        for p in result:
+            assert os.path.exists(p)
+            assert p.endswith(".svg")
 
     def test_filenames_are_zero_padded(
         self, delta_root_with_data: Path, tmp_path: Path
@@ -443,11 +512,11 @@ class TestRenderMicroGraphSteps:
         """Output filenames use zero-padded step numbers."""
         output_dir = tmp_path / "images"
 
-        result = render_micro_graph_steps(delta_root_with_data, output_dir)
+        result = render_micro_graph_steps(str(delta_root_with_data), output_dir)
 
-        assert result[0].name == "step_00.svg"
-        assert result[1].name == "step_01.svg"
-        assert result[2].name == "step_02.svg"
+        assert os.path.basename(result[0]) == "step_00.svg"
+        assert os.path.basename(result[1]) == "step_01.svg"
+        assert os.path.basename(result[2]) == "step_02.svg"
 
     def test_creates_output_directory(
         self, delta_root_with_data: Path, tmp_path: Path
@@ -455,7 +524,7 @@ class TestRenderMicroGraphSteps:
         """Creates output directory if it doesn't exist."""
         output_dir = tmp_path / "nested" / "images"
 
-        render_micro_graph_steps(delta_root_with_data, output_dir)
+        render_micro_graph_steps(str(delta_root_with_data), output_dir)
 
         assert output_dir.exists()
 
@@ -465,7 +534,7 @@ class TestRenderMicroGraphSteps:
         """Returns empty list when no executions exist."""
         output_dir = tmp_path / "images"
 
-        result = render_micro_graph_steps(empty_delta_root, output_dir)
+        result = render_micro_graph_steps(str(empty_delta_root), output_dir)
 
         assert result == []
 
@@ -475,22 +544,25 @@ class TestRenderMicroGraphSteps:
         """Each step's image includes all prior steps."""
         output_dir = tmp_path / "images"
 
-        result = render_micro_graph_steps(delta_root_with_data, output_dir)
+        result = render_micro_graph_steps(str(delta_root_with_data), output_dir)
 
         # Step 0: only external file
-        step0_content = result[0].read_text()
+        with open(result[0]) as f:
+            step0_content = f.read()
         assert "sample" in step0_content
         assert "data_parser" not in step0_content
 
         # Step 1: external file + step 1 execution + intermediate metric
-        step1_content = result[1].read_text()
+        with open(result[1]) as f:
+            step1_content = f.read()
         assert "sample" in step1_content
         assert "data_parser" in step1_content
         assert "parsed_result" in step1_content
         assert "metric_calc" not in step1_content
 
         # Step 2: everything
-        step2_content = result[2].read_text()
+        with open(result[2]) as f:
+            step2_content = f.read()
         assert "sample" in step2_content
         assert "data_parser" in step2_content
         assert "parsed_result" in step2_content
@@ -503,11 +575,12 @@ class TestRenderMicroGraphSteps:
         output_dir = tmp_path / "images"
 
         result = render_micro_graph_steps(
-            delta_root_with_data, output_dir, format="png"
+            str(delta_root_with_data), output_dir, format="png"
         )
 
         assert len(result) == 3
-        for path in result:
-            assert path.suffix == ".png"
-            content = path.read_bytes()
+        for p in result:
+            assert p.endswith(".png")
+            with open(p, "rb") as f:
+                content = f.read()
             assert content[:8] == b"\x89PNG\r\n\x1a\n"

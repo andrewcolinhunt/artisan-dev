@@ -12,15 +12,15 @@ from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 def _make_pipeline(tmp_path) -> PipelineManager:
     config = PipelineConfig(
         name="test",
-        delta_root=tmp_path / "delta",
-        staging_root=tmp_path / "staging",
-        working_root=tmp_path / "working",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "working"),
     )
     return PipelineManager(config)
 
 
 class TestEscalatingSignalHandler:
-    """Fix 1: second Ctrl+C restores default handlers."""
+    """second Ctrl+C restores default handlers."""
 
     @patch("artisan.orchestration.pipeline_manager.StepTracker")
     def test_first_signal_cancels(self, mock_tracker_cls, tmp_path):

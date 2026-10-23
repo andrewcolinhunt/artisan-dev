@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import time
 from enum import StrEnum, auto
 from typing import Any, ClassVar
@@ -10,7 +11,9 @@ from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -22,14 +25,11 @@ class Wait(OperationDefinition):
     without performing real computation.
     """
 
-    # ---------- Metadata ----------
     name = "wait"
     description = "Wait a specified duration then produce a marker file"
 
-    # ---------- Inputs ----------
-    inputs: ClassVar[dict] = {}
+    inputs: ClassVar[dict[str, Any]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         output = auto()
 
@@ -37,11 +37,10 @@ class Wait(OperationDefinition):
         OutputRole.output: OutputSpec(
             artifact_type="data",
             description="Marker file recording the actual wait duration",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Parameters for Wait."""
 
@@ -53,30 +52,36 @@ class Wait(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Lifecycle ----------
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Sleep for the configured duration."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         start = time.perf_counter()
         time.sleep(self.params.duration)
         elapsed = time.perf_counter() - start
 
-        marker = output_dir / "wait_marker.csv"
-        marker.write_text(f"requested,actual\n{self.params.duration},{elapsed:.4f}\n")
+        marker = os.path.join(output_dir, "wait_marker.csv")
+        with open(marker, "w") as f:
+            f.write(f"requested,actual\n{self.params.duration},{elapsed:.4f}\n")
 
         return {"elapsed": elapsed}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build a DataArtifact from the marker file."""
-        drafts: list[DataArtifact] = []
+        drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
                 drafts.append(
                     DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )
@@ -84,6 +89,7 @@ class Wait(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts={"output": drafts},
+            lineage={"output": []},
             metadata={
                 "operation": "wait",
                 "duration": self.params.duration,

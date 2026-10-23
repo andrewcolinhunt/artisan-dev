@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import Path
+import posixpath
 from typing import Any
 
-from pydantic import BaseModel, PrivateAttr
+from pydantic import BaseModel
 
 
 def metadata_to_json(metadata: dict[str, Any] | None) -> str:
@@ -31,28 +31,26 @@ def get_compound_extension(filename: str) -> str:
         The compound extension (e.g., '.dat.gz') or single extension (e.g., '.dat').
         Returns empty string if no extension.
     """
-    suffixes = Path(filename).suffixes
-    return "".join(suffixes) if suffixes else ""
+    name = posixpath.basename(filename)
+    # Find first dot that starts an extension (position > 0, not a dotfile)
+    dot = name.find(".", 1)
+    return name[dot:] if dot > 0 else ""
 
 
 class JsonContentMixin(BaseModel):
-    """Mixin providing a cached ``values`` property for JSON content artifacts.
+    """Expose independent parsed values from an artifact's current JSON content.
 
     Expects the concrete class to have a ``content: bytes | None`` field
     containing JSON-encoded data.
     """
 
-    _cached_values: dict[str, Any] | None = PrivateAttr(default=None)
-
     @property
     def values(self) -> dict[str, Any]:
-        """Return parsed JSON values, caching after first access.
+        """Return freshly decoded values that callers can modify independently.
 
         Raises:
             ValueError: If the artifact is not hydrated.
         """
-        if self._cached_values is not None:
-            return self._cached_values
         content: bytes | None = getattr(self, "content", None)
         if content is None:
             msg = (
@@ -60,6 +58,5 @@ class JsonContentMixin(BaseModel):
                 "Use artifact_store.get_artifact(id, hydrate=True)."
             )
             raise ValueError(msg)
-        self._cached_values = json.loads(content.decode("utf-8"))
-        assert self._cached_values is not None
-        return self._cached_values
+        values: dict[str, Any] = json.loads(content.decode("utf-8"))
+        return values

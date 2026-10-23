@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from artisan.schemas.operation_config.environment_spec import (
@@ -44,6 +42,12 @@ class TestEnvironments:
         with pytest.raises(ValueError, match="not configured"):
             envs.current()
 
+    def test_unknown_active_raises(self):
+        # 'available' collides with a method name; without the validator it
+        # would resolve to the bound method and defeat the fail-fast error.
+        with pytest.raises(ValueError, match="Unknown environment"):
+            Environments(active="available")
+
     def test_available_default(self):
         envs = Environments()
         assert envs.available() == ["local"]
@@ -51,7 +55,7 @@ class TestEnvironments:
     def test_available_multiple(self):
         envs = Environments(
             docker=DockerEnvironmentSpec(image="img:latest"),
-            apptainer=ApptainerEnvironmentSpec(image=Path("/img.sif")),
+            apptainer=ApptainerEnvironmentSpec(image="/img.sif"),
         )
         available = envs.available()
         assert "local" in available
@@ -80,8 +84,16 @@ class TestEnvironments:
     def test_current_returns_correct_subclass(self):
         envs = Environments(
             active="apptainer",
-            apptainer=ApptainerEnvironmentSpec(image=Path("/img.sif")),
+            apptainer=ApptainerEnvironmentSpec(image="/img.sif"),
         )
         current = envs.current()
         assert isinstance(current, ApptainerEnvironmentSpec)
         assert isinstance(current, EnvironmentSpec)
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValueError, match="dockr"):
+            Environments(dockr={"image": "img:latest"})
+
+    def test_unknown_nested_field_rejected(self):
+        with pytest.raises(ValueError, match="gpux"):
+            Environments(docker={"image": "img:latest", "gpux": True})

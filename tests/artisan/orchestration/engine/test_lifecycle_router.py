@@ -1,0 +1,463 @@
+"""Tests for LifecycleRouter ABC and state machine."""
+
+from __future__ import annotations
+
+import threading
+
+import pytest
+
+from artisan.orchestration.engine.lifecycle_router import (
+    LifecycleRouter,
+)
+from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
+
+
+def _result(**overrides: object) -> UnitResult:
+    """Build a UnitResult with sensible defaults."""
+    defaults = {
+        "success": True,
+        "error": None,
+        "item_count": 1,
+        "execution_run_ids": [],
+    }
+    return UnitResult(**{**defaults, **overrides})
+
+
+class _StubHandle(LifecycleRouter):
+    """Minimal concrete handle for state machine tests."""
+
+    def __init__(self, results: list[UnitResult] | None = None) -> None:
+        super().__init__()
+        self._stub_results = results or [_result()]
+        self.cancel_count = 0
+        self.dispatch_called = False
+
+    def _dispatch(self, units, runtime_env) -> None:
+        self.dispatch_called = True
+        self._results = self._stub_results
+        self._done.set()
+
+    def cancel(self) -> CancellationAcknowledgement:
+        self.cancel_count += 1
+        return CancellationAcknowledgement(CancellationStatus.REJECTED)
+
+
+class _SlowStubHandle(LifecycleRouter):
+    """Stub that doesn't complete until explicitly told to."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.cancel_count = 0
+
+    def _dispatch(self, units, runtime_env) -> None:
+        # Don't set _done or _results — stays in DISPATCHED state
+        return None
+
+    def cancel(self) -> CancellationAcknowledgement:
+        self.cancel_count += 1
+        return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+
+    def complete(self, results: list[UnitResult]) -> None:
+        """Externally signal completion (for test control)."""
+        self._results = results
+        self._done.set()
+
+
+class TestLifecycleRouterStateMachine:
+    def test_dispatch_then_collect(self) -> None:
+        handle = _StubHandle()
+        handle.dispatch([object()], None)
+        assert handle.is_done()
+        results = handle.collect()
+        assert len(results) == 1
+        assert results[0].success is True
+
+    def test_double_dispatch_raises(self) -> None:
+        handle = _StubHandle()
+        handle.dispatch([object()], None)
+        with pytest.raises(RuntimeError, match="dispatch.*already called"):
+            handle.dispatch([object()], None)
+
+    def test_collect_before_done_raises(self) -> None:
+        handle = _SlowStubHandle()
+        handle.dispatch([object()], None)
+        with pytest.raises(RuntimeError, match="before completion"):
+            handle.collect()
+
+    def test_cancel_before_dispatch_noop(self) -> None:
+        handle = _StubHandle()
+        handle.cancel()  # Should not raise
+        assert handle.cancel_count == 1
+
+    def test_cancel_after_done_noop(self) -> None:
+        handle = _StubHandle()
+        handle.dispatch([object()], None)
+        assert handle.is_done()
+        handle.cancel()
+        assert handle.cancel_count == 1
+
+    def test_cancel_idempotent(self) -> None:
+        handle = _StubHandle()
+        handle.cancel()
+        handle.cancel()
+        assert handle.cancel_count == 2
+
+    def test_is_done_false_before_dispatch(self) -> None:
+        handle = _StubHandle()
+        assert not handle.is_done()
+
+
+class TestRunTemplateMethod:
+    @pytest.mark.parametrize(
+        ("provider_status", "expected"),
+        [
+            (CancellationStatus.REJECTED, CancellationStatus.REJECTED),
+            (CancellationStatus.CONFIRMED, CancellationStatus.CONFIRMED),
+            (CancellationStatus.UNKNOWN, CancellationStatus.UNKNOWN),
+            (CancellationStatus.REQUESTED, CancellationStatus.UNKNOWN),
+        ],
+    )
+    def test_run_reconciles_cancellation_at_completion_boundary(
+        self,
+        provider_status: CancellationStatus,
+        expected: CancellationStatus,
+    ) -> None:
+        event = threading.Event()
+
+        class BoundaryHandle(_StubHandle):
+            def is_done(self) -> bool:
+                done = super().is_done()
+                if done:
+                    event.set()
+                return done
+
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                return CancellationAcknowledgement(provider_status)
+
+        handle = BoundaryHandle()
+        handle.run([object()], None, cancel_event=event)
+
+        assert handle.cancel_count == 1
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == expected
+
+    def test_run_supplies_one_absolute_deadline_before_cancellation(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from artisan.orchestration.engine import lifecycle_router
+
+        monkeypatch.setattr(lifecycle_router.time, "monotonic", lambda: 12.0)
+        monkeypatch.setattr(lifecycle_router.time, "sleep", lambda _: None)
+        deadlines: list[float] = []
+
+        class DeadlineHandle(_SlowStubHandle):
+            def _set_cancellation_deadline(self, deadline: float) -> None:
+                deadlines.append(deadline)
+
+            def cancel(self) -> CancellationAcknowledgement:
+                assert deadlines == [12.75]
+                self.cancel_count += 1
+                if self.cancel_count == 2:
+                    self.complete([_result(success=False)])
+                    return CancellationAcknowledgement(CancellationStatus.CONFIRMED)
+                return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+
+        handle = DeadlineHandle()
+        event = threading.Event()
+        event.set()
+        handle.run([object()], None, event, cancellation_confirmation_timeout=0.75)
+
+        assert deadlines == [12.75]
+        assert handle.cancel_count == 2
+
+    def test_run_polling_does_not_extend_cancellation_deadline(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from artisan.orchestration.engine import lifecycle_router
+
+        now = 0.0
+
+        def advance(seconds: float) -> None:
+            nonlocal now
+            now += seconds
+
+        monkeypatch.setattr(lifecycle_router.time, "monotonic", lambda: now)
+        monkeypatch.setattr(lifecycle_router.time, "sleep", advance)
+        handle = _SlowStubHandle()
+        event = threading.Event()
+        event.set()
+
+        results = handle.run(
+            [object()], None, event, cancellation_confirmation_timeout=0.025
+        )
+
+        assert now == 0.025
+        assert results[0].success is False
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
+
+    def test_run_calls_dispatch_and_collect(self) -> None:
+        handle = _StubHandle(results=[_result(item_count=5)])
+        results = handle.run([object()], None)
+        assert handle.dispatch_called
+        assert len(results) == 1
+        assert results[0].item_count == 5
+
+    def test_run_with_cancel_event(self) -> None:
+        handle = _SlowStubHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()  # Already cancelled
+
+        def _complete_after_cancel():
+            """Complete the handle after cancel is called."""
+            while handle.cancel_count == 0:
+                pass
+            handle.complete([_result(success=False, error="Cancelled")])
+
+        t = threading.Thread(target=_complete_after_cancel, daemon=True)
+        t.start()
+
+        results = handle.run([object()], None, cancel_event=cancel_event)
+        t.join(timeout=2)
+
+        assert handle.cancel_count >= 1
+        assert len(results) == 1
+        assert results[0].error == "Cancelled"
+
+    def test_run_retries_idempotent_cancel_until_done(self) -> None:
+        class _RetryCancelHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                if self.cancel_count == 2:
+                    self.complete([_result(success=False, error="Cancelled")])
+                if self.cancel_count == 3:
+                    return CancellationAcknowledgement(CancellationStatus.REJECTED)
+                return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+
+        handle = _RetryCancelHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        results = handle.run([object()], None, cancel_event=cancel_event)
+
+        assert handle.cancel_count == 3
+        assert results[0].error == "Cancelled"
+        assert handle.cancellation_acknowledgement == CancellationAcknowledgement(
+            CancellationStatus.REJECTED
+        )
+
+    def test_run_fails_closed_when_completed_router_remains_requested(self) -> None:
+        class _UnresolvedHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                if self.cancel_count == 1:
+                    self.complete([_result(success=False, error="cancelled")])
+                return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+
+        handle = _UnresolvedHandle()
+        event = threading.Event()
+        event.set()
+
+        handle.run([object()], None, cancel_event=event)
+
+        assert handle.cancel_count == 2
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
+
+    def test_run_propagates_errors(self) -> None:
+        class _ErrorHandle(LifecycleRouter):
+            def _dispatch(self, units, runtime_env):
+                self._error = ValueError("boom")
+                self._done.set()
+
+            def cancel(self):
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
+
+        handle = _ErrorHandle()
+        with pytest.raises(ValueError, match="boom"):
+            handle.run([object()], None)
+
+    def test_collect_rejects_wrong_result_count(self) -> None:
+        handle = _StubHandle(results=[_result()])
+        handle.dispatch([object(), object()], None)
+
+        with pytest.raises(RuntimeError, match="1 results for 2 submitted units"):
+            handle.collect()
+
+    def test_background_failure_propagates(self) -> None:
+        class _BackgroundErrorHandle(LifecycleRouter):
+            def _dispatch(self, units, runtime_env):
+                def _raise():
+                    msg = "transport failed"
+                    raise OSError(msg)
+
+                self._start_background(_raise)
+
+            def cancel(self):
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
+
+        handle = _BackgroundErrorHandle()
+        handle.dispatch([object()], None)
+        assert handle._done.wait(timeout=2)
+
+        with pytest.raises(OSError, match="transport failed"):
+            handle.collect()
+
+    def test_synchronous_dispatch_failure_marks_router_done(self) -> None:
+        class _DispatchErrorHandle(LifecycleRouter):
+            def _dispatch(self, units, runtime_env):
+                msg = "submission failed"
+                raise OSError(msg)
+
+            def cancel(self):
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
+
+        handle = _DispatchErrorHandle()
+
+        with pytest.raises(OSError, match="submission failed"):
+            handle.dispatch([object()], None)
+
+        assert handle.is_done()
+
+    def test_requested_then_confirmed_is_published(self) -> None:
+        class _ConfirmingHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                if self.cancel_count == 1:
+                    return CancellationAcknowledgement(CancellationStatus.REQUESTED)
+                self.complete([_result(success=False, error="cancelled")])
+                return CancellationAcknowledgement(CancellationStatus.CONFIRMED)
+
+        handle = _ConfirmingHandle()
+        event = threading.Event()
+        event.set()
+
+        handle.run([object()], None, cancel_event=event)
+
+        assert handle.cancellation_acknowledgement == CancellationAcknowledgement(
+            CancellationStatus.CONFIRMED
+        )
+
+    def test_rejected_cancellation_reaches_natural_result(self) -> None:
+        class _RejectingHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                self.complete([_result(success=True)])
+                return CancellationAcknowledgement(CancellationStatus.REJECTED)
+
+        handle = _RejectingHandle()
+        event = threading.Event()
+        event.set()
+
+        results = handle.run([object()], None, cancel_event=event)
+
+        assert results[0].success is True
+        assert handle.cancellation_acknowledgement is not None
+        assert handle.cancellation_acknowledgement.status == CancellationStatus.REJECTED
+
+    def test_unknown_cancellation_fails_closed(self) -> None:
+        class _UnknownHandle(_SlowStubHandle):
+            def cancel(self) -> CancellationAcknowledgement:
+                self.cancel_count += 1
+                return CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    "lost provider acknowledgement",
+                )
+
+        handle = _UnknownHandle()
+        event = threading.Event()
+        event.set()
+
+        results = handle.run([object()], None, cancel_event=event)
+
+        assert results[0].success is False
+        assert results[0].cancellation_acknowledgement is not None
+        assert (
+            results[0].cancellation_acknowledgement.status == CancellationStatus.UNKNOWN
+        )
+
+
+class TestCancelSentinel:
+    """run() writes the cancel sentinel before cancelling the router."""
+
+    def test_run_writes_sentinel_on_cancel(self, tmp_path) -> None:
+        from types import SimpleNamespace
+
+        from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+        from artisan.utils.path import cancel_sentinel_path
+
+        staging = tmp_path / "staging"
+        staging.mkdir()
+        runtime_env = RuntimeEnvironment(
+            delta_root=str(tmp_path / "delta"),
+            working_root=str(tmp_path / "working"),
+            staging_root=str(staging),
+        )
+        unit = SimpleNamespace(step_run_id="step-abc123")
+
+        handle = _SlowStubHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        def _complete_after_cancel():
+            while handle.cancel_count == 0:
+                pass
+            handle.complete([_result()])
+
+        t = threading.Thread(target=_complete_after_cancel, daemon=True)
+        t.start()
+        handle.run([unit], runtime_env, cancel_event=cancel_event)
+        t.join(timeout=2)
+
+        sentinel = cancel_sentinel_path(str(staging), "step-abc123")
+        assert runtime_env.storage.filesystem().exists(sentinel)
+
+    def test_failing_sentinel_write_is_logged_not_raised(self, caplog) -> None:
+        from unittest.mock import MagicMock
+
+        runtime_env = MagicMock()
+        runtime_env.staging_root = "/tmp/staging"
+        runtime_env.storage.filesystem.side_effect = RuntimeError("fs down")
+        unit = MagicMock()
+        unit.step_run_id = "step-abc123"
+
+        handle = _SlowStubHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        def _complete_after_cancel():
+            while handle.cancel_count == 0:
+                pass
+            handle.complete([_result()])
+
+        t = threading.Thread(target=_complete_after_cancel, daemon=True)
+        t.start()
+        results = handle.run([unit], runtime_env, cancel_event=cancel_event)
+        t.join(timeout=2)
+
+        assert len(results) == 1  # cancellation path completed despite the failure
+        assert handle.cancel_count >= 1
+        assert any("cancel sentinel" in record.message for record in caplog.records)
+
+    def test_no_step_run_id_skips_sentinel(self) -> None:
+        """Direct units without an attempt ID do not write a cancel sentinel."""
+        handle = _SlowStubHandle()
+        cancel_event = threading.Event()
+        cancel_event.set()
+
+        def _complete_after_cancel():
+            while handle.cancel_count == 0:
+                pass
+            handle.complete([_result()])
+
+        t = threading.Thread(target=_complete_after_cancel, daemon=True)
+        t.start()
+        unit = type("Unit", (), {"step_run_id": None})()
+        results = handle.run([unit], None, cancel_event=cancel_event)
+        t.join(timeout=2)
+        assert len(results) == 1

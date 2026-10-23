@@ -15,9 +15,11 @@ Example::
 from __future__ import annotations
 
 from pathlib import PurePosixPath
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
+from artisan.errors import ApplicationRegistrationError
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import TablePath
 
 
 class ArtifactTypeDef:
@@ -48,31 +50,90 @@ class ArtifactTypeDef:
 
         key = cls.key
 
-        # Validate required attributes
+        if key == ArtifactTypes.ANY:
+            msg = f"{ArtifactTypes.ANY!r} is reserved for artifact specifications"
+            raise ValueError(msg)
+
         if "table_path" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must set 'table_path' class variable")
+            msg = f"{cls.__name__} must set 'table_path' class variable"
+            raise TypeError(msg)
         if "model" not in cls.__dict__:
-            raise TypeError(f"{cls.__name__} must set 'model' class variable")
+            msg = f"{cls.__name__} must set 'model' class variable"
+            raise TypeError(msg)
 
-        # Validate model has required serialization interface
-        model = cls.model
-        for attr in ("POLARS_SCHEMA", "to_row", "from_row"):
-            if not hasattr(model, attr):
-                raise TypeError(
-                    f"{cls.__name__}.model ({model.__name__}) " f"must have '{attr}'"
+        # Validate the model contract before mutating either registry.
+        from artisan.schemas.artifact.base import Artifact
+
+        model: object = cls.model
+        if not isinstance(model, type) or not issubclass(model, Artifact):
+            msg = f"{cls.__name__}.model must subclass Artifact"
+            raise TypeError(msg)
+        type_field = model.model_fields.get("artifact_type")
+        if type_field is None or type_field.default != key:
+            msg = (
+                f"{cls.__name__}.key {key!r} must match "
+                f"{model.__name__}.artifact_type default"
+            )
+            raise ValueError(msg)
+        schema = getattr(model, "POLARS_SCHEMA", None)
+        if not isinstance(schema, dict):
+            msg = f"{model.__name__} must declare POLARS_SCHEMA"
+            raise TypeError(msg)
+        if model.EXTERNALLY_BACKED:
+            if len(model.LOCATOR_FIELDS) != 1:
+                msg = (
+                    f"Externally backed {model.__name__} must declare exactly one "
+                    "locator field"
                 )
+                raise TypeError(msg)
+            locator = next(iter(model.LOCATOR_FIELDS))
+            if locator not in model.model_fields:
+                msg = (
+                    f"Externally backed {model.__name__} declares unknown "
+                    f"locator field {locator!r}"
+                )
+                raise TypeError(msg)
+            if locator in schema:
+                msg = (
+                    f"Externally backed {model.__name__} locator field "
+                    f"{locator!r} must not be stored in its content table"
+                )
+                raise TypeError(msg)
+            if model.verify_external_content is Artifact.verify_external_content:
+                msg = (
+                    f"Externally backed {model.__name__} must implement "
+                    "verify_external_content()"
+                )
+                raise TypeError(msg)
+            if model._materialize_content is Artifact._materialize_content:
+                msg = (
+                    f"Externally backed {model.__name__} must implement "
+                    "_materialize_content()"
+                )
+                raise TypeError(msg)
 
-        # Reject duplicate keys
+        reserved_paths = {member.value for member in TablePath}
+        if cls.table_path in reserved_paths:
+            msg = f"Artifact table path {cls.table_path!r} is framework-reserved"
+            raise ValueError(msg)
+        for existing in ArtifactTypeDef._registry.values():
+            if existing is not cls and existing.table_path == cls.table_path:
+                msg = (
+                    f"Duplicate artifact table path {cls.table_path!r}: "
+                    f"{cls.__name__} conflicts with {existing.__name__}"
+                )
+                raise ValueError(msg)
+
         if key in ArtifactTypeDef._registry:
             existing = ArtifactTypeDef._registry[key]
             if existing is not cls:
-                raise ValueError(
+                msg = (
                     f"Duplicate artifact type key {key!r}: "
                     f"{cls.__name__} conflicts with {existing.__name__}"
                 )
+                raise ValueError(msg)
             return
 
-        # Register in both registries
         ArtifactTypes.register(key)
         ArtifactTypeDef._registry[key] = cls
 
@@ -84,9 +145,7 @@ class ArtifactTypeDef:
     @classmethod
     def polars_schema(cls) -> dict[str, Any]:
         """Return the Polars column schema from the model."""
-        return cls.model.POLARS_SCHEMA
-
-    # --- Public lookup API ---
+        return cast("dict[str, Any]", cls.model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
     @staticmethod
     def get(key: str) -> type[ArtifactTypeDef]:
@@ -99,13 +158,14 @@ class ArtifactTypeDef:
             The ArtifactTypeDef subclass.
 
         Raises:
-            KeyError: If key is not registered.
+            ApplicationRegistrationError: If key is not registered.
         """
         if key not in ArtifactTypeDef._registry:
-            raise KeyError(
+            msg = (
                 f"Unknown artifact type: {key!r}. "
                 f"Registered: {list(ArtifactTypeDef._registry.keys())}"
             )
+            raise ApplicationRegistrationError(msg)
         return ArtifactTypeDef._registry[key]
 
     @staticmethod
@@ -147,18 +207,14 @@ class ArtifactTypeDef:
         Returns:
             Dict mapping column names to Polars data types.
         """
-        return ArtifactTypeDef.get(key).model.POLARS_SCHEMA
+        return cast("dict[str, Any]", ArtifactTypeDef.get(key).model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
-
-# =============================================================================
-# Concrete type definitions (auto-registered via __init_subclass__)
-# =============================================================================
 
 # Imports are deferred to module level to avoid circular imports at
 # class-definition time. The models are fully defined before this
 # module's bottom-of-file code executes.
 
-from artisan.schemas.artifact.execution_config import (
+from artisan.schemas.artifact.execution_config import (  # noqa: E402
     ExecutionConfigArtifact,
 )
 from artisan.schemas.artifact.file_ref import FileRefArtifact  # noqa: E402

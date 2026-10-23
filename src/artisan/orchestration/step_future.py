@@ -7,9 +7,11 @@ and pipeline-aware status reporting.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from concurrent.futures import Future
 
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 
 
@@ -28,6 +30,7 @@ class StepFuture:
         output_roles: frozenset[str],
         output_types: dict[str, str | None],
         future: Future[StepResult],
+        status_reader: Callable[[], StepStatus],
     ) -> None:
         """Initialize with step metadata and an underlying future.
 
@@ -37,12 +40,24 @@ class StepFuture:
             output_roles: Set of valid output role names.
             output_types: Mapping of role name to artifact type (or None).
             future: Underlying concurrent future driving execution.
+            status_reader: Manager-owned reader updated after durable snapshots.
         """
         self.step_number = step_number
         self.step_name = step_name
         self._output_roles = output_roles
         self._output_types = output_types
         self._future = future
+        self._status_reader = status_reader
+
+    @property
+    def output_roles(self) -> frozenset[str]:
+        """Available output role names for this step."""
+        return self._output_roles
+
+    @property
+    def output_types(self) -> dict[str, str | None]:
+        """Return a copy of the declared output-role type mapping."""
+        return dict(self._output_types)
 
     def output(self, role: str) -> OutputReference:
         """Create a lazy reference to a step output without blocking.
@@ -63,21 +78,23 @@ class StepFuture:
         return OutputReference(
             source_step=self.step_number,
             role=role,
-            artifact_type=self._output_types.get(role),
+            artifact_type=self._output_types.get(role),  # type: ignore[arg-type]  # narrowed at construction; absent roles caught above
         )
 
     @property
     def done(self) -> bool:
-        """True if the step has completed (success or failure)."""
+        """Return whether the underlying future is done."""
         return self._future.done()
 
     @property
-    def status(self) -> str:
-        """Current status: 'running', 'completed', or 'failed'."""
-        if not self._future.done():
-            return "running"
-        exc = self._future.exception()
-        return "failed" if exc is not None else "completed"
+    def cancelled_before_start(self) -> bool:
+        """Whether the internal closure was cancelled before it ran."""
+        return self._future.cancelled()
+
+    @property
+    def status(self) -> StepStatus:
+        """Return the latest durably persisted lifecycle status."""
+        return self._status_reader()
 
     def result(self, timeout: float | None = None) -> StepResult:
         """Block until done and return the StepResult.
@@ -86,7 +103,7 @@ class StepFuture:
             timeout: Maximum seconds to wait. None means wait forever.
 
         Returns:
-            The StepResult from the completed step.
+            The terminal StepResult.
 
         Raises:
             TimeoutError: If timeout expires before completion.

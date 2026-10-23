@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from enum import StrEnum, auto
 from typing import ClassVar
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -13,6 +13,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -32,14 +33,14 @@ class MockOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.data: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
     def preprocess(self, inputs):
         return {}
 
-    def execute(self, inputs, output_dir):
+    def execute_function(self, inputs, output_dir):
         pass
 
 
@@ -61,13 +62,16 @@ class IngestMockOp(OperationDefinition):
 
 def _mock_execute_step(**kwargs):
     from artisan.orchestration.engine.step_executor import build_step_result
+    from artisan.schemas.enums import FailurePolicy
 
+    operation = kwargs["operation"]
+    succeeded_count = 0 if isinstance(operation, IngestMockOp) else 5
     return build_step_result(
-        operation=kwargs["operation_class"],
+        operation=operation,
         step_number=kwargs["step_number"],
-        succeeded_count=5,
+        succeeded_count=succeeded_count,
         failed_count=0,
-        failure_policy=kwargs["failure_policy"],
+        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
     )
 
 
@@ -79,7 +83,8 @@ def _mock_execute_step_slow(**kwargs):
 
 def _mock_execute_step_error(**kwargs):
     """Simulate a failed step."""
-    raise RuntimeError("Step execution failed")
+    msg = "Step execution failed"
+    raise RuntimeError(msg)
 
 
 class TestSubmit:
@@ -93,8 +98,8 @@ class TestSubmit:
         """submit() returns StepFuture, not StepResult."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         assert isinstance(future, StepFuture)
@@ -105,17 +110,32 @@ class TestSubmit:
     )
     def test_submit_cache_hit_resolved(self, mock_exec, tmp_path):
         """done immediately on cache hit."""
+        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
         # First run to populate cache
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
-        p1.run(IngestMockOp, inputs=None)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
+        source = p1.run(IngestMockOp, inputs=None)
 
         # Second run — cache hit
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
-        future = p2.submit(IngestMockOp, inputs=None)
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
+        p2._step_tracker.check_cache = MagicMock(
+            return_value=_WholeStepCacheHit(
+                result=source,
+                source_step_run_id=source.step_run_id,
+                execution_run_ids=("c" * 32,),
+            )
+        )
+        with patch.object(p2, "_commit_whole_step_reuse"):
+            future = p2.submit(IngestMockOp, inputs=None)
         assert future.done is True
+        assert future.result().step_run_id != source.step_run_id
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
@@ -125,8 +145,8 @@ class TestSubmit:
         """output() returns immediately even when step not done."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         ref = future.output("file")
@@ -138,16 +158,16 @@ class TestSubmit:
         side_effect=_mock_execute_step,
     )
     def test_submit_status_transitions(self, mock_exec, tmp_path):
-        """Status transitions to 'completed'."""
+        """Status transitions to the authoritative succeeded state."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         # Wait for completion
         future.result()
-        assert future.status == "completed"
+        assert future.status == StepStatus.SUCCEEDED
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
@@ -157,8 +177,8 @@ class TestSubmit:
         """result() blocks and returns StepResult."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         result = future.result()
@@ -173,8 +193,8 @@ class TestSubmit:
         """TimeoutError on result()."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         with pytest.raises(TimeoutError):
@@ -187,18 +207,18 @@ class TestSubmit:
         side_effect=_mock_execute_step_error,
     )
     def test_submit_error_returns_failed_result(self, mock_exec, tmp_path):
-        """Failed step returns StepResult(success=False) instead of raising."""
+        """Failed step returns a failed terminal result instead of raising."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         result = future.result()
         assert isinstance(result, StepResult)
-        assert result.success is False
-        assert "error" in result.metadata
-        assert "RuntimeError" in result.metadata["error"]
+        assert result.status == StepStatus.FAILED
+        assert result.error is not None
+        assert "RuntimeError" in result.error
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
@@ -208,8 +228,8 @@ class TestSubmit:
         """run() returns same StepResult as submit().result()."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         result = pipeline.run(IngestMockOp, inputs=None)
         assert isinstance(result, StepResult)
@@ -220,16 +240,17 @@ class TestSubmit:
         side_effect=_mock_execute_step,
     )
     def test_mixed_run_submit(self, mock_exec, tmp_path):
-        """submit() followed by run() works."""
+        """A downstream run skips when the submitted step produced no artifacts."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future = pipeline.submit(IngestMockOp, inputs=None)
         result2 = pipeline.run(MockOp, inputs={"data": future.output("file")})
         assert result2.step_name == "MockOp"
-        assert result2.success is True
+        assert result2.status == StepStatus.SKIPPED
+        assert result2.metadata["skip_reason"] == "empty_inputs"
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
@@ -239,8 +260,8 @@ class TestSubmit:
         """submit() blocks on upstream future completion."""
         pipeline = PipelineManager.create(
             name="test",
-            delta_root=tmp_path / "delta",
-            staging_root=tmp_path / "staging",
+            delta_root=str(tmp_path / "delta"),
+            staging_root=str(tmp_path / "staging"),
         )
         future0 = pipeline.submit(IngestMockOp, inputs=None)
         # This should wait for future0 internally via _wait_for_predecessors

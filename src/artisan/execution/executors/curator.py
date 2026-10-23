@@ -15,20 +15,36 @@ from typing import Any
 
 import polars as pl
 
-from artisan.execution.context.builder import build_curator_execution_context
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.lineage.builder import build_edges
-from artisan.execution.lineage.capture import capture_lineage_metadata
 from artisan.execution.lineage.enrich import (
-    build_artifact_edges_from_dict,
-    build_config_reference_edges,
+    build_artifact_edges_from_types,
+    require_artifact_type,
 )
-from artisan.execution.lineage.validation import validate_artifacts_match_specs
+from artisan.execution.lineage.validation import (
+    validate_artifacts_match_specs,
+    validate_lineage_completeness,
+    validate_lineage_integrity,
+)
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
-    build_execution_edges,
+from artisan.execution.recording.commands import (
+    capture_commands,
+    command_snapshot,
+    sanitize_diagnostic,
+)
+from artisan.execution.recording.durable import configuration_recorder
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import (
+    error_envelope_dict,
+    execution_is_sealed,
     record_execution_failure,
     record_execution_success,
+    record_passthrough,
+)
+from artisan.execution.recording.replay_snapshot import (
+    capture_replay,
+    replay_recording_fields,
+    verify_replay_worker,
 )
 from artisan.execution.utils import (
     finalize_artifacts,
@@ -36,16 +52,24 @@ from artisan.execution.utils import (
     validate_passthrough_result,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
-from artisan.schemas.execution.curator_result import ArtifactResult, PassthroughResult
+from artisan.registry.discovery import bootstrap_applications
+from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.curator_result import (
+    ArtifactResult,
+    PassthroughResult,
+)
 from artisan.schemas.execution.execution_context import ExecutionContext
+from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.utils.errors import format_error
+from artisan.utils.command_supervisor import (
+    check_command_scope,
+    close_command_scope,
+    managed_invocation,
+)
+from artisan.utils.hashing import serialize_params
 from artisan.utils.timing import phase_timer
+from artisan.utils.traceback import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -59,128 +83,60 @@ def is_curator_operation(op: type[OperationDefinition] | OperationDefinition) ->
     )
 
 
-def _get_params(operation: OperationDefinition) -> dict[str, Any]:
-    """Safely serialize operation params when available."""
-    from artisan.utils.hashing import serialize_params
-
-    return serialize_params(operation)
-
-
-def _hydrate_inputs_for_lineage(
-    inputs: dict[str, list[str]],
-    output_specs: dict[str, OutputSpec],
-    artifact_store: ArtifactStore,
-) -> dict[str, list[Artifact]]:
-    """Hydrate only input roles referenced by OutputSpec.infer_lineage_from.
-
-    Lineage capture needs Artifact objects with original_name for stem-matching.
-    This helper hydrates only the specific roles needed, avoiding full
-    instantiation of all inputs.
-
-    Args:
-        inputs: Raw inputs {role: [artifact_id, ...]}.
-        output_specs: Operation output specs to check infer_lineage_from.
-        artifact_store: Store for artifact hydration.
-
-    Returns:
-        {role: [Artifact, ...]} for roles referenced by lineage config.
-    """
-    needed_roles: set[str] = set()
-    for spec in output_specs.values():
-        if spec.infer_lineage_from is not None:
-            for input_role in spec.infer_lineage_from.get("inputs", []):
-                needed_roles.add(input_role)
-
-    result: dict[str, list[Artifact]] = {}
-    for role in needed_roles:
-        ids = inputs.get(role, [])
-        if not ids:
-            continue
-
-        # Determine artifact type from the operation's input specs
-        type_map = artifact_store.provenance.load_type_map(ids)
-
-        # Group by type for bulk loading
-        ids_by_type: dict[str, list[str]] = {}
-        for aid in ids:
-            atype = type_map.get(aid)
-            if atype:
-                ids_by_type.setdefault(atype, []).append(aid)
-
-        role_artifacts: dict[str, Artifact] = {}
-        for atype, type_ids in ids_by_type.items():
-            loaded = artifact_store.get_artifacts_by_type(type_ids, atype)
-            role_artifacts.update(loaded)
-
-        # Preserve input order
-        result[role] = [role_artifacts[aid] for aid in ids if aid in role_artifacts]
-
-    return result
-
-
 def _handle_artifact_result(
     result: ArtifactResult,
     operation: OperationDefinition,
     artifact_store: ArtifactStore,
     execution_context: ExecutionContext,
-    unit: ExecutionUnit,
-    inputs: dict[str, Any],
-    input_artifacts: dict[str, list[Artifact]],
+    inputs: dict[str, list[str]],
     timestamp_end: datetime,
+    command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
     """Finalize, validate, and stage new artifacts from a curator result."""
-    finalized = finalize_artifacts(result.artifacts)
-    validate_artifacts_match_specs(finalized, operation.outputs)
-    artifact_edges: list[ArtifactProvenanceEdge] = []
-
-    # Build lookup of all artifacts for lineage edge construction
-    built_artifacts: dict[str, Artifact] = {}
-    for artifact_list in finalized.values():
-        for artifact in artifact_list:
-            if artifact.artifact_id is not None:
-                built_artifacts[artifact.artifact_id] = artifact
-    for artifact_list in input_artifacts.values():
-        for artifact in artifact_list:
-            if artifact.artifact_id is not None:
-                built_artifacts[artifact.artifact_id] = artifact
-
-    # Standard lineage inference via OutputSpec.infer_lineage_from
-    output_specs = getattr(operation, "outputs", {})
-    lineage = capture_lineage_metadata(
-        finalized,
-        input_artifacts,
-        output_specs,
-        group_by=getattr(type(operation), "group_by", None),
-        group_ids=unit.group_ids,
+    validate_artifacts_match_specs(
+        result.artifacts, operation.outputs, allow_dynamic_outputs=True
     )
-    pairs = build_edges(lineage, finalized, input_artifacts, output_specs)
-    if pairs:
-        artifact_edges.extend(
-            build_artifact_edges_from_dict(
-                source_target_pairs=pairs,
-                execution_run_id=execution_context.execution_run_id,
-                built_artifacts=built_artifacts,
-            )
-        )
+    validate_lineage_integrity(
+        result.lineage, inputs, result.artifacts, operation.outputs
+    )
+    validate_lineage_completeness(result.artifacts, operation.outputs, result.lineage)
+    finalized = finalize_artifacts(result.artifacts)
+    source_ids = {
+        mapping.source_artifact_id
+        for mappings in result.lineage.values()
+        for mapping in mappings
+        if mapping.source_artifact_id is not None
+    }
+    artifact_types = (
+        artifact_store.provenance.load_type_map(sorted(source_ids))
+        if source_ids
+        else {}
+    )
+    # Identity-neutral outputs must not conceal an absent input in the store.
+    for source_id in source_ids:
+        require_artifact_type(source_id, artifact_types)
+    artifact_types.update(
+        {
+            artifact.artifact_id: artifact.artifact_type
+            for artifacts in finalized.values()
+            for artifact in artifacts
+            if artifact.artifact_id is not None
+        }
+    )
+    pairs = build_edges(result.lineage, finalized, artifact_types)
+    artifact_edges = build_artifact_edges_from_types(
+        pairs, execution_context.execution_run_id, artifact_types
+    )
 
-    config_artifacts = [
-        artifact
-        for artifact_list in finalized.values()
-        for artifact in artifact_list
-        if isinstance(artifact, ExecutionConfigArtifact)
-    ]
-    if config_artifacts:
-        artifact_edges.extend(
-            build_config_reference_edges(
-                config_artifacts=config_artifacts,
-                artifact_store=artifact_store,
-                execution_run_id=execution_context.execution_run_id,
-            )
-        )
-
-    params_dict = _get_params(operation)
+    params_dict = serialize_params(operation)
+    close_command_scope()
     return record_execution_success(
+        replay_snapshot=replay_snapshot,
+        replay_of_execution_run_id=replay_of_execution_run_id,
+        command_recording=command_recording,
         execution_context=execution_context,
         artifacts=dict(finalized),
         lineage_edges=artifact_edges,
@@ -198,72 +154,69 @@ def _handle_passthrough_result(
     execution_context: ExecutionContext,
     inputs: dict[str, Any],
     timestamp_end: datetime,
+    command_recording: CommandRecording,
+    replay_snapshot: ReplaySnapshot,
+    replay_of_execution_run_id: str | None,
     user_overrides: dict[str, Any] | None = None,
 ) -> StagingResult:
-    """Validate and stage a passthrough result (no new artifacts created)."""
-    from artisan.execution.staging.parquet_writer import (
-        StagingResult,
-        _create_staging_path,
-        _stage_execution,
-    )
+    """Validate and stage a passthrough result (no new artifacts created).
 
+    Validation needs the operation instance (which the recorder never sees),
+    so it stays here; the staging body — including edge run-id stamping —
+    lives in ``record_passthrough``.
+    """
     validate_passthrough_result(result, operation.outputs)
-    staging_path = _create_staging_path(
-        execution_context.staging_root,
-        execution_context.execution_run_id,
-        execution_context.step_number,
-        operation_name=execution_context.operation_name,
-    )
-    execution_edges = build_execution_edges(
-        execution_run_id=execution_context.execution_run_id,
+    close_command_scope()
+    return record_passthrough(
+        replay_snapshot=replay_snapshot,
+        replay_of_execution_run_id=replay_of_execution_run_id,
+        command_recording=command_recording,
+        execution_context=execution_context,
+        passthrough=result.passthrough,
+        lineage_edges=result.lineage_edges,
         inputs=inputs,
-        outputs=result.passthrough,
-    )
-
-    params_dict = _get_params(operation)
-    _stage_execution(
-        execution_run_id=execution_context.execution_run_id,
-        execution_spec_id=execution_context.execution_spec_id,
-        operation_name=execution_context.operation_name,
-        step_number=execution_context.step_number,
-        execution_edges=execution_edges,
-        staging_path=staging_path,
-        success=True,
-        error=None,
-        timestamp_start=execution_context.timestamp_start,
         timestamp_end=timestamp_end,
-        worker_id=execution_context.worker_id,
-        params=params_dict,
-        compute_backend=execution_context.compute_backend,
-        shared_filesystem=execution_context.shared_filesystem,
+        params=serialize_params(operation),
         result_metadata=result.metadata if result.metadata else None,
         user_overrides=user_overrides,
-        step_run_id=execution_context.step_run_id,
-    )
-    all_passthrough_ids = [aid for ids in result.passthrough.values() for aid in ids]
-    return StagingResult(
-        success=True,
-        staging_path=staging_path,
-        execution_run_id=execution_context.execution_run_id,
-        artifact_ids=all_passthrough_ids,
     )
 
 
 def run_curator_flow(
-    unit: ExecutionUnit,
-    runtime_env: RuntimeEnvironment,
-    worker_id: int = 0,
+    unit: ExecutionUnit, runtime_env: RuntimeEnvironment
 ) -> StagingResult:
-    """Execute a curator operation through setup, execute, and record phases.
+    """Execute a curator and stage its result with command and replay evidence.
 
     Args:
-        unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and backend configuration for this run.
-        worker_id: Numeric worker identifier for concurrency tracking.
+        unit: Configured operation and concrete input batch.
+        runtime_env: Resolved worker identity, runtime paths and storage.
 
     Returns:
-        StagingResult indicating success or failure with staged paths.
+        Staged success or failure, or an unstaged failure if setup prevents
+        recording.
     """
+    with (
+        managed_invocation(),
+        capture_commands(unit.operation) as commands,
+    ):
+        bootstrap_applications(
+            runtime_env.application_modules, purpose="curator worker"
+        )
+        configuration_recorder(
+            unit.operation, params=unit.user_overrides, recorder=commands
+        )
+        commands.add_environment(
+            {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
+        )
+        with capture_replay(unit, runtime_env):
+            return _run_curator_flow(unit, runtime_env)
+
+
+def _run_curator_flow(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+) -> StagingResult:
+    """Run setup, execution and recording for one curator unit."""
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
     operation = unit.operation
@@ -272,30 +225,27 @@ def run_curator_flow(
     execution_run_id = generate_execution_run_id(
         unit.execution_spec_id,
         timestamp_start,
-        worker_id,
+        runtime_env.worker_id,
     )
-    params_dict = _get_params(operation)
+    params_dict = serialize_params(operation)
     user_overrides = unit.user_overrides
     execution_context = None
 
     try:
+        check_command_scope()
         # --- setup phase ---
         with phase_timer("setup", timings):
-            artifact_store = ArtifactStore(runtime_env.delta_root_path)
-
-            execution_context = build_curator_execution_context(
+            execution_context = build_execution_context(
                 execution_run_id=execution_run_id,
                 execution_spec_id=unit.execution_spec_id,
                 step_number=unit.step_number,
                 timestamp_start=timestamp_start,
-                worker_id=worker_id,
-                delta_root_path=runtime_env.delta_root_path,
-                staging_root_path=runtime_env.staging_root_path,
+                runtime_env=runtime_env,
                 operation=operation,
-                compute_backend_name=runtime_env.compute_backend_name,
-                shared_filesystem=runtime_env.shared_filesystem,
                 step_run_id=unit.step_run_id,
             )
+            artifact_store = execution_context.artifact_store
+            verify_replay_worker(unit)
 
             # Build DataFrames with artifact_id column per role
             input_dfs = {
@@ -310,8 +260,12 @@ def run_curator_flow(
                     step_number=unit.step_number,
                     artifact_store=artifact_store,
                 )
+                close_command_scope()
             except Exception as exc:
+                close_command_scope(exc)
                 return record_execution_failure(
+                    **replay_recording_fields(),
+                    command_recording=command_snapshot(),
                     execution_context=execution_context,
                     error=format_error(exc),
                     inputs=inputs,
@@ -319,13 +273,22 @@ def run_curator_flow(
                     params=params_dict,
                     user_overrides=user_overrides,
                     failure_logs_root=runtime_env.failure_logs_root,
+                    error_envelope=error_envelope_dict(exc),
                 )
+
+        # Reject collisions before adding framework execution timings.
+        reserved = {"timings", "skip_reason", "status", "cancelled", "skipped"}
+        if reserved.intersection(result.metadata):
+            msg = "Curator metadata uses reserved framework keys"
+            raise ValueError(msg)
 
         # --- record phase ---
         with phase_timer("record", timings):
             timestamp_end = datetime.now(UTC)
             if not result.success:
                 staging_result = record_execution_failure(
+                    **replay_recording_fields(),
+                    command_recording=command_snapshot(),
                     execution_context=execution_context,
                     error=result.error or "Unknown error",
                     inputs=inputs,
@@ -346,24 +309,21 @@ def run_curator_flow(
 
                 match result_with_metadata:
                     case ArtifactResult():
-                        # Hydrate only input roles needed for lineage
-                        output_specs = getattr(operation, "outputs", {})
-                        input_artifacts = _hydrate_inputs_for_lineage(
-                            inputs, output_specs, artifact_store
-                        )
                         staging_result = _handle_artifact_result(
+                            **replay_recording_fields(),
+                            command_recording=command_snapshot(),
                             result=result_with_metadata,
                             operation=operation,
                             artifact_store=artifact_store,
                             execution_context=execution_context,
-                            unit=unit,
                             inputs=inputs,
-                            input_artifacts=input_artifacts,
                             timestamp_end=timestamp_end,
                             user_overrides=user_overrides,
                         )
                     case PassthroughResult():
                         staging_result = _handle_passthrough_result(
+                            **replay_recording_fields(),
+                            command_recording=command_snapshot(),
                             result=result_with_metadata,
                             operation=operation,
                             execution_context=execution_context,
@@ -372,12 +332,15 @@ def run_curator_flow(
                             user_overrides=user_overrides,
                         )
                     case _:
-                        error = (
+                        # Defensive branch: mypy narrows to known cases.
+                        error = (  # type: ignore[unreachable]
                             f"Unexpected result type from curator operation: "
                             f"{type(result_with_metadata).__name__}. "
                             f"Expected ArtifactResult or PassthroughResult."
                         )
                         staging_result = record_execution_failure(
+                            **replay_recording_fields(),
+                            command_recording=command_snapshot(),
                             execution_context=execution_context,
                             error=error,
                             inputs=inputs,
@@ -388,7 +351,10 @@ def run_curator_flow(
                         )
 
     except Exception as exc:
-        error = format_error(exc)
+        close_command_scope(exc)
+        if execution_context is not None and execution_is_sealed(execution_context):
+            raise
+        error = sanitize_diagnostic(format_error(exc))
         if execution_context is None:
             logger.error("Curator setup failed: %s", error)
             return StagingResult(
@@ -398,6 +364,8 @@ def run_curator_flow(
                 artifact_ids=[],
             )
         staging_result = record_execution_failure(
+            **replay_recording_fields(),
+            command_recording=command_snapshot(),
             execution_context=execution_context,
             error=error,
             inputs=inputs,
@@ -405,6 +373,7 @@ def run_curator_flow(
             params=params_dict,
             user_overrides=user_overrides,
             failure_logs_root=runtime_env.failure_logs_root,
+            error_envelope=error_envelope_dict(exc),
         )
 
     timings["total"] = round(time.perf_counter() - total_start, 4)

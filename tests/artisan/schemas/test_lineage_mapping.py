@@ -1,152 +1,54 @@
-"""Tests for lineage_mapping.py"""
+"""Strict, filename-independent lineage reference schema."""
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
 
-from artisan.schemas.provenance.lineage_mapping import LineageMapping
+from artisan.schemas import LineageMapping
 
 
-class TestLineageMapping:
-    """Tests for LineageMapping model."""
+def test_input_and_output_references_roundtrip() -> None:
+    for source in ({"source_artifact_id": "a" * 32}, {"source_output_index": 0}):
+        mapping = LineageMapping(draft_index=2, source_role="data", **source)
+        assert LineageMapping.model_validate_json(mapping.model_dump_json()) == mapping
+        with pytest.raises(ValidationError, match="frozen"):
+            mapping.draft_index = 1
 
-    def test_create_valid_mapping(self):
-        """Create a valid LineageMapping."""
-        mapping = LineageMapping(
-            draft_original_name="sample_001_processed.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",  # 32 chars
-            source_role="data",
+
+@pytest.mark.parametrize(
+    "source", [{}, {"source_artifact_id": "a" * 32, "source_output_index": 0}]
+)
+def test_exactly_one_source_required(source: dict) -> None:
+    with pytest.raises(ValidationError, match="exactly one"):
+        LineageMapping(draft_index=0, source_role="data", **source)
+
+
+@pytest.mark.parametrize("field", ["draft_index", "source_output_index"])
+@pytest.mark.parametrize("value", [-1, True, False, 1.0, "0", None])
+def test_strict_nonnegative_indices(field: str, value: object) -> None:
+    values = {"draft_index": 0, "source_role": "data", "source_output_index": 0}
+    values[field] = value
+    with pytest.raises(ValidationError):
+        LineageMapping(**values)
+
+
+@pytest.mark.parametrize("source_id", ["a" * 31, "a" * 33, "g" * 32, "", True, 123])
+def test_malformed_ids_rejected(source_id: object) -> None:
+    with pytest.raises(ValidationError):
+        LineageMapping(draft_index=0, source_role="data", source_artifact_id=source_id)
+
+
+@pytest.mark.parametrize(
+    "extra", ["draft_original_name", "source_original_name", "group_id", "anything"]
+)
+def test_removed_fields_rejected(extra: str) -> None:
+    with pytest.raises(ValidationError, match="Extra inputs"):
+        LineageMapping(
+            draft_index=0, source_role="data", source_output_index=0, **{extra: "old"}
         )
-        assert mapping.draft_original_name == "sample_001_processed.dat"
-        assert mapping.source_artifact_id == "abc123def456ghijklmnopqrstuvwx01"
-        assert mapping.source_role == "data"
 
-    def test_frozen_model(self):
-        """LineageMapping is immutable."""
-        mapping = LineageMapping(
-            draft_original_name="test.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="input",
-        )
-        with pytest.raises(Exception):
-            mapping.draft_original_name = "new.dat"
 
-    def test_draft_original_name_required(self):
-        """draft_original_name is required."""
-        with pytest.raises(ValidationError) as exc_info:
-            LineageMapping(
-                source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-                source_role="input",
-            )
-        assert "draft_original_name" in str(exc_info.value)
-
-    def test_source_artifact_id_required(self):
-        """source_artifact_id is required."""
-        with pytest.raises(ValidationError) as exc_info:
-            LineageMapping(
-                draft_original_name="test.dat",
-                source_role="input",
-            )
-        assert "source_artifact_id" in str(exc_info.value)
-
-    def test_source_role_required(self):
-        """source_role is required."""
-        with pytest.raises(ValidationError) as exc_info:
-            LineageMapping(
-                draft_original_name="test.dat",
-                source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            )
-        assert "source_role" in str(exc_info.value)
-
-    def test_draft_original_name_min_length(self):
-        """draft_original_name must be at least 1 character."""
-        with pytest.raises(ValidationError) as exc_info:
-            LineageMapping(
-                draft_original_name="",
-                source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-                source_role="input",
-            )
-        assert "draft_original_name" in str(exc_info.value)
-
-    def test_source_role_min_length(self):
-        """source_role must be at least 1 character."""
-        with pytest.raises(ValidationError) as exc_info:
-            LineageMapping(
-                draft_original_name="test.dat",
-                source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-                source_role="",
-            )
-        assert "source_role" in str(exc_info.value)
-
-    def test_source_artifact_id_exact_32_chars(self):
-        """source_artifact_id must be exactly 32 characters."""
-        # Too short
-        with pytest.raises(ValidationError) as exc_info:
-            LineageMapping(
-                draft_original_name="test.dat",
-                source_artifact_id="abc123",  # Only 6 chars
-                source_role="input",
-            )
-        assert "source_artifact_id" in str(exc_info.value)
-
-        # Too long
-        with pytest.raises(ValidationError) as exc_info:
-            LineageMapping(
-                draft_original_name="test.dat",
-                source_artifact_id="abc123def456ghijklmnopqrstuvwx01yz123",  # 35 chars
-                source_role="input",
-            )
-        assert "source_artifact_id" in str(exc_info.value)
-
-    def test_hashable(self):
-        """LineageMapping is hashable (frozen model)."""
-        mapping = LineageMapping(
-            draft_original_name="test.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="input",
-        )
-        # Should not raise
-        assert isinstance(hash(mapping), int)
-
-    def test_equality(self):
-        """Two LineageMappings with same values are equal."""
-        mapping1 = LineageMapping(
-            draft_original_name="test.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="input",
-        )
-        mapping2 = LineageMapping(
-            draft_original_name="test.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="input",
-        )
-        assert mapping1 == mapping2
-
-    def test_inequality(self):
-        """Two LineageMappings with different values are not equal."""
-        mapping1 = LineageMapping(
-            draft_original_name="test1.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="input",
-        )
-        mapping2 = LineageMapping(
-            draft_original_name="test2.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="input",
-        )
-        assert mapping1 != mapping2
-
-    def test_inequality_different_source_role(self):
-        """Two LineageMappings with different source_role are not equal."""
-        mapping1 = LineageMapping(
-            draft_original_name="test.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="data",
-        )
-        mapping2 = LineageMapping(
-            draft_original_name="test.dat",
-            source_artifact_id="abc123def456ghijklmnopqrstuvwx01",
-            source_role="reference",
-        )
-        assert mapping1 != mapping2
+def test_source_role_must_be_nonempty() -> None:
+    with pytest.raises(ValidationError):
+        LineageMapping(draft_index=0, source_role="", source_output_index=0)

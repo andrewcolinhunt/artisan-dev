@@ -12,14 +12,15 @@ from typing import Any, ClassVar
 import polars as pl
 import pytest
 from fixtures.csv import make_csv
-from prefect.testing.utilities import prefect_test_harness
+from fsspec import AbstractFileSystem
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -29,32 +30,15 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
 
-@pytest.fixture(scope="session", autouse=True)
-def _prefect_harness():
-    """Activate Prefect test harness and bridge PREFECT_API_URL to os.environ.
-
-    The test harness provides an ephemeral Prefect server. We use session scope
-    so each xdist worker shares a single server (instead of one per module),
-    and a longer timeout to handle concurrent startup under load.
-    """
-    with prefect_test_harness(server_startup_timeout=60):
-        from prefect.settings import PREFECT_API_URL
-
-        url = PREFECT_API_URL.value()
-        os.environ["PREFECT_API_URL"] = url
-        yield
-        os.environ.pop("PREFECT_API_URL", None)
-
-
 @pytest.fixture
-def pipeline_env(tmp_path: Path) -> dict[str, Path]:
+def pipeline_env(tmp_path: Path) -> dict[str, str]:
     """Create isolated pipeline environment with Delta Lake directories.
 
     Args:
         tmp_path: Pytest-provided temporary directory.
 
     Returns:
-        Dictionary with delta_root, staging_root, and working_root paths.
+        Dictionary with delta_root, staging_root, and working_root as strings.
     """
     delta_root = tmp_path / "delta"
     staging_root = tmp_path / "staging"
@@ -65,9 +49,41 @@ def pipeline_env(tmp_path: Path) -> dict[str, Path]:
     working_root.mkdir()
 
     return {
-        "delta_root": delta_root,
-        "staging_root": staging_root,
-        "working_root": working_root,
+        "delta_root": str(delta_root),
+        "staging_root": str(staging_root),
+        "working_root": str(working_root),
+    }
+
+
+@pytest.fixture
+def s3_pipeline_env(tmp_path: Path, s3_fs) -> dict:
+    """Cloud-backed pipeline environment on the per-test MinIO bucket.
+
+    Mirrors :func:`pipeline_env` but returns ``delta_root``,
+    ``staging_root``, and ``files_root`` as ``s3://`` URIs plus the
+    populated ``StorageConfig``. ``working_root`` stays local — it
+    holds sandboxes and (cloud-derived) failure logs that
+    ``recorder._write_failure_log`` writes with ``os.makedirs``.
+
+    Args:
+        tmp_path: Pytest-provided temporary directory (used for working_root).
+        s3_fs: ``(fs, storage_config, uri_prefix)`` from the session MinIO.
+
+    Returns:
+        Dict with ``delta_root``, ``staging_root``, ``files_root``,
+        ``working_root``, and ``storage`` (the ``StorageConfig``).
+    """
+    fs, storage, uri_prefix = s3_fs
+    working_root = tmp_path / "working"
+    working_root.mkdir()
+    return {
+        "delta_root": f"{uri_prefix}/delta",
+        "staging_root": f"{uri_prefix}/staging",
+        "files_root": f"{uri_prefix}/files",
+        "working_root": str(working_root),
+        "storage": storage,
+        "fs": fs,
+        "uri_prefix": uri_prefix,
     }
 
 
@@ -96,23 +112,57 @@ def sample_csv_files(tmp_path: Path) -> list[Path]:
 # =============================================================================
 
 
-def read_table(delta_root: Path, table_name: str) -> pl.DataFrame:
+def read_table(
+    delta_root: str,
+    table_name: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> pl.DataFrame:
     """Read a Delta Lake table, return empty DataFrame if not exists.
 
+    ``fs`` and ``storage_options`` travel as a pair. For cloud
+    ``delta_root`` (URI), callers must pass ``fs``; ``storage_options``
+    should be ``env["storage"].delta_storage_options()`` from the
+    fixture, which may be ``None`` for production IAM/env-var auth.
+    Local callers pass nothing and behave identically to today.
+
     Args:
-        delta_root: Root directory for Delta Lake tables.
+        delta_root: Root directory or URI for Delta Lake tables.
         table_name: Name of the table to read.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options forwarded to
+            ``pl.read_delta``. ``None`` is valid on cloud URIs — delta-rs
+            will read credentials from env vars / IAM role.
 
     Returns:
-        Polars DataFrame with table contents, or empty DataFrame.
+        Polars DataFrame with table contents, or empty DataFrame when
+        the table doesn't exist.
+
+    Raises:
+        ValueError: When ``delta_root`` is a URI but ``fs`` is None.
     """
-    table_path = delta_root / table_name
-    if not table_path.exists():
-        return pl.DataFrame()
-    return pl.read_delta(str(table_path))
+    if "://" in delta_root:
+        if fs is None:
+            msg = f"fs required for cloud delta_root {delta_root!r}"
+            raise ValueError(msg)
+        table_uri = f"{delta_root.rstrip('/')}/{table_name.lstrip('/')}"
+        if not fs.exists(table_uri):
+            return pl.DataFrame()
+    else:
+        table_uri = os.path.join(delta_root, table_name)
+        if not os.path.exists(table_uri):
+            return pl.DataFrame()
+    return pl.read_delta(table_uri, storage_options=storage_options)
 
 
-def count_artifacts_by_step(delta_root: Path, step_number: int) -> int:
+def count_artifacts_by_step(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count artifacts produced by a specific step.
 
     Queries: artifact_index WHERE origin_step_number = step_number
@@ -120,17 +170,27 @@ def count_artifacts_by_step(delta_root: Path, step_number: int) -> int:
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to count artifacts for.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of artifacts produced by the step.
     """
-    df_index = read_table(delta_root, "artifacts/index")
+    df_index = read_table(
+        delta_root, "artifacts/index", fs=fs, storage_options=storage_options
+    )
     if df_index.is_empty():
         return 0
     return df_index.filter(pl.col("origin_step_number") == step_number).height
 
 
-def count_artifacts_by_type(delta_root: Path, artifact_type: str) -> int:
+def count_artifacts_by_type(
+    delta_root: str,
+    artifact_type: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count artifacts of a specific type.
 
     Queries: artifact_index WHERE artifact_type = artifact_type
@@ -138,34 +198,98 @@ def count_artifacts_by_type(delta_root: Path, artifact_type: str) -> int:
     Args:
         delta_root: Root directory for Delta Lake tables.
         artifact_type: Artifact type to count.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of artifacts of the specified type.
     """
-    df_index = read_table(delta_root, "artifacts/index")
+    df_index = read_table(
+        delta_root, "artifacts/index", fs=fs, storage_options=storage_options
+    )
     if df_index.is_empty():
         return 0
     return df_index.filter(pl.col("artifact_type") == artifact_type).height
 
 
-def get_execution_outputs(delta_root: Path, step_number: int, role: str) -> list[str]:
-    """Get output artifact IDs for a step/role.
-
-    Steps:
-    1. Query executions for execution_run_id WHERE origin_step_number = step_number
-    2. Query execution_edges for artifact_id WHERE execution_run_id IN (...)
-       AND direction = 'output' AND role = role
+def load_artifact_edges(
+    delta_root: str,
+    target_ids: list[str] | set[str],
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> pl.DataFrame:
+    """Load artifact_edges rows whose target_artifact_id is in target_ids.
 
     Args:
-        delta_root: Root directory for Delta Lake tables.
-        step_number: Step number to query.
-        role: Output role name.
+        delta_root: Root directory or URI for Delta Lake tables.
+        target_ids: Target artifact IDs to filter on.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
-        List of artifact IDs.
+        Polars DataFrame with columns from the artifact_edges table
+        (source_artifact_id, target_artifact_id, group_id, etc.).
+        Empty DataFrame if the table doesn't exist or no matches.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
-    df_prov = read_table(delta_root, "provenance/execution_edges")
+    df = read_table(
+        delta_root,
+        "provenance/artifact_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
+    if df.is_empty():
+        return df
+    return df.filter(pl.col("target_artifact_id").is_in(list(target_ids)))
+
+
+def get_execution_outputs(
+    delta_root: str,
+    step_number: int,
+    role: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> list[str]:
+    """Read output occurrences by origin step/role across the fixture store."""
+    return _execution_artifact_ids(
+        delta_root, step_number, role, "output", fs=fs, storage_options=storage_options
+    )
+
+
+def get_execution_inputs(
+    delta_root: str,
+    step_number: int,
+    role: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> list[str]:
+    """Read input occurrences by origin step/role across the fixture store."""
+    return _execution_artifact_ids(
+        delta_root, step_number, role, "input", fs=fs, storage_options=storage_options
+    )
+
+
+def _execution_artifact_ids(
+    delta_root: str,
+    step_number: int,
+    role: str,
+    direction: str,
+    *,
+    fs: AbstractFileSystem | None,
+    storage_options: dict | None,
+) -> list[str]:
+    """Preserve repeated occurrences without restricting accepted run membership."""
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
+    df_prov = read_table(
+        delta_root,
+        "provenance/execution_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
 
     if df_exec.is_empty() or df_prov.is_empty():
         return []
@@ -176,42 +300,18 @@ def get_execution_outputs(delta_root: Path, step_number: int, role: str) -> list
 
     return df_prov.filter(
         pl.col("execution_run_id").is_in(exec_ids)
-        & (pl.col("direction") == "output")
+        & (pl.col("direction") == direction)
         & (pl.col("role") == role)
     )["artifact_id"].to_list()
 
 
-def get_execution_inputs(delta_root: Path, step_number: int, role: str) -> list[str]:
-    """Get input artifact IDs for a step/role.
-
-    Same as get_execution_outputs but with direction = 'input'.
-
-    Args:
-        delta_root: Root directory for Delta Lake tables.
-        step_number: Step number to query.
-        role: Input role name.
-
-    Returns:
-        List of artifact IDs.
-    """
-    df_exec = read_table(delta_root, "orchestration/executions")
-    df_prov = read_table(delta_root, "provenance/execution_edges")
-
-    if df_exec.is_empty() or df_prov.is_empty():
-        return []
-
-    exec_ids = df_exec.filter(pl.col("origin_step_number") == step_number)[
-        "execution_run_id"
-    ].to_list()
-
-    return df_prov.filter(
-        pl.col("execution_run_id").is_in(exec_ids)
-        & (pl.col("direction") == "input")
-        & (pl.col("role") == role)
-    )["artifact_id"].to_list()
-
-
-def count_executions_by_step(delta_root: Path, step_number: int) -> int:
+def count_executions_by_step(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count execution records for a specific step.
 
     Queries: executions WHERE origin_step_number = step_number
@@ -220,27 +320,44 @@ def count_executions_by_step(delta_root: Path, step_number: int) -> int:
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to count executions for.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of execution records for the step.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
     if df_exec.is_empty():
         return 0
     return df_exec.filter(pl.col("origin_step_number") == step_number).height
 
 
-def get_artifact_edges(delta_root: Path, source_id: str) -> list[str]:
+def get_artifact_edges(
+    delta_root: str,
+    source_id: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> list[str]:
     """Get target artifact IDs linked from a source artifact.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         source_id: Source artifact ID.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         List of target artifact IDs.
     """
-    df = read_table(delta_root, "provenance/artifact_edges")
+    df = read_table(
+        delta_root,
+        "provenance/artifact_edges",
+        fs=fs,
+        storage_options=storage_options,
+    )
     if df.is_empty():
         return []
     return df.filter(pl.col("source_artifact_id") == source_id)[
@@ -248,17 +365,27 @@ def get_artifact_edges(delta_root: Path, source_id: str) -> list[str]:
     ].to_list()
 
 
-def get_step_status(delta_root: Path, step_number: int) -> str | None:
+def get_step_status(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> str | None:
     """Get the latest status for a step.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Latest status string, or None if not found.
     """
-    df = read_table(delta_root, "orchestration/steps")
+    df = read_table(
+        delta_root, "orchestration/steps", fs=fs, storage_options=storage_options
+    )
     if df.is_empty():
         return None
     filtered = df.filter(pl.col("step_number") == step_number).sort(
@@ -269,17 +396,27 @@ def get_step_status(delta_root: Path, step_number: int) -> str | None:
     return filtered["status"][0]
 
 
-def get_failed_executions(delta_root: Path, step_number: int) -> int:
+def get_failed_executions(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count failed executions for a step.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of failed executions.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
     if df_exec.is_empty():
         return 0
     return df_exec.filter(
@@ -287,17 +424,27 @@ def get_failed_executions(delta_root: Path, step_number: int) -> int:
     ).height
 
 
-def get_successful_executions(delta_root: Path, step_number: int) -> int:
+def get_successful_executions(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict | None = None,
+) -> int:
     """Count successful executions for a step.
 
     Args:
         delta_root: Root directory for Delta Lake tables.
         step_number: Step number to query.
+        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
+        storage_options: Delta-rs storage options.
 
     Returns:
         Number of successful executions.
     """
-    df_exec = read_table(delta_root, "orchestration/executions")
+    df_exec = read_table(
+        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
+    )
     if df_exec.is_empty():
         return 0
     return df_exec.filter(
@@ -306,7 +453,7 @@ def get_successful_executions(delta_root: Path, step_number: int) -> int:
 
 
 @pytest.fixture
-def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, Path]]:
+def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, str]]:
     """Create two isolated pipeline environments for cross-pipeline tests.
 
     Args:
@@ -314,7 +461,7 @@ def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, Path]]:
 
     Returns:
         Dict with keys "a" and "b", each containing delta_root,
-        staging_root, and working_root paths.
+        staging_root, and working_root as strings.
     """
     envs = {}
     for label in ("a", "b"):
@@ -326,9 +473,9 @@ def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, Path]]:
         staging.mkdir()
         working.mkdir()
         envs[label] = {
-            "delta_root": delta,
-            "staging_root": staging,
-            "working_root": working,
+            "delta_root": str(delta),
+            "staging_root": str(staging),
+            "working_root": str(working),
         }
     return envs
 
@@ -336,6 +483,44 @@ def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, Path]]:
 # =============================================================================
 # Shared Test Operations
 # =============================================================================
+
+
+def prepare_paired_files(inputs: PreprocessInput) -> dict[str, Any]:
+    """Carry the operation's input IDs alongside its grouped file paths."""
+    prepared = {
+        role: PerArtifact([a.materialized_path for a in artifacts])
+        for role, artifacts in inputs.input_artifacts.items()
+    }
+    roles = list(inputs.input_artifacts)
+    prepared["source_ids"] = PerArtifact(
+        [
+            {
+                role: [artifact.artifact_id]
+                for role, artifact in zip(roles, group, strict=True)
+            }
+            for group in zip(*(inputs.input_artifacts[r] for r in roles), strict=True)
+        ]
+    )
+    return prepared
+
+
+def declared_file_result(
+    inputs: PostprocessInput, role: str = "result"
+) -> ArtifactResult:
+    """Return drafts using only associations carried by the fixture operation."""
+    result = ArtifactResult()
+    for record in inputs.memory_outputs["records"]:
+        path = Path(record["path"])
+        result.add_artifact(
+            role,
+            DataArtifact.draft(
+                content=path.read_bytes(),
+                original_name=record.get("name", path.name),
+                step_number=inputs.step_number,
+            ),
+            sources=record["sources"],
+        )
+    return result
 
 
 class FailingTransformer(OperationDefinition):
@@ -365,7 +550,7 @@ class FailingTransformer(OperationDefinition):
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
             description="Transformed CSV dataset",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
@@ -376,49 +561,65 @@ class FailingTransformer(OperationDefinition):
         fail_on_all: bool = Field(default=False, description="Fail on all datasets")
 
     params: Params = Params()
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="failing_transformer")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="failing_transformer")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract materialized paths from input artifacts."""
-        return {
-            role: [a.materialized_path for a in artifacts]
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        """Extract materialized paths and original names from input artifacts."""
+        prepared: dict[str, Any] = {}
+        for role, artifacts in inputs.input_artifacts.items():
+            prepared[role] = PerArtifact([a.materialized_path for a in artifacts])
+            # Pass original names for index extraction (filenames are artifact_ids)
+            prepared[f"{role}_names"] = PerArtifact(
+                [a.original_name for a in artifacts]
+            )
+            prepared[f"{role}_ids"] = PerArtifact([a.artifact_id for a in artifacts])
+        return prepared
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Transform CSV (prepend marker line) with controllable failure injection."""
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+        """Scale numeric CSV columns with controllable failure injection."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         dataset_input = inputs.inputs.get("dataset")
         if dataset_input is None:
-            raise ValueError("No dataset input provided")
+            msg = "No dataset input provided"
+            raise ValueError(msg)
 
         if isinstance(dataset_input, (str, Path)):
             input_files = [Path(dataset_input)]
         else:
             input_files = [Path(f) for f in dataset_input]
 
-        for input_path in input_files:
+        # Use original names to extract dataset index for failure injection
+        original_names = inputs.inputs.get("dataset_names", [])
+        records = []
+        for file_idx, input_path in enumerate(input_files):
             input_path = Path(input_path)
             stem = input_path.stem
-            match = re.search(r"dataset_(\d+)", stem)
+
+            # Extract index from original_name (e.g. "dataset_1" -> 1)
+            orig_name = (
+                original_names[file_idx] if file_idx < len(original_names) else ""
+            )
+            match = re.search(r"dataset_(\d+)", orig_name or "")
             index = int(match.group(1)) if match else -1
 
             if self.params.fail_on_all:
-                raise ValueError(f"Intentional failure on {stem}")
+                msg = f"Intentional failure on {stem}"
+                raise ValueError(msg)
             if index == self.params.fail_on_index:
-                raise ValueError(f"Intentional failure on index {index}")
+                msg = f"Intentional failure on index {index}"
+                raise ValueError(msg)
 
             # Scale numeric columns by 1.1 to produce different content
-            with input_path.open() as f:
+            with open(input_path) as f:
                 reader = csv.DictReader(f)
                 headers = list(reader.fieldnames or [])
                 rows = list(reader)
 
-            out_path = output_dir / f"{stem}_0.csv"
-            with out_path.open("w", newline="") as f:
+            out_path = os.path.join(output_dir, f"{stem}_0.csv")
+            with open(out_path, "w", newline="") as f:
                 writer = csv.DictWriter(f, fieldnames=headers)
                 writer.writeheader()
                 for row in rows:
@@ -427,23 +628,16 @@ class FailingTransformer(OperationDefinition):
                         if col in ("x", "y", "z", "score"):
                             new_row[col] = round(float(row[col]) * 1.1, 4)
                     writer.writerow(new_row)
+            records.append(
+                {
+                    "path": out_path,
+                    "name": f"{orig_name}_0.csv",
+                    "sources": {"dataset": [inputs.inputs["dataset_ids"][file_idx]]},
+                }
+            )
 
-        return {}
+        return {"records": records}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from output CSV files."""
-        drafts: list[DataArtifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
-                drafts.append(
-                    DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
-                        step_number=inputs.step_number,
-                    )
-                )
-        return ArtifactResult(
-            success=True,
-            artifacts={"dataset": drafts},
-            metadata={"operation": "failing_transformer"},
-        )
+        return declared_file_result(inputs, "dataset")

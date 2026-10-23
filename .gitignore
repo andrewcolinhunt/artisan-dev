@@ -58,13 +58,6 @@ wandb/
 *.pt
 *.parquet
 
-# SLURM job logs
-slurm_logs/
-**/slurm_logs/
-
-# Prefect
-.prefect-postgres/
-
 # Documentation build output
 _build/
 docs/_build/
@@ -74,3 +67,10 @@ docs/_build/
 
 # Run outputs (pipeline execution artifacts)
 **/runs/
+
+# Dev-only files (symlinked from ~/git/notes/)
+_dev
+CLAUDE.local.md
+
+# Claude Code worktrees and local state
+.claude/worktrees/

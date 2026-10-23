@@ -1,19 +1,21 @@
 # Write Curator Operations
 
-How to write operations that route, filter, merge, or ingest artifacts without
-heavy computation. Companion to
-[Writing Creator Operations](writing-creator-operations.md).
+Use a curator to route, filter, merge, or ingest artifacts in an isolated local
+subprocess. Use a [creator](writing-creator-operations.md) for heavy computation
+or external tools.
+
+Before writing a custom curator, check whether a
+[built-in operation](#built-in-curator-operations) already does what you need.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Writing Creator Operations](writing-creator-operations.md).
-
-**Key types:** `OperationDefinition`, `ArtifactResult`, `PassthroughResult`
 
 ---
 
 ## Minimal working example
 
-A curator operation that merges two artifact streams into one:
+This example implements a merge to show the curator contract. For ordinary
+pipeline merging, use the built-in `Merge` operation.
 
 ```python
 from __future__ import annotations
@@ -60,7 +62,7 @@ class SimpleMerge(OperationDefinition):
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
         merged = (
-            pl.concat(inputs.values()).select("artifact_id")
+            pl.concat([frame.select("artifact_id") for frame in inputs.values()])
             if inputs
             else pl.DataFrame({"artifact_id": []})
         )
@@ -82,36 +84,25 @@ pipeline.run(
 
 ---
 
-## Step 1: Choose curator vs creator
-
-Curator and creator operations solve different problems. Pick the right one
-before you start writing code.
+## Choose curator vs creator
 
 | | Creator | Curator |
 |---|---------|---------|
 | **Purpose** | Heavy computation, file I/O | Route, filter, merge, or ingest artifacts |
-| **Execution** | Three phases (preprocess / execute / postprocess) | Single `execute_curator` method |
-| **Sandboxing** | Full sandbox with file materialization | None — in-memory only |
-| **Dispatch** | Workers (local ProcessPool or SLURM) | Direct in-process call |
-| **Returns** | `ArtifactResult` (always creates new artifacts) | `ArtifactResult` or `PassthroughResult` |
-
-**Choose curator when** the operation routes, filters, merges, or annotates
-existing artifacts without heavy computation.
-
-**Choose creator when** the operation runs external tools, processes files, or
-needs GPU/SLURM dispatch.
+| **Execution** | Three phases (`preprocess` / `execute_function` / `postprocess`) | Single `execute_curator` method |
+| **Sandboxing** | Full sandbox with file materialization | No working sandbox; memory-isolated subprocess |
+| **Dispatch** | Built-in local runner or an external provider instance | Local spawned subprocess; step-runner overrides do not relocate it |
+| **Returns** | `ArtifactResult` containing any new artifacts | `ArtifactResult` or `PassthroughResult` |
 
 ---
 
-## Step 2: Choose a return type
+## Choose a return type
 
-Curator operations return one of two result types. This choice shapes the rest
-of your implementation.
+Return existing IDs with `PassthroughResult` or new drafts with `ArtifactResult`.
 
 ### `PassthroughResult` — route existing artifacts
 
-No new artifacts are created. The output is a subset or union of input artifact
-IDs. Used by operations like Filter and Merge.
+Return a subset or union of input IDs, as `Filter` and `Merge` do:
 
 ```python
 from artisan.schemas import PassthroughResult
@@ -126,11 +117,12 @@ The `passthrough` dict maps output role names to lists of artifact ID strings.
 
 ### `ArtifactResult` — create new artifacts
 
-New draft artifacts are created and returned. Used by ingest operations that
-bring external data into the pipeline.
+Ingest operations return new drafts. In this fragment, `file_ref` is the
+input read into `file_bytes`; the output spec declares
+`derives_from={"inputs": ["file"]}`.
 
 ```python
-from artisan.schemas import ArtifactResult, DataArtifact
+from artisan.schemas import ArtifactResult, DataArtifact, LineageMapping
 
 drafts = [
     DataArtifact.draft(
@@ -139,29 +131,55 @@ drafts = [
         step_number=step_number,
     )
 ]
-return ArtifactResult(success=True, artifacts={"data": drafts})
+return ArtifactResult(
+    artifacts={"data": drafts},
+    lineage={"data": [LineageMapping(
+        draft_index=0, source_role="file", source_artifact_id=file_ref.artifact_id,
+    )]},
+)
 ```
 
 The `artifacts` dict maps output role names to lists of draft `Artifact`
 objects. Drafts are finalized automatically by the framework after
 `execute_curator` returns.
 
+### Preserve result roles and metadata
+
+A curator with an empty `outputs` declaration may return dynamic artifact roles.
+After commitment, its `StepResult.output_roles` and `output_types` describe the
+roles that contain accepted artifacts. A role containing one type reports that
+type; a role containing several types reports `ArtifactTypes.ANY`. Empty dynamic
+results have no output roles. Use the completed result's `output(role)` to
+reference a dynamic role; asynchronous handles expose the declared contract.
+Curators with declared outputs retain those
+descriptors, including optional roles with no artifacts.
+
+Operation-authored `ArtifactResult.metadata` and `PassthroughResult.metadata`
+are available at the top level of `StepResult.metadata`. They survive cache reuse
+and pipeline reopening. Reserve `timings`, `skip_reason`, `status`, `cancelled`,
+and `skipped` for the framework; returning any of those keys fails the execution.
+Step timings describe the current attempt, while execution timings remain on the
+execution record.
+
+For example, `IngestPipelineStep` publishes its actual imported roles and retains
+`metadata["ingest_source"]`, including the exact source attempt IDs. Reopening
+reads the committed result; it does not repeat the import. `IngestPipelineStep`
+remains non-cacheable and performs a fresh source read each time it runs.
+
 ---
 
-## Step 3: Define the operation class
+## Define the operation class
 
-A curator operation is an `OperationDefinition` subclass that overrides
-`execute_curator`. The framework detects curator operations automatically — if
-`execute_curator()` is overridden, the operation is treated as a curator.
-No explicit flag or registration needed.
+A curator subclasses `OperationDefinition` and overrides `execute_curator`;
+no operation-type flag is needed. Import its module in every
+process that uses the operation; see
+[application loading](configuring-execution.md#load-application-definitions-in-every-process).
 
-### Class variables
-
-| Variable | Type | Default | When to change |
-|----------|------|---------|----------------|
-| `runtime_defined_inputs` | `bool` | `False` | Set `True` when input role names are defined by the caller, not the operation |
-| `independent_input_streams` | `bool` | `False` | Set `True` when input roles have different cardinalities (e.g., a merge with streams of different lengths) |
-| `hydrate_inputs` | `bool` | `True` | Set `False` when the operation only needs artifact IDs, not full content (e.g., passthrough operations) |
+For a merge-like operation, `runtime_defined_inputs=True` lets callers choose
+input roles, and `independent_input_streams=True` allows different stream lengths.
+Use `hydrate_inputs=False` when only IDs are needed. The complete `SimpleMerge`
+example above combines these settings; see the
+[operation docstrings](../reference/python-api.md) for their exact contracts.
 
 ### Input and output specs
 
@@ -173,10 +191,11 @@ When `outputs` is non-empty, you must define an `OutputRole(StrEnum)` inner
 class whose values match the `outputs` dict keys. The framework validates this
 match at class definition time.
 
-Curator operations skip several validations that apply to creators:
+For curator input and output validation:
 
-- `infer_lineage_from` can be `None` on `OutputSpec` (creators must set it
-  explicitly)
+- `derives_from=None` is valid for passthrough outputs. When a curator returns
+  drafts in `ArtifactResult`, it must declare parent roles and exact parents,
+  using the same validation as creators.
 - `preprocess()` is not required, even when inputs are declared
 
 ### Method signature
@@ -188,42 +207,42 @@ def execute_curator(
     step_number: int,
     artifact_store: ArtifactStore,
 ) -> PassthroughResult | ArtifactResult:
+    ...
 ```
 
-`inputs` is a dict mapping role names to Polars DataFrames, each with at least
-an `artifact_id` column. Operations that need full artifact content hydrate
-them from `artifact_store`.
-
-`step_number` is needed when creating draft artifacts.
-
-`artifact_store` provides access to the Delta Lake store for loading artifact
-content, metrics, provenance edges, etc.
+`inputs` maps roles to Polars DataFrames with at least an `artifact_id` column.
+Load content, metrics, or provenance through `artifact_store`. Use `step_number`
+when creating drafts.
 
 ---
 
-## Step 4: Implement `execute_curator`
+## Implement `execute_curator`
 
-Here are the three common curator patterns with complete implementations.
+The following classes use the imports from the `SimpleMerge` example.
 
 ### Pattern A: Filter (passthrough)
 
-Accept a stream, evaluate each artifact, return the IDs that pass. This
-example loads artifact content from the store and keeps only those whose
-`original_name` matches a pattern:
+Return the IDs of artifacts whose `original_name` matches a pattern:
 
 ```python
 from enum import StrEnum, auto
 
-from artisan.schemas.artifact.types import ArtifactTypes
+from pydantic import BaseModel, Field
+
+from artisan.schemas import ArtifactTypes
 
 
 class NameFilter(OperationDefinition):
     name = "name_filter"
 
-    runtime_defined_inputs: ClassVar[bool] = True
-    hydrate_inputs: ClassVar[bool] = False
+    class InputRole(StrEnum):
+        passthrough = auto()
 
-    inputs: ClassVar[dict[str, InputSpec]] = {}
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.passthrough: InputSpec(
+            artifact_type=ArtifactTypes.DATA, hydrate=False, materialize=False
+        ),
+    }
 
     class OutputRole(StrEnum):
         passthrough = auto()
@@ -234,7 +253,10 @@ class NameFilter(OperationDefinition):
         ),
     }
 
-    contains: str = ""
+    class Params(BaseModel):
+        contains: str = Field(default="", description="Substring to match.")
+
+    params: Params = Params()
 
     def execute_curator(
         self,
@@ -249,7 +271,7 @@ class NameFilter(OperationDefinition):
         artifacts = artifact_store.get_artifacts_by_type(ids, ArtifactTypes.DATA)
         passed = [
             aid for aid, art in artifacts.items()
-            if art.original_name and self.contains in art.original_name
+            if art.original_name and self.params.contains in art.original_name
         ]
 
         return PassthroughResult(
@@ -291,7 +313,9 @@ class TaggedMerge(OperationDefinition):
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
-        merged = pl.concat(inputs.values()).select("artifact_id")
+        merged = pl.concat(
+            [frame.select("artifact_id") for frame in inputs.values()]
+        )
         return PassthroughResult(
             success=True,
             passthrough={"merged": merged["artifact_id"].to_list()},
@@ -300,13 +324,12 @@ class TaggedMerge(OperationDefinition):
 
 ### Pattern C: Ingest (new artifacts)
 
-Create new artifacts from external data. The `IngestFiles` abstract base class
-handles the iteration pattern — subclass it and implement `convert_file()`:
+Subclass `IngestFiles` and implement `convert_file()` to create artifacts from
+external files. The base class iterates over inputs:
 
 ```python
 from artisan.operations.curator import IngestFiles
-from artisan.schemas.artifact import DataArtifact
-from artisan.schemas.artifact.file_ref import FileRefArtifact
+from artisan.schemas import DataArtifact, FileRefArtifact
 
 
 class IngestCSV(IngestFiles):
@@ -318,14 +341,14 @@ class IngestCSV(IngestFiles):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.data: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["file"]},
+            derives_from={"inputs": ["file"]},
         ),
     }
 
     def convert_file(
-        self, file_ref: FileRefArtifact, step_number: int
+        self, file_ref: FileRefArtifact, step_number: int, *, fs=None
     ) -> DataArtifact:
-        content = file_ref.read_content()
+        content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
         return DataArtifact.draft(
             content=content,
@@ -342,19 +365,34 @@ pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b
 ```
 
 If `IngestFiles` does not fit your ingestion pattern, implement
-`execute_curator` directly and return an `ArtifactResult`.
+`execute_curator` directly and return an `ArtifactResult` with explicit lineage.
+`IngestFiles` declares each converted draft's exact `file` parent inside its
+conversion loop. Your subclass supplies the output contract and conversion.
+
+Config-producing curators follow the same rule: preserve the intended referenced
+parents by declaring them under input roles. Calling
+`config.get_artifact_references()` inside the operation can collect exact IDs;
+deduplicate repeated references before adding mappings. The executor does not
+scan config contents or hydrate source contents to discover parents. Reference
+materialization still substitutes paths normally. See
+[Config references and ancestry](writing-creator-operations.md#config-references-and-ancestry).
+
+For a generative role, set `derives_from={"inputs": []}` and return
+`lineage={"role": []}` alongside its artifact list. A curator with dynamic
+output types and `outputs={}` may emit only roots and must include an empty
+lineage list for every returned role. `IngestPipelineStep` uses this deliberately
+to import artifacts as new roots, including configs; it does not preserve
+source-pipeline ancestry or create edges to foreign IDs.
 
 ---
 
+(built-in-curator-operations)=
 ## Built-in curator operations
 
-Before writing a custom curator, check whether a built-in one already does what
-you need.
-
+(filter)=
 ### Filter
 
-Conditional passthrough with structured criteria. Evaluates metrics against
-thresholds and returns the artifact IDs that pass.
+Keep artifacts whose metrics pass all criteria:
 
 ```python
 from artisan.operations.curator import Filter
@@ -371,10 +409,8 @@ pipeline.run(
 )
 ```
 
-Criteria use bare field names — Filter auto-discovers associated metrics via
-forward provenance walk from the passthrough artifacts. When metrics come from
-multiple sources with non-colliding field names, no extra wiring is needed.
-When field names collide, add `step` or `step_number` to disambiguate:
+Use bare metric field names. `Filter` finds descendant metrics through provenance;
+add `step` or `step_number` when field names collide:
 
 ```python
 pipeline.run(
@@ -390,18 +426,9 @@ pipeline.run(
 )
 ```
 
-All criteria are AND'd. Supported operators: `gt`, `ge`, `lt`, `le`, `eq`, `ne`.
+Supported operators: `gt`, `ge`, `lt`, `le`, `eq`, `ne`.
 
-#### Filter parameters
-
-| Parameter | Type | Default | Effect |
-|-----------|------|---------|--------|
-| `criteria` | `list[Criterion]` | `[]` | AND'd filter criteria to evaluate |
-| `passthrough_failures` | `bool` | `False` | Pass all artifacts through regardless of criteria (diagnostics still computed) |
-| `chunk_size` | `int` | `100_000` | Number of passthrough artifacts per hydration/evaluation chunk |
-
-Set `passthrough_failures=True` to preview what a filter *would* remove without
-actually removing anything — useful for debugging filter thresholds:
+Set `passthrough_failures=True` to preview removals while retaining every artifact:
 
 ```python
 pipeline.run(
@@ -417,13 +444,13 @@ pipeline.run(
 
 ### Merge
 
-Union multiple artifact streams into one. No content is loaded — pure
-passthrough.
+Union multiple artifact streams into one. The curator routes IDs without
+consuming artifact content. Pipeline preparation still verifies input integrity.
 
 ```python
 from artisan.operations.curator import Merge
 
-# List format (preferred) — auto-generates role names
+# List format combines the streams into one input role.
 pipeline.run(
     operation=Merge,
     name="merge",
@@ -445,7 +472,8 @@ pipeline.run(operation=IngestData, name="ingest", inputs=["/data/a.csv", "/data/
 
 ### IngestPipelineStep
 
-Import artifacts from another pipeline's Delta Lake store:
+Import accepted outputs from an explicit run in another pipeline's Delta Lake
+store. Use `artisan.orchestration.list_runs` to discover source run IDs:
 
 ```python
 from artisan.operations.curator import IngestPipelineStep
@@ -455,18 +483,42 @@ pipeline.run(
     name="ingest_external",
     params={
         "source_delta_root": "/runs/other_pipeline/delta",
+        "source_run_id": "other_pipeline_20260919_120000_a1b2c3d4",
         "source_step": 3,
+        "include_prior_steps": True,  # optional: include existing steps 0 through 3
         "artifact_type": "data",  # optional: filter by type
     },
 )
 ```
 
+Omit `include_prior_steps` to select only step 3. Both modes select the latest
+attempt at each chosen position and import its accepted outputs, including
+cached and passthrough results. Failed executions contribute no artifacts;
+successful executions of a partial step do. The boundary must exist, and
+selected pending or running attempts fail the import.
+
+With `include_prior_steps=True`, the import combines outputs through the selected
+step and removes duplicates. If step 0 produces A and B and step 1 filters to A,
+importing only step 1 gives A; importing through step 1 gives A and B. Select the
+final filter step alone when you want its surviving set.
+
+Each invocation reads the source again, even when its parameters match an
+earlier import. Restoring an already accepted destination step with `resume()`
+restores that result; submit a new ingest step or run to observe source changes.
+Imported artifacts become destination roots, with their immediate source run
+and artifact identity in `metadata.imported_from`. The execution's
+`ingest_source` metadata records which source attempts contributed.
+
+External files retain their verified source locations. Keep those files
+accessible for the lifetime of the imported artifacts. Destination readers
+need a filesystem that supports the retained URIs and the required access or
+credentials. `source_storage` configures source reads; it does not transfer
+credentials or copy file ownership. Missing or modified bytes fail the import.
+
 ### InteractiveFilter
 
-Explore metric distributions in a notebook, set thresholds interactively, and
-commit the result as a pipeline step. Unlike `Filter` (which requires upfront
-criteria), `InteractiveFilter` lets you inspect data before committing to
-thresholds.
+Inspect metric distributions in a notebook, choose thresholds, then commit the
+filtered result as a pipeline step:
 
 ```python
 from artisan.operations.curator import InteractiveFilter
@@ -491,6 +543,11 @@ filt.filtered_wide_df    # wide DataFrame filtered to passing rows
 result = filt.commit(step_name="interactive_filter")
 # result.output("passthrough") is available for downstream steps
 ```
+
+The `load()` step filter uses artifact origin steps across the store. It does
+not select outputs accepted by a particular run. Use it when you intend that
+origin-based selection; see [run selection](inspecting-provenance.md#select-the-run-you-want-to-inspect)
+for the distinction.
 
 The `load()` method discovers descendant metrics via forward provenance walk.
 `set_criteria()` validates metric names against loaded data and checks for
@@ -543,7 +600,7 @@ etc.).
 | Empty `inputs` dict | Input role name mismatch | Check that `pipeline.run(inputs={...})` keys match what the operation expects |
 | `ArtifactResult` with unfinalizable drafts | Missing `step_number` on `draft()` | Use the `step_number` parameter |
 | `PassthroughResult` with invalid IDs | Passed artifact objects instead of ID strings | Use `artifact.artifact_id`, not the artifact itself |
-| Operation dispatched to SLURM unexpectedly | Operation overrides `execute()` instead of `execute_curator()` | Override `execute_curator` — curators run in-process |
+| Operation used the external runner instead of staying local | Operation overrides `execute_function()` and is therefore a creator | Override `execute_curator()` — curators run in an isolated local subprocess |
 
 ---
 
@@ -554,19 +611,22 @@ Confirm your operation works end-to-end in a minimal pipeline:
 ```python
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
+from artisan.orchestration import StepStatus
 
 pipeline = PipelineManager.create(
     name="test", delta_root="test/delta", staging_root="test/staging",
 )
 output = pipeline.output
-pipeline.run(operation=DataGenerator, name="gen_a", params={"count": 3})
-pipeline.run(operation=DataGenerator, name="gen_b", params={"count": 2})
+pipeline.run(operation=DataGenerator, name="gen_a", params={"count": 3, "seed": 42})
+pipeline.run(operation=DataGenerator, name="gen_b", params={"count": 2, "seed": 43})
 step = pipeline.run(
     operation=SimpleMerge,
     name="merge",
     inputs=[output("gen_a", "datasets"), output("gen_b", "datasets")],
 )
-assert step.success
+assert step.status is StepStatus.SUCCEEDED
+assert step.output_roles == {"merged"}
+assert pipeline.finalize()["overall_success"]
 ```
 
 ---

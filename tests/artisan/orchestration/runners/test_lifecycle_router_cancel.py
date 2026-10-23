@@ -1,0 +1,141 @@
+"""Tests for native local lifecycle cancellation."""
+
+from __future__ import annotations
+
+import threading
+import time
+from collections.abc import Callable
+from concurrent.futures import Future
+from concurrent.futures.process import BrokenProcessPool
+from unittest.mock import MagicMock, patch
+
+from artisan.orchestration.engine.native_pool import _terminate_process_pool
+from artisan.orchestration.runners.local import LocalLifecycleRouter
+from artisan.schemas.execution.unit_result import UnitResult
+from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
+
+
+def _success() -> UnitResult:
+    return UnitResult(True, None, 1, [])
+
+
+class TestLocalLifecycleRouterCancel:
+    def test_cancel_before_dispatch_is_noop(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+
+        handle.cancel()
+
+        assert handle._cancel_requested is False
+
+    def test_cancel_after_empty_dispatch_is_noop(self) -> None:
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        assert handle.run([], MagicMock()) == []
+
+        handle.cancel()
+
+        assert handle._cancel_requested is False
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_cancel_pending_future_returns_aligned_failure(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        pending: Future[list[UnitResult]] = Future()
+        executor.submit.return_value = pending
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        handle.dispatch([MagicMock()], MagicMock())
+        _wait_until(lambda: executor.submit.called)
+
+        requested = handle.cancel()
+        assert handle._done.wait(timeout=2)
+        confirmed = handle.cancel()
+        results = handle.collect()
+
+        assert requested.status == CancellationStatus.REQUESTED
+        assert confirmed.status == CancellationStatus.CONFIRMED
+        assert len(results) == 1
+        assert results[0].success is False
+        assert "CancelledError" in results[0].error
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_cancel_terminates_in_flight_worker(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        running: Future[list[UnitResult]] = Future()
+        running.set_running_or_notify_cancel()
+        executor.submit.return_value = running
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        handle.dispatch([MagicMock()], MagicMock())
+        _wait_until(lambda: executor.submit.called)
+
+        def terminate(*args, **kwargs):
+            running.set_exception(BrokenProcessPool("worker terminated"))
+            return True
+
+        with patch(
+            "artisan.orchestration.engine.native_pool._terminate_process_pool",
+            side_effect=terminate,
+        ) as terminate_pool:
+            requested = handle.cancel()
+            assert requested.status == CancellationStatus.REQUESTED
+            assert running.cancelled() is False
+            assert handle._done.wait(timeout=3)
+            confirmed = handle.cancel()
+        terminate_pool.assert_called_once()
+        assert confirmed.status == CancellationStatus.CONFIRMED
+        assert handle.collect()[0].success is False
+
+    @patch("artisan.orchestration.runners.local.ProcessPoolExecutor")
+    def test_run_observes_delayed_cancel_event(
+        self,
+        mock_executor_class: MagicMock,
+    ) -> None:
+        executor = mock_executor_class.return_value
+        running: Future[list[UnitResult]] = Future()
+        running.set_running_or_notify_cancel()
+        executor.submit.return_value = running
+        handle = LocalLifecycleRouter(max_workers=1, units_per_worker=1)
+        cancel_event = threading.Event()
+
+        def _cancel_then_finish() -> None:
+            _wait_until(lambda: executor.submit.called)
+            cancel_event.set()
+            time.sleep(0.15)
+            running.set_result([_success()])
+
+        threading.Thread(target=_cancel_then_finish, daemon=True).start()
+
+        results = handle.run([MagicMock(step_run_id=None)], MagicMock(), cancel_event)
+
+        assert results == [_success()]
+        assert handle._cancel_requested is True
+
+    def test_process_exit_races_do_not_skip_executor_shutdown(self) -> None:
+        executor = MagicMock()
+        exited = MagicMock()
+        exited.is_alive.side_effect = ValueError("process already closed")
+        vanished = MagicMock()
+        vanished.is_alive.return_value = True
+        vanished.terminate.side_effect = ProcessLookupError("already exited")
+        remaining = MagicMock()
+        remaining.is_alive.return_value = True
+        executor._processes = {1: exited, 2: vanished, 3: remaining}
+
+        _terminate_process_pool(executor)
+
+        remaining.terminate.assert_called_once_with()
+        executor.shutdown.assert_called_once_with(wait=False, cancel_futures=True)
+
+
+def _wait_until(predicate: Callable[[], bool], timeout: float = 2.0) -> None:
+    """Wait for an asynchronous router condition in a bounded loop."""
+    deadline = time.monotonic() + timeout
+    while not predicate():
+        if time.monotonic() >= deadline:
+            msg = "condition was not met before timeout"
+            raise AssertionError(msg)
+        time.sleep(0.01)

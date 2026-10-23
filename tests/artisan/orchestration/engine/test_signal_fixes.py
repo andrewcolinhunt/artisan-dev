@@ -1,23 +1,52 @@
-"""Tests for signal-related fixes in step_executor (Fixes 3, 4, 5)."""
+"""Tests for process failure and cancellation in step execution."""
 
 from __future__ import annotations
 
 import threading
+from concurrent.futures import Future
 from concurrent.futures.process import BrokenProcessPool
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from artisan.orchestration.engine.inputs import PreparedInputs
+from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+    StepStatus,
+)
+from artisan.utils.hashing import CacheInputIdentity
+
+
+def _prepared(inputs: dict[str, list[str]]) -> PreparedInputs:
+    """Build a typed prepared-input snapshot for signal-path tests."""
+    types = {
+        artifact_id: "metric"
+        for artifact_ids in inputs.values()
+        for artifact_id in artifact_ids
+    }
+    cache_inputs = {
+        role: [
+            CacheInputIdentity(role, None, position, types[artifact_id], artifact_id)
+            for position, artifact_id in enumerate(artifact_ids)
+        ]
+        for role, artifact_ids in inputs.items()
+    }
+    return PreparedInputs(inputs, None, cache_inputs)
+
 
 class TestCreatorBrokenProcessPool:
-    """Fix 3: BrokenProcessPool in creator dispatch produces failed StepResult."""
+    """BrokenProcessPool in creator dispatch produces failed StepResult."""
 
     @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
+    @patch(
+        "artisan.orchestration.engine.step_executor.build_replay_snapshot",
+        new=lambda *args, **kwargs: ReplaySnapshot.unavailable("mock_unit"),
+    )
     @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
     @patch("artisan.orchestration.engine.step_executor.check_cache_for_batch")
     @patch("artisan.utils.hashing.compute_execution_spec_id")
-    @patch("artisan.orchestration.engine.step_executor._save_units")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
     @patch("artisan.orchestration.engine.step_executor.get_batch_config")
     @patch(
         "artisan.orchestration.engine.step_executor.generate_execution_unit_batches",
@@ -26,8 +55,6 @@ class TestCreatorBrokenProcessPool:
         self,
         mock_batches,
         mock_batch_config,
-        mock_resolve,
-        mock_save_units,
         mock_spec_id,
         mock_cache,
         mock_eu_cls,
@@ -39,23 +66,22 @@ class TestCreatorBrokenProcessPool:
         mock_op.name = "test_op"
         mock_op.outputs = {}
         mock_op.group_by = None
-        mock_resolve.return_value = {"data": ["id1", "id2"]}
-        mock_save_units.return_value = "/fake/units.json"
-
-        # Each batch yields (inputs_dict, group_ids)
+        # Each batch yields inputs, group IDs, and the sliced cache identities.
         mock_batches.return_value = [
-            ({"data": ["id1"]}, None),
-            ({"data": ["id2"]}, None),
+            ({"data": ["id1"]}, None, _prepared({"data": ["id1"]}).cache_inputs),
+            ({"data": ["id2"]}, None, _prepared({"data": ["id2"]}).cache_inputs),
         ]
         mock_spec_id.return_value = "spec-123"
         mock_cache.return_value = None  # No cache hit
 
         mock_unit = MagicMock()
+        mock_unit.get_batch_size.return_value = 1
         mock_eu_cls.return_value = mock_unit
 
         mock_backend = MagicMock()
-        mock_flow = MagicMock(side_effect=BrokenProcessPool("pool broken"))
-        mock_backend.create_flow.return_value = mock_flow
+        mock_handle = MagicMock()
+        mock_handle.run.side_effect = BrokenProcessPool("pool broken")
+        mock_backend.create_lifecycle_router.return_value = mock_handle
 
         config = MagicMock()
         config.delta_root = MagicMock()
@@ -63,172 +89,129 @@ class TestCreatorBrokenProcessPool:
 
         result = _execute_creator_step(
             operation=mock_op,
-            inputs={"data": ["id1", "id2"]},
-            backend=mock_backend,
+            inputs=_prepared({"data": ["id1", "id2"]}),
+            step_runner=mock_backend,
             step_number=1,
             config=config,
         )
 
-        assert result.success is False
+        assert result.status == StepStatus.FAILED
         assert result.failed_count == 2
 
 
-class TestCuratorCancelAwareMessage:
-    """Fix 4: BrokenProcessPool during cancellation uses cancel-specific message."""
+class TestCuratorBrokenProcessPool:
+    """Real subprocess error handling preserves failure and cancellation evidence."""
 
-    @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
-    @patch("artisan.orchestration.engine.step_executor.build_curator_execution_context")
-    @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
-    @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
-    @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_cancel_message_logged_when_event_set(
+    @pytest.mark.parametrize("failure_boundary", ["dispatch", "worker"])
+    @pytest.mark.parametrize("cancelled", [False, True])
+    def test_failed_future_returns_failure_and_closes_ownership(
         self,
-        mock_resolve,
-        mock_eu_cls,
-        mock_run_sub,
-        mock_create_rt,
-        mock_build_ctx,
-        mock_record_failure,
-        caplog,
-    ):
-        """BrokenProcessPool with cancel_event set logs cancellation message."""
-        from artisan.orchestration.engine.step_executor import _execute_curator_step
+        failure_boundary: str,
+        cancelled: bool,
+        mock_native_ownership: MagicMock,
+    ) -> None:
+        from artisan.execution.recording.parquet_writer import StagingResult
+        from artisan.operations.curator.merge import Merge
+        from artisan.orchestration.engine.step_executor import (
+            _run_curator_in_subprocess,
+        )
 
-        mock_op = MagicMock()
-        mock_op.name = "filter"
-        mock_op.outputs = {}
-        mock_op.group_by = None
-        mock_resolve.return_value = {"passthrough": ["id1"]}
-
-        mock_unit = MagicMock()
-        mock_unit.execution_spec_id = "spec-123-456789012345678901"
-        mock_unit.inputs = {"passthrough": ["id1"]}
-        mock_unit.operation = mock_op
-        mock_unit.step_number = 1
-        mock_eu_cls.return_value = mock_unit
-
-        mock_record_failure.return_value = MagicMock(success=False, error="killed")
-
-        # Set cancel_event during the subprocess call
+        error = BrokenProcessPool("worker terminated")
+        dispatched: Future[Future[StagingResult]] = Future()
+        if failure_boundary == "dispatch":
+            dispatched.set_exception(error)
+        else:
+            failed: Future[StagingResult] = Future()
+            failed.set_exception(error)
+            dispatched.set_result(failed)
         event = threading.Event()
-
-        def raise_broken_pool(*args, **kwargs):
+        if cancelled:
             event.set()
-            raise BrokenProcessPool("killed")
+            mock_native_ownership.cancelled = True
+            mock_native_ownership.acknowledgement.return_value = (
+                CancellationAcknowledgement(CancellationStatus.CONFIRMED)
+            )
+        unit = MagicMock(operation=Merge(), inputs={"data": ["a" * 32]})
+        with patch(
+            "artisan.orchestration.engine.step_executor._dispatch_curator",
+            return_value=dispatched,
+        ):
+            result = _run_curator_in_subprocess(
+                unit, MagicMock(), event, ownership=mock_native_ownership
+            )
 
-        mock_run_sub.side_effect = raise_broken_pool
-
-        config = MagicMock()
-        config.delta_root = MagicMock()
-
-        _execute_curator_step(
-            operation=mock_op,
-            inputs={"passthrough": ["id1"]},
-            step_number=1,
-            config=config,
-            cancel_event=event,
-            step_spec_id="test-spec-id",
+        assert not result.success
+        assert result.error is not None
+        assert "Curator subprocess killed (likely OOM)" in result.error
+        assert not result.execution_run_id
+        mock_native_ownership.finish.assert_called_once_with(
+            failed=True, cancel_event=event
         )
-
-        # Verify the cancellation message was logged (not OOM)
-        assert any(
-            "cancellation" in record.message for record in caplog.records
-        ), f"Expected 'cancellation' in log, got: {[r.message for r in caplog.records]}"
-
-    @patch("artisan.orchestration.engine.step_executor.record_execution_failure")
-    @patch("artisan.orchestration.engine.step_executor.build_curator_execution_context")
-    @patch("artisan.orchestration.engine.step_executor._create_runtime_environment")
-    @patch("artisan.orchestration.engine.step_executor._run_curator_in_subprocess")
-    @patch("artisan.orchestration.engine.step_executor.ExecutionUnit")
-    @patch("artisan.orchestration.engine.step_executor.resolve_inputs")
-    def test_oom_message_logged_when_no_cancel(
-        self,
-        mock_resolve,
-        mock_eu_cls,
-        mock_run_sub,
-        mock_create_rt,
-        mock_build_ctx,
-        mock_record_failure,
-        caplog,
-    ):
-        """BrokenProcessPool without cancel logs OOM diagnostic message."""
-        from artisan.orchestration.engine.step_executor import _execute_curator_step
-
-        mock_op = MagicMock()
-        mock_op.name = "filter"
-        mock_op.outputs = {}
-        mock_op.group_by = None
-        mock_resolve.return_value = {"passthrough": ["id1"]}
-
-        mock_unit = MagicMock()
-        mock_unit.execution_spec_id = "spec-123-456789012345678901"
-        mock_unit.inputs = {"passthrough": ["id1"]}
-        mock_unit.operation = mock_op
-        mock_unit.step_number = 1
-        mock_eu_cls.return_value = mock_unit
-
-        mock_run_sub.side_effect = BrokenProcessPool("killed")
-        mock_record_failure.return_value = MagicMock(success=False, error="killed")
-
-        config = MagicMock()
-        config.delta_root = MagicMock()
-
-        _execute_curator_step(
-            operation=mock_op,
-            inputs={"passthrough": ["id1"]},
-            step_number=1,
-            config=config,
-            cancel_event=None,
-            step_spec_id="test-spec-id",
-        )
-
-        assert any(
-            "OOM" in record.message for record in caplog.records
-        ), f"Expected 'OOM' in log, got: {[r.message for r in caplog.records]}"
+        if cancelled:
+            assert result.cancellation_acknowledgement is not None
+            assert (
+                result.cancellation_acknowledgement.status
+                is CancellationStatus.CONFIRMED
+            )
+            mock_native_ownership.request_cancel.assert_called_once()
+        else:
+            assert result.cancellation_acknowledgement is None
+            mock_native_ownership.request_cancel.assert_not_called()
 
 
 class TestCuratorCancelAwareWait:
-    """Fix 5: _run_curator_in_subprocess raises on cancel within ~1s."""
+    """Curator cancellation returns typed process-exit evidence."""
 
     @patch("artisan.orchestration.engine.step_executor.ProcessPoolExecutor")
-    def test_cancel_event_interrupts_wait(self, mock_ppe_cls):
+    def test_cancel_event_interrupts_wait(self, mock_ppe_cls, mock_native_ownership):
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
 
         mock_future = MagicMock()
-        mock_future.result.side_effect = TimeoutError
+        # An unfinished child forces the cancellation path.
+        mock_future.done.return_value = False
 
         mock_pool = MagicMock()
-        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
-        mock_pool.__exit__ = MagicMock(return_value=False)
         mock_pool.submit.return_value = mock_future
         mock_ppe_cls.return_value = mock_pool
 
         event = threading.Event()
         event.set()
 
-        with pytest.raises(RuntimeError, match="Curator interrupted by cancellation"):
-            _run_curator_in_subprocess(
-                unit=MagicMock(),
-                runtime_env=MagicMock(),
-                cancel_event=event,
-            )
+        mock_native_ownership.cancelled = True
+        mock_native_ownership.advance.return_value = True
+        mock_native_ownership.acknowledgement.return_value = (
+            CancellationAcknowledgement(CancellationStatus.CONFIRMED)
+        )
+        result = _run_curator_in_subprocess(
+            unit=MagicMock(),
+            runtime_env=MagicMock(),
+            cancel_event=event,
+            ownership=mock_native_ownership,
+        )
+        assert (
+            result.cancellation_acknowledgement.status is CancellationStatus.CONFIRMED
+        )
+        mock_native_ownership.request_cancel.assert_called_once()
+        mock_native_ownership.finish.assert_called_once_with(
+            failed=True, cancel_event=event
+        )
+        mock_future.result.assert_not_called()
 
     @patch("artisan.orchestration.engine.step_executor.ProcessPoolExecutor")
-    def test_returns_result_when_no_cancel(self, mock_ppe_cls):
+    def test_returns_result_when_no_cancel(self, mock_ppe_cls, mock_native_ownership):
         from artisan.orchestration.engine.step_executor import (
             _run_curator_in_subprocess,
         )
 
         mock_result = MagicMock()
         mock_future = MagicMock()
-        mock_future.result.side_effect = [TimeoutError, mock_result]
+        # Done immediately: result() is called exactly once, with no timeout.
+        mock_future.done.return_value = True
+        mock_future.result.return_value = mock_result
 
         mock_pool = MagicMock()
-        mock_pool.__enter__ = MagicMock(return_value=mock_pool)
-        mock_pool.__exit__ = MagicMock(return_value=False)
         mock_pool.submit.return_value = mock_future
         mock_ppe_cls.return_value = mock_pool
 
@@ -236,6 +219,7 @@ class TestCuratorCancelAwareWait:
             unit=MagicMock(),
             runtime_env=MagicMock(),
             cancel_event=None,
+            ownership=mock_native_ownership,
         )
 
         assert result is mock_result

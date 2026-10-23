@@ -2,22 +2,26 @@
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum, auto
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Any, ClassVar, cast
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.environment_spec import (
     DockerEnvironmentSpec,
     LocalEnvironmentSpec,
 )
 from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -38,11 +42,9 @@ class DataTransformerScript(OperationDefinition):
     and invokes the script via ``run_command()``.
     """
 
-    # ---------- Metadata ----------
     name: ClassVar[str] = "data_transformer_script"
     description: ClassVar[str] = "Execute data transformation script"
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
         config = auto()
@@ -60,86 +62,101 @@ class DataTransformerScript(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         DATASET = "dataset"
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["config"]},
+            derives_from={"inputs": ["config"]},
             description="Transformed dataset files",
         ),
     }
 
-    # ---------- Behavior ----------
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
-    # ---------- Tool ----------
-    tool: ToolSpec = ToolSpec(executable=SCRIPT_PATH, interpreter="python")
+    tool: ToolSpec = ToolSpec(executable=str(SCRIPT_PATH), interpreter="python")
 
-    # ---------- Environments ----------
     environments: Environments = Environments(
         local=LocalEnvironmentSpec(),
         docker=DockerEnvironmentSpec(image="my-registry/transformer:latest"),
     )
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(
+    runner_resources: RunnerResources = RunnerResources(  # type: ignore[call-arg]  # pydantic defaults
         cpus=1,
         memory_gb=4,
         time_limit="00:30:00",
     )
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_script")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Lifecycle ----------
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized config paths from paired inputs."""
-        prepared_inputs = []
+        prepared_inputs: list[dict[str, Any]] = []
         for group in inputs.grouped():
-            config = group["config"]
-            prepared_inputs.append({
-                "config_path": str(config.materialized_path),
-                "design_name": config.original_name,
-            })
+            config = cast(ExecutionConfigArtifact, group["config"])
+            prepared_inputs.append(
+                {
+                    "config_path": str(config.materialized_path),
+                    "design_name": config.original_name,
+                    "source_artifact_id": config.artifact_id,
+                }
+            )
 
-        return {"items": prepared_inputs}
+        return {"items": PerArtifact(prepared_inputs)}
 
-    def execute(self, inputs: ExecuteInput) -> Any:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Invoke transform_data.py for each config in the batch."""
         execute_dir = inputs.execute_dir
         env = self.environments.current()
+        outputs = []
 
         for item in inputs.inputs["items"]:
             config_path = item["config_path"]
             design_name = item["design_name"]
+            output_basename = item["source_artifact_id"]
 
-            args = format_args({
-                "config": config_path,
-                "output-dir": str(execute_dir),
-                "output-basename": design_name,
-            })
+            args = format_args(
+                {
+                    "config": config_path,
+                    "output-dir": execute_dir,
+                    "output-basename": output_basename,
+                }
+            )
             run_command(
                 env,
                 [*self.tool.parts(), *args],
                 cwd=execute_dir,
             )
+            outputs.append(
+                {
+                    "path": os.path.join(
+                        execute_dir, f"{output_basename}_variant_0.csv"
+                    ),
+                    "original_name": f"{design_name}_variant_0.csv",
+                    "source_artifact_id": item["source_artifact_id"],
+                }
+            )
 
-        return None
+        return {"outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build DataArtifact drafts from script-produced CSV files."""
-        drafts = []
-        for f in inputs.file_outputs:
-            if f.suffix != ".csv":
-                continue
+        result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
+        for output in inputs.memory_outputs["outputs"]:
+            with open(output["path"], "rb") as fh:
+                content = fh.read()
             draft = DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
+                content=content,
+                original_name=output["original_name"],
                 step_number=inputs.step_number,
             )
-            drafts.append(draft)
+            result.add_artifact(
+                "dataset", draft, sources={"config": [output["source_artifact_id"]]}
+            )
 
-        return ArtifactResult(success=True, artifacts={"dataset": drafts})
+        return result

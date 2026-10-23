@@ -1,6 +1,6 @@
 """Tests for submit-time validation of overrides.
 
-Verifies that unknown keys in params, resources, execution, command,
+Verifies that unknown keys in params, runner resources, batching, tool configuration,
 and input roles are caught immediately at submit() time with helpful
 error messages.
 """
@@ -12,10 +12,6 @@ from typing import Any, ClassVar
 from unittest.mock import MagicMock
 
 import pytest
-
-# =============================================================================
-# Mock Operations
-# =============================================================================
 from pydantic import BaseModel
 
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -41,9 +37,39 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
 
-class MockParams(BaseModel):
-    count: int = 1
-    seed: int = 42
+@pytest.mark.parametrize(
+    "method", ["run", "submit", "run_composite", "submit_composite"]
+)
+@pytest.mark.parametrize("policy", ["step_completed", 1, False])
+def test_invalid_cache_policy_allocates_no_work(tmp_path, method, policy) -> None:
+    from artisan.composites import CompositeContext, CompositeDefinition
+    from artisan.orchestration import PipelineManager
+
+    composed = MagicMock()
+
+    class EmptyComposite(CompositeDefinition):
+        name = "empty_cache_policy_validation"
+
+        def compose(self, ctx: CompositeContext) -> None:
+            composed()
+
+    pipeline = PipelineManager.create(
+        name="validation",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+    )
+    target = EmptyComposite if "composite" in method else MockOpWithParams
+    with pytest.raises(TypeError, match="cache_policy"):
+        getattr(pipeline, method)(target, cache_policy=policy)
+    assert pipeline.current_step == 0
+    assert pipeline._step_start_records == {}
+    assert pipeline._active_futures == {}
+    assert (
+        pipeline._step_tracker.load_current_states(pipeline.config.pipeline_run_id)
+        == []
+    )
+    composed.assert_not_called()
+    pipeline.finalize()
 
 
 class MockOpWithParams(OperationDefinition):
@@ -55,33 +81,21 @@ class MockOpWithParams(OperationDefinition):
     name: ClassVar[str] = "mock_with_params"
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
-    }
-    params: MockParams = MockParams()
-
-    def execute_curator(self, execute_input: Any) -> Any:
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-class MockFlatFieldsOp(OperationDefinition):
-    """Operation with flat fields (no params sub-model)."""
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_flat_fields"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
-    flavor: str = "vanilla"
+    class Params(BaseModel):
+        """Mock parameters.
+
+        Attributes:
+            count: Mock counter.
+            seed: Mock RNG seed.
+        """
+
+        count: int = 1
+        seed: int = 42
+
+    params: Params = Params()
 
     def execute_curator(self, execute_input: Any) -> Any:
         from artisan.schemas.execution.curator_result import ArtifactResult
@@ -105,7 +119,7 @@ class MockCreatorOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
@@ -118,12 +132,12 @@ class MockCreatorOp(OperationDefinition):
     def preprocess(self, inputs: Any) -> dict:
         return {}
 
-    def execute(self, inputs: Any) -> Any:
+    def execute_function(self, inputs: Any) -> Any:
         return None
 
 
 class MockCuratorOp(OperationDefinition):
-    """Curator op (no command field)."""
+    """Curator operation without a tool specification."""
 
     class InputRole(StrEnum):
         data = auto()
@@ -136,9 +150,7 @@ class MockCuratorOp(OperationDefinition):
         InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -157,9 +169,7 @@ class MockRuntimeInputsOp(OperationDefinition):
     runtime_defined_inputs: ClassVar[bool] = True
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.merged: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.merged: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -186,9 +196,7 @@ class MockOpWithOptionalInput(OperationDefinition):
         ),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -211,20 +219,13 @@ class MockOpWithAnyInput(OperationDefinition):
         InputRole.data: InputSpec(artifact_type=ArtifactTypes.ANY, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA, is_memory_output=True
-        ),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
         from artisan.schemas.execution.curator_result import ArtifactResult
 
         return ArtifactResult(success=True)
-
-
-# =============================================================================
-# Tests for _validate_params
-# =============================================================================
 
 
 class TestValidateParams:
@@ -239,19 +240,25 @@ class TestValidateParams:
         with pytest.raises(ValueError, match="Unknown params.*bogus"):
             _validate_params(MockOpWithParams, {"count": 5, "bogus": True})
 
-    def test_valid_flat_fields(self):
-        """Valid flat field keys should not raise."""
-        _validate_params(MockFlatFieldsOp, {"flavor": "chocolate"})
+    def test_parameter_less_op_accepts_empty_dict(self):
+        """Ops without a ``params`` field have no valid keys; ``{}`` passes."""
+        from artisan.operations.curator.merge import Merge
 
-    def test_unknown_flat_field_raises(self):
-        """Unknown flat field key should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown params.*bogus"):
-            _validate_params(MockFlatFieldsOp, {"bogus": True})
+        _validate_params(Merge, {})
 
+    def test_parameter_less_op_rejects_any_key(self):
+        """Ops without a ``params`` field reject any provided key."""
+        from artisan.operations.curator.merge import Merge
 
-# =============================================================================
-# Tests for _validate_resources
-# =============================================================================
+        with pytest.raises(ValueError, match="Unknown params.*flavor"):
+            _validate_params(Merge, {"flavor": "vanilla"})
+
+    def test_valid_params_accepted(self):
+        _validate_params(MockOpWithParams, {"count": 5})
+
+    def test_unknown_param_raises(self):
+        with pytest.raises(ValueError, match="Unknown params.*gamma"):
+            _validate_params(MockOpWithParams, {"gamma": 99})
 
 
 class TestValidateResources:
@@ -259,7 +266,7 @@ class TestValidateResources:
 
     def test_valid_resources(self):
         """Valid resource keys should not raise."""
-        _validate_resources({"memory_gb": 32, "gpus": 1})
+        _validate_resources({"cpus": 4, "memory_gb": 32, "gpus": 1})
 
     def test_unknown_resource_raises(self):
         """Unknown resource key should raise with valid keys listed."""
@@ -270,11 +277,6 @@ class TestValidateResources:
         """Error message should list valid keys."""
         with pytest.raises(ValueError, match="Valid keys:.*memory_gb"):
             _validate_resources({"bogus": True})
-
-
-# =============================================================================
-# Tests for _validate_execution
-# =============================================================================
 
 
 class TestValidateExecution:
@@ -288,11 +290,6 @@ class TestValidateExecution:
         """Unknown execution key should raise ValueError."""
         with pytest.raises(ValueError, match="Unknown execution keys.*batch_size"):
             _validate_execution({"batch_size": 10})
-
-
-# =============================================================================
-# Tests for _validate_environment
-# =============================================================================
 
 
 class TestValidateEnvironment:
@@ -326,11 +323,6 @@ class TestValidateEnvironment:
         _validate_environment(MockCreatorOp, {})
 
 
-# =============================================================================
-# Tests for _validate_tool
-# =============================================================================
-
-
 class TestValidateTool:
     """Tests for tool validation."""
 
@@ -351,11 +343,6 @@ class TestValidateTool:
     def test_empty_tool_accepted(self):
         """Empty tool dict should not raise."""
         _validate_tool(MockCreatorOp, {})
-
-
-# =============================================================================
-# Tests for _validate_input_roles
-# =============================================================================
 
 
 class TestValidateInputRoles:
@@ -384,11 +371,6 @@ class TestValidateInputRoles:
         _validate_input_roles(MockCuratorOp, [MagicMock()])
 
 
-# =============================================================================
-# Tests for no-overrides case
-# =============================================================================
-
-
 class TestNoOverrides:
     """Tests for the no-overrides case."""
 
@@ -397,23 +379,15 @@ class TestNoOverrides:
         from artisan.orchestration.engine.step_executor import (
             instantiate_operation,
         )
+        from artisan.schemas.orchestration.step_overrides import StepOverrides
 
         instance = instantiate_operation(
             MockOpWithParams,
-            params=None,
-            resources=None,
-            execution=None,
-            environment=None,
-            tool=None,
+            StepOverrides.from_user(),
         )
         assert instance.params.count == 1
-        assert instance.resources.cpus == 1
-        assert instance.execution.artifacts_per_unit == 1
-
-
-# =============================================================================
-# Tests for _validate_required_inputs
-# =============================================================================
+        assert instance.runner_resources.cpus == 1
+        assert instance.batch_strategy.artifacts_per_unit == 1
 
 
 class TestValidateRequiredInputs:
@@ -447,10 +421,9 @@ class TestValidateRequiredInputs:
         _validate_required_inputs(MockCuratorOp, None)
         _validate_required_inputs(MockCuratorOp, [MagicMock()])
 
-
-# =============================================================================
-# Tests for _validate_input_types
-# =============================================================================
+    def test_missing_required_raises(self):
+        with pytest.raises(ValueError, match="Missing required input.*dataset"):
+            _validate_required_inputs(MockOpWithOptionalInput, {"reference": "val"})
 
 
 class TestValidateInputTypes:

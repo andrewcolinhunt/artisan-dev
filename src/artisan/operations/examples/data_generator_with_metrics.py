@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import random
 import statistics
 from enum import StrEnum, auto
@@ -11,12 +12,13 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -28,21 +30,18 @@ class DataGeneratorWithMetrics(OperationDefinition):
     each one (like MetricCalculator). The metric's lineage points to the
     co-produced dataset, not to any input.
 
-    Demonstrates ``infer_lineage_from={"outputs": ["datasets"]}``.
+    Demonstrates ``derives_from={"outputs": ["datasets"]}``.
 
     Output Roles:
         datasets (data) -- Generated CSV dataset files
         metrics (metric) -- Statistics derived from co-produced datasets
     """
 
-    # ---------- Metadata ----------
     name = "data_generator_with_metrics"
     description = "Generate datasets with co-produced statistics"
 
-    # ---------- Inputs ----------
-    inputs: ClassVar[dict] = {}
+    inputs: ClassVar[dict[str, Any]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         datasets = auto()
         metrics = auto()
@@ -51,16 +50,15 @@ class DataGeneratorWithMetrics(OperationDefinition):
         OutputRole.datasets: OutputSpec(
             artifact_type="data",
             description="Generated CSV dataset files",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
         OutputRole.metrics: OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
             description="Statistics derived from co-produced datasets",
-            infer_lineage_from={"outputs": ["datasets"]},
+            derives_from={"outputs": ["datasets"]},
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataGeneratorWithMetrics."""
 
@@ -81,21 +79,22 @@ class DataGeneratorWithMetrics(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(
+    batch_strategy: BatchStrategy = BatchStrategy(
         artifacts_per_unit=100,
         units_per_worker=1,
         job_name="data_generator_with_metrics",
     )
 
-    # ---------- Lifecycle ----------
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV datasets and compute per-file summary statistics."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         rng = random.Random(self.params.seed)
         created_files = []
@@ -103,10 +102,10 @@ class DataGeneratorWithMetrics(OperationDefinition):
 
         for i in range(self.params.count):
             filename = f"dataset_{i:05d}.csv"
-            filepath = output_dir / filename
+            filepath = os.path.join(output_dir, filename)
 
             xs, ys, zs, scores = [], [], [], []
-            with filepath.open("w", newline="") as f:
+            with open(filepath, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["id", "x", "y", "z", "score"])
                 for row_idx in range(self.params.rows_per_file):
@@ -120,18 +119,22 @@ class DataGeneratorWithMetrics(OperationDefinition):
                     zs.append(z)
                     scores.append(score)
 
-            created_files.append(str(filepath))
+            created_files.append(filepath)
 
             n = len(xs)
-            calculated_metrics.append({
-                "metric_key": f"dataset_{i:05d}_metrics.json",
-                "mean_x": statistics.mean(xs),
-                "mean_y": statistics.mean(ys),
-                "mean_z": statistics.mean(zs),
-                "mean_score": statistics.mean(scores),
-                "std_score": statistics.stdev(scores) if n >= 2 else 0.0,
-                "row_count": n,
-            })
+            calculated_metrics.append(
+                {
+                    "dataset_path": filepath,
+                    "dataset_name": filename,
+                    "metric_key": f"dataset_{i:05d}_metrics.json",
+                    "mean_x": statistics.mean(xs),
+                    "mean_y": statistics.mean(ys),
+                    "mean_z": statistics.mean(zs),
+                    "mean_score": statistics.mean(scores),
+                    "std_score": statistics.stdev(scores) if n >= 2 else 0.0,
+                    "row_count": n,
+                }
+            )
 
         return {
             "created_files": created_files,
@@ -142,20 +145,25 @@ class DataGeneratorWithMetrics(OperationDefinition):
         """Build DataArtifact and MetricArtifact drafts from execution output."""
         raw = inputs.memory_outputs
 
-        dataset_drafts: list[DataArtifact] = []
-        for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
-                dataset_drafts.append(
-                    DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
-                        step_number=inputs.step_number,
-                    )
-                )
-
-        metric_drafts: list[MetricArtifact] = []
+        result = ArtifactResult(
+            artifacts={"datasets": [], "metrics": []},
+            lineage={"datasets": [], "metrics": []},
+            metadata={
+                "operation": "data_generator_with_metrics",
+                "count": self.params.count,
+                "seed": self.params.seed,
+            },
+        )
         for metric_data in raw.get("calculated_metrics", []):
-            metric_drafts.append(
+            with open(metric_data["dataset_path"], "rb") as f:
+                dataset = DataArtifact.draft(
+                    content=f.read(),
+                    original_name=metric_data["dataset_name"],
+                    step_number=inputs.step_number,
+                )
+            dataset_index = result.add_artifact("datasets", dataset, sources={})
+            result.add_artifact(
+                "metrics",
                 MetricArtifact.draft(
                     content={
                         "mean_x": metric_data["mean_x"],
@@ -167,18 +175,8 @@ class DataGeneratorWithMetrics(OperationDefinition):
                     },
                     original_name=metric_data["metric_key"],
                     step_number=inputs.step_number,
-                )
+                ),
+                sources={"datasets": [dataset_index]},
             )
 
-        return ArtifactResult(
-            success=True,
-            artifacts={
-                "datasets": dataset_drafts,
-                "metrics": metric_drafts,
-            },
-            metadata={
-                "operation": "data_generator_with_metrics",
-                "count": self.params.count,
-                "seed": self.params.seed,
-            },
-        )
+        return result

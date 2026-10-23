@@ -1,18 +1,30 @@
-"""Tests for PipelineManager.resume() and list_runs()."""
+"""Tests for PipelineManager.resume()."""
 
 from __future__ import annotations
 
+import json
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import ClassVar
 from unittest.mock import patch
 
+import polars as pl
 import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.pipeline_manager import PipelineManager
+from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.enums import CachePolicy
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+
+
+class ExternalRunner(LocalRunner):
+    """Concrete stand-in for a runner supplied by an external provider."""
+
+    name = "external_test"
 
 
 class MockOp(OperationDefinition):
@@ -29,14 +41,14 @@ class MockOp(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.data: OutputSpec(
             artifact_type=ArtifactTypes.DATA,
-            infer_lineage_from={"inputs": ["data"]},
+            derives_from={"inputs": ["data"]},
         ),
     }
 
     def preprocess(self, inputs):
         return {}
 
-    def execute(self, inputs, output_dir):
+    def execute_function(self, inputs, output_dir):
         pass
 
 
@@ -58,44 +70,120 @@ class IngestMockOp(OperationDefinition):
 
 def _mock_execute_step(**kwargs):
     from artisan.orchestration.engine.step_executor import build_step_result
+    from artisan.schemas.enums import FailurePolicy
 
-    return build_step_result(
-        operation=kwargs["operation_class"],
+    operation = kwargs["operation"]
+    succeeded_count = 0 if isinstance(operation, IngestMockOp) else 5
+    result = build_step_result(
+        operation=operation,
         step_number=kwargs["step_number"],
-        succeeded_count=5,
+        succeeded_count=succeeded_count,
         failed_count=0,
-        failure_policy=kwargs["failure_policy"],
+        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
+        step_run_id=kwargs["step_run_id"],
     )
+    return kwargs["persist_result"](result, ())
+
+
+def _run_external_default_pipeline(
+    delta_root: Path,
+    staging_root: Path,
+    *,
+    local_override: bool = False,
+) -> tuple[PipelineManager, ExternalRunner]:
+    """Run steps whose effective runners can differ from an external default."""
+    runner = ExternalRunner()
+    pipeline = PipelineManager.create(
+        name="test",
+        delta_root=str(delta_root),
+        staging_root=str(staging_root),
+        default_step_runner=runner,
+    )
+    pipeline.run(IngestMockOp, inputs=None)
+    if local_override:
+        pipeline.run(
+            MockOp,
+            inputs={"data": pipeline[0].output("file")},
+            step_runner="local",
+        )
+    return pipeline, runner
 
 
 class TestResume:
     """Tests for PipelineManager.resume()."""
+
+    @pytest.mark.parametrize("default", [None, *CachePolicy])
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_policy_default_applies_only_to_new_submissions(
+        self, mock_exec, tmp_path, default: CachePolicy | None
+    ) -> None:
+        roots = {
+            "delta_root": str(tmp_path / "delta"),
+            "staging_root": str(tmp_path / "staging"),
+        }
+        original = PipelineManager.create(name="resume_policy", **roots)
+        first = original.run(IngestMockOp, cache_policy=CachePolicy.STEP_COMPLETED)
+        second = original.run(IngestMockOp, cache_policy=CachePolicy.ALL_SUCCEEDED)
+        original.finalize()
+        before = pl.read_delta(tmp_path / "delta" / "orchestration" / "steps")
+        options = {} if default is None else {"cache_policy": default}
+        resumed = PipelineManager.resume(
+            **roots, pipeline_run_id=original.config.pipeline_run_id, **options
+        )
+        assert [step.step_run_id for step in resumed._step_results] == [
+            first.step_run_id,
+            second.step_run_id,
+        ]
+        assert mock_exec.call_count == 2
+        inherited = resumed.submit(IngestMockOp).result()
+        explicit = resumed.run(IngestMockOp, cache_policy=CachePolicy.STEP_COMPLETED)
+        resumed.finalize()
+        after = pl.read_delta(tmp_path / "delta" / "orchestration" / "steps")
+        assert after.filter(
+            pl.col("step_run_id").is_in([first.step_run_id, second.step_run_id])
+        ).equals(before)
+        for result, expected in (
+            (inherited, default or CachePolicy.ALL_SUCCEEDED),
+            (explicit, CachePolicy.STEP_COMPLETED),
+        ):
+            rows = after.filter(pl.col("step_run_id") == result.step_run_id)
+            assert {
+                json.loads(value)["cache_policy"]
+                for value in rows["compute_options_json"]
+            } == {expected.value}
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
     def test_resume_reconstructs_state(self, mock_exec, tmp_path):
-        """step_results, current_step, step_spec_ids are restored."""
+        """Restore terminal results and the next step position."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
         # Run 2 steps
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         run_id = p1.config.pipeline_run_id
         p1.run(IngestMockOp, inputs=None)
         p1.run(MockOp, inputs={"data": p1[0].output("file")})
 
         # Resume
         p2 = PipelineManager.resume(
-            delta_root=delta,
-            staging_root=staging,
+            delta_root=str(delta),
+            staging_root=str(staging),
             pipeline_run_id=run_id,
         )
         assert p2.current_step == 2
         assert len(p2._step_results) == 2
-        assert 0 in p2._step_spec_ids
-        assert 1 in p2._step_spec_ids
+        restored = p2._step_tracker.load_current_states(run_id)
+        assert restored[0].step_spec_id
+        assert restored[1].step_spec_id is None
+        assert p2._step_results[1].status == StepStatus.SKIPPED
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
@@ -106,13 +194,15 @@ class TestResume:
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
 
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         run_id = p1.config.pipeline_run_id
         p1.run(IngestMockOp, inputs=None)
 
         p2 = PipelineManager.resume(
-            delta_root=delta,
-            staging_root=staging,
+            delta_root=str(delta),
+            staging_root=str(staging),
             pipeline_run_id=run_id,
         )
         ref = p2[0].output("file")
@@ -129,50 +219,255 @@ class TestResume:
         staging = tmp_path / "staging"
 
         # Run 1 — Ingest only
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
+        p1 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
         p1.run(IngestMockOp, inputs=None)
-        run1_id = p1.config.pipeline_run_id
 
-        # Run 2 — Ingest + MockOp (different steps, so not all cache hits)
-        p2 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
-        p2.run(IngestMockOp, inputs=None)  # cache hit from run 1
-        p2.run(MockOp, inputs={"data": p2[0].output("file")})
+        # Run 2 — execute two steps so it is the newest complete run.
+        p2 = PipelineManager.create(
+            name="test", delta_root=str(delta), staging_root=str(staging)
+        )
+        p2.run(IngestMockOp, inputs=None, skip_cache=True)
+        p2.run(
+            MockOp,
+            inputs={"data": p2[0].output("file")},
+            skip_cache=True,
+        )
         run2_id = p2.config.pipeline_run_id
 
         # Resume without specifying run_id — should pick run 2 (most recent completed)
-        p3 = PipelineManager.resume(delta_root=delta, staging_root=staging)
+        p3 = PipelineManager.resume(delta_root=str(delta), staging_root=str(staging))
         assert p3.config.pipeline_run_id == run2_id
         assert p3.current_step == 2
 
     def test_resume_no_runs_raises(self, tmp_path):
         """ValueError on empty table."""
-        with pytest.raises(ValueError, match="No completed steps found"):
+        with pytest.raises(ValueError, match="No step attempts found"):
             PipelineManager.resume(
-                delta_root=tmp_path / "delta",
-                staging_root=tmp_path / "staging",
+                delta_root=str(tmp_path / "delta"),
+                staging_root=str(tmp_path / "staging"),
             )
-
-
-class TestListRuns:
-    """Tests for PipelineManager.list_runs()."""
 
     @patch(
         "artisan.orchestration.pipeline_manager.execute_step",
         side_effect=_mock_execute_step,
     )
-    def test_list_runs(self, mock_exec, tmp_path):
-        """Returns correct DataFrame."""
+    def test_resume_accepts_matching_persisted_external_runner_instance(
+        self, mock_exec, tmp_path
+    ):
+        """An imported provider instance restores its persisted default."""
         delta = tmp_path / "delta"
         staging = tmp_path / "staging"
+        p1, runner = _run_external_default_pipeline(delta, staging)
 
-        p1 = PipelineManager.create(name="test", delta_root=delta, staging_root=staging)
-        p1.run(IngestMockOp, inputs=None)
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=p1.config.pipeline_run_id,
+            default_step_runner=runner,
+        )
 
-        runs = PipelineManager.list_runs(delta)
-        assert len(runs) == 1
-        assert "pipeline_run_id" in runs.columns
+        assert resumed.config.default_step_runner == "external_test"
+        assert resumed._default_step_runner is runner
 
-    def test_list_runs_empty(self, tmp_path):
-        """Empty table returns empty DataFrame."""
-        runs = PipelineManager.list_runs(tmp_path / "delta")
-        assert len(runs) == 0
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_does_not_infer_default_from_curator_or_override(
+        self, mock_exec, tmp_path
+    ):
+        """Effective local step runners cannot hide a persisted external default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        p1, _ = _run_external_default_pipeline(
+            delta,
+            staging,
+            local_override=True,
+        )
+
+        rows = pl.read_delta(delta / "orchestration" / "steps").filter(
+            pl.col("status") == StepStatus.SUCCEEDED.value
+        )
+        assert set(rows["compute_backend"]) == {"local"}
+        decoded_options = [
+            json.loads(options) for options in rows["compute_options_json"]
+        ]
+        assert {
+            options["pipeline_default_step_runner"] for options in decoded_options
+        } == {"external_test"}
+        assert all(
+            "pipeline_default_local_runner" not in options
+            for options in decoded_options
+        )
+
+        with pytest.raises(ValueError, match="initialized provider runner"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=p1.config.pipeline_run_id,
+            )
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_rejects_runner_mismatch_with_persisted_default(
+        self, mock_exec, tmp_path
+    ):
+        """An explicit runner cannot replace the persisted pipeline default."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        p1, _ = _run_external_default_pipeline(delta, staging)
+
+        with pytest.raises(ValueError, match="does not match persisted"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=p1.config.pipeline_run_id,
+                default_step_runner=LocalRunner(),
+            )
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_reconstructs_configured_local_runner(self, mock_exec, tmp_path):
+        """A built-in local pool size survives an omitted resume argument."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(delta),
+            staging_root=str(staging),
+            default_step_runner=LocalRunner(default_max_workers=9),
+        )
+        pipeline.run(IngestMockOp, inputs=None)
+
+        succeeded = pl.read_delta(delta / "orchestration" / "steps").filter(
+            pl.col("status") == StepStatus.SUCCEEDED.value
+        )
+        options = json.loads(succeeded.item(0, "compute_options_json"))
+        assert options["pipeline_default_step_runner"] == "local"
+        assert options["pipeline_default_local_runner"] == {"default_max_workers": 9}
+        assert succeeded.item(0, "compute_backend") == "local"
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=pipeline.config.pipeline_run_id,
+        )
+
+        assert type(resumed._default_step_runner) is LocalRunner
+        assert resumed._default_step_runner.default_max_workers == 9
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_retains_matching_configured_local_runner(self, mock_exec, tmp_path):
+        """An explicit compatible LocalRunner remains the runtime instance."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(delta),
+            staging_root=str(staging),
+            default_step_runner=LocalRunner(default_max_workers=9),
+        )
+        pipeline.run(IngestMockOp, inputs=None)
+        supplied = LocalRunner(default_max_workers=9)
+
+        resumed = PipelineManager.resume(
+            delta_root=str(delta),
+            staging_root=str(staging),
+            pipeline_run_id=pipeline.config.pipeline_run_id,
+            default_step_runner=supplied,
+        )
+
+        assert resumed._default_step_runner is supplied
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_rejects_incompatible_configured_local_runner(
+        self, mock_exec, tmp_path
+    ):
+        """An explicit LocalRunner must match the persisted pool size."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        pipeline = PipelineManager.create(
+            name="test",
+            delta_root=str(delta),
+            staging_root=str(staging),
+            default_step_runner=LocalRunner(default_max_workers=9),
+        )
+        pipeline.run(IngestMockOp, inputs=None)
+
+        with pytest.raises(ValueError, match="does not match persisted"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=pipeline.config.pipeline_run_id,
+                default_step_runner=LocalRunner(default_max_workers=4),
+            )
+
+    @patch(
+        "artisan.orchestration.pipeline_manager.execute_step",
+        side_effect=_mock_execute_step,
+    )
+    def test_resume_rejects_external_runner_name_without_instance(
+        self, mock_exec, tmp_path
+    ):
+        """A persisted provider name cannot be reconstructed by core alone."""
+        delta = tmp_path / "delta"
+        staging = tmp_path / "staging"
+        p1, _ = _run_external_default_pipeline(delta, staging)
+
+        with pytest.raises(ValueError, match="initialized provider runner"):
+            PipelineManager.resume(
+                delta_root=str(delta),
+                staging_root=str(staging),
+                pipeline_run_id=p1.config.pipeline_run_id,
+                default_step_runner="external_test",
+            )
+
+
+@patch(
+    "artisan.orchestration.pipeline_manager.execute_step",
+    side_effect=_mock_execute_step,
+)
+def test_resume_recovers_before_loading_accepted_results(
+    mock_exec, tmp_path, monkeypatch
+):
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.storage.io import repair
+
+    roots = {
+        "delta_root": str(tmp_path / "delta"),
+        "staging_root": str(tmp_path / "staging"),
+    }
+    with PipelineManager.create(name="resume_order", **roots) as original:
+        result = original.run(IngestMockOp)
+    events = []
+    real_repair = repair.repair_store
+    real_resumable = StepTracker.load_resumable_steps
+
+    def recover(**kwargs):
+        events.append("recover")
+        return real_repair(**kwargs)
+
+    def accepted(tracker, run_id):
+        assert events == ["recover"]
+        events.append("accepted")
+        return real_resumable(tracker, run_id)
+
+    monkeypatch.setattr(repair, "repair_store", recover)
+    monkeypatch.setattr(StepTracker, "load_resumable_steps", accepted)
+    with PipelineManager.resume(
+        **roots, pipeline_run_id=original.config.pipeline_run_id
+    ) as resumed:
+        assert resumed[0].step_run_id == result.step_run_id
+        assert events == ["recover", "accepted"]

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
@@ -41,6 +40,10 @@ class TestEnvironmentSpec:
         spec = EnvironmentSpec()
         spec.validate_environment()  # should not raise
 
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValueError, match="Extra inputs are not permitted"):
+            EnvironmentSpec(unknown=True)
+
 
 class TestLocalEnvironmentSpec:
     def test_defaults(self):
@@ -53,15 +56,15 @@ class TestLocalEnvironmentSpec:
         assert spec.prepare_env() is None
 
     def test_prepare_env_with_venv(self):
-        spec = LocalEnvironmentSpec(venv_path=Path("/envs/.venv"))
+        spec = LocalEnvironmentSpec(venv_path="/envs/.venv")
         env = spec.prepare_env()
         assert env is not None
         assert env["VIRTUAL_ENV"] == "/envs/.venv"
-        assert str(Path("/envs/.venv/bin")) in env["PATH"]
+        assert "/envs/.venv/bin" in env["PATH"]
 
     def test_prepare_env_venv_plus_extra(self):
         spec = LocalEnvironmentSpec(
-            venv_path=Path("/envs/.venv"),
+            venv_path="/envs/.venv",
             env={"CUDA_VISIBLE_DEVICES": "0"},
         )
         env = spec.prepare_env()
@@ -84,6 +87,7 @@ class TestDockerEnvironmentSpec:
         spec = DockerEnvironmentSpec(image="samtools:1.17")
         result = spec.wrap_command(["samtools", "sort"])
         assert result[:3] == ["docker", "run", "--rm"]
+        assert "--workdir" not in result
         assert "samtools:1.17" in result
         assert result[-2:] == ["samtools", "sort"]
 
@@ -93,19 +97,55 @@ class TestDockerEnvironmentSpec:
         assert "--gpus" in result
         assert "all" in result
 
-    def test_wrap_command_with_cwd(self):
+    @pytest.mark.parametrize("cwd", ["/data/sandbox/step0", "/data/sandbox/step 0"])
+    def test_wrap_command_with_cwd(self, cwd: str) -> None:
         spec = DockerEnvironmentSpec(image="img:latest")
-        result = spec.wrap_command(["cmd"], cwd=Path("/data/sandbox/step0"))
+        result = spec.wrap_command(["cmd"], cwd=cwd)
         assert "--volume" in result
         assert "/data/sandbox:/data/sandbox" in result
+        index = result.index("--workdir")
+        assert result[index + 1] == cwd
+        assert index < result.index("img:latest")
 
     def test_wrap_command_with_binds(self):
         spec = DockerEnvironmentSpec(
             image="img:latest",
-            binds=[(Path("/host/data"), Path("/container/data"))],
+            binds=[("/host/data", "/container/data")],
         )
         result = spec.wrap_command(["cmd"])
         assert "/host/data:/container/data" in result
+
+    def test_wrap_command_with_3tuple_bind_ro(self):
+        """3-tuple bind emits ``host:container:mode`` for read-only mounts."""
+        spec = DockerEnvironmentSpec(
+            image="img:latest",
+            binds=[("/host/weights", "/weights", "ro")],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/host/weights:/weights:ro" in result
+
+    def test_wrap_command_with_mixed_binds(self):
+        """A mix of 2-tuple and 3-tuple binds in one list both emit correctly."""
+        spec = DockerEnvironmentSpec(
+            image="img:latest",
+            binds=[
+                ("/a", "/b"),
+                ("/c", "/d", "ro"),
+            ],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/a:/b" in result
+        assert "/c:/d:ro" in result
+
+    def test_round_trip_3tuple_bind(self):
+        """``model_dump`` ↔ ``model_validate`` preserves 3-tuple binds."""
+        spec = DockerEnvironmentSpec(
+            image="img:latest",
+            binds=[("/a", "/b", "ro")],
+        )
+        data = spec.model_dump()
+        restored = DockerEnvironmentSpec.model_validate(data)
+        assert restored == spec
 
     def test_wrap_command_with_env(self):
         spec = DockerEnvironmentSpec(image="img:latest", env={"KEY": "val"})
@@ -127,62 +167,98 @@ class TestDockerEnvironmentSpec:
         spec = DockerEnvironmentSpec(
             image="img:latest",
             gpu=True,
-            binds=[(Path("/a"), Path("/b"))],
+            binds=[("/a", "/b")],
             env={"K": "V"},
         )
         data = spec.model_dump()
         restored = DockerEnvironmentSpec.model_validate(data)
         assert restored == spec
 
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValueError, match="imgae"):
+            DockerEnvironmentSpec(image="img:latest", imgae="typo")
+
 
 class TestApptainerEnvironmentSpec:
     def test_construction(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
-        assert spec.image == Path("/img.sif")
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
+        assert spec.image == "/img.sif"
         assert spec.gpu is False
 
     def test_wrap_command_minimal(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
         result = spec.wrap_command(["samtools", "sort"])
         assert result[:2] == ["apptainer", "exec"]
         assert "/img.sif" in result
         assert result[-2:] == ["samtools", "sort"]
 
     def test_wrap_command_with_gpu(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=True)
+        spec = ApptainerEnvironmentSpec(image="/img.sif", gpu=True)
         result = spec.wrap_command(["cmd"])
         assert "--nv" in result
 
     def test_wrap_command_with_cwd(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
-        result = spec.wrap_command(["cmd"], cwd=Path("/data/sandbox/step0"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
+        result = spec.wrap_command(["cmd"], cwd="/data/sandbox/step0")
         assert "--bind" in result
         assert "/data/sandbox:/data/sandbox" in result
 
     def test_wrap_command_with_binds_and_env(self):
         spec = ApptainerEnvironmentSpec(
-            image=Path("/img.sif"),
-            binds=[(Path("/host"), Path("/container"))],
+            image="/img.sif",
+            binds=[("/host", "/container")],
             env={"KEY": "val"},
         )
         result = spec.wrap_command(["cmd"])
         assert "--bind" in result
         assert "--env" in result
 
+    def test_wrap_command_with_3tuple_bind_ro(self):
+        """3-tuple bind emits ``host:container:mode`` for Apptainer too."""
+        spec = ApptainerEnvironmentSpec(
+            image="/img.sif",
+            binds=[("/host/weights", "/weights", "ro")],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/host/weights:/weights:ro" in result
+
+    def test_wrap_command_with_mixed_binds(self):
+        """A mix of 2-tuple and 3-tuple binds in one list both emit correctly."""
+        spec = ApptainerEnvironmentSpec(
+            image="/img.sif",
+            binds=[
+                ("/a", "/b"),
+                ("/c", "/d", "ro"),
+            ],
+        )
+        result = spec.wrap_command(["cmd"])
+        assert "/a:/b" in result
+        assert "/c:/d:ro" in result
+
+    def test_round_trip_3tuple_bind(self):
+        """``model_dump`` ↔ ``model_validate`` preserves 3-tuple binds."""
+        spec = ApptainerEnvironmentSpec(
+            image="/img.sif",
+            binds=[("/a", "/b", "ro")],
+        )
+        data = spec.model_dump()
+        restored = ApptainerEnvironmentSpec.model_validate(data)
+        assert restored == spec
+
     @patch("shutil.which", return_value=None)
     def test_validate_not_installed(self, mock_which):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
         with pytest.raises(FileNotFoundError, match="Apptainer"):
             spec.validate_environment()
 
     @patch("shutil.which", return_value="/usr/bin/apptainer")
     def test_validate_missing_image(self, mock_which):
-        spec = ApptainerEnvironmentSpec(image=Path("/nonexistent.sif"))
+        spec = ApptainerEnvironmentSpec(image="/nonexistent.sif")
         with pytest.raises(FileNotFoundError, match="Container image not found"):
             spec.validate_environment()
 
     def test_isinstance(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"))
+        spec = ApptainerEnvironmentSpec(image="/img.sif")
         assert isinstance(spec, EnvironmentSpec)
 
 
@@ -199,7 +275,7 @@ class TestPixiEnvironmentSpec:
         assert result[4:] == ["python", "train.py"]
 
     def test_wrap_command_with_manifest(self):
-        spec = PixiEnvironmentSpec(manifest_path=Path("/project/pixi.toml"))
+        spec = PixiEnvironmentSpec(manifest_path="/project/pixi.toml")
         result = spec.wrap_command(["cmd"])
         assert "--manifest-path" in result
         assert "/project/pixi.toml" in result
@@ -230,7 +306,7 @@ class TestMasterPortInjection:
     """MASTER_PORT/MASTER_ADDR auto-injection for GPU container specs."""
 
     def test_apptainer_gpu_injects_master_port(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=True)
+        spec = ApptainerEnvironmentSpec(image="/img.sif", gpu=True)
         result = spec.wrap_command(["cmd"])
         env_pairs = {result[i + 1] for i, v in enumerate(result) if v == "--env"}
         master_ports = [p for p in env_pairs if p.startswith("MASTER_PORT=")]
@@ -241,7 +317,7 @@ class TestMasterPortInjection:
 
     def test_apptainer_gpu_respects_explicit_master_port(self):
         spec = ApptainerEnvironmentSpec(
-            image=Path("/img.sif"), gpu=True, env={"MASTER_PORT": "12345"}
+            image="/img.sif", gpu=True, env={"MASTER_PORT": "12345"}
         )
         result = spec.wrap_command(["cmd"])
         env_pairs = [result[i + 1] for i, v in enumerate(result) if v == "--env"]
@@ -249,7 +325,7 @@ class TestMasterPortInjection:
         assert master_ports == ["MASTER_PORT=12345"]
 
     def test_apptainer_no_gpu_no_injection(self):
-        spec = ApptainerEnvironmentSpec(image=Path("/img.sif"), gpu=False)
+        spec = ApptainerEnvironmentSpec(image="/img.sif", gpu=False)
         result = spec.wrap_command(["cmd"])
         joined = " ".join(result)
         assert "MASTER_PORT" not in joined
@@ -280,3 +356,47 @@ class TestMasterPortInjection:
         joined = " ".join(result)
         assert "MASTER_PORT" not in joined
         assert "MASTER_ADDR" not in joined
+
+
+@pytest.mark.parametrize(
+    "public_env", [("",), ("ROOT", "ROOT"), ("MISSING",), (17,), "ROOT"]
+)
+def test_public_env_rejects_invalid_names_without_input_values(public_env):
+    with pytest.raises(ValueError) as caught:
+        LocalEnvironmentSpec(env={"ROOT": "hidden-input-value"}, public_env=public_env)
+    assert "hidden-input-value" not in str(caught.value)
+    assert "hidden-input-value" not in repr(caught.value)
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("API_KEY", "hidden-credential"),
+        ("ROOT", "https://user:hidden-credential@host/path"),
+        ("ROOT", "https://:hidden-credential@host/path"),
+        ("ROOT", "https://host/path?token=hidden-credential"),
+    ],
+)
+def test_public_env_rejects_known_credentials_safely(name, value):
+    with pytest.raises(ValueError) as caught:
+        LocalEnvironmentSpec(env={name: value}, public_env=(name,))
+    assert "hidden-credential" not in str(caught.value)
+    assert "hidden-credential" not in repr(caught.value)
+
+
+def test_public_env_does_not_change_subprocess_values():
+    spec = LocalEnvironmentSpec(env={"ROOT": "/opt/application"}, public_env=("ROOT",))
+    assert spec.prepare_env()["ROOT"] == "/opt/application"
+    assert LocalEnvironmentSpec().public_env == ()
+    assert LocalEnvironmentSpec.model_validate_json(spec.model_dump_json()) == spec
+
+
+def test_copied_public_env_is_revalidated_before_command_preparation():
+    from artisan.execution.recording.commands import CommandRecorder
+
+    spec = LocalEnvironmentSpec(env={"TOKEN": "copy-sensitive"}).model_copy(
+        update={"public_env": ("TOKEN",)}
+    )
+    with pytest.raises(ValueError) as caught:
+        CommandRecorder().prepare(spec, ["tool"], ())
+    assert "copy-sensitive" not in repr(caught.value)

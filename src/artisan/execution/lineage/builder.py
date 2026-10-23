@@ -1,71 +1,92 @@
-"""Build provenance edges from captured lineage metadata."""
+"""Resolve declared output references into exact artifact derivation pairs."""
 
 from __future__ import annotations
 
+from artisan.execution.exceptions import LineageIntegrityError
+from artisan.execution.inputs._validation import is_hex_id
+from artisan.execution.lineage.enrich import require_artifact_type
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 from artisan.schemas.provenance.source_target_pair import SourceTargetPair
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
+
+
+def _output_id(artifacts: dict[str, list[Artifact]], role: str, index: int) -> str:
+    """Resolve one explicit occurrence, rejecting missing or unfinished outputs."""
+    if not 0 <= index < len(artifacts.get(role, [])):
+        msg = f"Lineage references non-existent output {role!r}[{index}]"
+        raise LineageIntegrityError(msg)
+    artifact_id = artifacts[role][index].artifact_id
+    if not is_hex_id(artifact_id):
+        msg = f"Output {role!r}[{index}] has no valid finalized artifact ID"
+        raise LineageIntegrityError(msg)
+    return artifact_id
+
+
+def _parent_group_id(parents: set[tuple[str, str, str]]) -> str | None:
+    """Label the exact resolved parent set without adding any parents."""
+    if len(parents) < 2:
+        return None
+    return compute_content_digest(
+        canonical_json_bytes(
+            {"domain": "lineage-parents-v1", "parents": sorted(parents)}
+        )
+    )
 
 
 def build_edges(
     lineage: dict[str, list[LineageMapping]],
     finalized_artifacts: dict[str, list[Artifact]],
-    input_artifacts: dict[str, list[Artifact]],  # noqa: ARG001
-    output_specs: dict[str, OutputSpec],  # noqa: ARG001
+    artifact_types: dict[str, str],
 ) -> list[SourceTargetPair]:
-    """Resolve lineage mappings into concrete source-target artifact pairs.
+    """Resolve role-local indices and label each occurrence's declared parents.
 
-    Draft references (``__draft__`` prefixed IDs) are resolved against
-    finalized artifact names within the appropriate role.
+    Equivalent resolved parents collapse before grouping. Separate occurrences
+    retain their own parent sets even when they finalize to an identical ID.
 
     Args:
-        lineage: Role-keyed lineage mappings from capture or user code.
-        finalized_artifacts: Role-keyed finalized output artifacts.
-        input_artifacts: Role-keyed input artifacts (unused; reserved).
-        output_specs: Role-keyed output specs (unused; reserved).
-
-    Returns:
-        List of source-target pairs with role and group metadata.
+        lineage: Operation-authored mappings keyed by target role.
+        finalized_artifacts: Output lists in their original declaration order.
+        artifact_types: Concrete source and target types keyed by artifact ID.
 
     Raises:
-        ValueError: If a draft reference cannot be resolved.
+        LineageIntegrityError: If a reference cannot be resolved exactly.
     """
-    # Per-role lookup: role -> (original_name -> artifact_id).
-    # Must be scoped by role because Artifact.draft() strips extensions,
-    # so different roles can have artifacts with the same original_name.
-    role_name_to_id: dict[str, dict[str, str]] = {}
-    for role, artifacts in finalized_artifacts.items():
-        lookup: dict[str, str] = {}
-        for artifact in artifacts:
-            original_name = getattr(artifact, "original_name", None)
-            if original_name is not None and artifact.artifact_id is not None:
-                lookup[original_name] = artifact.artifact_id
-        role_name_to_id[role] = lookup
-
-    edges: list[SourceTargetPair] = []
+    parents_by_occurrence: dict[tuple[str, int], set[tuple[str, str, str]]] = {}
     for role, mappings in lineage.items():
         for mapping in mappings:
-            target_id = role_name_to_id.get(role, {}).get(mapping.draft_original_name)
-            source_id = mapping.source_artifact_id
-            if source_id.startswith("__draft__"):
-                draft_name = source_id[len("__draft__") :]
-                if draft_name == "":
-                    msg = f"Invalid draft name: {source_id} (no draft prefix)"
-                    raise ValueError(msg)
-                source_id = role_name_to_id.get(mapping.source_role, {}).get(draft_name)
-                if source_id is None:
-                    msg = f"Draft {draft_name} not found in role {mapping.source_role}"
-                    raise ValueError(msg)
-            if target_id:
-                edges.append(
-                    SourceTargetPair(
-                        source=source_id,
-                        target=target_id,
-                        source_role=mapping.source_role,
-                        target_role=role,
-                        group_id=getattr(mapping, "group_id", None),
-                    )
+            target = _output_id(finalized_artifacts, role, mapping.draft_index)
+            require_artifact_type(target, artifact_types)
+            source = mapping.source_artifact_id
+            if source is None:
+                if mapping.source_output_index is None:
+                    msg = "Lineage mapping has no source reference"
+                    raise LineageIntegrityError(msg)
+                source = _output_id(
+                    finalized_artifacts,
+                    mapping.source_role,
+                    mapping.source_output_index,
                 )
+            if not is_hex_id(source):
+                msg = f"Malformed lineage source ID: {source!r}"
+                raise LineageIntegrityError(msg)
+            source_type = require_artifact_type(source, artifact_types)
+            parents_by_occurrence.setdefault((role, mapping.draft_index), set()).add(
+                (mapping.source_role, source_type, source)
+            )
 
+    edges: list[SourceTargetPair] = []
+    for (role, index), parents in parents_by_occurrence.items():
+        group_id = _parent_group_id(parents)
+        target = _output_id(finalized_artifacts, role, index)
+        edges.extend(
+            SourceTargetPair(
+                source=source,
+                target=target,
+                source_role=source_role,
+                target_role=role,
+                group_id=group_id,
+            )
+            for source_role, _source_type, source in sorted(parents)
+        )
     return edges

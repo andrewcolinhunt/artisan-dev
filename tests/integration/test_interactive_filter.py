@@ -6,12 +6,10 @@ that produces data artifacts and metrics in a Delta store.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.curator.interactive_filter import (
     FilterSummary,
@@ -19,7 +17,8 @@ from artisan.operations.curator.interactive_filter import (
 )
 from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 from .conftest import (
     get_execution_inputs,
@@ -29,7 +28,7 @@ from .conftest import (
 )
 
 
-def test_interactive_filter_end_to_end(pipeline_env: dict[str, Path]):
+def test_interactive_filter_end_to_end(pipeline_env: dict[str, str]):
     """Full workflow: pipeline -> InteractiveFilter load/filter/commit."""
     delta_root = pipeline_env["delta_root"]
 
@@ -44,13 +43,13 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 4, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -93,12 +92,12 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, Path]):
 
     # Commit
     step_result = filt.commit("interactive_filter")
-    assert step_result.success
+    assert step_result.status is StepStatus.SUCCEEDED
     assert step_result.succeeded_count == 4
     assert step_result.step_number == 2
 
     # Verify committed step visible in steps table
-    assert get_step_status(delta_root, 2) == "completed"
+    assert get_step_status(delta_root, 2) == "succeeded"
 
     # Verify execution edges
     outputs = get_execution_outputs(delta_root, 2, "passthrough")
@@ -114,7 +113,7 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, Path]):
     assert diag["total_passed"] == 4
 
 
-def test_interactive_filter_selective_criteria(pipeline_env: dict[str, Path]):
+def test_interactive_filter_selective_criteria(pipeline_env: dict[str, str]):
     """Criteria that filter out some artifacts."""
     delta_root = pipeline_env["delta_root"]
 
@@ -128,13 +127,13 @@ def test_interactive_filter_selective_criteria(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 99},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -157,14 +156,14 @@ def test_interactive_filter_selective_criteria(pipeline_env: dict[str, Path]):
     # Commit and verify only passing artifacts are in outputs
     if len(filtered) > 0:
         step_result = filt.commit("selective_filter")
-        assert step_result.success
+        assert step_result.status is StepStatus.SUCCEEDED
         assert step_result.succeeded_count == len(filtered)
 
         outputs = get_execution_outputs(delta_root, 2, "passthrough")
         assert set(outputs) == set(filtered)
 
 
-def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, Path]):
+def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, str]):
     """Loading with step_numbers restricts primary artifacts."""
     delta_root = pipeline_env["delta_root"]
 
@@ -178,13 +177,13 @@ def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, Path]
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -201,7 +200,7 @@ def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, Path]
     assert len(filt.filtered_ids) == 3
 
 
-def test_interactive_filter_output_reference(pipeline_env: dict[str, Path]):
+def test_interactive_filter_output_reference(pipeline_env: dict[str, str]):
     """Committed step result supports output() for downstream wiring."""
     delta_root = pipeline_env["delta_root"]
 
@@ -215,13 +214,13 @@ def test_interactive_filter_output_reference(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

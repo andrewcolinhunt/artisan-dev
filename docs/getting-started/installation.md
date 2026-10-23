@@ -1,15 +1,35 @@
 # Installation
 
-This page covers installing Artisan and its dependencies, starting the Prefect
-orchestration server, and configuring your editor.
+Install Artisan from a checkout using the repository's Pixi environment.
+The same environment supplies Python, Graphviz, and the notebook kernel.
 
 ---
 
 ## Prerequisites
 
-- **Platform:** Linux (x86_64) or macOS (Apple Silicon)
-- [Pixi](https://pixi.sh) package manager (installs Python and all other
-  dependencies for you)
+- **Platform:** Linux (x86_64 or aarch64) or macOS (Apple Silicon)
+- [Pixi](https://pixi.sh) **0.66.0**, which installs Python 3.12 and the other
+  dependencies
+
+---
+
+## Before upgrading to 0.2.0
+
+Start a **new Delta root for store format 7**. Earlier stores and their staging
+cannot be migrated or read by this release; keep each older root with its
+matching Artisan version. Do not edit its manifest to force an upgrade. See
+[the store format contract](../concepts/storage-and-delta-lake.md#the-store-format-is-explicit).
+
+Update downstream operations, pipelines, runner providers, and inspection
+clients using the [breaking changes in the changelog](../../CHANGELOG.md).
+The [public API index](../reference/python-api.md) links to supported imports and
+current examples; removed APIs have no compatibility aliases.
+
+Upgrade Modal clients and worker code together and
+[explicitly redeploy tool endpoints](../how-to-guides/deploying-tool-endpoints.md).
+For SLURM, use a compatible `artisan-submitit` provider and qualify it separately
+on your cluster. Core Artisan qualification does not qualify external runner
+packages; see [step runner configuration](../how-to-guides/configuring-execution.md#choose-a-step-runner).
 
 ---
 
@@ -17,7 +37,7 @@ orchestration server, and configuring your editor.
 
 ```bash
 # Install Pixi (if not already installed)
-curl -fsSL https://pixi.sh/install.sh | sh
+curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.66.0 bash
 ```
 
 :::{tip}
@@ -29,112 +49,63 @@ Restart your terminal after installing Pixi so it appears on your `PATH`.
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
 
-# Install all dependencies (Python 3.12, scientific stack, Prefect, etc.)
+# Install the runtime dependencies
 pixi install
+pixi run setup
 ```
 
 :::{note}
-The first `pixi install` downloads Python and all dependencies, which may take
-several minutes. Subsequent runs are fast.
+The first `pixi install` may take several minutes to download dependencies.
+`setup` registers Graphviz's layout plugins in the selected environment and is
+safe to repeat. Git hooks and Jupyter kernels have separate setup commands below.
 :::
 
 Verify the installation:
 
 ```bash
 pixi run python -c "import artisan; print('Installation OK')"
+pixi run python -c "from graphviz import Source; assert b'<svg' in Source('digraph { source -> result }').pipe(format='svg'); print('Graphviz OK')"
 ```
 
-You should see `Installation OK` printed to the terminal.
+Both commands should print their `OK` message.
+Use ordinary Pixi commands for local work. See
+[reviewing lockfile changes](using-pixi.md#reviewing-lockfile-changes) when
+editing the project's configuration.
+
+:::{tip}
+**Contributors:** prepare the dev environment and install Git hooks:
+
+```bash
+pixi install -e dev
+pixi run -e dev setup
+pixi run -e dev install-hooks
+```
+
+Run `setup` in each environment you use to render graphs. The hook suite
+(ruff, mypy, codespell, blacken-docs, and supporting checkers) runs on every
+commit; the same suite is enforced in CI. Customize via `.pre-commit-config.yaml`.
+:::
 
 :::{dropdown} What is Pixi?
-Pixi is a project-scoped environment and task manager. Like `venv` or `conda`,
-it creates an isolated environment — but Pixi also handles Python itself and
-all non-Python dependencies (PostgreSQL, Graphviz, etc.) from a single lockfile.
-Each clone gets its own environment.
-
-| Tool | Manages Python? | Manages system deps? | Project-scoped? |
-|------|:-:|:-:|:-:|
-| venv + pip | No | No | Yes |
-| conda | Yes | Yes | No (shared envs) |
-| uv | Yes | No | Yes |
-| **Pixi** | **Yes** | **Yes** | **Yes** |
-
-**Why Pixi for this project?** Artisan needs PostgreSQL and Graphviz
-alongside Python (plus Node.js for documentation builds). Pixi resolves all of them from conda-forge and PyPI in one
-lockfile (`pixi.lock`), so every contributor gets an identical environment
-regardless of platform. See [Tooling Decisions](../contributing/tooling-decisions.md)
-for the full rationale.
+Pixi manages environments, dependencies, and tasks. Each clone gets an isolated
+environment containing Python and system tools such as Graphviz. The lockfile
+records package versions for each supported platform. See
+[Tooling Decisions](../contributing/tooling-decisions.md) for why Artisan uses it.
 :::
 
 ---
 
-## Start the Prefect server
+## Optional cluster runners
 
-```bash
-pixi run prefect-start
-```
-
-This starts a local Prefect server (backed by PostgreSQL) in the background and
-writes a discovery file so Artisan can locate it automatically. The server binds
-to a UID-based port to avoid collisions when multiple users share a machine.
-Check the terminal output for the URL, then open it in your browser to verify.
-
-To stop the server when you're done:
-
-```bash
-pixi run prefect-stop
-```
-
-:::{tip}
-**On HPC clusters:** Don't run the Prefect server on the head node. Use a
-persistent interactive session (long-running CPU allocation). The server must
-stay running and accessible while pipelines execute.
-:::
-
-:::{note}
-**Prefect Cloud** is also supported as an alternative, though the self-hosted
-server is recommended for most use cases — especially on HPC clusters. See
-[Connect to Prefect](../how-to-guides/connect-to-prefect.md) for details on
-both options.
-:::
-
-:::{dropdown} What is Prefect?
-Artisan uses [Prefect](https://www.prefect.io/) as a dispatch layer for
-parallel task execution. Prefect is **not** a workflow engine here — Artisan
-owns pipeline definition, step sequencing, caching, and provenance. Prefect
-dispatches work to local processes or SLURM nodes and provides an optional
-monitoring UI.
-
-The server is required for all execution modes — both local and SLURM. Even
-local execution uses Prefect to dispatch tasks to a process pool. See
-[Tooling Decisions](../contributing/tooling-decisions.md) for the full
-rationale.
-:::
-
-### Use an existing server
-
-If you already have a Prefect server running elsewhere, point Artisan to it
-instead of starting a local one:
-
-```bash
-export PREFECT_SUBMITIT_SERVER=http://<host>:<port>/api
-```
-
-When connecting, Artisan checks for a server URL in this order:
-
-| Priority | Source | How to set |
-|----------|--------|-----------|
-| Highest | Explicit `prefect_server` argument | `PipelineManager.create(prefect_server="...")` |
-| | `PREFECT_SUBMITIT_SERVER` env var | `export PREFECT_SUBMITIT_SERVER=http://...` |
-| | `PREFECT_API_URL` env var | `export PREFECT_API_URL=http://...` |
-| | Discovery file | Written by `pixi run prefect-start` |
-| Lowest | Prefect profile | `~/.prefect/profiles.toml` (set via `pixi run prefect cloud login`) |
+Artisan's local process-pool runner requires no orchestration server. For SLURM,
+install the separate `artisan-submitit` package and follow its cluster setup
+instructions. It supplies job-array and intra-allocation runners.
 
 ---
 
 ## Using Pixi day-to-day
 
-See [Using Pixi](using-pixi.md) for a full guide to environments, tasks, shells,
+See [Using Pixi](using-pixi.md) for environments, tasks, shells,
 and workspaces.
 
 ---
@@ -155,8 +126,7 @@ Interpreter" → paste the path above.
 
 ### Jupyter kernel
 
-Register the Pixi environment as a Jupyter kernel so notebooks use the correct
-packages:
+Register the Pixi environment as a Jupyter kernel:
 
 ```bash
 pixi run install-kernel
@@ -164,26 +134,26 @@ pixi run install-kernel
 
 In VSCode: open a `.ipynb` file → click "Select Kernel" → choose **Artisan**.
 
+This registers a user kernel pointing to the environment that ran the task.
+To use the dev environment, run `pixi run -e dev install-kernel`;
+this replaces the same **Artisan** kernel registration with the dev interpreter.
+Environment setup does not choose or overwrite your kernel.
+
 ### Kernel slowness (Pixi environments)
 
-If your pixi Jupyter kernel takes 30+ seconds to start in VS Code, the
-`Python Environments` extension (`ms-python.vscode-python-envs`) is likely the
-cause. It doesn't recognize pixi as a known environment type and spends 30
-seconds trying to activate it before timing out.
-
-**Fix:** Uninstall the `Python Environments` extension (`ms-python.vscode-python-envs`)
-in VS Code. The core Python extension works fine without it.
-
-Tracked upstream: [microsoft/vscode-python#25804](https://github.com/microsoft/vscode-python/issues/25804)
+If a kernel starts slowly, first confirm that it uses the interpreter registered
+above. For a repeated delay accompanied by `Failed to get activated env vars`,
+check [the reported Pixi activation issue](https://github.com/microsoft/vscode-python/issues/25804).
+That report identifies the `Python Environments` extension
+(`ms-python.vscode-python-envs`) as the cause in affected versions. Temporarily
+disable it to check whether the same issue explains your delay.
 
 ---
 
-## Claude Code
+## Coding agents
 
-Artisan ships with a [Claude Code](https://docs.anthropic.com/en/docs/claude-code)
-configuration for AI-assisted development — scaffolding operations, building
-pipelines, and writing docs. See [Using Claude Code](using-claude-code.md) for
-setup and usage.
+See [Using Coding Agents](using-coding-agents.md) to load Artisan's project
+instructions and skills for authoring code and inspecting runs.
 
 ---
 
@@ -194,14 +164,12 @@ setup and usage.
 | `pixi: command not found` | Pixi not on `PATH` | Restart your terminal, or add `~/.pixi/bin` to your `PATH` manually |
 | Thread-spawn panic during `pixi install` | Too many threads on constrained node | `RAYON_NUM_THREADS=4 pixi install` |
 | `pixi install` is very slow | First run downloads Python + all deps | Expected on first install — subsequent runs are fast |
-| `PrefectServerNotFound` when running a pipeline | No Prefect server detected | Run `pixi run prefect-start`, or set `PREFECT_SUBMITIT_SERVER` |
-| `PrefectServerUnreachable` | Server URL found but server is not responding | Check that the server process is running (`pixi run prefect-start`) |
-| `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run dot -c` to register plugins (normally handled automatically) |
+| `dot` / Graphviz errors in provenance graphs | Graphviz layout plugins not registered | Run `pixi run setup` in the selected environment; use `-e dev` for dev |
 | Jupyter kernel missing "Artisan" option | Kernel not registered | Run `pixi run install-kernel` and restart your notebook |
 
 ---
 
 ## Next steps
 
-- [Your First Pipeline](../tutorials/getting-started/01-first-pipeline.ipynb) — Build and run a pipeline in an interactive notebook
-- [Orientation](orientation.md) — The mental model behind the framework
+- [Your First Pipeline](../tutorials/01-getting-started/01-first-pipeline.ipynb) — Build and run a pipeline in an interactive notebook
+- [Orientation](orientation.md) — How the framework's concepts fit together

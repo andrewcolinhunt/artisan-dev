@@ -6,13 +6,14 @@ Tests: co-produced metrics filter, 1:N LINEAGE grouping, resume-and-extend.
 from __future__ import annotations
 
 import csv
+import os
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.curator import Filter
@@ -24,12 +25,12 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.enums import GroupByStrategy
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -41,8 +42,10 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from .conftest import (
     count_artifacts_by_step,
     count_executions_by_step,
+    declared_file_result,
     get_execution_outputs,
     get_step_status,
+    prepare_paired_files,
 )
 
 # =============================================================================
@@ -75,56 +78,49 @@ class DualInputConfigConsumer(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["dataset", "config"]},
+            derives_from={"inputs": ["dataset", "config"]},
         ),
     }
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
-    execution: ExecutionConfig = ExecutionConfig(job_name="dual_input_config_consumer")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_config_consumer")
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        return {
-            role: [a.materialized_path for a in artifacts]
-            for role, artifacts in inputs.input_artifacts.items()
-        }
+        return prepare_paired_files(inputs)
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         dataset_files = inputs.inputs.get("dataset", [])
         if isinstance(dataset_files, (str, Path)):
             dataset_files = [dataset_files]
 
-        for df_path in dataset_files:
+        records = []
+        for index, df_path in enumerate(dataset_files):
             df_path = Path(df_path)
-            with df_path.open() as fh:
+            with open(df_path) as fh:
                 reader = csv.DictReader(fh)
-                headers = list(reader.fieldnames or []) + ["consumed"]
+                headers = [*list(reader.fieldnames or []), "consumed"]
                 rows = list(reader)
 
-            out_path = output_dir / f"{df_path.stem}_0.csv"
-            with out_path.open("w", newline="") as fh:
+            out_path = os.path.join(output_dir, f"{df_path.stem}_0.csv")
+            with open(out_path, "w", newline="") as fh:
                 writer = csv.DictWriter(fh, fieldnames=headers)
                 writer.writeheader()
                 for row in rows:
                     row["consumed"] = "1"
                     writer.writerow(row)
 
-        return {}
+            records.append(
+                {"path": str(out_path), "sources": inputs.inputs["source_ids"][index]}
+            )
+
+        return {"records": records}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = [
-            DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
-                step_number=inputs.step_number,
-            )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
-        ]
-        return ArtifactResult(success=True, artifacts={"result": drafts})
+        return declared_file_result(inputs)
 
 
 # =============================================================================
@@ -132,7 +128,7 @@ class DualInputConfigConsumer(OperationDefinition):
 # =============================================================================
 
 
-def test_co_produced_metrics_filter(pipeline_env: dict[str, Path]) -> None:
+def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
     """Filter auto-discovers co-produced metrics from same step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -147,12 +143,12 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, Path]) -> None:
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Filter using co-produced metrics (mean_score >= 0)
     # The filter should auto-discover metrics from step 0's output-to-output lineage
-    step1 = pipeline.run(
+    pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
         params={
@@ -160,7 +156,7 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, Path]) -> None:
                 {"metric": "mean_score", "operator": "ge", "value": 0},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -175,7 +171,7 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, Path]) -> None:
     assert set(passthrough_ids) == gen_dataset_ids
 
 
-def test_lineage_grouping_one_to_many(pipeline_env: dict[str, Path]) -> None:
+def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
     """1:N LINEAGE expansion: one dataset fans out to multiple configs."""
     delta_root = pipeline_env["delta_root"]
 
@@ -190,7 +186,7 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, Path]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate configs (2 scale_factors per dataset = 4 configs total)
@@ -202,19 +198,19 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, Path]) -> None:
             "noise_amplitudes": [0.0],
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Consume with LINEAGE grouping
     # Each dataset has 2 configs descended from it -> 2 groups
     # Each group: 1 dataset + 2 configs -> product gives 2 execution units per group
-    step2 = pipeline.run(
+    pipeline.run(
         DualInputConfigConsumer,
         inputs={
             "dataset": step0.output("datasets"),
             "config": step1.output("config"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -223,11 +219,16 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, Path]) -> None:
     # 2 datasets, each with 2 configs = 4 execution units (product expansion)
     assert count_executions_by_step(delta_root, 2) == 4
 
-    # Each execution unit produces 1 result artifact = 4 total
-    assert count_artifacts_by_step(delta_root, 2) == 4
+    # Each execution records its output occurrence, but this operation does not
+    # use the config value. The two config variants for one dataset therefore
+    # produce the same typed semantic artifact and deduplicate globally.
+    output_ids = get_execution_outputs(delta_root, 2, "result")
+    assert len(output_ids) == 4
+    assert len(set(output_ids)) == 2
+    assert count_artifacts_by_step(delta_root, 2) == 2
 
 
-def test_resume_and_extend(pipeline_env: dict[str, Path]) -> None:
+def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     """Resume a successful pipeline and extend with new steps."""
     delta_root = pipeline_env["delta_root"]
     staging_root = pipeline_env["staging_root"]
@@ -245,7 +246,7 @@ def test_resume_and_extend(pipeline_env: dict[str, Path]) -> None:
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     step1 = p1.run(
         DataTransformer,
@@ -256,12 +257,12 @@ def test_resume_and_extend(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -289,7 +290,7 @@ def test_resume_and_extend(pipeline_env: dict[str, Path]) -> None:
                 {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Transform the filtered output
@@ -302,15 +303,15 @@ def test_resume_and_extend(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 200,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = p2.finalize()
     assert result["overall_success"]
 
     # New steps executed
-    assert get_step_status(delta_root, 3) == "completed"
-    assert get_step_status(delta_root, 4) == "completed"
+    assert get_step_status(delta_root, 3) == StepStatus.SUCCEEDED
+    assert get_step_status(delta_root, 4) == StepStatus.SUCCEEDED
 
     # New steps produced artifacts
     passthrough_ids = get_execution_outputs(delta_root, 3, "passthrough")

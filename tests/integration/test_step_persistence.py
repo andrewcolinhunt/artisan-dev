@@ -10,16 +10,16 @@ Tests the full steps Delta Lake table lifecycle with real operations:
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import polars as pl
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
-from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration import PipelineManager, list_runs
+from artisan.orchestration.runners import Runner
+from artisan.orchestration.runners.local import LocalRunner
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 
 from .conftest import read_table
 
@@ -28,7 +28,7 @@ from .conftest import read_table
 # =============================================================================
 
 
-def test_cache_hit(pipeline_env: dict[str, Path]) -> None:
+def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     """Second identical run skips execution via cache."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -44,14 +44,14 @@ def test_cache_hit(pipeline_env: dict[str, Path]) -> None:
     result1 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
     # Count steps rows after first run
     steps_df1 = read_table(delta, "orchestration/steps")
     first_run_rows = len(steps_df1)
-    assert first_run_rows >= 2  # at least running + completed
+    assert first_run_rows >= 3  # pending + running + terminal
 
     # Second run — same operation, same params, same step position
     p2 = PipelineManager.create(
@@ -63,17 +63,128 @@ def test_cache_hit(pipeline_env: dict[str, Path]) -> None:
     result2 = p2.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
     # Cache hit: same step name, same success
     assert result2.step_name == result1.step_name
-    assert result2.success is True
+    assert result2.status is StepStatus.SUCCEEDED
+    assert result2.disposition is StepDisposition.CACHE_HIT
 
-    # Cache hit should NOT add new running/completed rows
+    # A cache hit adds current-attempt lifecycle rows, but no new execution.
     steps_df2 = read_table(delta, "orchestration/steps")
-    assert len(steps_df2) == first_run_rows
+    assert len(steps_df2) == first_run_rows + 3
+    cached_rows = steps_df2.filter(
+        pl.col("pipeline_run_id") == p2.config.pipeline_run_id
+    )
+    assert cached_rows.height == 3
+    assert set(cached_rows["step_run_id"].to_list()) == {result2.step_run_id}
+    terminal = cached_rows.filter(pl.col("status") == "succeeded")
+    assert terminal.height == 1
+    assert result2.step_run_id != result1.step_run_id
+    assert terminal.item(0, "step_run_id") == result2.step_run_id
+
+    source_execution_ids = set(
+        read_table(delta, "orchestration/executions")
+        .filter(pl.col("step_run_id") == result1.step_run_id)["execution_run_id"]
+        .to_list()
+    )
+    reuse_rows = read_table(delta, "orchestration/cache_reuse").filter(
+        pl.col("current_step_run_id") == result2.step_run_id
+    )
+    assert set(reuse_rows["cached_execution_run_id"].to_list()) == (
+        source_execution_ids
+    )
+
+
+def test_cache_only_run_can_resume_and_extend(
+    pipeline_env: dict[str, str],
+) -> None:
+    """A cached topology resumes and scopes downstream reads to source outputs."""
+    delta = pipeline_env["delta_root"]
+    staging = pipeline_env["staging_root"]
+    working = pipeline_env["working_root"]
+
+    source = PipelineManager.create(
+        name="test_cache_resume",
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+    )
+    source_result = source.run(
+        DataGenerator,
+        params={"count": 2, "seed": 42},
+    )
+    source.finalize()
+
+    cached = PipelineManager.create(
+        name="test_cache_resume",
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+        default_step_runner=LocalRunner(default_max_workers=2),
+    )
+    cached_result = cached.run(
+        DataGenerator,
+        params={"count": 2, "seed": 42},
+        name="cached_generator",
+    )
+    cached_run_id = cached.config.pipeline_run_id
+    cached.finalize()
+
+    assert cached_result.step_run_id != source_result.step_run_id
+    resumed = PipelineManager.resume(
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+        pipeline_run_id=cached_run_id,
+    )
+    assert resumed.current_step == 1
+    assert len(resumed) == 1
+    assert resumed[0].step_name == "cached_generator"
+    assert resumed[0].output_roles == source_result.output_roles
+    assert resumed[0].total_count == source_result.total_count
+    assert resumed._step_run_ids[0] == cached_result.step_run_id
+    assert type(resumed._default_step_runner) is LocalRunner
+    assert resumed._default_step_runner.default_max_workers == 2
+
+    downstream = resumed.run(
+        DataTransformer,
+        inputs={"dataset": resumed.output("cached_generator", "datasets")},
+        params={
+            "scale_factor": 1.5,
+            "noise_amplitude": 0.0,
+            "variants": 1,
+            "seed": 100,
+        },
+    )
+    resumed.finalize()
+    assert downstream.status is StepStatus.SUCCEEDED
+    assert downstream.succeeded_count == 2
+
+    mixed = PipelineManager.resume(
+        delta_root=delta,
+        staging_root=staging,
+        working_root=working,
+        pipeline_run_id=cached_run_id,
+    )
+    assert mixed.current_step == 2
+    assert [step.step_name for step in mixed] == [
+        "cached_generator",
+        "data_transformer",
+    ]
+    assert mixed._step_run_ids[0] == cached_result.step_run_id
+
+    rows = read_table(delta, "orchestration/steps").filter(
+        pl.col("pipeline_run_id") == cached_run_id
+    )
+    cached_step_rows = rows.filter(pl.col("step_number") == 0)
+    assert cached_step_rows.height == 3
+    assert set(cached_step_rows["step_run_id"].to_list()) == {cached_result.step_run_id}
+    assert sorted(
+        rows.filter(pl.col("status") == "succeeded")["step_number"].to_list()
+    ) == [0, 1]
 
 
 # =============================================================================
@@ -81,7 +192,7 @@ def test_cache_hit(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_cache_miss_different_params(pipeline_env: dict[str, Path]) -> None:
+def test_cache_miss_different_params(pipeline_env: dict[str, str]) -> None:
     """Different params cause re-execution."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -97,7 +208,7 @@ def test_cache_miss_different_params(pipeline_env: dict[str, Path]) -> None:
     p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -111,11 +222,11 @@ def test_cache_miss_different_params(pipeline_env: dict[str, Path]) -> None:
     result = p2.run(
         DataGenerator,
         params={"count": 3, "seed": 99},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
-    assert result.success is True
+    assert result.status is StepStatus.SUCCEEDED
     assert result.total_count >= 1
 
 
@@ -124,7 +235,7 @@ def test_cache_miss_different_params(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
+def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     """Changed upstream params invalidate downstream cache."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -140,7 +251,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.run(
         DataTransformer,
@@ -151,13 +262,13 @@ def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
     steps_df1 = read_table(delta, "orchestration/steps")
-    completed_1 = steps_df1.filter(pl.col("status") == "completed")
-    count_1 = len(completed_1)
+    terminal_1 = steps_df1.filter(pl.col("status") == "succeeded")
+    count_1 = len(terminal_1)
 
     # Second run: different seed on step 0 → step 1 should also re-execute
     p2 = PipelineManager.create(
@@ -169,7 +280,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
     step0b = p2.run(
         DataGenerator,
         params={"count": 2, "seed": 99},  # different seed
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     result = p2.run(
         DataTransformer,
@@ -180,15 +291,15 @@ def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p2.finalize()
 
-    # Both steps re-executed → new completed rows
+    # Both steps re-executed, producing new succeeded snapshots.
     steps_df2 = read_table(delta, "orchestration/steps")
-    completed_2 = steps_df2.filter(pl.col("status") == "completed")
-    assert len(completed_2) > count_1
-    assert result.success is True
+    terminal_2 = steps_df2.filter(pl.col("status") == "succeeded")
+    assert len(terminal_2) > count_1
+    assert result.status is StepStatus.SUCCEEDED
 
 
 # =============================================================================
@@ -196,7 +307,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_resume(pipeline_env: dict[str, Path]) -> None:
+def test_resume(pipeline_env: dict[str, str]) -> None:
     """Resume reconstructs pipeline state from delta."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -213,7 +324,7 @@ def test_resume(pipeline_env: dict[str, Path]) -> None:
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.run(
         DataTransformer,
@@ -224,7 +335,7 @@ def test_resume(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -248,7 +359,7 @@ def test_resume(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_async_submit(pipeline_env: dict[str, Path]) -> None:
+def test_async_submit(pipeline_env: dict[str, str]) -> None:
     """submit() returns StepFuture that resolves to StepResult."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
@@ -264,7 +375,7 @@ def test_async_submit(pipeline_env: dict[str, Path]) -> None:
     future = pipeline.submit(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # output() returns immediately (never blocks)
@@ -274,7 +385,7 @@ def test_async_submit(pipeline_env: dict[str, Path]) -> None:
 
     # result() blocks until done
     result = future.result()
-    assert result.success is True
+    assert result.status is StepStatus.SUCCEEDED
     assert result.step_name == "data_generator"
 
     pipeline.finalize()
@@ -285,8 +396,8 @@ def test_async_submit(pipeline_env: dict[str, Path]) -> None:
 # =============================================================================
 
 
-def test_list_runs(pipeline_env: dict[str, Path]) -> None:
-    """list_runs() returns DataFrame with completed runs."""
+def test_list_runs(pipeline_env: dict[str, str]) -> None:
+    """list_runs() returns a DataFrame with terminal runs."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
     working = pipeline_env["working_root"]
@@ -301,11 +412,11 @@ def test_list_runs(pipeline_env: dict[str, Path]) -> None:
     p.run(
         DataGenerator,
         params={"count": 1, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
     p.finalize()
 
-    runs = PipelineManager.list_runs(delta)
+    runs = list_runs(delta)
     assert isinstance(runs, pl.DataFrame)
     assert "pipeline_run_id" in runs.columns
     assert len(runs) >= 1

@@ -1,0 +1,32 @@
+"""Unit execution result model.
+
+``UnitResult`` represents the outcome of exactly one execution unit.
+Lifecycle runners return one result per submitted unit in the same order.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
+
+
+@dataclass(frozen=True)
+class UnitResult:
+    """Result of executing one execution unit.
+
+    Attributes:
+        success: Whether execution succeeded.
+        error: Error message if execution failed, else None.
+        item_count: Number of items processed.
+        execution_run_ids: Run IDs produced by this unit.
+        worker_log: Optional stdout/stderr captured by the step runner.
+        cancellation_acknowledgement: Provider evidence for requested cancellation.
+    """
+
+    success: bool
+    error: str | None
+    item_count: int
+    execution_run_ids: list[str]
+    worker_log: str | None = None
+    cancellation_acknowledgement: CancellationAcknowledgement | None = None

@@ -6,15 +6,13 @@ and remain isolated between steps.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 from .conftest import (
     count_artifacts_by_step,
@@ -23,7 +21,7 @@ from .conftest import (
 )
 
 
-def test_param_override_produces_different_outputs(pipeline_env: dict[str, Path]):
+def test_param_override_produces_different_outputs(pipeline_env: dict[str, str]):
     """Different param overrides on the same operation produce different artifacts."""
     delta_root = pipeline_env["delta_root"]
 
@@ -37,11 +35,11 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, Path]
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: scale_factor=2.0
-    step1 = pipeline.run(
+    pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
@@ -50,11 +48,11 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, Path]
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: scale_factor=5.0
-    step2 = pipeline.run(
+    pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
@@ -63,7 +61,7 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, Path]
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -72,14 +70,14 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, Path]
     # Different params → different artifact IDs
     step1_ids = set(get_execution_outputs(delta_root, 1, "dataset"))
     step2_ids = set(get_execution_outputs(delta_root, 2, "dataset"))
-    assert (
-        step1_ids != step2_ids
-    ), "Different scale_factors should produce different artifacts"
+    assert step1_ids != step2_ids, (
+        "Different scale_factors should produce different artifacts"
+    )
     assert len(step1_ids) == 2
     assert len(step2_ids) == 2
 
 
-def test_execution_override_batching(pipeline_env: dict[str, Path]):
+def test_execution_override_batching(pipeline_env: dict[str, str]):
     """Execution override controls batch size independently per step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -93,7 +91,7 @@ def test_execution_override_batching(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 6, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: 3 artifacts per unit → ceil(6/3) = 2 executions
@@ -101,8 +99,8 @@ def test_execution_override_batching(pipeline_env: dict[str, Path]):
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"scale_factor": 2.0, "noise_amplitude": 0.0, "variants": 1, "seed": 1},
-        execution={"artifacts_per_unit": 3},
-        backend=Backend.LOCAL,
+        batch_strategy={"artifacts_per_unit": 3},
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: 2 artifacts per unit → ceil(6/2) = 3 executions
@@ -110,8 +108,8 @@ def test_execution_override_batching(pipeline_env: dict[str, Path]):
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"scale_factor": 3.0, "noise_amplitude": 0.0, "variants": 1, "seed": 2},
-        execution={"artifacts_per_unit": 2},
-        backend=Backend.LOCAL,
+        batch_strategy={"artifacts_per_unit": 2},
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -125,7 +123,7 @@ def test_execution_override_batching(pipeline_env: dict[str, Path]):
     assert count_artifacts_by_step(delta_root, 2) == 6
 
 
-def test_override_isolation(pipeline_env: dict[str, Path]):
+def test_override_isolation(pipeline_env: dict[str, str]):
     """Execution override on one step doesn't affect the next step's defaults."""
     delta_root = pipeline_env["delta_root"]
 
@@ -139,7 +137,7 @@ def test_override_isolation(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 4, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: all 4 in a single batch
@@ -147,8 +145,8 @@ def test_override_isolation(pipeline_env: dict[str, Path]):
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"scale_factor": 2.0, "noise_amplitude": 0.0, "variants": 1, "seed": 1},
-        execution={"artifacts_per_unit": 4},
-        backend=Backend.LOCAL,
+        batch_strategy={"artifacts_per_unit": 4},
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: default batching (artifacts_per_unit=1 for DataTransformer)
@@ -156,7 +154,7 @@ def test_override_isolation(pipeline_env: dict[str, Path]):
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"scale_factor": 3.0, "noise_amplitude": 0.0, "variants": 1, "seed": 2},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

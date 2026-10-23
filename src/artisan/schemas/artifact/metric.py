@@ -7,8 +7,8 @@ as content-addressed artifacts.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from typing import Any, ClassVar, Self
+import os
+from typing import Any, ClassVar
 
 import polars as pl
 from pydantic import Field
@@ -17,8 +17,6 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.common import (
     JsonContentMixin,
     get_compound_extension,
-    metadata_from_json,
-    metadata_to_json,
 )
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.filename import strip_extensions
@@ -31,14 +29,13 @@ class MetricArtifact(JsonContentMixin, Artifact):
     serialized as JSON bytes.
     """
 
-    POLARS_SCHEMA: ClassVar[dict[str, pl.DataType]] = {
+    POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
         "artifact_id": pl.String,
         "origin_step_number": pl.Int32,
         "content": pl.Binary,
         "original_name": pl.String,
         "extension": pl.String,
         "metadata": pl.String,
-        "external_path": pl.String,
     }
 
     artifact_type: str = Field(
@@ -51,34 +48,37 @@ class MetricArtifact(JsonContentMixin, Artifact):
     )
     original_name: str | None = Field(
         default=None,
-        description="Key name for lineage inference (stem only, no extension)",
+        description="Human-readable artifact name (stem only, no extension)",
     )
     extension: str | None = Field(
         default=None,
         description="File extension (.json typically). None for ID-only artifacts.",
     )
 
-    def _materialize_content(self, directory: Path) -> Path:
+    def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Write metric JSON to a file in the given directory.
 
         Args:
             directory: Target directory for the output file.
+            fs: Accepted for base-class signature parity but unused;
+                metric content is inline, so no filesystem read is needed.
 
         Returns:
             Path to the written file.
 
         Raises:
-            ValueError: If content is None.
+            ValueError: If content is None or artifact_id is not set.
         """
         if self.content is None:
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
-        if self.original_name:
-            filename = f"{self.original_name}{self.extension or '.json'}"
-        else:
-            filename = f"{self.artifact_id}.json"
-        path = directory / filename
-        path.write_bytes(self.content)
+        if self.artifact_id is None:
+            msg = "Cannot materialize: artifact not finalized (no artifact_id)"
+            raise ValueError(msg)
+        filename = f"{self.artifact_id}{self.extension or '.json'}"
+        path = os.path.join(directory, filename)
+        with open(path, "wb") as f:
+            f.write(self.content)
         self.materialized_path = path
         return path
 
@@ -94,9 +94,12 @@ class MetricArtifact(JsonContentMixin, Artifact):
 
         Args:
             content: Metric key-value pairs (JSON-serializable).
-            original_name: Filename for lineage inference (extensions stripped).
+            original_name: Human-readable filename; extensions are stored separately.
             step_number: Pipeline step number.
             metadata: Optional metadata dict.
+
+        Returns:
+            Draft MetricArtifact containing the encoded metric values.
         """
         encoded = json.dumps(content, sort_keys=True).encode("utf-8")
         return cls(
@@ -106,39 +109,4 @@ class MetricArtifact(JsonContentMixin, Artifact):
             original_name=strip_extensions(original_name),
             extension=get_compound_extension(original_name),
             metadata=metadata or {},
-        )
-
-    def to_row(self) -> dict[str, Any]:
-        """Serialize to a flat dict matching POLARS_SCHEMA columns.
-
-        JSON-encodes ``metadata`` for Parquet storage.
-        """
-        return {
-            "artifact_id": self.artifact_id,
-            "origin_step_number": self.origin_step_number,
-            "content": self.content,
-            "original_name": self.original_name,
-            "extension": self.extension,
-            "metadata": metadata_to_json(self.metadata),
-            "external_path": self.external_path,
-        }
-
-    @classmethod
-    def from_row(cls, row: dict[str, Any]) -> Self:
-        """Reconstruct from a Parquet row dict.
-
-        Reverses the JSON encoding applied by ``to_row`` for
-        ``metadata``.
-
-        Args:
-            row: Dict with keys matching POLARS_SCHEMA columns.
-        """
-        return cls(
-            artifact_id=row["artifact_id"],
-            origin_step_number=row.get("origin_step_number"),
-            content=row.get("content"),
-            original_name=row.get("original_name"),
-            extension=row.get("extension"),
-            metadata=metadata_from_json(row.get("metadata")),
-            external_path=row.get("external_path"),
         )

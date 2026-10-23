@@ -1,7 +1,7 @@
 """NFS-aware staging file verification.
 
 On distributed filesystems (NFS) the orchestrator may not immediately see
-files written by SLURM workers due to directory attribute caching. This
+files written by remote workers due to directory attribute caching. This
 module forces cache invalidation and uses ``open()``-based close-to-open
 consistency checks to confirm staging files are visible before commit.
 """
@@ -11,17 +11,16 @@ from __future__ import annotations
 import logging
 import os
 import time
-from pathlib import Path
 
-from artisan.utils.path import shard_path
+from artisan.utils.path import shard_uri
 
 logger = logging.getLogger(__name__)
 
-# The file that is ALWAYS written by finalize_and_stage()
+# The file that every staged execution writes (via _write_execution_record)
 REQUIRED_STAGING_FILE = "executions.parquet"
 
 
-def _invalidate_nfs_dir_cache(path: Path) -> None:
+def _invalidate_nfs_dir_cache(path: str) -> None:
     """Force NFS to refresh directory entry caches along the path.
 
     Walk from root toward ``path``, calling ``os.listdir()`` on each
@@ -30,10 +29,11 @@ def _invalidate_nfs_dir_cache(path: Path) -> None:
     Args:
         path: Target whose ancestor directories need invalidation.
     """
-    # Collect path components from root to target
-    parts = list(path.parts)
-    for i in range(1, len(parts) + 1):
-        ancestor = Path(*parts[:i])
+    normalized = os.path.normpath(path)
+    parts = normalized.split(os.sep)
+    # For absolute paths, parts[0] is '' (from leading /)
+    for i in range(2, len(parts) + 1):
+        ancestor = os.sep + os.path.join(*parts[1:i])
         try:
             os.listdir(ancestor)
         except (FileNotFoundError, PermissionError, OSError):
@@ -42,7 +42,7 @@ def _invalidate_nfs_dir_cache(path: Path) -> None:
             break
 
 
-def verify_file_exists_nfs(path: Path) -> bool:
+def verify_file_exists_nfs(path: str) -> bool:
     """Check file existence using NFS close-to-open consistency.
 
     Invalidate parent directory caches, then ``open()`` and read one
@@ -50,6 +50,9 @@ def verify_file_exists_nfs(path: Path) -> bool:
 
     Args:
         path: File to verify.
+
+    Returns:
+        True if the file is visible and readable, else False.
     """
     _invalidate_nfs_dir_cache(path)
     try:
@@ -61,11 +64,11 @@ def verify_file_exists_nfs(path: Path) -> bool:
 
 
 def compute_expected_staging_paths(
-    staging_root: Path,
+    staging_root: str,
     execution_run_ids: list[str],
     step_number: int | None = None,
     operation_name: str | None = None,
-) -> list[Path]:
+) -> list[str]:
     """Compute the expected staging directory for each execution run ID.
 
     Args:
@@ -79,7 +82,7 @@ def compute_expected_staging_paths(
         One staging directory path per run ID, in the same order.
     """
     return [
-        shard_path(
+        shard_uri(
             staging_root,
             run_id,
             step_number=step_number,
@@ -89,7 +92,7 @@ def compute_expected_staging_paths(
     ]
 
 
-def verify_staging_directory(staging_dir: Path) -> tuple[bool, list[str]]:
+def verify_staging_directory(staging_dir: str) -> tuple[bool, list[str]]:
     """Verify required staging files exist using NFS-safe checks.
 
     Args:
@@ -100,10 +103,10 @@ def verify_staging_directory(staging_dir: Path) -> tuple[bool, list[str]]:
         ``(True, [])`` on success, or ``(False, reasons)`` listing
         which files or directories are missing.
     """
-    required_file = staging_dir / REQUIRED_STAGING_FILE
+    required_file = os.path.join(staging_dir, REQUIRED_STAGING_FILE)
 
     if not verify_file_exists_nfs(required_file):
-        if not staging_dir.exists():
+        if not os.path.exists(staging_dir):
             return False, [f"directory {staging_dir} not found"]
         return False, [REQUIRED_STAGING_FILE]
 
@@ -111,7 +114,7 @@ def verify_staging_directory(staging_dir: Path) -> tuple[bool, list[str]]:
 
 
 def await_staging_files(
-    staging_root: Path,
+    staging_root: str,
     execution_run_ids: list[str],
     timeout_seconds: float = 60.0,
     poll_interval_seconds: float = 1.0,
@@ -151,14 +154,13 @@ def await_staging_files(
 
     start_time = time.monotonic()
     current_interval = poll_interval_seconds
-    max_interval = 5.0  # Cap backoff at 5 seconds
+    max_interval = 5.0
     attempt = 0
 
     while True:
         attempt += 1
         elapsed = time.monotonic() - start_time
 
-        # Check all paths using open() for close-to-open consistency
         missing: dict[str, str] = {}
         for run_id, path in id_to_path.items():
             success, issues = verify_staging_directory(path)
@@ -172,18 +174,15 @@ def await_staging_files(
             )
             return
 
-        # Check timeout
         if elapsed >= timeout_seconds:
             _raise_timeout_error(missing, len(execution_run_ids), timeout_seconds)
 
-        # Log progress
         logger.debug(
             f"Staging verification attempt {attempt}: "
             f"{len(missing)}/{len(execution_run_ids)} still missing, "
             f"elapsed={elapsed:.1f}s"
         )
 
-        # Wait with exponential backoff
         time.sleep(current_interval)
         current_interval = min(current_interval * 1.5, max_interval)
 
@@ -202,9 +201,10 @@ def _raise_timeout_error(
     if len(missing) > max_shown:
         details_str += f"\n  ... and {len(missing) - max_shown} more"
 
-    raise TimeoutError(
+    msg = (
         f"Staging files not visible after {timeout_seconds}s.\n"
         f"Missing {len(missing)}/{total_count} execution_run_ids:\n"
         f"{details_str}\n"
-        f"Check SLURM worker logs for these executions."
+        "Check provider worker logs for these executions."
     )
+    raise TimeoutError(msg)

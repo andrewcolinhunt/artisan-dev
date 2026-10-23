@@ -6,19 +6,18 @@ skip cascade behaviour with real operations.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 
-def test_cancel_before_any_steps(pipeline_env: dict[str, Path]):
-    """cancel() before running steps causes subsequent steps to skip."""
+def test_cancel_before_any_steps(pipeline_env: dict[str, str]):
+    """cancel() before running steps confirms queued cancellation."""
     pipeline = PipelineManager.create(
         name="test_cancel_before",
         delta_root=pipeline_env["delta_root"],
@@ -31,13 +30,10 @@ def test_cancel_before_any_steps(pipeline_env: dict[str, Path]):
     result = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
-    assert (
-        result.metadata.get("skipped") is True
-        or result.metadata.get("cancelled") is True
-    )
+    assert result.status is StepStatus.CANCELLED
     assert result.succeeded_count == 0
 
     summary = pipeline.finalize()
@@ -45,8 +41,8 @@ def test_cancel_before_any_steps(pipeline_env: dict[str, Path]):
     assert "overall_success" in summary
 
 
-def test_cancel_skips_downstream_steps(pipeline_env: dict[str, Path]):
-    """Cancelling after step 0 causes step 1 to be skipped."""
+def test_cancel_marks_downstream_steps_cancelled(pipeline_env: dict[str, str]):
+    """Cancelling after step 0 marks the subsequent step cancelled."""
     pipeline = PipelineManager.create(
         name="test_cancel_downstream",
         delta_root=pipeline_env["delta_root"],
@@ -57,9 +53,9 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
-    assert step0.success is True
+    assert step0.status is StepStatus.SUCCEEDED
 
     pipeline.cancel()
 
@@ -72,18 +68,17 @@ def test_cancel_skips_downstream_steps(pipeline_env: dict[str, Path]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
-    assert step1.metadata.get("skipped") is True
-    assert step1.metadata.get("skip_reason") == "cancelled"
+    assert step1.status is StepStatus.CANCELLED
 
     summary = pipeline.finalize()
     assert summary["total_steps"] == 2
 
 
-def test_cancel_during_submit(pipeline_env: dict[str, Path]):
-    """cancel() after submit() causes the queued step to skip."""
+def test_cancel_before_submit(pipeline_env: dict[str, str]):
+    """Cancelling before submission returns a cancelled future."""
     pipeline = PipelineManager.create(
         name="test_cancel_during",
         delta_root=pipeline_env["delta_root"],
@@ -94,7 +89,7 @@ def test_cancel_during_submit(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.cancel()
@@ -108,20 +103,17 @@ def test_cancel_during_submit(pipeline_env: dict[str, Path]):
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = future.result(timeout=10)
-    assert (
-        result.metadata.get("skipped") is True
-        or result.metadata.get("cancelled") is True
-    )
+    assert result.status is StepStatus.CANCELLED
 
     summary = pipeline.finalize()
     assert "pipeline_name" in summary
 
 
-def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, Path]):
+def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, str]):
     """finalize() after cancel returns a valid summary dict."""
     pipeline = PipelineManager.create(
         name="test_finalize_cancel",
@@ -130,10 +122,10 @@ def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, Path]):
         working_root=pipeline_env["working_root"],
     )
 
-    step0 = pipeline.run(
+    pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     pipeline.cancel()
@@ -147,7 +139,7 @@ def test_finalize_after_cancel_returns_cleanly(pipeline_env: dict[str, Path]):
     assert len(summary["steps"]) == 1
 
 
-def test_cancel_idempotent(pipeline_env: dict[str, Path]):
+def test_cancel_idempotent(pipeline_env: dict[str, str]):
     """Calling cancel() multiple times is safe."""
     pipeline = PipelineManager.create(
         name="test_cancel_idempotent",
@@ -162,3 +154,247 @@ def test_cancel_idempotent(pipeline_env: dict[str, Path]):
 
     summary = pipeline.finalize()
     assert "pipeline_name" in summary
+
+
+def test_cancel_event_reaches_lifecycle_router(pipeline_env: dict[str, str]):
+    """cancel() during a running step flows through handle.run(cancel_event).
+
+    Submits a slow Wait step (30s), cancels after 1s, and verifies the
+    pipeline finishes quickly — proving the cancel_event reached the
+    lifecycle router's run() poll loop rather than blocking for 30s.
+    """
+    import threading
+    import time
+
+    from artisan.operations.examples import Wait
+
+    pipeline = PipelineManager.create(
+        name="test_cancel_reaches_handle",
+        delta_root=pipeline_env["delta_root"],
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+
+    def _cancel_after_delay():
+        time.sleep(1.0)
+        pipeline.cancel()
+
+    threading.Thread(target=_cancel_after_delay, daemon=True).start()
+
+    start = time.monotonic()
+    pipeline.submit(
+        Wait,
+        params={"duration": 30},
+        step_runner=Runner.LOCAL,
+    )
+    summary = pipeline.finalize()
+    elapsed = time.monotonic() - start
+
+    # Should finish much faster than 30s — cancel interrupted the wait
+    assert elapsed < 15.0
+    assert "pipeline_name" in summary
+
+
+@pytest.mark.parametrize("preserve_staging", [False, True])
+@pytest.mark.parametrize("recover_staging", [False, True])
+def test_cancelled_creator_retains_sealed_work_until_verified_commit(
+    pipeline_env: dict[str, str],
+    monkeypatch,
+    preserve_staging,
+    recover_staging,
+):
+    """Cancel at a real worker's seal boundary, then prove optional reuse."""
+    import threading
+    from pathlib import Path
+
+    import polars as pl
+    from fsspec.implementations.local import LocalFileSystem
+
+    from artisan.orchestration.engine.native_pool import _NativePoolOwnership
+    from artisan.schemas.enums import TablePath
+    from artisan.schemas.orchestration.step_lifecycle import StepDisposition
+    from artisan.storage.core.committed_scan import read_committed
+    from artisan.visualization import inspect_step
+
+    pipeline = PipelineManager.create(
+        name="test_cancelled_staging",
+        **pipeline_env,
+        recover_staging=False,
+        preserve_staging=preserve_staging,
+    )
+    original_finish = _NativePoolOwnership.finish
+    original_request_cancel = _NativePoolOwnership.request_cancel
+    cancellation_accepted = threading.Event()
+    snapshots = {}
+
+    def observe_cancellation(ownership: _NativePoolOwnership, deadline: float) -> bool:
+        accepted = original_request_cancel(ownership, deadline)
+        if accepted:
+            cancellation_accepted.set()
+        return accepted
+
+    def cancel_after_worker_sealed(
+        ownership: _NativePoolOwnership,
+        *,
+        failed: bool = False,
+        cancel_event: threading.Event | None = None,
+    ) -> bool:
+        try:
+            root = Path(pipeline_env["staging_root"])
+            snapshots.update(
+                {path: path.read_bytes() for path in root.rglob("*.parquet")}
+            )
+            assert any(path.name == "executions.parquet" for path in snapshots)
+            pipeline.cancel()
+            assert cancellation_accepted.wait(5.0), "Router did not accept cancellation"
+        finally:
+            closed = original_finish(
+                ownership, failed=failed, cancel_event=cancel_event
+            )
+        return closed
+
+    with monkeypatch.context() as cancellation_patch:
+        cancellation_patch.setattr(
+            _NativePoolOwnership, "request_cancel", observe_cancellation
+        )
+        cancellation_patch.setattr(
+            _NativePoolOwnership, "finish", cancel_after_worker_sealed
+        )
+        cancelled = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
+        pipeline.finalize()
+
+    fs = LocalFileSystem()
+    root = pipeline_env["delta_root"]
+    assert cancelled.status is StepStatus.CANCELLED
+    assert read_committed(root, TablePath.EXECUTIONS, fs=fs).is_empty()
+    assert {path: path.read_bytes() for path in snapshots} == snapshots
+    assert inspect_step(
+        root, 0, pipeline_run_id=pipeline.config.pipeline_run_id
+    ).is_empty()
+
+    rerun = PipelineManager.create(
+        name="test_cancelled_staging",
+        **pipeline_env,
+        recover_staging=recover_staging,
+        preserve_staging=preserve_staging,
+    )
+    result = rerun.run(DataGenerator, params={"count": 2, "seed": 42})
+    rerun.finalize()
+
+    expected = (
+        StepDisposition.CACHE_HIT if recover_staging else StepDisposition.EXECUTED
+    )
+    assert result.disposition is expected
+    assert (
+        inspect_step(root, 0, pipeline_run_id=rerun.config.pipeline_run_id).height == 2
+    )
+    assert inspect_step(
+        root, 0, pipeline_run_id=pipeline.config.pipeline_run_id
+    ).is_empty()
+    history = (
+        read_committed(root, TablePath.STEPS, fs=fs)
+        .filter(pl.col("step_run_id") == cancelled.step_run_id)
+        .sort("state_sequence")
+    )
+    assert history.item(-1, "status") == "cancelled"
+    executions = read_committed(root, TablePath.EXECUTIONS, fs=fs)
+    owner = cancelled.step_run_id if recover_staging else result.step_run_id
+    assert executions["step_run_id"].to_list() == [owner]
+    if not recover_staging or preserve_staging:
+        assert {path: path.read_bytes() for path in snapshots} == snapshots
+    else:
+        assert not any(path.exists() for path in snapshots)
+
+
+def test_cancel_after_native_closure_preserves_completed_result(
+    pipeline_env: dict[str, str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A closed native scope rejects cancellation before result publication."""
+    from typing import Any
+
+    from fsspec.implementations.local import LocalFileSystem
+
+    from artisan.orchestration.engine import step_executor
+    from artisan.schemas.enums import TablePath
+    from artisan.schemas.orchestration.step_lifecycle import CancellationStatus
+    from artisan.storage.core.committed_scan import read_committed
+
+    pipeline = PipelineManager.create(name="test_late_cancel", **pipeline_env)
+    original_capture = step_executor.persist_worker_logs
+
+    def cancel_after_native_closure(*args: Any, **kwargs: Any) -> None:
+        original_capture(*args, **kwargs)
+        pipeline.cancel()
+
+    monkeypatch.setattr(
+        step_executor, "persist_worker_logs", cancel_after_native_closure
+    )
+    result = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
+    pipeline.finalize()
+
+    assert result.status is StepStatus.SUCCEEDED
+    assert result.cancellation_status is CancellationStatus.REJECTED
+    executions = read_committed(
+        pipeline_env["delta_root"], TablePath.EXECUTIONS, fs=LocalFileSystem()
+    )
+    assert executions["step_run_id"].to_list() == [result.step_run_id]
+
+
+def test_finalize_terminalizes_running_and_queued_cancellations(
+    pipeline_env: dict[str, str],
+) -> None:
+    """Bounded finalization leaves no started step permanently running."""
+    import time
+    from concurrent.futures import CancelledError
+    from pathlib import Path
+
+    import polars as pl
+
+    from artisan.operations.examples import Wait
+
+    pipeline = PipelineManager.create(
+        name="test_finalize_terminal_cancellation",
+        delta_root=pipeline_env["delta_root"],
+        staging_root=pipeline_env["staging_root"],
+        working_root=pipeline_env["working_root"],
+    )
+    running = pipeline.submit(
+        Wait,
+        name="running",
+        params={"duration": 6.0},
+        step_runner=Runner.LOCAL,
+    )
+
+    working_root = Path(pipeline_env["working_root"])
+    deadline = time.monotonic() + 10
+    while not any(working_root.rglob("execute")):
+        assert time.monotonic() < deadline, "Wait worker did not start"
+        time.sleep(0.05)
+
+    queued = pipeline.submit(
+        Wait,
+        name="queued",
+        params={"duration": 0.0},
+        step_runner=Runner.LOCAL,
+    )
+    pipeline.cancel()
+
+    summary = pipeline.finalize()
+
+    assert summary["total_steps"] == 2
+    assert [step["name"] for step in summary["steps"]] == ["running", "queued"]
+    assert all(result.status is StepStatus.CANCELLED for result in pipeline)
+    assert queued.status is StepStatus.CANCELLED
+    with pytest.raises(CancelledError):
+        queued.result()
+
+    steps = pl.read_delta(Path(pipeline_env["delta_root"]) / "orchestration/steps")
+    for step_number in (0, 1):
+        statuses = steps.filter(pl.col("step_number") == step_number)[
+            "status"
+        ].to_list()
+        assert "cancelled" in statuses
+
+    running.result(timeout=5)
+    assert pipeline.finalize() is summary
+    assert len(pipeline) == 2

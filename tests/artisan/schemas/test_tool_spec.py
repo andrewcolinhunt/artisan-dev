@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from pydantic import ValidationError
 
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 
@@ -19,11 +19,11 @@ class TestToolSpec:
 
     def test_full(self):
         ts = ToolSpec(
-            executable=Path("/opt/tools/gatk"),
+            executable="/opt/tools/gatk",
             interpreter="python -u",
             subcommand="HaplotypeCaller",
         )
-        assert ts.executable == Path("/opt/tools/gatk")
+        assert ts.executable == "/opt/tools/gatk"
         assert ts.interpreter == "python -u"
         assert ts.subcommand == "HaplotypeCaller"
 
@@ -44,7 +44,7 @@ class TestToolSpec:
         assert ts.parts() == ["python", "/app/run.py", "train"]
 
     def test_parts_path_executable(self):
-        ts = ToolSpec(executable=Path("/opt/bin/tool"))
+        ts = ToolSpec(executable="/opt/bin/tool")
         assert ts.parts() == ["/opt/bin/tool"]
 
     def test_model_copy(self):
@@ -73,5 +73,14 @@ class TestToolSpec:
     def test_validate_tool_existing_path(self, tmp_path):
         script = tmp_path / "run.py"
         script.touch()
-        ts = ToolSpec(executable=script)
+        ts = ToolSpec(executable=str(script))
         ts.validate_tool()  # should not raise
+
+    @pytest.mark.parametrize("executable", [None, "", "   "])
+    def test_executable_must_be_present(self, executable):
+        with pytest.raises(ValidationError, match="non-empty"):
+            ToolSpec(executable=executable)
+
+    def test_unknown_field_rejected(self):
+        with pytest.raises(ValidationError, match="executabl"):
+            ToolSpec(executable="bash", executabl="python")

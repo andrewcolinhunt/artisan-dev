@@ -4,18 +4,14 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from fixtures.logical_commit_store import commit_test_tables as _commit_tables
 
+from artisan.schemas.enums import TablePath
 from artisan.storage.core.provenance_store import ProvenanceStore
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
 )
-
-
-def _write_delta(path, df):
-    """Write a DataFrame as a Delta table."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    df.write_delta(str(path))
 
 
 def _make_edges(pairs: list[tuple[str, str, str]]) -> pl.DataFrame:
@@ -58,20 +54,30 @@ D = "d" * 32
 E = "e" * 32
 
 
+@pytest.fixture
+def prov_env(backend_fs):
+    """Yield ``(store, fs, storage_options, root)`` per ``backend_fs`` param.
+
+    Shared by ``TestGetAncestorIds`` and ``TestGetDescendantIds`` so every
+    test runs twice — once against ``LocalFileSystem``, once against MinIO.
+    """
+    fs, storage, root = backend_fs
+    opts = storage.delta_storage_options()
+    store = ProvenanceStore(root, fs=fs, storage_options=opts)
+    return store, fs, opts, root
+
+
 class TestGetAncestorIds:
     """Tests for ProvenanceStore.get_ancestor_ids."""
 
-    @pytest.fixture
-    def store(self, tmp_path):
-        return ProvenanceStore(tmp_path)
-
-    def test_no_edges_table(self, store):
-        """Returns empty list when artifact_edges table is missing."""
+    def test_empty_edges_table(self, prov_env):
+        """Return an empty list when the artifact edges table is empty."""
+        store, _fs, _opts, _root = prov_env
         assert store.get_ancestor_ids(A) == []
 
-    def test_linear_chain(self, tmp_path):
+    def test_linear_chain(self, prov_env):
         """A -> B -> C: ancestors of C are [A, B]."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -85,23 +91,30 @@ class TestGetAncestorIds:
                 (C, "data", 3),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
-        _write_delta(tmp_path / "artifacts/index", index)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.get_ancestor_ids(C)
         assert set(result) == {A, B}
 
-    def test_no_ancestors(self, tmp_path):
+    def test_no_ancestors(self, prov_env):
         """Root node has no ancestors."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_ancestor_ids(A) == []
 
-    def test_diamond_graph(self, tmp_path):
+    def test_diamond_graph(self, prov_env):
         """A -> B, A -> C, B -> D, C -> D: ancestors of D are [A, B, C]."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -118,15 +131,22 @@ class TestGetAncestorIds:
                 (D, "data", 3),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
-        _write_delta(tmp_path / "artifacts/index", index)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         result = store.get_ancestor_ids(D)
         assert set(result) == {A, B, C}
 
-    def test_ancestor_type_filter(self, tmp_path):
+    def test_ancestor_type_filter(self, prov_env):
         """Filter ancestors by type returns only matching types."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "metric"),
@@ -140,8 +160,15 @@ class TestGetAncestorIds:
                 (C, "data", 3),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
-        _write_delta(tmp_path / "artifacts/index", index)
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
 
         # All ancestors
         assert set(store.get_ancestor_ids(C)) == {A, B}
@@ -154,11 +181,11 @@ class TestGetAncestorIds:
         result = store.get_ancestor_ids(C, ancestor_type="metric")
         assert result == [B]
 
-    def test_unknown_artifact(self, tmp_path):
+    def test_unknown_artifact(self, prov_env):
         """Artifact not in any edge returns empty list."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_ancestor_ids(C) == []
 
@@ -166,39 +193,36 @@ class TestGetAncestorIds:
 class TestGetDescendantIds:
     """Tests for ProvenanceStore.get_descendant_ids."""
 
-    @pytest.fixture
-    def store(self, tmp_path):
-        return ProvenanceStore(tmp_path)
-
-    def test_no_edges_table(self, store):
-        """Returns empty list when artifact_edges table is missing."""
+    def test_empty_edges_table(self, prov_env):
+        """Return an empty list when the artifact edges table is empty."""
+        store, _fs, _opts, _root = prov_env
         assert store.get_descendant_ids(A) == []
 
-    def test_linear_chain(self, tmp_path):
+    def test_linear_chain(self, prov_env):
         """A -> B -> C: descendants of A are [B, C]."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
                 (B, C, "data"),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         result = store.get_descendant_ids(A)
         assert set(result) == {B, C}
 
-    def test_no_descendants(self, tmp_path):
+    def test_no_descendants(self, prov_env):
         """Leaf node has no descendants."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_descendant_ids(B) == []
 
-    def test_branching_graph(self, tmp_path):
+    def test_branching_graph(self, prov_env):
         """A -> B, A -> C, B -> D: descendants of A are [B, C, D]."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -206,14 +230,14 @@ class TestGetDescendantIds:
                 (B, D, "data"),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         result = store.get_descendant_ids(A)
         assert set(result) == {B, C, D}
 
-    def test_descendant_type_filter(self, tmp_path):
+    def test_descendant_type_filter(self, prov_env):
         """Filter descendants by type returns only matching types."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
                 (A, B, "data"),
@@ -221,7 +245,7 @@ class TestGetDescendantIds:
                 (B, D, "data"),
             ]
         )
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         # Only metric descendants
         result = store.get_descendant_ids(A, descendant_type="metric")
@@ -231,10 +255,135 @@ class TestGetDescendantIds:
         result = store.get_descendant_ids(A, descendant_type="data")
         assert set(result) == {B, D}
 
-    def test_unknown_artifact(self, tmp_path):
+    def test_unknown_artifact(self, prov_env):
         """Artifact not in any edge returns empty list."""
-        store = ProvenanceStore(tmp_path)
+        store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "data")])
-        _write_delta(tmp_path / "provenance/artifact_edges", edges)
+        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_descendant_ids(C) == []
+
+
+class TestLoadEdgesDf:
+    """Tests for ProvenanceStore.load_edges_df, especially the optional flags."""
+
+    def test_returns_empty_when_tables_empty(self, prov_env):
+        """Return an empty frame with the expected schema for empty tables."""
+        store, _fs, _opts, _root = prov_env
+        result = store.load_edges_df(0, 10)
+        assert result.is_empty()
+        assert result.columns == ["source_artifact_id", "target_artifact_id"]
+
+    def test_returns_base_columns_by_default(self, prov_env):
+        """Default call returns only source/target IDs, no roles or types."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
+
+        result = store.load_edges_df(0, 10)
+        assert result.columns == ["source_artifact_id", "target_artifact_id"]
+        assert result.height == 1
+        assert result["source_artifact_id"][0] == A
+        assert result["target_artifact_id"][0] == B
+
+    def test_include_target_type_adds_column(self, prov_env):
+        """include_target_type=True adds target_artifact_type."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "metric")])
+        index = _make_index([(A, "data", 1), (B, "metric", 2)])
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
+
+        result = store.load_edges_df(0, 10, include_target_type=True)
+        assert "target_artifact_type" in result.columns
+        assert result["target_artifact_type"][0] == "metric"
+
+    def test_include_roles_adds_role_and_group_columns(self, prov_env):
+        """include_roles=True surfaces source_role, target_role, group_id."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
+
+        result = store.load_edges_df(0, 10, include_roles=True)
+        assert {"source_role", "target_role", "group_id"} <= set(result.columns)
+        # _make_edges seeds source_role='input', target_role='output'.
+        assert result["source_role"][0] == "input"
+        assert result["target_role"][0] == "output"
+        assert result["group_id"][0] is None
+
+    def test_include_both_flags_returns_all_extra_columns(self, prov_env):
+        """Combining include_target_type and include_roles returns all extras."""
+        store, _fs, opts, root = prov_env
+        edges = _make_edges([(A, B, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        _commit_tables(
+            root,
+            _fs,
+            opts,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
+
+        result = store.load_edges_df(
+            0, 10, include_target_type=True, include_roles=True
+        )
+        assert {
+            "target_artifact_type",
+            "source_role",
+            "target_role",
+            "group_id",
+        } <= set(result.columns)
+
+
+class TestProvenanceStoreBackendParametrized:
+    """Test both traversal directions against each storage backend."""
+
+    def test_seed_and_walk(self, backend_fs):
+        """Seed A -> B -> C, then walk both directions via the store."""
+        fs, storage_config, root = backend_fs
+        storage_options = storage_config.delta_storage_options()
+
+        edges = _make_edges([(A, B, "data"), (B, C, "data")])
+        index = _make_index([(A, "data", 1), (B, "data", 2), (C, "data", 3)])
+
+        _commit_tables(
+            root,
+            fs,
+            storage_options,
+            {
+                TablePath.ARTIFACT_EDGES.value: edges,
+                TablePath.ARTIFACT_INDEX.value: index,
+            },
+        )
+
+        store = ProvenanceStore(root, fs=fs, storage_options=storage_options)
+
+        assert set(store.get_ancestor_ids(C)) == {A, B}
+        assert set(store.get_descendant_ids(A)) == {B, C}

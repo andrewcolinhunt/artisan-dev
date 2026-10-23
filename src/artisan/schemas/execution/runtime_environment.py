@@ -1,14 +1,15 @@
 """Runtime environment configuration for worker processes.
 
-``RuntimeEnvironment`` specifies WHERE execution happens (paths, debug
+``RuntimeEnvironment`` specifies WHERE execution happens (URIs, debug
 flags), separate from WHAT executes (ExecutionUnit).
 """
 
 from __future__ import annotations
 
-from pathlib import Path
+from pydantic import BaseModel, Field, field_validator
 
-from pydantic import BaseModel, Field
+from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.utils.application_modules import validate_application_modules
 
 
 class RuntimeEnvironment(BaseModel):
@@ -20,89 +21,94 @@ class RuntimeEnvironment(BaseModel):
 
     The separation of concerns:
     - ExecutionUnit: What to compute (operation, inputs, params, step_number)
-    - RuntimeEnvironment: Where to compute (paths, debug flags)
+    - RuntimeEnvironment: Where to compute (URIs/paths, debug flags)
 
-    For curator operations, working_root_path is None since they
+    For curator operations, working_root is None since they
     don't require sandboxing or materialization.
 
-    Path semantics:
-    - delta_root_path: Read-only access to Delta Lake tables
-    - working_root_path: Read-write scratch space (cleaned after execution)
-    - staging_root_path: Write-only output for staged Parquet files
-
-    Attributes:
-        delta_root_path: Root directory for Delta Lake tables.
-            Contains: data/, metrics/, configs/, file_refs/,
-            artifact_index/, executions/
-        working_root_path: Base directory for execution sandboxes.
-            Resolved from $TMPDIR (via tempfile.gettempdir()) by default.
-            Each execution creates a sharded subdirectory.
-            None for curator operations (no sandbox needed).
-        staging_root_path: Where to write staged Parquet files.
-            Workers write here; orchestrator commits to Delta Lake.
-        preserve_staging: Debug flag - don't cleanup staging after commit.
-        preserve_working: Debug flag - don't cleanup sandbox after execution.
+    Field semantics:
+    - delta_root, staging_root, files_root: Cloud-capable — local path or
+      s3://bucket/... URI. Use uri_join(), fs.* for I/O.
+    - working_root, failure_logs_root: Always local paths. Use os.* for I/O.
 
     Example:
         >>> env = RuntimeEnvironment(
-        ...     delta_root_path=Path("/data/delta"),
-        ...     working_root_path=Path("/tmp"),
-        ...     staging_root_path=Path("/data/staging"),
+        ...     delta_root="/data/delta",
+        ...     staging_root="/data/staging",
+        ...     working_root="/tmp",
         ... )
-        >>> # RuntimeEnvironment is typically created once per worker process
-        >>> # and reused for many ExecutionUnits
     """
 
-    delta_root_path: Path = Field(
+    application_modules: tuple[str, ...] = Field(
+        default=(),
+        description="Resolved trusted application modules; no worker environment merge.",
+    )
+
+    @field_validator("application_modules", mode="before")
+    @classmethod
+    def _validate_application_modules(cls, value: object) -> tuple[str, ...]:
+        return validate_application_modules(value)
+
+    delta_root: str = Field(
         ...,
         description=(
-            "Root directory for Delta Lake tables. "
-            "Contains data/, metrics/, configs/, file_refs/, "
-            "artifact_index/, executions/"
+            "Root URI for Delta Lake tables. Local path or s3://bucket/delta."
         ),
     )
 
-    working_root_path: Path | None = Field(
+    working_root: str | None = Field(
         None,
         description=(
             "Base directory for execution sandboxes. "
-            "Each execution creates a sharded subdirectory. "
-            "Defaults to $TMPDIR via tempfile.gettempdir(). "
+            "Always a local path. "
             "None for curator operations (no sandbox needed)."
         ),
     )
 
-    staging_root_path: Path = Field(
+    staging_root: str = Field(
         ...,
         description=(
-            "Where to write staged Parquet files. "
-            "Workers write here; orchestrator commits to Delta Lake"
+            "Root URI for staged Parquet files. Local path or s3://bucket/staging."
         ),
     )
 
-    failure_logs_root: Path | None = Field(
+    files_root: str | None = Field(
         None,
         description=(
-            "Where to write human-readable failure log files. "
-            "Each failed execution writes a .log file under "
-            "step_{N}_{op}/ for easy debugging."
+            "Root for Artisan-managed external files. "
+            "Local path or cloud URI. "
+            "None when not configured."
+        ),
+    )
+
+    failure_logs_root: str | None = Field(
+        None,
+        description=(
+            "Where to write human-readable failure log files. Always a local path."
         ),
     )
 
     # Debug flags
     preserve_staging: bool = Field(
         False,
-        description="Don't cleanup staging directory after commit",
+        description="Retain staging after verified commitment; uncommitted staging is always retained",
     )
     preserve_working: bool = Field(
         False,
         description="Don't cleanup sandbox directory after execution",
     )
 
-    # Backend traits (flattened from WorkerTraits for serialization)
+    # Runner traits (flattened from WorkerTraits for serialization)
     worker_id_env_var: str | None = Field(
         None,
-        description="Environment variable for worker ID (e.g. SLURM_ARRAY_TASK_ID).",
+        description="Provider environment variable resolved at the worker entry point.",
+    )
+    worker_id: int = Field(
+        default=0,
+        strict=True,
+        ge=-(2**31),
+        le=2**31 - 1,
+        description="Resolved numeric worker index; 0 for local execution.",
     )
     shared_filesystem: bool = Field(
         False,
@@ -110,7 +116,13 @@ class RuntimeEnvironment(BaseModel):
     )
     compute_backend_name: str = Field(
         "local",
-        description="Backend name for provenance records.",
+        description="Resolved step-runner name for provenance records.",
+    )
+
+    # Storage
+    storage: StorageConfig = Field(
+        default_factory=StorageConfig,
+        description="Storage configuration for fsspec and delta-rs.",
     )
 
     model_config = {"frozen": True}  # Config should be immutable

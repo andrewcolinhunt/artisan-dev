@@ -2,17 +2,16 @@
 
 from __future__ import annotations
 
-import logging
 from typing import TYPE_CHECKING
 
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas.execution.replay import ReplayAssociation
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
-
-logger = logging.getLogger(__name__)
 
 
 def instantiate_inputs(
@@ -20,6 +19,8 @@ def instantiate_inputs(
     artifact_store: ArtifactStore,
     input_specs: dict[str, InputSpec],
     default_hydrate: bool = True,
+    *,
+    recorded_associated: list[ReplayAssociation] | None = None,
 ) -> tuple[dict[str, list[Artifact]], dict[tuple[str, str], list[Artifact]]]:
     """Instantiate all input artifacts from storage using bulk queries.
 
@@ -32,16 +33,33 @@ def instantiate_inputs(
         artifact_store: Store for loading and hydrating artifacts.
         input_specs: Role-keyed input specs controlling hydration behavior.
         default_hydrate: Fallback hydration flag when a role has no spec.
+        recorded_associated: Replay associations to load exactly as captured.
+            None resolves live descendants; an empty list resolves none.
 
     Returns:
         Tuple of (artifacts_by_role, associated_map) where associated_map
         keys are ``(primary_artifact_id, associated_type)`` tuples.
-    """
-    # Bulk-resolve artifact types (1 delta scan instead of N)
-    all_ids = [aid for ids in inputs.values() for aid in ids]
-    type_map = artifact_store.provenance.load_type_map(all_ids) if all_ids else {}
 
-    # Pre-load hydrated artifacts in bulk by type
+    Raises:
+        ValueError: If an input ID is malformed or an input/recorded association
+            cannot be loaded.
+    """
+    all_ids = [aid for ids in inputs.values() for aid in ids]
+    for role, artifact_ids in inputs.items():
+        for artifact_id in artifact_ids:
+            if not is_hex_id(artifact_id):
+                msg = (
+                    f"Invalid artifact ID for role '{role}': {artifact_id!r}. "
+                    "Expected a 32-character hexadecimal string."
+                )
+                raise ValueError(msg)
+
+    type_map = artifact_store.provenance.load_type_map(all_ids) if all_ids else {}
+    missing_ids = sorted(set(all_ids) - set(type_map))
+    if missing_ids:
+        msg = f"Input artifact IDs not found in the artifact store: {missing_ids}"
+        raise ValueError(msg)
+
     hydrated_ids_by_type: dict[str, list[str]] = {}
     for role, artifact_ids in inputs.items():
         spec = input_specs.get(role)
@@ -56,7 +74,6 @@ def instantiate_inputs(
     for atype, ids in hydrated_ids_by_type.items():
         hydrated_cache.update(artifact_store.get_artifacts_by_type(ids, atype))
 
-    # Pre-build non-hydrated artifacts in bulk (no store calls needed)
     non_hydrated_cache: dict[str, Artifact] = {}
     non_hydrated_ids_by_type: dict[str, list[str]] = {}
     for role, artifact_ids in inputs.items():
@@ -73,7 +90,6 @@ def instantiate_inputs(
         for aid in ids:
             non_hydrated_cache[aid] = model_cls(artifact_id=aid, artifact_type=atype)
 
-    # Iterate — all lookups are dict hits
     result: dict[str, list[Artifact]] = {}
     for role, artifact_ids in inputs.items():
         spec = input_specs.get(role)
@@ -86,30 +102,34 @@ def instantiate_inputs(
             elif not hydrate and artifact_id in non_hydrated_cache:
                 artifacts.append(non_hydrated_cache[artifact_id])
             else:
-                atype = type_map.get(artifact_id)
-                if atype is None:
-                    logger.warning(
-                        "Artifact %s for role '%s' not found in type map — skipping",
-                        artifact_id,
-                        role,
-                    )
-                    continue
+                atype = type_map[artifact_id]
                 artifact = artifact_store.get_artifact(
                     artifact_id, artifact_type=atype, hydrate=hydrate
                 )
                 if artifact is None:
-                    logger.warning(
-                        "Artifact %s for role '%s' could not be loaded — skipping",
-                        artifact_id,
-                        role,
-                    )
-                    continue
+                    msg = f"Artifact {artifact_id!r} for role '{role}' could not be loaded"
+                    raise ValueError(msg)
                 artifacts.append(artifact)
 
         result[role] = artifacts
 
+    if recorded_associated is not None:
+        associated = {}
+        for capture in recorded_associated:
+            artifacts = []
+            for artifact_id in capture.artifact_ids:
+                artifact = artifact_store.get_artifact(
+                    artifact_id, artifact_type=capture.artifact_type
+                )
+                if artifact is None:
+                    msg = f"Recorded associated artifact {artifact_id} is missing"
+                    raise ValueError(msg)
+                artifacts.append(artifact)
+            associated[(capture.primary_id, capture.artifact_type)] = artifacts
+        return result, associated
+
     # Resolve associated artifacts via provenance
-    associated: dict[tuple[str, str], list[Artifact]] = {}
+    associated = {}
     for role, artifacts in result.items():
         spec = input_specs.get(role)
         if spec is None or not spec.with_associated:
@@ -119,7 +139,7 @@ def instantiate_inputs(
             continue
         for assoc_type in spec.with_associated:
             assoc_map = artifact_store.get_associated(primary_ids, assoc_type)
-            for primary_id, assoc_artifacts in assoc_map.items():
-                associated[(primary_id, assoc_type)] = assoc_artifacts
+            for primary_id in primary_ids:
+                associated[(primary_id, assoc_type)] = assoc_map.get(primary_id, [])
 
     return result, associated

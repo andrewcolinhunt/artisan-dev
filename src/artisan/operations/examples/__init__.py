@@ -1,26 +1,45 @@
 """Artisan example operations for testing and demonstration."""
+
 from __future__ import annotations
 
+from artisan.operations.examples.appendable_generator import AppendableGenerator
+from artisan.operations.examples.csv_head import CsvHead
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_generator_with_metrics import (
     DataGeneratorWithMetrics,
 )
 from artisan.operations.examples.data_transformer import (
     DataTransformer,
+    SequentialDataTransformer,
 )
 from artisan.operations.examples.data_transformer_config import (
     DataTransformerConfig,
 )
 from artisan.operations.examples.data_transformer_script import DataTransformerScript
+from artisan.operations.examples.file_generator import FileGenerator
 from artisan.operations.examples.metric_calculator import MetricCalculator
+from artisan.operations.examples.slow_transformer import (
+    SequentialSlowTransformer,
+    SlowTransformer,
+)
+from artisan.operations.examples.streaming_echo import StreamingEcho
 from artisan.operations.examples.wait import Wait
+from artisan.operations.examples.wait_tool import WaitTool
 
 __all__ = [
+    "AppendableGenerator",
+    "CsvHead",
     "DataGenerator",
     "DataGeneratorWithMetrics",
     "DataTransformer",
     "DataTransformerConfig",
     "DataTransformerScript",
+    "FileGenerator",
     "MetricCalculator",
+    "SequentialDataTransformer",
+    "SequentialSlowTransformer",
+    "SlowTransformer",
+    "StreamingEcho",
     "Wait",
+    "WaitTool",
 ]

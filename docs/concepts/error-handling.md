@@ -1,262 +1,157 @@
 # Error Handling
 
-Pipeline computations fail. Operations crash, files go missing, cluster nodes
-die. How the framework handles those failures determines whether you lose hours
-of work or get a clear report of what went wrong.
-
-This page explains how Artisan contains, records, and reports failures -- and
-the design thinking behind each choice.
+Artisan records execution failures alongside successful work. A step's terminal
+status tells you whether downstream work can use its outputs; execution records
+and failure logs explain what failed.
 
 ---
 
-## The core idea
+## Error boundaries
 
-**Errors are data, not control flow.**
+Failures have different outcomes depending on when they occur:
 
-When something fails -- an operation crashes, a file is missing, a SLURM node
-dies -- the framework converts that failure into a structured record and passes
-it forward as data. A pipeline processing 1,000 items where 3 fail completes
-with 997 successes and 3 failure records, not a stack trace.
+| Boundary | Outcome |
+|----------|---------|
+| API-shape validation before acceptance | Raises to the caller; no step attempt has been accepted |
+| Operational preparation after acceptance | Records a failed step attempt with a diagnostic |
+| Worker execution | Stages success or failure evidence for each execution |
+| Runner and dispatch | Returns unit results, including provider failures and available worker logs |
+| Step completion | Aggregates results under the failure policy and persists the terminal state |
+| Commit failure | Reports failure and retains incomplete commit evidence for inspection or repair |
 
-This is different from most execution frameworks, which abort on the first
-uncaught exception. Artisan treats failure as an expected outcome -- one that
-should be captured with the same care as success.
-
----
-
-## Containment: never crash the many for the one
-
-The most important rule: a single item failure must never destroy other items'
-results. This applies at every level of the system.
-
-| Level | What happens on failure |
-|-------|------------------------|
-| Within a step | One execution unit fails; other units' results are still committed |
-| Within a pipeline | A step has partial failures; downstream steps receive whatever succeeded |
-
-Pipeline work is expensive. Throwing away 997 successful results because 3
-failed is wasteful. And failure patterns are often informative -- seeing *which*
-inputs fail helps diagnose the problem.
-
-The only exception is the explicit `fail_fast` policy, where you have decided
-that *any* failure should stop execution (more on this [below](#you-control-the-response)).
-
----
-
-## Layered error boundaries
-
-Exceptions are caught and converted to structured data at each architectural
-boundary. An exception never crosses two boundaries.
-
-```
-  ┌─────────────────────────────────────────────────────────────────┐
-  │  Layer 1: Worker                                                │
-  │  Catches: operation errors, staging errors, validation errors   │
-  │  Returns: StagingResult(success=False, error="...")             │
-  ├─────────────────────────────────────────────────────────────────┤
-  │  Layer 2: Dispatch                                              │
-  │  Catches: anything that escaped Layer 1, future failures        │
-  │  Returns: {"success": False, "error": "...", "item_count": N}   │
-  ├─────────────────────────────────────────────────────────────────┤
-  │  Layer 3: Step executor                                         │
-  │  Catches: dispatch crashes, commit failures                     │
-  │  Returns: StepResult(failed_count=N)                            │
-  ├─────────────────────────────────────────────────────────────────┤
-  │  Layer 4: Pipeline manager                                      │
-  │  Catches: step executor exceptions, submit-time validation      │
-  │  Returns: StepResult (always -- the pipeline never crashes)     │
-  └─────────────────────────────────────────────────────────────────┘
-```
-
-**Why this redundancy?** In the normal case, Layer 1 catches everything and
-the outer layers see only structured results. But if Layer 1 has a bug, Layer 2
-catches the leak. If Layer 2 has a bug, Layer 3 catches it. Each boundary is
-independently responsible for never letting an unstructured exception escape.
-
-**Why catch early?** The layer closest to the failure has the most context. A
-worker knows which operation, which inputs, which execution run. The dispatch
-layer only knows which unit. The orchestrator only knows which step. Catching
-at the source preserves rich diagnostics.
-
----
-
-## How a failure flows through the system
-
-Here is the complete journey of a single failure, from the moment an operation
-raises an exception to the moment you see the result:
-
-```
-1. operation.execute() raises ValueError("invalid input format")
-       │
-2. Worker catches the exception
-   │   Formats error with full traceback via format_error()
-   │   Stages failure record to Parquet (success=False)
-   │   Writes human-readable failure log to disk
-   │   Returns StagingResult(success=False, error="ValueError: ...")
-       │
-3. Dispatch converts StagingResult to dict
-   │   {"success": False, "error": "ValueError: ...", "item_count": 1}
-       │
-4. Step executor aggregates all worker results
-   │   succeeded=9, failed=1
-   │   Commits staged data (successes AND failure records) to Delta Lake
-       │
-5. StepResult(success=False, succeeded_count=9, failed_count=1)
-       │
-6. You see: "Step completed with 1 failure out of 10"
-   You query: executions table → find error message → know exactly what failed
-```
-
-The original exception message -- `ValueError: invalid input format` -- survives
-the entire journey unchanged. Every layer that touches the error preserves the
-original type name and message. No layer replaces it with a generic string.
+Recording can itself fail. If a worker cannot stage its failure record, it
+returns the original error together with the staging error. That preserves a
+diagnostic for the orchestrator, although the execution row may be absent.
+Interrupted commits retain evidence for the recovery process described below.
 
 ---
 
 ## The structured result types
 
-Three data types carry error information through the system, one per scope:
+Execution, dispatch, and step results each carry error information. Use
+[Python API lookup](../reference/python-api.md) for the public step and runner
+result models; `StagingResult` is an internal worker model.
 
 ### StagingResult (single execution)
 
-The return type from both creator and curator flows. Never raised as an
-exception -- exceptions are caught and converted into this type at the worker
-boundary.
+The worker's result for one creator or curator execution. It carries an error
+message on failure, or the staged Parquet path and output artifact IDs on success.
 
-```
-StagingResult
-├── success: bool
-├── error: str | None          # "ValueError: invalid input format"
-├── staging_path: Path | None  # where staged Parquet files live
-├── execution_run_id: str | None
-└── artifact_ids: list[str]    # empty on failure
-```
+### UnitResult (dispatch boundary)
 
-### Result dict (dispatch boundary)
-
-A plain dict that the dispatch layer produces from `StagingResult`. The step
-executor feeds these dicts to `aggregate_results()` (which reads `success`
-and `item_count`) and `extract_execution_run_ids()` (which collects the run
-IDs for commit).
-
-```
-{"success": bool, "error": str | None, "item_count": int, "execution_run_ids": [...]}
-```
+A frozen dispatch result with the unit's outcome, error, item count, and
+execution run IDs to commit. Runner providers can attach captured worker logs,
+including stderr from a killed job. The step executor aggregates these results.
 
 ### StepResult (step aggregate)
 
-The final, immutable record for a step. Counts successes and failures across
-all workers.
-
-```
-StepResult
-├── success: bool
-├── succeeded_count: int
-├── failed_count: int
-├── total_count: int
-├── duration_seconds: float | None
-└── metadata: dict             # may contain "dispatch_error" or "commit_error"
-```
+The final, immutable record for a step. It counts successes and failures across
+all workers and reports the step's authoritative status and duration.
+Infrastructure problems -- a dispatch or commit that itself crashed -- make the
+step `failed` and appear in its single `error` field rather than as item
+failures.
 
 ---
 
-## Recording: every attempt is persisted
+## Structured failure identity
 
-Every execution attempt -- success or failure -- produces a record in Delta
-Lake. When you ask "why did this fail?", the answer is queryable.
+`StepResult.status` answers whether the step completed successfully, partially,
+or unsuccessfully. Structured error details answer a different question: what
+failed and what action might help.
 
-Failed executions are persisted with the same schema as successes. The
-`executions` table row includes:
+Framework exceptions derived from `artisan.errors.ArtisanError` carry a stable
+`code` and an `ArtisanErrorEnvelope`. The envelope combines a readable message
+with available context such as the operation, an offending field, suggestions,
+and a `recovery_hint`. Automation can branch on the code rather than parse an
+error string. The hint suggests a next action; it does not retry or repair work.
 
-- `success: False`
-- `error: "ValueError: invalid input format"`
-- `execution_run_id`, `execution_spec_id`
-- Timestamps, source worker ID
-- Input artifact IDs (via the `execution_edges` table, joined on `execution_run_id`)
+Store, artifact-integrity, persistence, lineage, and execution-contract errors
+use this hierarchy. Python callers can catch `ArtisanError` at an appropriate
+boundary and inspect its `code` or serialize it with `to_dict()`. See
+[Python API](../reference/python-api.md) for the exception classes, codes, and
+current envelope definition.
 
-At the step level, the `steps` table records `status="failed"` with the error
-string, or `status="completed"` with `failed_count` and `succeeded_count`
-for partial failures. Infrastructure-level problems are captured separately
-in `dispatch_error` and `commit_error` columns.
+When a failed execution carries an Artisan error, its persisted execution
+record includes an `error_envelope`. `inspect_failures()` exposes structured
+code, recovery hint, offending field, and suggestions alongside the error and
+log location. An ordinary exception such as `ValueError` may have no envelope;
+its structured columns are then null, while its error text remains available.
+Not every result object carries an envelope, and a step-level infrastructure
+failure need not have a failed execution row.
 
-### Failure logs
+### Failure evidence and logs
 
-Beyond the structured records in Delta Lake, the framework writes
-human-readable failure log files for each failed execution. These logs include
-the execution run ID, operation name, step number, compute backend, timestamp,
-and full error traceback. When running on SLURM, worker stderr is appended
-to the log after job completion. These files provide a quick diagnostic path
-without needing to query Delta Lake.
+Execution records identify the attempt, operation configuration, timestamps,
+and success or failure. Execution edges retain its input IDs. The terminal
+step snapshot records the aggregate state and counts. Supported readers expose
+this evidence through the
+[logical commit boundary](storage-and-delta-lake.md#commit-ordering).
 
-### The double-fault handler
+Human-readable failure logs include the execution identity and traceback, plus
+worker output when the runner captures it. Logs are grouped by the source
+execution's UTC start date. Reusing an execution in another run preserves its
+original execution and log identity.
 
-What if writing the failure record itself fails (disk full, permission error)?
-The recorder has a fallback: it catches the staging exception, combines both
-error messages, and returns a `StagingResult` with the combined error. The
-error message still flows upward through the return value so the orchestrator
-can count it. The execution record may be missing from Delta Lake, but the
-failure is never silently swallowed.
+See [Inspect Pipeline Results and Provenance](../how-to-guides/inspecting-provenance.md)
+for selecting a run and reading failures, or
+[Debug Executions](../how-to-guides/debugging-executions.md) for diagnostic replay.
 
 ---
 
 (you-control-the-response)=
 ## You control the response
 
-The framework distinguishes two failure policies. You choose which one applies.
+Choose a failure policy based on whether partial results are usable:
 
 | Policy | Behavior | When to use |
 |--------|----------|-------------|
 | `continue` (default) | Collect all results, count successes and failures, keep going | Most pipelines -- partial results are valuable |
-| `fail_fast` | Abort on the first failure | When partial results are meaningless, or failures indicate a systemic problem |
+| `fail_fast` | Fail the step on an observed failure; preserve finished work for audit | When partial results are meaningless, or failures indicate a systemic problem |
 
-With `continue`, a step that processes 1,000 items with 3 failures completes
-normally. The 997 successes are committed. Downstream steps receive whatever
-succeeded. You inspect the `StepResult` and the executions table to diagnose
-the 3 failures.
+With `continue`, a step that processes 1,000 items with 3 failures becomes
+`partial`. The 997 successes are committed and remain available to downstream
+steps. If every item fails, the step becomes `failed` and exposes no output
+references. You inspect the `StepResult` and the executions table to diagnose
+the failures.
 
-With `fail_fast`, the first failure raises a `RuntimeError` that propagates
-through the dispatch and step layers. The pipeline manager catches it and
-returns a failed `StepResult`. Work already completed by other workers is
-still committed -- only remaining work is aborted.
+With `fail_fast`, any observed item failure makes the step `failed`, so its
+outputs are unavailable to downstream steps. The failed execution and any
+sibling work that already finished are persisted for audit.
 
-The policy can be set at two levels:
+Set the policy as a default or override:
 
 - **Pipeline default** -- applies to all steps unless overridden
+- **Composite default** -- applies to children unless they override it
 - **Per-step override** -- applies to a single `run()` or `submit()` call
 
 ---
 
 ## Failures and caching
 
-The framework's caching system interacts with failures through the cache
-policy. Two policies control whether a step with partial failures qualifies
-as a cache hit on re-run:
+Cache policy controls whether a partial step qualifies for whole-step reuse:
 
 | Cache policy | Behavior |
 |--------------|----------|
-| `all_succeeded` (default) | Cache hit only when the step had zero execution failures |
-| `step_completed` | Cache hit for any completed step, regardless of failure count |
+| `all_succeeded` (default) | Cache hit only for a `succeeded` attempt |
+| `step_completed` | Cache hit for a `succeeded` or `partial` attempt |
 
-Both policies block caching when infrastructure errors occurred (dispatch
-or commit failures). The distinction matters when you re-run a pipeline
-after fixing a bug: with `all_succeeded`, the step re-executes so the
-previously-failed items get another chance. With `step_completed`, the
-step is skipped because it already ran to completion, even though some
-items failed.
+Failed, cancelled, and skipped attempts never qualify. The distinction matters
+when you re-run a pipeline after fixing a bug: with `all_succeeded`, a partial
+step re-executes so failed items get another chance. With `step_completed`, its
+accepted successful subset is reused with `disposition="cache_hit"`.
 
 ---
 
 ## Empty inputs and pipeline stopping
 
-When a step receives no input artifacts -- because an upstream step produced
-nothing, or a filter removed all items -- the step is skipped rather than
-executed. This is not treated as a failure; it is recorded with
-`status="skipped"` and `skip_reason="empty_inputs"`.
+When a step's input roles contain no artifacts, Artisan records
+`status="skipped"` and `skip_reason="empty_inputs"`. This can happen after a
+filter removes every item or an upstream step produces nothing.
 
-Skipping propagates forward: once a step is skipped due to empty inputs, all
-subsequent steps in the pipeline are also skipped, since they depend on the
-outputs of the skipped step. The pipeline records each skipped step and
-completes normally, giving you visibility into where the data ran out.
+When the manager detects empty inputs before dispatch, it stops accepting work
+for that pipeline. Later submissions, including independent steps, are skipped
+with `skip_reason="pipeline_stopped"`. A source operation with no input contract
+can still start a pipeline normally.
 
 ---
 
@@ -266,104 +161,90 @@ Some errors are caught before any execution starts. When you call `run()` or
 `submit()`, the pipeline manager validates your inputs immediately:
 
 - Unrecognized parameter keys
-- Invalid resource, execution, environment, or tool configuration keys
+- Unrecognized resource, batching, environment, or tool configuration keys
 - Input roles that do not match the operation's declared inputs
 - Missing required input roles
-- Input type mismatches
+- Declared upstream output types that do not match the consuming input role
 
-These raise `ValueError` at call time, before any dispatching or worker
-allocation. This is intentional: configuration mistakes should fail fast and
-loud, not silently produce wrong results or waste compute.
+These call-shape errors raise before accepting a step attempt. Validation of
+values in recognized parameter fields happens when Artisan constructs the
+operation during preparation. If that fails, `run()` returns a failed
+`StepResult`; it does not necessarily raise the model's validation exception.
+Construct the operation's `Params` directly when you want to validate values
+before submission.
+
+Checks that read stored inputs, such as identity, content, external locations,
+and input pairing, also happen during preparation after acceptance. Their
+failures become failed attempts. Empty-input handling can skip a step before
+those checks run. See [Python API](../reference/python-api.md) for each entry
+point's documented exceptions.
 
 ---
 
 ## Subprocess and composite error handling
 
-Two execution modes have their own error containment strategies.
-
 ### Curator operations in subprocesses
 
-Curator operations run in a spawned subprocess for memory isolation. If the
-subprocess is killed (out-of-memory, SLURM timeout), the framework catches the
-`BrokenProcessPool` exception, generates a synthetic execution run ID, records
-the failure to Delta Lake with the error details, and returns a failed
-`StepResult`. The killed process does not take down the orchestrator.
+Curator operations run in a spawned subprocess for memory isolation. If it is
+killed, for example by the operating system's OOM killer, Artisan detects the
+broken process pool and attempts to record a synthetic execution failure.
+Managed commands still require cleanup. If that cleanup cannot be confirmed,
+the step fails and retains its workspace instead of collecting outputs.
 
 ### Composite operations
 
-In **collapsed** mode, a failure in any internal `ctx.run()` call aborts the
-entire composite. Artifacts are passed in-memory between operations, so there
-is no meaningful partial result to preserve. The composite executor catches the
-failure and returns a `StagingResult` with the error from the failing operation.
-At the step level, the composite failure is counted as a single failed item.
-
-In **expanded** mode, each internal operation runs as its own pipeline step
-and fails independently with standard step-level error handling.
+A composite's children use ordinary step error handling. A failed child exposes
+no outputs, so dependent steps receive empty inputs and skip.
 
 For the full composites model, see
 [Composites and Composition](composites-and-composition.md).
 
 ---
 
+## Cancellation and uncertain cleanup
+
+Cancellation is a request until Artisan can establish what happened to the
+worker and its managed commands. Confirmed cleanup produces a `cancelled` step;
+unknown cleanup produces a `failed` step without accepted outputs. Work that
+already completed can reject cancellation and keep its natural result.
+
+For example, a successful request to cancel a Modal call does not prove that its
+container stopped. Artisan records `unknown` and suppresses output download and
+ingestion for that call. Check the provider before reusing external files. See
+[Cancellation](execution-flow.md#cancellation) for native, container, and remote
+limits.
+
 ## Crash recovery
 
-If the orchestrator process crashes mid-pipeline (power failure, `kill -9`),
-staged Parquet files from completed workers may be left on disk without having
-been committed to Delta Lake. On the next pipeline initialization, the
-framework detects these orphaned staging files and commits them. This is
-controlled by the `recover_staging` option (enabled by default) and ensures
-that work completed before the crash is not lost.
+After interruption, startup retries eligible recorded commits and recovers
+validated finished execution units before cache lookup. Cancellation and failure
+retain uncommitted staging; recovery leaves the original step status unchanged.
+Incomplete evidence stays in place, while corruption or ownership conflicts
+block startup.
+
+Confirm that the old orchestrator has stopped before reopening its roots. See
+[Crash recovery](storage-and-delta-lake.md#storage-crash-recovery) for the independent
+recovery and preservation flags, and
+[explicit repair](../how-to-guides/configuring-execution.md#recovering-from-crashes)
+for inspecting evidence or applying recovery separately.
 
 ---
 
-## Severity, not category
+## Deciding how to respond
 
-The framework does not distinguish between *kinds* of failures for control
-flow. Operation bugs, missing files, network errors, disk full, SLURM
-timeouts -- all are handled identically: catch, record, report, continue.
-
-The distinction that matters is **severity at the pipeline level**, not the
-error category. Four severity levels emerge naturally from the layered
-architecture:
-
-| Severity | Meaning | How it manifests |
-|----------|---------|------------------|
-| Item failure | One input could not be processed | `StagingResult(success=False)` |
-| Step partial failure | Some items in a step failed | `StepResult(failed_count=N, succeeded_count=M)` |
-| Step total failure | All items in a step failed | `StepResult(succeeded_count=0)` |
-| Infrastructure failure | Dispatch or commit itself crashed | `StepResult` with error in `metadata` |
-
-You decide what severity warrants action. The framework gives you the data
-to make that decision.
-
----
-
-## Design summary
-
-| Principle | What it means |
-|-----------|---------------|
-| Errors are data | Failures become structured records, not stack traces |
-| Contain at the boundary | Each layer catches exceptions and returns structured results |
-| Preserve the message | Original error type and message survive end-to-end |
-| Record everything | Every attempt (success or failure) is persisted to Delta Lake |
-| Defense in depth | Four nested safety nets, each independently responsible |
-| Return, don't raise | Functions return results; exceptions are for programming errors |
-| Continue by default | Partial results are preserved; `fail_fast` is opt-in |
+Inspect the terminal step state first, then execution failures where present.
+Use the preserved evidence to correct inputs or configuration, retry applicable
+work, or inspect the store before attempting repair.
 
 ---
 
 ## Cross-references
 
-- [Error Handling in Practice tutorial](../tutorials/execution/04-error-visibility.ipynb) --
+- [Error Handling in Practice tutorial](../tutorials/05-errors-and-control/02-error-visibility.ipynb) --
   Runtime failures, failure logs, and FailurePolicy in action
-- [Pipeline Cancellation tutorial](../tutorials/execution/08-pipeline-cancellation.ipynb) --
+- [Pipeline Cancellation tutorial](../tutorials/05-errors-and-control/03-pipeline-cancellation.ipynb) --
   Cooperative cancellation, signal handling, and cancelled step metadata
-- [Resume and Caching tutorial](../tutorials/execution/02-resume-and-caching.ipynb) --
+- [Resume and Caching tutorial](../tutorials/03-caching/01-resume-and-caching.ipynb) --
   How caching interacts with failures during re-runs
-- [Execution Flow](execution-flow.md) -- Dispatch, execute, commit lifecycle
-  where error boundaries live
-- [Design Principles](design-principles.md) -- Foundational design decisions
-- [Architecture Overview](architecture-overview.md) -- Layer boundaries and
-  the orchestrator-worker split
 - [Coding Conventions: Error Handling](../contributing/coding-conventions.md#error-handling) --
   Implementation patterns and code examples

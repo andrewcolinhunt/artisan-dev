@@ -288,18 +288,8 @@ class TestParams:
 class TestModelBehavior:
     def test_extra_fields_forbidden(self):
         cls = _make_valid_composite("test_extra_forbid")
-        with pytest.raises(Exception):  # noqa: B017
+        with pytest.raises(Exception):
             cls(unknown_field="value")
-
-    def test_resources_default(self):
-        cls = _make_valid_composite("test_resources_default")
-        instance = cls()
-        assert instance.resources.cpus == 1
-
-    def test_execution_default(self):
-        cls = _make_valid_composite("test_execution_default")
-        instance = cls()
-        assert instance.execution.artifacts_per_unit == 1
 
 
 # ---------------------------------------------------------------------------

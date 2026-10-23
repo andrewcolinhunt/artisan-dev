@@ -10,7 +10,7 @@ from artisan.schemas.specs.input_spec import InputSpec
 
 
 class TestInputSpec:
-    """Tests for InputSpec dataclass."""
+    """Tests for the InputSpec model."""
 
     def test_create_with_artifact_type(self):
         """Create InputSpec with explicit artifact type."""
@@ -92,3 +92,56 @@ class TestMaterializeAs:
             materialize_as=".dat",
         )
         assert hash(spec1) != hash(spec2)
+
+
+class TestArtifactTypeValidator:
+    """Tests for the artifact_type field validator."""
+
+    def test_default_any_accepted(self):
+        """InputSpec() constructs and defaults artifact_type to ANY."""
+        spec = InputSpec()
+        assert spec.artifact_type == ArtifactTypes.ANY
+
+    @pytest.mark.parametrize(
+        "artifact_type",
+        [
+            ArtifactTypes.METRIC,
+            ArtifactTypes.FILE_REF,
+            ArtifactTypes.CONFIG,
+            ArtifactTypes.DATA,
+        ],
+    )
+    def test_registered_key_accepted(self, artifact_type: str):
+        """Each built-in registered key is accepted."""
+        spec = InputSpec(artifact_type=artifact_type)
+        assert spec.artifact_type == artifact_type
+
+    def test_unregistered_string_rejected(self):
+        """Unregistered strings raise with a helpful message."""
+        with pytest.raises(ValidationError) as exc_info:
+            InputSpec(artifact_type="totally_made_up")
+        msg = str(exc_info.value)
+        assert "totally_made_up" in msg
+        assert "metric" in msg
+        assert "ArtifactTypeDef" in msg
+
+
+@pytest.mark.parametrize(
+    "overrides",
+    [{"artifact_type": "data"}, {"hydrate": False}, {"materialize": True}],
+)
+def test_resolve_references_rejects_invalid_delivery_mode(overrides: dict) -> None:
+    values = {"artifact_type": "config", "materialize": False, **overrides}
+    with pytest.raises(ValidationError, match="resolve_references requires"):
+        InputSpec(resolve_references=True, **values)
+
+
+def test_resolve_references_enters_schema_equality_and_hash() -> None:
+    plain = InputSpec(artifact_type="config", materialize=False)
+    resolved = InputSpec(
+        artifact_type="config", materialize=False, resolve_references=True
+    )
+    assert not plain.resolve_references
+    assert resolved != plain
+    assert hash(resolved) != hash(plain)
+    assert resolved.model_dump(mode="json")["resolve_references"] is True

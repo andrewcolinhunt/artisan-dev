@@ -1,6 +1,6 @@
 # How-to Guides
 
-Task-oriented instructions for common Artisan framework operations. Each guide follows a consistent format: prerequisites, step-by-step instructions, and a verification step to confirm success.
+Build operations, configure pipelines, and work with results.
 
 ## Operations
 
@@ -16,24 +16,35 @@ Task-oriented instructions for common Artisan framework operations. Each guide f
 ## Pipelines
 
 - [Building a Pipeline](building-a-pipeline.md) -- Create, wire, and execute
-  a pipeline from scratch
+  a pipeline
 
 ## Configuration
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
-  batching, and SLURM configuration
-- [Connect to Prefect](connect-to-prefect.md) -- Connect pipelines to Prefect
-  for monitoring
+  batching, and runner configuration
+- [Deploy Tool Endpoints](deploying-tool-endpoints.md) -- Deploy command operations
+  and configure object-store input/output delivery
+- [Debug a Recorded Execution](debugging-executions.md) -- Replay one unit and
+  retain diagnostic evidence
+- [Op Container Images](op-container-images.md) -- Build, resolve, and pin
+  the image an operation runs in, for Modal and external harnesses
+- [Configuring S3-Compatible Storage](configuring-s3.md) -- Point Delta
+  Lake, staging, and inputs at S3, MinIO, or any S3-compatible backend
 
 ## Results
 
+- [Inspect Evidence Locally](inspecting-evidence.md) -- Find available queries
+  and inspect runs through Python or the CLI
+- [Export Complete Evidence](exporting-evidence.md) -- Save and verify complete
+  assessments and comparisons
+- [Connect an MCP Client](connecting-mcp.md) -- Discover operations and inspect
+  runs and failure logs through the read-only MCP server
 - [Inspecting Provenance](inspecting-provenance.md) -- Query lineage and trace
   artifact history
-- [Exporting Results](exporting-results.md) -- Extract data from Delta tables
-  and export artifacts
+- [Exporting Results](exporting-results.md) -- Export accepted run outputs and materialize artifacts
 
 ## Cross-references
 
 - [Concepts](../concepts/index.md) -- Understand the design decisions behind the tasks in these guides
-- [Reference](../reference/index.md) -- API details and schema specifications for types used in these guides
+- [Reference](../reference/index.md) -- Public entry points, source contracts, and terminology
 - [Tutorials](../tutorials/index.md) -- Hands-on walkthroughs that introduce the framework interactively

@@ -15,65 +15,162 @@ from __future__ import annotations
 
 import io
 import json
-from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import polars as pl
+from fsspec import AbstractFileSystem
+from pydantic import BaseModel, ValidationError
 
+from artisan.errors import StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.command_record import CommandRecording
+from artisan.storage.core.committed_scan import read_committed, scan_committed
+from artisan.storage.core.store_format import assert_store_format
 from artisan.utils.dicts import flatten_dict
+from artisan.utils.log_paths import failure_log_relative_path, worker_log_path
+
+if TYPE_CHECKING:
+    from polars.datatypes import DataType, DataTypeClass
+
+    from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.utils.path import uri_join
 
 # ======================================================================
 # Public API
 # ======================================================================
 
 
+def _validated_fs(
+    delta_root: str,
+    fs: AbstractFileSystem | None,
+    storage_options: dict[str, str] | None,
+) -> AbstractFileSystem:
+    """Resolve the filesystem and enforce the store-format gate."""
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
+
+        fs = LocalFileSystem()
+    assert_store_format(delta_root, fs, storage_options)
+    return fs
+
+
+def inspect_worker_log(
+    delta_root: str,
+    execution_run_id: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict[str, str] | None = None,
+) -> str | None:
+    """Read an exact execution's provider log, including uncommitted attempts.
+
+    Separate provider diagnostics take precedence over a committed embedded log.
+    Missing logs return None. The ID must be a literal path component.
+
+    Args:
+        delta_root: Store root containing execution records and diagnostics.
+        execution_run_id: Original execution attempt ID.
+        fs: Filesystem for the store; defaults to the local filesystem.
+        storage_options: Delta-rs options for reading embedded diagnostics.
+    """
+    path = worker_log_path(delta_root, execution_run_id)
+    fs = _validated_fs(delta_root, fs, storage_options)
+    if fs.exists(path):
+        with fs.open(path, "rb") as stream:
+            return cast(bytes, stream.read()).decode("utf-8")
+    executions = read_committed(
+        delta_root, TablePath.EXECUTIONS, fs=fs, storage_options=storage_options
+    ).filter(pl.col("execution_run_id") == execution_run_id)
+    if executions.is_empty():
+        return None
+    return cast(str | None, executions.item(0, "worker_log"))
+
+
+def inspect_commands(
+    delta_root: str,
+    execution_run_id: str,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict[str, str] | None = None,
+) -> dict[str, Any]:
+    """Read the canonical command evidence for exactly one committed execution.
+
+    Args:
+        delta_root: Root of the current-format Artisan store.
+        execution_run_id: Execution attempt to inspect.
+        fs: Filesystem for store access; defaults to local storage.
+        storage_options: Delta-rs options for cloud storage.
+
+    Returns:
+        Validated command recording, including omissions and missing invocations.
+
+    Raises:
+        FileNotFoundError: No committed execution has this ID.
+        StoreIntegrityError: The ID is duplicated or its evidence is malformed.
+    """
+    fs = _validated_fs(delta_root, fs, storage_options)
+    rows = (
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTIONS,
+            fs=fs,
+            storage_options=storage_options,
+        )
+        .filter(pl.col("execution_run_id") == execution_run_id)
+        .select("command_recording")
+        .collect()
+    )
+    if rows.height == 0:
+        msg = f"Committed execution {execution_run_id!r} not found"
+        raise FileNotFoundError(msg)
+    if rows.height != 1:
+        msg = "Duplicate committed execution ID"
+        raise StoreIntegrityError(msg)
+    try:
+        return CommandRecording.model_validate_json(rows.item()).model_dump(mode="json")
+    except (ValidationError, TypeError, ValueError):
+        msg = "Invalid canonical command recording"
+        raise StoreIntegrityError(msg) from None
+
+
 def inspect_pipeline(
-    delta_root: Path | str,
+    delta_root: str,
     *,
     pipeline_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Pipeline-level overview — one row per step.
 
     Args:
         delta_root: Path to Delta Lake root.
         pipeline_run_id: Filter to a specific run. Latest if None.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with columns: step, operation, status, produced, duration.
+        ``status`` uses the authoritative lifecycle vocabulary, including
+        pending and running attempts.
 
     Raises:
         FileNotFoundError: If steps table doesn't exist.
     """
-    delta_root = Path(delta_root)
-    steps_path = delta_root / TablePath.STEPS
-    if not steps_path.exists():
+    fs = _validated_fs(delta_root, fs, storage_options)
+    steps_path = uri_join(delta_root, TablePath.STEPS)
+    if not fs.exists(steps_path):
         msg = f"Steps table not found at {steps_path}"
         raise FileNotFoundError(msg)
 
-    # Load completed, skipped, and cancelled steps
-    scanner = pl.scan_delta(str(steps_path)).filter(
-        pl.col("status").is_in(["completed", "skipped", "cancelled"])
-    )
-    if pipeline_run_id is not None:
-        scanner = scanner.filter(pl.col("pipeline_run_id") == pipeline_run_id)
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
-    steps_df = (
-        scanner.select(
-            "pipeline_run_id",
-            "step_number",
-            "step_name",
-            "operation_class",
-            "status",
-            "succeeded_count",
-            "duration_seconds",
-        )
-        .sort("step_number")
-        .collect()
-    )
-
-    if steps_df.is_empty():
+    states = StepTracker(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+    ).load_current_states(pipeline_run_id)
+    if not states:
         return pl.DataFrame(
             schema={
                 "step": pl.Int32,
@@ -84,65 +181,47 @@ def inspect_pipeline(
             }
         )
 
-    # Resolve pipeline_run_id from first row if not provided
-    run_id = pipeline_run_id or steps_df["pipeline_run_id"][0]
-    if pipeline_run_id is None:
-        steps_df = steps_df.filter(pl.col("pipeline_run_id") == run_id)
+    run_id = states[0].pipeline_run_id
 
-    # Deduplicate by step_number (keep last)
-    steps_df = steps_df.unique(subset=["step_number"], keep="last").sort("step_number")
-
-    # Load artifact index for counts
-    index_path = delta_root / TablePath.ARTIFACT_INDEX
     index_counts: dict[int, dict[str, int]] = {}
-    if index_path.exists():
-        idx_df = pl.scan_delta(str(index_path)).collect()
-        if not idx_df.is_empty():
-            grouped = (
-                idx_df.group_by("origin_step_number", "artifact_type")
-                .len()
-                .sort("origin_step_number")
-            )
-            for row in grouped.iter_rows(named=True):
-                step_num = row["origin_step_number"]
-                if step_num not in index_counts:
-                    index_counts[step_num] = {}
-                index_counts[step_num][row["artifact_type"]] = row["len"]
+    from artisan.storage.core.run_scope import load_accepted_outputs
+
+    outputs = load_accepted_outputs(
+        delta_root,
+        fs=fs,
+        storage_options=storage_options,
+        pipeline_run_id=run_id,
+    )
+    distinct_outputs = outputs.select(
+        "current_step_number", "artifact_id", "artifact_type"
+    ).unique()
+    for output in distinct_outputs.iter_rows(named=True):
+        counts = index_counts.setdefault(output["current_step_number"], {})
+        artifact_type = output["artifact_type"]
+        counts[artifact_type] = counts.get(artifact_type, 0) + 1
 
     # Build result rows
     rows: list[dict[str, Any]] = []
-    for row in steps_df.iter_rows(named=True):
-        step_num = row["step_number"]
-
-        if row["status"] == "skipped":
+    usable = {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+    for state in states:
+        step_num = state.step_number
+        if state.status not in usable:
             rows.append(
                 {
                     "step": step_num,
-                    "operation": row["step_name"],
-                    "status": "skipped",
+                    "operation": state.step_name,
+                    "status": state.status.value,
                     "produced": "-",
                     "duration": "-",
                 }
             )
             continue
 
-        if row["status"] == "cancelled":
-            rows.append(
-                {
-                    "step": step_num,
-                    "operation": row["step_name"],
-                    "status": "cancelled",
-                    "produced": "-",
-                    "duration": "-",
-                }
-            )
-            continue
-
-        op_class = row["operation_class"] or ""
-        is_filter = "Filter" in op_class or "filter" in (row["step_name"] or "")
+        op_class = state.operation_class or ""
+        is_filter = "Filter" in op_class or "filter" in state.step_name
 
         if is_filter:
-            produced = f"{row['succeeded_count'] or 0} passed"
+            produced = f"{state.succeeded_count or 0} passed"
         else:
             counts = index_counts.get(step_num, {})
             if counts:
@@ -150,15 +229,14 @@ def inspect_pipeline(
                 produced = ", ".join(parts)
             else:
                 produced = "-"
-
-        duration_s = row["duration_seconds"]
+        duration_s = state.duration_seconds
         duration = f"{duration_s:.1f}s" if duration_s is not None else "-"
 
         rows.append(
             {
                 "step": step_num,
-                "operation": row["step_name"],
-                "status": "ok",
+                "operation": state.step_name,
+                "status": state.status.value,
                 "produced": produced,
                 "duration": duration,
             }
@@ -167,20 +245,404 @@ def inspect_pipeline(
     return pl.DataFrame(rows)
 
 
+_FAILURES_SCHEMA: dict[str, DataType | DataTypeClass] = {
+    "step": pl.Int32,
+    "operation": pl.String,
+    "execution_run_id": pl.String,
+    "timestamp_start": pl.Datetime("us", "UTC"),
+    "code": pl.String,
+    "recovery_hint": pl.String,
+    "field": pl.String,
+    "suggestions": pl.List(pl.String),
+    "error": pl.String,
+    "log": pl.String,
+}
+
+
+def inspect_failures(
+    delta_root: str,
+    *,
+    pipeline_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> pl.DataFrame:
+    """Report failed executions and their structured errors.
+
+    Scans ``executions`` for ``success == False``, deserializes each
+    ``error_envelope`` into its structured fields (``code``,
+    ``recovery_hint``, ``field``, ``suggestions``), and surfaces them
+    alongside step/op identity, the error string, and a pointer to the
+    human failure log. Rows whose failure carried no ``ArtisanError``
+    (``error_envelope`` NULL) show the string and log only, with null
+    structured fields.
+
+    Complements ``inspect_pipeline`` (the step overview): this surfaces the
+    failed *executions* within any step, including partial failures inside
+    a terminal step attempt.
+
+    Args:
+        delta_root: Path to Delta Lake root.
+        pipeline_run_id: Exact run whose execution participation to inspect.
+            Reused executions appear at their current logical positions while
+            retaining source execution/log identity. None reports executions
+            across all runs at their origin steps.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
+
+    Returns:
+        DataFrame with columns: step, operation, execution_run_id, timestamp_start, code,
+        recovery_hint, field, suggestions, error, log. ``log`` is the
+        relative fragment ``YYYYMMDD/YYYYMMDDTHHMMSSffffffZ_executionID.log``;
+        prefix it with ``<runs_dir>/logs/failures/``. Rows sort by source
+        start time, execution ID, then current step, oldest first.
+
+    Raises:
+        IncompatibleStoreError: The root lacks the current store-format contract.
+        FileNotFoundError: Both execution and step tables are absent after
+            store-format validation. An initialized store without failures
+            returns an empty frame.
+    """
+    fs = _validated_fs(delta_root, fs, storage_options)
+    executions_path = uri_join(delta_root, TablePath.EXECUTIONS)
+    if not fs.exists(executions_path):
+        steps_path = uri_join(delta_root, TablePath.STEPS)
+        if fs.exists(steps_path):
+            return pl.DataFrame(schema=_FAILURES_SCHEMA)
+        msg = f"Executions table not found at {executions_path}"
+        raise FileNotFoundError(msg)
+
+    if pipeline_run_id is not None:
+        from artisan.storage.core.run_scope import load_execution_membership
+
+        failures = load_execution_membership(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=pipeline_run_id,
+        ).filter(~pl.col("success"))
+        failures = failures.select(
+            "execution_run_id",
+            "timestamp_start",
+            pl.col("current_step_number").alias("origin_step_number"),
+            "operation_name",
+            "error",
+            "error_envelope",
+        )
+    else:
+        failures = (
+            scan_committed(
+                delta_root,
+                TablePath.EXECUTIONS,
+                fs=fs,
+                storage_options=storage_options,
+            )
+            .filter(~pl.col("success"))
+            .select(
+                "execution_run_id",
+                "timestamp_start",
+                "origin_step_number",
+                "operation_name",
+                "error",
+                "error_envelope",
+            )
+            .collect()
+        )
+
+    rows: list[dict[str, Any]] = []
+    for row in failures.iter_rows(named=True):
+        code = recovery_hint = field = None
+        suggestions: list[str] | None = None
+        env_json = row["error_envelope"]
+        if env_json is not None:
+            env = json.loads(env_json)
+            code = env.get("code")
+            recovery_hint = env.get("recovery_hint")
+            field = env.get("field")
+            suggestions = env.get("suggestions")
+        step = row["origin_step_number"]
+        operation = row["operation_name"]
+        rows.append(
+            {
+                "step": step,
+                "operation": operation,
+                "execution_run_id": row["execution_run_id"],
+                "timestamp_start": row["timestamp_start"],
+                "code": code,
+                "recovery_hint": recovery_hint,
+                "field": field,
+                "suggestions": suggestions,
+                "error": row["error"],
+                "log": failure_log_relative_path(
+                    row["execution_run_id"], row["timestamp_start"]
+                ),
+            }
+        )
+
+    if not rows:
+        return pl.DataFrame(schema=_FAILURES_SCHEMA)
+    return pl.DataFrame(rows, schema=_FAILURES_SCHEMA).sort(
+        "timestamp_start", "execution_run_id", "step"
+    )
+
+
+_RECOVERY_ACTIONS = {
+    "CHECK_INPUT": "Check the operation's inputs and parameters against its schema.",
+    "RETRY_LATER": "Retry the run; the failure may be transient.",
+    "TRY_ALTERNATIVE": "Try an alternative operation or configuration.",
+    "REPORT_TO_USER": "Surface this failure to the user; it needs human attention.",
+}
+"""Deterministic recovery_hint → next-action mapping (no heuristics)."""
+
+_DEFAULT_ACTION = "Read the failure log for the full error and traceback."
+
+
+class DiagnosisUpstreamScope(BaseModel):
+    """Coverage of the selected failed-output seed and depth-limited walks."""
+
+    seed_limit: int = 10
+    seed_count: int = 0
+    total_seed_count: int | None = 0
+    seed_selection_truncated: bool | None = False
+    depth: int = 2
+    traversal_truncated: bool | None = False
+
+
+class RunDiagnosis(BaseModel):
+    """Composite failure diagnosis for one run — pure composition, no new state.
+
+    Attributes:
+        pipeline_run_id: The diagnosed run.
+        last_status: The run's most recent step status, or None if unknown.
+        failed_steps: One deserialized ``inspect_failures`` row per failed
+            execution in the run.
+        similar_runs: Recent runs whose ``last_status`` was ``failed``,
+            excluding this run (context for a recurring failure).
+        upstream_edges: Backward provenance edges from the artifacts the
+            failed steps produced, deduplicated and depth-bounded.
+        suggested_actions: Deterministic next actions derived from the
+            failed steps' ``recovery_hint`` values.
+        matching_failed_run_count: All other failed run rollups before the
+            recent-run window is applied; not a causal similarity count.
+        similar_run_limit: Maximum number of recent failed runs retained.
+        upstream_scope: Seed selection and depth coverage of the selected
+            upstream edge union, independent of response pagination.
+    """
+
+    pipeline_run_id: str
+    last_status: str | None
+    failed_steps: list[dict[str, Any]]
+    similar_runs: list[dict[str, Any]]
+    upstream_edges: list[dict[str, str]]
+    suggested_actions: list[str]
+    matching_failed_run_count: int
+    similar_run_limit: int = 5
+    upstream_scope: DiagnosisUpstreamScope
+
+
+def diagnose_run(
+    delta_root: str,
+    pipeline_run_id: str,
+    *,
+    storage: StorageConfig | None = None,
+) -> RunDiagnosis:
+    """Diagnose one run's failures by composing the shipped readers.
+
+    Composes ``inspect_failures`` (failed executions + envelopes),
+    ``run_history.list_runs`` (this run's status and recent failed runs),
+    and ``provenance_edges`` (backward lineage from the failed steps'
+    artifacts). ``suggested_actions`` is a fixed mapping from the failures'
+    ``recovery_hint`` values — no inference.
+
+    Args:
+        delta_root: Path to Delta Lake root.
+        pipeline_run_id: The run to diagnose.
+        storage: Storage configuration for cloud backends. Defaults to
+            local filesystem.
+
+    Returns:
+        A ``RunDiagnosis``. An initialized store without failed executions
+        yields a diagnosis with no failed steps.
+
+    Raises:
+        IncompatibleStoreError: The root lacks the current store-format contract.
+        FileNotFoundError: Required tables are missing after store-format
+            validation, propagated from the underlying readers.
+    """
+    from artisan.orchestration.run_history import list_runs
+    from artisan.schemas.execution.storage_config import StorageConfig
+
+    storage = storage or StorageConfig()
+    failed_steps = inspect_failures(
+        delta_root,
+        pipeline_run_id=pipeline_run_id,
+        storage_options=storage.delta_storage_options(),
+        fs=storage.filesystem(),
+    ).to_dicts()
+
+    runs = list_runs(delta_root, storage=storage).to_dicts()
+    last_status = next(
+        (r["last_status"] for r in runs if r["pipeline_run_id"] == pipeline_run_id),
+        None,
+    )
+    matching_runs = [
+        r
+        for r in runs
+        if r["pipeline_run_id"] != pipeline_run_id and r["last_status"] == "failed"
+    ]
+    matching_runs.sort(key=lambda row: row["pipeline_run_id"])
+    matching_runs.sort(
+        key=lambda row: (row["started_at"] is not None, row["started_at"]),
+        reverse=True,
+    )
+    similar_runs = matching_runs[:5]
+
+    upstream_edges, upstream_scope = _failure_upstream_edges(
+        delta_root, failed_steps, storage
+    )
+
+    hints = {
+        hint
+        for step in failed_steps
+        if isinstance(hint := step.get("recovery_hint"), str)
+    }
+    suggested = list(
+        dict.fromkeys(
+            _RECOVERY_ACTIONS.get(hint, _DEFAULT_ACTION) for hint in sorted(hints)
+        )
+    )
+    if not suggested and failed_steps:
+        suggested = [_DEFAULT_ACTION]
+
+    return RunDiagnosis(
+        pipeline_run_id=pipeline_run_id,
+        last_status=last_status,
+        failed_steps=failed_steps,
+        similar_runs=similar_runs,
+        upstream_edges=upstream_edges,
+        suggested_actions=suggested,
+        matching_failed_run_count=len(matching_runs),
+        upstream_scope=upstream_scope,
+    )
+
+
+def _failure_upstream_edges(
+    delta_root: str,
+    failed_steps: list[dict[str, Any]],
+    storage: StorageConfig,
+) -> tuple[list[dict[str, str]], DiagnosisUpstreamScope]:
+    """Walk ten deterministic failed-output seeds and retain coverage facts."""
+    from artisan.provenance import provenance_edges
+
+    execution_ids = {step["execution_run_id"] for step in failed_steps}
+    if not execution_ids:
+        return [], DiagnosisUpstreamScope()
+    fs = storage.filesystem()
+    edge_path = uri_join(delta_root, TablePath.EXECUTION_EDGES)
+    if not fs.exists(edge_path):
+        return [], DiagnosisUpstreamScope(
+            total_seed_count=None,
+            seed_selection_truncated=None,
+            traversal_truncated=None,
+        )
+    all_ids = (
+        scan_committed(
+            delta_root,
+            TablePath.EXECUTION_EDGES,
+            fs=fs,
+            storage_options=storage.delta_storage_options(),
+        )
+        .filter(
+            pl.col("execution_run_id").is_in(execution_ids)
+            & (pl.col("direction") == "output")
+        )
+        .select("artifact_id")
+        .unique()
+        .sort("artifact_id")
+        .collect()["artifact_id"]
+        .to_list()
+    )
+    scope = DiagnosisUpstreamScope(
+        seed_count=min(10, len(all_ids)),
+        total_seed_count=len(all_ids),
+        seed_selection_truncated=len(all_ids) > 10,
+    )
+    pairs: set[tuple[str, str]] = set()
+    for artifact_id in all_ids[: scope.seed_limit]:
+        walk = provenance_edges(
+            delta_root,
+            artifact_id,
+            direction="backward",
+            depth=scope.depth,
+            storage=storage,
+        )
+        scope.traversal_truncated = bool(scope.traversal_truncated or walk.truncated)
+        pairs.update(
+            (edge["source_artifact_id"], edge["target_artifact_id"])
+            for edge in walk.edges
+        )
+    edges = [
+        {"source_artifact_id": source, "target_artifact_id": target}
+        for source, target in sorted(pairs)
+    ]
+    return edges, scope
+
+
+def _validate_attempt_selection(
+    delta_root: str,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None,
+    step_run_id: str | None,
+    pipeline_run_id: str | None,
+    step_number: int | None,
+) -> None:
+    """Validate an explicit historical selector before querying output membership."""
+    if step_run_id is None:
+        return
+    from artisan.orchestration.engine.step_tracker import StepTracker
+
+    states = StepTracker(
+        delta_root, fs=fs, storage_options=storage_options
+    ).load_all_current_states()
+    state = next((item for item in states if item.step_run_id == step_run_id), None)
+    if state is None:
+        msg = f"Unknown step attempt {step_run_id!r}"
+        raise ValueError(msg)
+    if pipeline_run_id is not None and state.pipeline_run_id != pipeline_run_id:
+        msg = f"Step attempt {step_run_id!r} does not belong to run {pipeline_run_id!r}"
+        raise ValueError(msg)
+    if step_number is not None and state.step_number != step_number:
+        msg = f"Step attempt {step_run_id!r} is not step {step_number}"
+        raise ValueError(msg)
+
+
 def inspect_step(
-    delta_root: Path | str,
+    delta_root: str,
     step_number: int,
+    *,
+    pipeline_run_id: str | None = None,
+    step_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """One-row-per-artifact summary for a given step.
 
     Args:
         delta_root: Path to Delta Lake root.
-        step_number: Step number to inspect.
+        step_number: Origin step by default, or current logical step when a
+            run is selected.
+        pipeline_run_id: Exact run whose accepted outputs to inspect. None
+            selects artifacts by origin step across all runs.
+        step_run_id: Exact attempt, including history. Must match the required
+            step_number and any supplied pipeline_run_id.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with columns: name, artifact_type, step, details.
+
+    Raises:
+        ValueError: An explicit attempt is unknown or conflicts with run/step.
     """
-    delta_root = Path(delta_root)
     empty = pl.DataFrame(
         schema={
             "name": pl.String,
@@ -190,16 +652,46 @@ def inspect_step(
         }
     )
 
-    # Get artifact IDs at this step from index
-    index_path = delta_root / TablePath.ARTIFACT_INDEX
-    if not index_path.exists():
+    fs = _validated_fs(delta_root, fs, storage_options)
+    _validate_attempt_selection(
+        delta_root, fs, storage_options, step_run_id, pipeline_run_id, step_number
+    )
+    index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
+    if not fs.exists(index_path):
         return empty
 
-    idx_df = (
-        pl.scan_delta(str(index_path))
-        .filter(pl.col("origin_step_number") == step_number)
-        .collect()
-    )
+    if pipeline_run_id is None and step_run_id is None:
+        idx_df = (
+            scan_committed(
+                delta_root,
+                TablePath.ARTIFACT_INDEX,
+                fs=fs,
+                storage_options=storage_options,
+            )
+            .filter(pl.col("origin_step_number") == step_number)
+            .collect()
+        )
+    else:
+        from artisan.storage.core.run_scope import load_accepted_outputs
+
+        outputs = load_accepted_outputs(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=pipeline_run_id,
+            step_run_id=step_run_id,
+        )
+        rows = [
+            {
+                "artifact_id": row["artifact_id"],
+                "artifact_type": row["artifact_type"],
+                "origin_step_number": row["origin_step_number"],
+                "metadata": "{}",
+            }
+            for row in outputs.iter_rows(named=True)
+            if row["current_step_number"] == step_number
+        ]
+        idx_df = pl.DataFrame(rows) if rows else pl.DataFrame()
 
     if idx_df.is_empty():
         return empty
@@ -212,17 +704,19 @@ def inspect_step(
         art_type = group_row["artifact_type"]
         art_ids = set(group_row["artifact_id"])
 
-        try:
-            table_path = delta_root / ArtifactTypeDef.get_table_path(art_type)
-        except KeyError:
-            continue
+        table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path(art_type))
 
-        if not table_path.exists():
+        if not fs.exists(table_path):
             continue
 
         df = (
-            pl.scan_delta(str(table_path))
-            .filter(pl.col("origin_step_number") == step_number)
+            scan_committed(
+                delta_root,
+                ArtifactTypeDef.get_table_path(art_type),
+                fs=fs,
+                storage_options=storage_options,
+            )
+            .filter(pl.col("artifact_id").is_in(art_ids))
             .collect()
         )
 
@@ -249,52 +743,98 @@ def inspect_step(
 
 
 def inspect_metrics(
-    delta_root: Path | str,
+    delta_root: str,
     step_number: int | None = None,
     *,
+    pipeline_run_id: str | None = None,
+    step_run_id: str | None = None,
     round_digits: int = 3,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Parse metric artifacts into a human-readable table.
 
     Args:
         delta_root: Path to Delta Lake root.
-        step_number: Filter to a specific step. All metric steps if None.
+        step_number: Origin step by default, or current logical step when a
+            run is selected. None includes all steps in the selected scope.
+        pipeline_run_id: Exact run whose accepted metric outputs to inspect.
+            None includes metrics across all runs at their origin steps.
+        step_run_id: Exact attempt, including history. Must match any supplied
+            run or step; omitted positions are inferred from this attempt.
         round_digits: Decimal places for float rounding.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with columns: name, step, {metric_key_1}, {metric_key_2}, ...
 
     Raises:
         FileNotFoundError: If metrics table doesn't exist.
+        ValueError: An explicit attempt is unknown or conflicts with run/step.
     """
-    delta_root = Path(delta_root)
-    table_path = delta_root / ArtifactTypeDef.get_table_path("metric")
-    if not table_path.exists():
+    fs = _validated_fs(delta_root, fs, storage_options)
+    _validate_attempt_selection(
+        delta_root, fs, storage_options, step_run_id, pipeline_run_id, step_number
+    )
+    table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("metric"))
+    if not fs.exists(table_path):
         msg = f"Metrics table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(str(table_path))
-    if step_number is not None:
+    scanner = scan_committed(
+        delta_root,
+        ArtifactTypeDef.get_table_path("metric"),
+        fs=fs,
+        storage_options=storage_options,
+    )
+    current_steps: pl.DataFrame | None = None
+    if pipeline_run_id is not None or step_run_id is not None:
+        from artisan.storage.core.run_scope import load_accepted_outputs
+
+        outputs = load_accepted_outputs(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=pipeline_run_id,
+            step_run_id=step_run_id,
+        )
+        current_steps = outputs.filter(pl.col("artifact_type") == "metric").select(
+            "artifact_id", "current_step_number"
+        )
+        if step_number is not None:
+            current_steps = current_steps.filter(
+                pl.col("current_step_number") == step_number
+            )
+        current_steps = current_steps.unique()
+        scanner = scanner.filter(
+            pl.col("artifact_id").is_in(current_steps["artifact_id"].to_list())
+        )
+    elif step_number is not None:
         scanner = scanner.filter(pl.col("origin_step_number") == step_number)
 
     df = scanner.collect()
+    if current_steps is not None:
+        df = current_steps.join(df, on="artifact_id", how="inner")
 
     if df.is_empty():
         return pl.DataFrame(schema={"name": pl.String, "step": pl.Int32})
 
-    # Parse all metric values and collect unique keys
     parsed_rows: list[dict[str, Any]] = []
-    all_keys: dict[str, None] = {}
 
     for row in df.iter_rows(named=True):
         name = row.get("original_name") or row["artifact_id"][:16]
+        current_step = row.get("current_step_number")
+        display_step = (
+            current_step if current_step is not None else row["origin_step_number"]
+        )
         # Strip _metrics suffix for readability
         if name.endswith("_metrics"):
             name = name[: -len("_metrics")]
 
         content = row.get("content")
         if content is None:
-            parsed_rows.append({"name": name, "step": row["origin_step_number"]})
+            parsed_rows.append({"name": name, "step": display_step})
             continue
 
         values = json.loads(
@@ -302,9 +842,8 @@ def inspect_metrics(
         )
         flat = flatten_dict(values)
 
-        entry: dict[str, Any] = {"name": name, "step": row["origin_step_number"]}
+        entry: dict[str, Any] = {"name": name, "step": display_step}
         for k, v in flat.items():
-            all_keys[k] = None
             if isinstance(v, float):
                 entry[k] = round(v, round_digits)
             else:
@@ -326,34 +865,73 @@ def inspect_metrics(
 
 
 def inspect_data(
-    delta_root: Path | str,
+    delta_root: str,
     name: str | None = None,
     step_number: int | None = None,
+    *,
+    pipeline_run_id: str | None = None,
+    step_run_id: str | None = None,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
     """Read DataArtifact CSV content as a Polars DataFrame.
 
     Args:
         delta_root: Path to Delta Lake root.
         name: Filter by original_name. Takes the first match.
-        step_number: Filter by step number.
+        step_number: Origin step by default, or current logical step when a
+            run is selected. None includes all steps in the selected scope.
+        pipeline_run_id: Exact run whose accepted data outputs may match.
+            None selects artifacts across all runs by origin step.
+        step_run_id: Exact attempt, including history. Must match any supplied
+            run or step; omitted positions are inferred from this attempt.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks. Local if None.
 
     Returns:
         DataFrame with the actual CSV data content.
 
     Raises:
         FileNotFoundError: If data table doesn't exist.
-        ValueError: If no matching artifacts found or content is None.
+        ValueError: If no matching artifacts found, content is None, or an
+            explicit attempt is unknown or conflicts with run/step.
     """
-    delta_root = Path(delta_root)
-    table_path = delta_root / ArtifactTypeDef.get_table_path("data")
-    if not table_path.exists():
+    fs = _validated_fs(delta_root, fs, storage_options)
+    _validate_attempt_selection(
+        delta_root, fs, storage_options, step_run_id, pipeline_run_id, step_number
+    )
+    table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("data"))
+    if not fs.exists(table_path):
         msg = f"Data table not found at {table_path}"
         raise FileNotFoundError(msg)
 
-    scanner = pl.scan_delta(str(table_path))
+    scanner = scan_committed(
+        delta_root,
+        ArtifactTypeDef.get_table_path("data"),
+        fs=fs,
+        storage_options=storage_options,
+    )
     if name is not None:
         scanner = scanner.filter(pl.col("original_name") == name)
-    if step_number is not None:
+    if pipeline_run_id is not None or step_run_id is not None:
+        from artisan.storage.core.run_scope import load_accepted_outputs
+
+        outputs = load_accepted_outputs(
+            delta_root,
+            fs=fs,
+            storage_options=storage_options,
+            pipeline_run_id=pipeline_run_id,
+            step_run_id=step_run_id,
+        )
+        artifact_ids = [
+            row["artifact_id"]
+            for row in outputs.filter(pl.col("artifact_type") == "data").iter_rows(
+                named=True
+            )
+            if step_number is None or row["current_step_number"] == step_number
+        ]
+        scanner = scanner.filter(pl.col("artifact_id").is_in(artifact_ids))
+    elif step_number is not None:
         scanner = scanner.filter(pl.col("origin_step_number") == step_number)
 
     df = scanner.collect()
@@ -361,9 +939,13 @@ def inspect_data(
     if df.is_empty():
         # Build a helpful error message
         all_names = (
-            pl.scan_delta(str(table_path))
-            .select("original_name")
-            .collect()["original_name"]
+            read_committed(
+                delta_root,
+                ArtifactTypeDef.get_table_path("data"),
+                fs=fs,
+                storage_options=storage_options,
+            )
+            .select("original_name")["original_name"]
             .to_list()
         )
         msg = f"No matching data artifacts found. Available names: {all_names}"
@@ -457,6 +1039,12 @@ def _build_details(artifact_type: str, row: dict[str, Any]) -> str:
         size = row.get("size_bytes")
         if size is not None:
             return _format_size(size)
+        return "-"
+
+    elif artifact_type == "appendable":
+        record_id = row.get("record_id")
+        if record_id is not None:
+            return str(record_id)
         return "-"
 
     else:

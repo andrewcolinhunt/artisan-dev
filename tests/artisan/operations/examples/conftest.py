@@ -6,31 +6,36 @@ Infers artifact types from operation input specs.
 
 from __future__ import annotations
 
+import glob
+import os
 from pathlib import Path
 from typing import Any
 
-from artisan.schemas.artifact.data import DataArtifact  # noqa: F401 (registers DataTypeDef)
-from artisan.schemas.artifact import Artifact
-from artisan.schemas.artifact.registry import ArtifactTypeDef
+import pytest
+from fixtures.store_format import publish_test_store
+from fsspec import AbstractFileSystem
+from fsspec.implementations.local import LocalFileSystem
+
 from artisan.schemas import (
     ArtifactResult,
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
 )
+from artisan.schemas.artifact import Artifact
+from artisan.schemas.artifact.data import (
+    DataArtifact,  # noqa: F401 (registers DataTypeDef)
+)
+from artisan.schemas.artifact.registry import ArtifactTypeDef
+from artisan.schemas.execution.storage_config import StorageConfig
 
-__all__ = [
-    "run_inmemory_operation_lifecycle",
-    "run_inmemory_operation_lifecycle_with_exception",
-    "run_operation_lifecycle",
-    "run_operation_lifecycle_with_exception",
-]
+__all__ = ["run_operation_lifecycle"]
 
 
 def _create_mock_artifact(
     content: bytes,
     name: str,
-    path: Path,
+    path: str,
     artifact_type: str,
     step_number: int = 0,
 ) -> Artifact:
@@ -52,25 +57,41 @@ def _resolve_input_artifacts(
     """Convert raw inputs to artifact lists."""
     input_artifacts: dict[str, list[Artifact]] = {}
     for key, value in inputs.items():
-        if operation is not None and hasattr(operation, "inputs") and key in operation.inputs:
+        if (
+            operation is not None
+            and hasattr(operation, "inputs")
+            and key in operation.inputs
+        ):
             artifact_type = operation.inputs[key].artifact_type
         else:
             msg = f"Cannot infer artifact type for role '{key}': no operation spec provided"
             raise ValueError(msg)
 
         if isinstance(value, (str, Path)):
-            path = Path(value)
-            content = path.read_bytes() if path.exists() else b""
+            path = str(value)
+            if os.path.exists(path):
+                with open(path, "rb") as fh:
+                    content = fh.read()
+            else:
+                content = b""
             input_artifacts[key] = [
-                _create_mock_artifact(content, path.name, path, artifact_type)
+                _create_mock_artifact(
+                    content, os.path.basename(path), path, artifact_type
+                )
             ]
         elif isinstance(value, list) and value and isinstance(value[0], (str, Path)):
             artifacts = []
             for p in value:
-                path = Path(p)
-                content = path.read_bytes() if path.exists() else b""
+                path = str(p)
+                if os.path.exists(path):
+                    with open(path, "rb") as fh:
+                        content = fh.read()
+                else:
+                    content = b""
                 artifacts.append(
-                    _create_mock_artifact(content, path.name, path, artifact_type)
+                    _create_mock_artifact(
+                        content, os.path.basename(path), path, artifact_type
+                    )
                 )
             input_artifacts[key] = artifacts
 
@@ -81,19 +102,25 @@ def _setup_dirs(
     output_dir: Path,
     preprocess_dir: Path | None,
     postprocess_dir: Path | None,
-) -> tuple[Path, Path, Path, Path]:
+) -> tuple[str, str, str, str]:
     """Create standard lifecycle directories."""
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    if preprocess_dir is None:
-        preprocess_dir = output_dir / "preprocess"
-    preprocess_dir.mkdir(parents=True, exist_ok=True)
-    if postprocess_dir is None:
-        postprocess_dir = output_dir / "postprocess"
-    postprocess_dir.mkdir(parents=True, exist_ok=True)
-    execute_dir = output_dir / "execute"
-    execute_dir.mkdir(parents=True, exist_ok=True)
-    return output_dir, preprocess_dir, postprocess_dir, execute_dir
+    out = str(output_dir)
+    os.makedirs(out, exist_ok=True)
+    pre = (
+        str(preprocess_dir)
+        if preprocess_dir is not None
+        else os.path.join(out, "preprocess")
+    )
+    os.makedirs(pre, exist_ok=True)
+    post = (
+        str(postprocess_dir)
+        if postprocess_dir is not None
+        else os.path.join(out, "postprocess")
+    )
+    os.makedirs(post, exist_ok=True)
+    exe = os.path.join(out, "execute")
+    os.makedirs(exe, exist_ok=True)
+    return out, pre, post, exe
 
 
 def run_operation_lifecycle(
@@ -104,147 +131,70 @@ def run_operation_lifecycle(
     postprocess_dir: Path | None = None,
 ) -> ArtifactResult:
     """Run the full operation lifecycle: preprocess -> execute -> postprocess."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
-        output_dir, preprocess_dir, postprocess_dir
+    _output_dir_str, preprocess_dir_str, postprocess_dir_str, execute_dir_str = (
+        _setup_dirs(output_dir, preprocess_dir, postprocess_dir)
     )
 
     input_artifacts = _resolve_input_artifacts(inputs, operation)
 
     preprocess_input = PreprocessInput(
         input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
+        preprocess_dir=preprocess_dir_str,
     )
     prepared_inputs = operation.preprocess(preprocess_input)
 
     execute_input = ExecuteInput(
         inputs=prepared_inputs,
-        execute_dir=execute_dir,
+        execute_dir=execute_dir_str,
     )
-    raw_result = operation.execute(execute_input)
+    raw_result = operation.execute_function(execute_input)
 
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
+    new_files = [
+        p
+        for p in glob.glob(os.path.join(execute_dir_str, "**", "*"), recursive=True)
+        if os.path.isfile(p)
+    ]
 
     postprocess_input = PostprocessInput(
         file_outputs=new_files,
         memory_outputs=raw_result,
         input_artifacts=input_artifacts,
         step_number=1,
-        postprocess_dir=postprocess_dir,
+        postprocess_dir=postprocess_dir_str,
     )
     return operation.postprocess(postprocess_input)
 
 
-def run_operation_lifecycle_with_exception(
-    operation,
-    inputs: dict[str, Any],
-    output_dir: Path,
-    preprocess_dir: Path | None = None,
-    postprocess_dir: Path | None = None,
-) -> ArtifactResult:
-    """Run lifecycle catching execute exceptions (matching executor behavior)."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
-        output_dir, preprocess_dir, postprocess_dir
-    )
+@pytest.fixture(
+    params=[
+        pytest.param("local"),
+        pytest.param("s3", marks=pytest.mark.s3),
+    ]
+)
+def backend_env(
+    request: pytest.FixtureRequest, tmp_path: Path
+) -> tuple[AbstractFileSystem, StorageConfig, str, str, str]:
+    """Return (fs, storage, delta_root, files_root, working_root).
 
-    input_artifacts = _resolve_input_artifacts(inputs, operation)
-
-    preprocess_input = PreprocessInput(
-        input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
-    )
-    prepared_inputs = operation.preprocess(preprocess_input)
-
-    execute_input = ExecuteInput(
-        inputs=prepared_inputs,
-        execute_dir=execute_dir,
-    )
-    try:
-        raw_result = operation.execute(execute_input)
-    except Exception as e:
-        return ArtifactResult(success=False, error=str(e))
-
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
-
-    postprocess_input = PostprocessInput(
-        file_outputs=new_files,
-        memory_outputs=raw_result,
-        input_artifacts=input_artifacts,
-        step_number=1,
-        postprocess_dir=postprocess_dir,
-    )
-    return operation.postprocess(postprocess_input)
-
-
-def run_inmemory_operation_lifecycle(
-    operation,
-    input_artifacts: dict[str, list[Artifact]],
-    output_dir: Path,
-    preprocess_dir: Path | None = None,
-    postprocess_dir: Path | None = None,
-) -> ArtifactResult:
-    """Run lifecycle for in-memory operations (materialize=False)."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
-        output_dir, preprocess_dir, postprocess_dir
-    )
-
-    preprocess_input = PreprocessInput(
-        input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
-    )
-    prepared_inputs = operation.preprocess(preprocess_input)
-
-    execute_input = ExecuteInput(
-        inputs=prepared_inputs,
-        execute_dir=execute_dir,
-    )
-    raw_result = operation.execute(execute_input)
-
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
-
-    postprocess_input = PostprocessInput(
-        file_outputs=new_files,
-        memory_outputs=raw_result,
-        input_artifacts=input_artifacts,
-        step_number=1,
-        postprocess_dir=postprocess_dir,
-    )
-    return operation.postprocess(postprocess_input)
-
-
-def run_inmemory_operation_lifecycle_with_exception(
-    operation,
-    input_artifacts: dict[str, list[Artifact]],
-    output_dir: Path,
-    preprocess_dir: Path | None = None,
-    postprocess_dir: Path | None = None,
-) -> ArtifactResult:
-    """Run in-memory lifecycle catching execute exceptions."""
-    output_dir, preprocess_dir, postprocess_dir, execute_dir = _setup_dirs(
-        output_dir, preprocess_dir, postprocess_dir
-    )
-
-    preprocess_input = PreprocessInput(
-        input_artifacts=input_artifacts,
-        preprocess_dir=preprocess_dir,
-    )
-    prepared_inputs = operation.preprocess(preprocess_input)
-
-    execute_input = ExecuteInput(
-        inputs=prepared_inputs,
-        execute_dir=execute_dir,
-    )
-    try:
-        raw_result = operation.execute(execute_input)
-    except Exception as e:
-        return ArtifactResult(success=False, error=str(e))
-
-    new_files = [f for f in execute_dir.glob("**/*") if f.is_file()]
-
-    postprocess_input = PostprocessInput(
-        file_outputs=new_files,
-        memory_outputs=raw_result,
-        input_artifacts=input_artifacts,
-        step_number=1,
-        postprocess_dir=postprocess_dir,
-    )
-    return operation.postprocess(postprocess_input)
+    Resolve the S3 fixture only for S3 cases so local tests need no service.
+    """
+    working = tmp_path / "working"
+    working.mkdir()
+    if request.param == "local":
+        files_root = tmp_path / "files_root"
+        files_root.mkdir()
+        fs = LocalFileSystem()
+        storage = StorageConfig(protocol="file")
+        delta_root = str(tmp_path / "delta")
+        publish_test_store(delta_root, fs, storage.delta_storage_options())
+        return (
+            fs,
+            storage,
+            delta_root,
+            str(files_root),
+            str(working),
+        )
+    fs, storage, uri_prefix = request.getfixturevalue("s3_fs")
+    delta_root = f"{uri_prefix}/delta"
+    publish_test_store(delta_root, fs, storage.delta_storage_options())
+    return fs, storage, delta_root, f"{uri_prefix}/files", str(working)

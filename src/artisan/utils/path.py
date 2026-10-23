@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import inspect
 import os
+import posixpath
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -88,7 +89,7 @@ def find_project_root() -> Path:
         RuntimeError: If none of the strategies find a valid root.
     """
     # Strategy 1: walk up from caller dir
-    p = get_caller_dir()
+    p = get_caller_dir(stack_level=2)
     while p != p.parent:
         if (p / "pyproject.toml").exists():
             return p
@@ -130,46 +131,87 @@ def step_dir_name(step_number: int, operation_name: str) -> str:
     return f"{step_number}_{operation_name}"
 
 
-def shard_path(
-    root: Path,
+def shard_uri(
+    root: str,
     execution_run_id: str,
     step_number: int | None = None,
     operation_name: str | None = None,
-) -> Path:
-    """Create sharded path from execution_run_id, optionally partitioned by step_number.
+) -> str:
+    """Create sharded URI from execution_run_id, optionally partitioned by step.
 
-    Uses first 4 characters for 2-level sharding to distribute files
-    across directories and avoid filesystem bottlenecks on HPC systems.
+    Works with local paths and cloud URIs (s3://, gcs://).
 
     Args:
-        root: Base directory.
+        root: Base URI or path string.
         execution_run_id: 32-character hex hash.
         step_number: Optional pipeline step number for partitioning.
         operation_name: Optional operation name. When provided together with
             step_number, the step directory becomes ``{step_number}_{operation_name}``.
 
     Returns:
-        If step_number is None: root/ab/cd/execution_run_id
-        If step_number is provided: root/{step_dir}/ab/cd/execution_run_id
-
-    Example:
-        >>> shard_path(Path("/tmp"), "abcdef1234567890...")
-        Path("/tmp/ab/cd/abcdef1234567890...")
-        >>> shard_path(Path("/tmp"), "abcdef1234567890...", step_number=3)
-        Path("/tmp/3/ab/cd/abcdef1234567890...")
-        >>> shard_path(Path("/tmp"), "abcdef1234567890...", step_number=3, operation_name="tool_c")
-        Path("/tmp/3_tool_c/ab/cd/abcdef1234567890...")
+        Sharded URI string.
     """
+    prefix = execution_run_id[:2]
+    shard = execution_run_id[2:4]
     if step_number is not None:
-        if operation_name is not None:
-            step_segment = step_dir_name(step_number, operation_name)
-        else:
-            step_segment = str(step_number)
-        return (
-            root
-            / step_segment
-            / execution_run_id[:2]
-            / execution_run_id[2:4]
-            / execution_run_id
+        step_segment = (
+            step_dir_name(step_number, operation_name)
+            if operation_name
+            else str(step_number)
         )
-    return root / execution_run_id[:2] / execution_run_id[2:4] / execution_run_id
+        return f"{root}/{step_segment}/{prefix}/{shard}/{execution_run_id}"
+    return f"{root}/{prefix}/{shard}/{execution_run_id}"
+
+
+# ---------------------------------------------------------------------------
+# URI-safe path operations
+# ---------------------------------------------------------------------------
+
+
+def uri_join(base: str, *parts: str) -> str:
+    """Join URI/path segments. Works for local paths and cloud URIs.
+
+    Uses ``posixpath.join`` which operates on string structure without
+    assuming OS conventions. Both local POSIX paths and cloud URIs
+    (``s3://``, ``gcs://``) use ``/`` as the separator.
+
+    Args:
+        base: Base URI or path.
+        *parts: Segments to append.
+
+    Returns:
+        Joined URI string.
+    """
+    return posixpath.join(base, *parts)
+
+
+def uri_parent(uri: str) -> str:
+    """Parent directory of a URI/path. Works for local paths and cloud URIs.
+
+    Args:
+        uri: URI or path string.
+
+    Returns:
+        Parent directory URI string.
+    """
+    return posixpath.dirname(uri)
+
+
+def cancel_sentinel_path(staging_root: str, step_run_id: str) -> str:
+    """Path of the cancel sentinel file for one step attempt.
+
+    The orchestrator's lifecycle router writes this empty file when the
+    pipeline cancel event fires; worker-side execute routers poll for it.
+    It rides the staging filesystem — the one channel every runner shares
+    with its workers — and lives in the step's ``_dispatch`` directory,
+    which the step executor removes when the step finishes. A sentinel
+    orphaned by a crash is inert: ``step_run_id`` is unique per attempt.
+
+    Args:
+        staging_root: Staging root (local path or cloud URI).
+        step_run_id: Unique ID of the step attempt being cancelled.
+
+    Returns:
+        Sentinel URI string.
+    """
+    return uri_join(staging_root, "_dispatch", f"cancel-{step_run_id}")
