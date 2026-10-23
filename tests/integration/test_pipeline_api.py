@@ -6,16 +6,15 @@ finalize() ordering, and pipeline state inspection with real operations.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 # =============================================================================
 # Dunder methods
@@ -26,7 +25,7 @@ class TestPipelineDunderMethods:
     """Integration tests for __len__, __iter__, __getitem__, __bool__,
     __contains__, __str__, __repr__ with real pipeline execution."""
 
-    def test_len_tracks_completed_steps(self, pipeline_env: dict[str, Path]):
+    def test_len_tracks_completed_steps(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_len",
             delta_root=pipeline_env["delta_root"],
@@ -39,13 +38,13 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         assert len(pipeline) == 1
 
         pipeline.finalize()
 
-    def test_iter_yields_step_results(self, pipeline_env: dict[str, Path]):
+    def test_iter_yields_step_results(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_iter",
             delta_root=pipeline_env["delta_root"],
@@ -56,12 +55,12 @@ class TestPipelineDunderMethods:
         step0 = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
-        step1 = pipeline.run(
+        pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         results = list(pipeline)
@@ -71,7 +70,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_getitem_by_index(self, pipeline_env: dict[str, Path]):
+    def test_getitem_by_index(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_getitem",
             delta_root=pipeline_env["delta_root"],
@@ -79,10 +78,10 @@ class TestPipelineDunderMethods:
             working_root=pipeline_env["working_root"],
         )
 
-        step0 = pipeline.run(
+        pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         assert pipeline[0].step_name == "data_generator"
@@ -93,7 +92,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_getitem_slice(self, pipeline_env: dict[str, Path]):
+    def test_getitem_slice(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_slice",
             delta_root=pipeline_env["delta_root"],
@@ -104,12 +103,12 @@ class TestPipelineDunderMethods:
         step0 = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         sliced = pipeline[0:1]
@@ -118,7 +117,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_bool_true_when_all_succeed(self, pipeline_env: dict[str, Path]):
+    def test_bool_true_when_all_succeed(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_bool_true",
             delta_root=pipeline_env["delta_root"],
@@ -129,13 +128,13 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         assert pipeline
         pipeline.finalize()
 
-    def test_bool_false_when_empty(self, pipeline_env: dict[str, Path]):
+    def test_bool_false_when_empty(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_bool_false",
             delta_root=pipeline_env["delta_root"],
@@ -146,7 +145,7 @@ class TestPipelineDunderMethods:
         assert not pipeline
         pipeline.finalize()
 
-    def test_contains_by_step_name(self, pipeline_env: dict[str, Path]):
+    def test_contains_by_step_name(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_contains",
             delta_root=pipeline_env["delta_root"],
@@ -157,7 +156,7 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
             name="my_generator",
         )
 
@@ -166,7 +165,7 @@ class TestPipelineDunderMethods:
 
         pipeline.finalize()
 
-    def test_str_and_repr(self, pipeline_env: dict[str, Path]):
+    def test_str_and_repr(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_str_repr",
             delta_root=pipeline_env["delta_root"],
@@ -180,7 +179,7 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         assert "1 steps" in str(pipeline)
@@ -197,7 +196,7 @@ class TestPipelineDunderMethods:
 class TestOutputNameLookup:
     """Integration tests for pipeline.output(name, role)."""
 
-    def test_output_with_custom_name(self, pipeline_env: dict[str, Path]):
+    def test_output_with_custom_name(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_name",
             delta_root=pipeline_env["delta_root"],
@@ -208,7 +207,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
             name="gen_step",
         )
 
@@ -219,7 +218,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_with_default_name(self, pipeline_env: dict[str, Path]):
+    def test_output_with_default_name(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_default",
             delta_root=pipeline_env["delta_root"],
@@ -230,7 +229,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         ref = pipeline.output("data_generator", "datasets")
@@ -238,7 +237,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_unknown_name_raises(self, pipeline_env: dict[str, Path]):
+    def test_output_unknown_name_raises(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_unknown",
             delta_root=pipeline_env["delta_root"],
@@ -251,7 +250,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_unknown_role_raises(self, pipeline_env: dict[str, Path]):
+    def test_output_unknown_role_raises(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_output_bad_role",
             delta_root=pipeline_env["delta_root"],
@@ -262,7 +261,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         with pytest.raises(ValueError, match="Output role .* not available"):
@@ -270,7 +269,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_step_number_disambiguation(self, pipeline_env: dict[str, Path]):
+    def test_output_step_number_disambiguation(self, pipeline_env: dict[str, str]):
         """Two steps with the same name: step_number selects the right one."""
         pipeline = PipelineManager.create(
             name="test_output_disambig",
@@ -282,13 +281,13 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
             name="gen",
         )
         pipeline.run(
             DataGenerator,
             params={"count": 3, "seed": 99},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
             name="gen",
         )
 
@@ -302,7 +301,7 @@ class TestOutputNameLookup:
 
         pipeline.finalize()
 
-    def test_output_wires_to_downstream(self, pipeline_env: dict[str, Path]):
+    def test_output_wires_to_downstream(self, pipeline_env: dict[str, str]):
         """pipeline.output() reference can be used to wire downstream steps."""
         pipeline = PipelineManager.create(
             name="test_output_wiring",
@@ -314,7 +313,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
             name="gen",
         )
 
@@ -323,10 +322,10 @@ class TestOutputNameLookup:
         step1 = pipeline.run(
             MetricCalculator,
             inputs={"dataset": ref},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
-        assert step1.success is True
+        assert step1.status is StepStatus.SUCCEEDED
         assert step1.succeeded_count == 2
 
         pipeline.finalize()
@@ -340,7 +339,7 @@ class TestOutputNameLookup:
 class TestStepFutureProperties:
     """Integration tests for StepFuture.output, .status, .done."""
 
-    def test_step_future_output_before_completion(self, pipeline_env: dict[str, Path]):
+    def test_step_future_output_before_completion(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_future_output",
             delta_root=pipeline_env["delta_root"],
@@ -351,7 +350,7 @@ class TestStepFutureProperties:
         future = pipeline.submit(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         ref = future.output("datasets")
@@ -362,7 +361,7 @@ class TestStepFutureProperties:
         future.result(timeout=30)
         pipeline.finalize()
 
-    def test_step_future_done_and_status(self, pipeline_env: dict[str, Path]):
+    def test_step_future_done_and_status(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_future_status",
             delta_root=pipeline_env["delta_root"],
@@ -373,17 +372,17 @@ class TestStepFutureProperties:
         future = pipeline.submit(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         result = future.result(timeout=30)
         assert future.done is True
-        assert future.status == "completed"
-        assert result.success is True
+        assert future.status is StepStatus.SUCCEEDED
+        assert result.status is StepStatus.SUCCEEDED
 
         pipeline.finalize()
 
-    def test_step_future_chain(self, pipeline_env: dict[str, Path]):
+    def test_step_future_chain(self, pipeline_env: dict[str, str]):
         """submit() output can wire to subsequent submit() via StepFuture.output()."""
         pipeline = PipelineManager.create(
             name="test_future_chain",
@@ -395,20 +394,20 @@ class TestStepFutureProperties:
         future0 = pipeline.submit(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         future1 = pipeline.submit(
             MetricCalculator,
             inputs={"dataset": future0.output("datasets")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         result0 = future0.result(timeout=30)
         result1 = future1.result(timeout=30)
 
-        assert result0.success is True
-        assert result1.success is True
+        assert result0.status is StepStatus.SUCCEEDED
+        assert result1.status is StepStatus.SUCCEEDED
 
         pipeline.finalize()
 
@@ -421,7 +420,7 @@ class TestStepFutureProperties:
 class TestFinalizeOrdering:
     """Tests that finalize() returns steps sorted by step_number."""
 
-    def test_finalize_steps_sorted(self, pipeline_env: dict[str, Path]):
+    def test_finalize_steps_sorted(self, pipeline_env: dict[str, str]):
         """finalize() summary has steps in step_number order."""
         pipeline = PipelineManager.create(
             name="test_finalize_sort",
@@ -433,12 +432,12 @@ class TestFinalizeOrdering:
         step0 = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
-        step1 = pipeline.run(
+        pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         summary = pipeline.finalize()
@@ -456,7 +455,7 @@ class TestFinalizeOrdering:
 class TestPipelineProperties:
     """Integration tests for config and current_step properties."""
 
-    def test_config_property(self, pipeline_env: dict[str, Path]):
+    def test_config_property(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_config_prop",
             delta_root=pipeline_env["delta_root"],
@@ -469,7 +468,7 @@ class TestPipelineProperties:
 
         pipeline.finalize()
 
-    def test_current_step_increments(self, pipeline_env: dict[str, Path]):
+    def test_current_step_increments(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_step_counter",
             delta_root=pipeline_env["delta_root"],
@@ -482,14 +481,14 @@ class TestPipelineProperties:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         assert pipeline.current_step == 1
 
         pipeline.run(
             DataGenerator,
             params={"count": 3, "seed": 99},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
         assert pipeline.current_step == 2
 
@@ -504,7 +503,7 @@ class TestPipelineProperties:
 class TestCustomStepName:
     """Integration tests for the name= parameter on run()."""
 
-    def test_custom_name_propagates(self, pipeline_env: dict[str, Path]):
+    def test_custom_name_propagates(self, pipeline_env: dict[str, str]):
         pipeline = PipelineManager.create(
             name="test_custom_name",
             delta_root=pipeline_env["delta_root"],
@@ -515,7 +514,7 @@ class TestCustomStepName:
         result = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
             name="my_generation_step",
         )
 

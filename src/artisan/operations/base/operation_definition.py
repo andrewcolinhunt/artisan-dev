@@ -7,29 +7,40 @@ generation, and the operation registry live here.
 
 from __future__ import annotations
 
+import json
 from typing import (
     TYPE_CHECKING,
     Any,
     ClassVar,
+    Literal,
 )
 
 if TYPE_CHECKING:
     import polars as pl
 
+    from artisan.registry.models import OperationMetadata, OperationSummary
     from artisan.storage.core.artifact_store import ArtifactStore
 
 from pydantic import BaseModel, ConfigDict
 
+from artisan.errors import ArtisanError, ErrorCode
+from artisan.operations.base._param_docs import (
+    _extract_arg_descriptions,
+    _params_class,
+)
 from artisan.operations.base._role_docs import (
     append_role_docs,
     get_registered,
     validate_role_enums,
 )
+from artisan.operations.base.operation_example import OperationExample
 from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
-from artisan.schemas.execution.execution_config import ExecutionConfig
+from artisan.schemas.operation_config.compute import ComputeProvider
+from artisan.schemas.operation_config.compute_resources import ComputeResources
 from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -44,36 +55,63 @@ class OperationDefinition(BaseModel):
     """Base class for all pipeline operations.
 
     Subclasses declare input/output specs, implement the lifecycle methods
-    (preprocess, execute/execute_curator, postprocess), and are automatically
-    validated and registered on definition.
+    (preprocess, one of the execute slots, postprocess), and are
+    automatically validated and registered on definition. The execute
+    slots are ``execute_function()`` (a Python body),
+    ``execute_command()`` (a tool argv), and ``execute_curator()``
+    (metadata-only curators).
+
+    The framework synthesizes a unit-level log at
+    ``<sandbox_root>/tool_output.log`` and exposes it as
+    ``ExecuteInput.log_path``. The filename ``tool_output.log`` is
+    reserved by the framework — do not write a file by that name to
+    ``<sandbox_root>``.
 
     Attributes:
         name (str): Unique operation identifier used for registry lookup.
         description (str): Human-readable summary shown in docs and logs.
         inputs (dict[str, InputSpec]): Named input specifications.
         outputs (dict[str, OutputSpec]): Named output specifications.
-        resources (ResourceConfig): Hardware resource allocation for SLURM jobs.
-        execution (ExecutionConfig): Batching and scheduling configuration.
+        runner_resources (RunnerResources): Hardware resources for worker dispatch.
+        batch_strategy (BatchStrategy): Batching and scheduling configuration.
     """
 
     model_config = ConfigDict(
         extra="forbid",
         str_strip_whitespace=True,
+        hide_input_in_errors=True,
     )
 
     _registry: ClassVar[dict[str, type[OperationDefinition]]] = {}
+    _name_collisions: ClassVar[list[tuple[str, str, str]]] = []
+    """Dropped registration attempts: (name, first_module, second_module).
+
+    Populated by ``__pydantic_init_subclass__`` whenever a second class tries
+    to register under an existing name. First registration wins; the second
+    is dropped. ``artisan.registry.discover()`` reads this list to populate
+    ``DiscoveryReport.name_collisions``.
+    """
 
     # ---------- Metadata ----------
     name: ClassVar[str] = ""
+    version: ClassVar[str] = "1"
+    """Behavior version included in execution cache keys.
+
+    Bump when identical inputs and configuration can produce different outputs,
+    including changes to execution, preprocessing, postprocessing, or dependencies.
+    """
     description: ClassVar[str] = ""
+    examples: ClassVar[list[OperationExample]] = []
+    """Author-declared usage examples. Surfaced by ``artisan.registry.examples(name)``."""
+
+    tags: ClassVar[list[str]] = []
+    """Free-form tags for agent-side filtering (e.g. ``"source"``, ``"transform"``)."""
 
     # ---------- Inputs ----------
     inputs: ClassVar[dict[str, InputSpec]] = {}
     """Input specification for this operation.
 
-    Defines what inputs the operation accepts.
-    Required - operations without inputs will fail validation.
-    Empty dict {} is valid for generative operations (no inputs).
+    Defaults to an empty mapping, valid for generative operations with no inputs.
 
     Example:
         inputs: ClassVar[dict[str, InputSpec]] = {
@@ -86,24 +124,29 @@ class OperationDefinition(BaseModel):
     outputs: ClassVar[dict[str, OutputSpec]] = {}
     """Output specification for this operation.
 
-    Defines what outputs the operation produces and their types.
-    Required - operations without outputs will fail validation.
-    Empty dict {} is valid for operations that only have side effects.
+    Defaults to an empty mapping, valid for operations that only have side effects.
 
     Example:
         outputs: ClassVar[dict[str, OutputSpec]] = {
             "processed_data": OutputSpec(
                 artifact_type=ArtifactTypes.DATA,
-                infer_lineage_from={"inputs": ["data"]},
+                derives_from={"inputs": ["data"]},
             ),
             "scores": OutputSpec(
                 artifact_type=ArtifactTypes.METRIC,
-                infer_lineage_from={"outputs": ["processed_data"]},
+                derives_from={"outputs": ["processed_data"]},
             ),
         }
     """
 
     # ---------- Behavior ----------
+    cacheable: ClassVar[bool] = True
+    """Whether declared inputs and configuration fully identify reusable work.
+
+    Set to False when execution reads mutable state outside its declared
+    inputs. This bypasses both cache layers without changing content identity.
+    """
+
     runtime_defined_inputs: ClassVar[bool] = False
     """If True, input roles are provided by the user at pipeline construction time,
     not declared in inputs. Accepts both list and dict input formats.
@@ -146,11 +189,64 @@ class OperationDefinition(BaseModel):
             independent_input_streams = True  # Unions streams of any size
     """
 
-    group_by: ClassVar[GroupByStrategy | None] = None
+    group_by: GroupByStrategy | None = None
     """Strategy for pairing multiple input streams before delivery to the operation.
 
-    None for single-input operations. ZIP, LINEAGE, or CROSS_PRODUCT for
-    multi-input operations.
+    Default ``None`` for single-input operations; subclasses set ``LINEAGE``,
+    ``ZIP``, or ``CROSS_PRODUCT`` for multi-input operations. Per-step callers
+    override via ``pipeline.run(..., group_by=...)``; the override wins over
+    any class-level default.
+
+    Notes:
+        - **CROSS_PRODUCT output collisions.** Artifact IDs hash typed semantic
+          identity, excluding locator paths and origin steps. When each input
+          pair must produce a distinct artifact, its semantic content must
+          depend on all inputs; identical semantic artifacts share one stored
+          ``artifact_id`` even when they come from different pairs.
+        - **Explicit ancestry.** Operations declare the exact parents used for
+          each output in ``ArtifactResult.lineage``. Carry those IDs with each
+          produced record or file, including repeated inputs in different pairs.
+          Input pairing and dispatch directories never supply output lineage.
+    """
+
+    per_artifact_dispatch: ClassVar[bool] = True
+    """Whether execute fans out per artifact in batch dispatch.
+
+    When True (default), the framework splits preprocess output into
+    per-artifact ExecuteInputs and dispatches each separately. Modal
+    sends them to parallel containers; in-process execution loops sequentially.
+
+    Set to False for operations that run external tools via
+    ``run_command()`` where a single subprocess should process all
+    artifacts to amortize model loading.
+    """
+
+    execute_as_tool: ClassVar[bool] = False
+    """Run ``execute_function`` as a framework-generated command.
+
+    Opting in makes this op a command op everywhere — a subprocess
+    locally, deployable to a Modal tool endpoint — with the framework
+    supplying the argv (``artisan op run <module:Qualname>``). Requires
+    the file-shaped contract:
+
+    - Prepared inputs are file paths, JSON-serializable. Per-artifact
+      values are wrapped in ``PerArtifact`` (a raw list passes through
+      whole, as shared data, to every per-artifact subprocess). Scalars
+      belong in ``Params``.
+    - Multi-element list values (the ``per_artifact_dispatch=False``
+      shape) run under the local command adapter but cannot cross the endpoint —
+      the wire protocol carries one file per role.
+    - Outputs are files written to ``execute_dir``;
+      ``execute_function`` returns None (a non-None return is a runtime
+      error under the adapter).
+    - All per-run config lives in the nested ``Params`` model (enforced
+      at class definition).
+    - ``ExecuteInput.metadata`` and ``files_dir`` are unavailable, and
+      ``log_path`` points at a throwaway file — log to stdout/stderr,
+      which the framework captures to the unit log.
+    - The op's module and artisan must be importable wherever the
+      command runs: baked into the container image for Modal and
+      ``docker run``, installed in the active environment locally.
     """
 
     # ---------- Tool ----------
@@ -161,13 +257,21 @@ class OperationDefinition(BaseModel):
     environments: Environments = Environments()
     """Multi-environment configuration. Selects which runtime wraps commands."""
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig()
-    """Hardware resource allocation for SLURM jobs."""
+    # ---------- Compute provider ----------
+    compute_provider: ComputeProvider = ComputeProvider()
+    """Compute provider routing. Selects where the execute phase runs (local/Modal)."""
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig()
-    """Batching and scheduling configuration."""
+    # ---------- Compute resources ----------
+    compute_resources: ComputeResources = ComputeResources()
+    """Hardware resources requested from the compute provider (Modal)."""
+
+    # ---------- Runner resources ----------
+    runner_resources: RunnerResources = RunnerResources()  # type: ignore[call-arg]
+    """Hardware resources for the active step runner."""
+
+    # ---------- Batch strategy ----------
+    batch_strategy: BatchStrategy = BatchStrategy()  # type: ignore[call-arg]
+    """Batching and scheduling — how artifacts are sliced into units/workers."""
 
     # ---------- Lifecycle ----------
     def preprocess(self, _inputs: PreprocessInput) -> dict[str, Any]:
@@ -178,30 +282,109 @@ class OperationDefinition(BaseModel):
         Generative creators (no inputs) can use the default (returns ``{}``).
 
         Args:
-            inputs: Artifacts keyed by role and a working directory for
+            _inputs: Artifacts keyed by role and a working directory for
                 intermediate files.
 
         Returns:
-            Dict of prepared inputs forwarded to ``execute()``.
+            Dict of prepared inputs forwarded to the execute phase.
 
         Example:
+            >>> from artisan.operations.base.per_artifact import PerArtifact
             >>> def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
             ...     return {
-            ...         role: [a.materialized_path for a in artifacts]
+            ...         role: PerArtifact([a.materialized_path for a in artifacts])
             ...         for role, artifacts in inputs.input_artifacts.items()
             ...     }
         """
         return {}
 
-    def execute(self, inputs: ExecuteInput) -> Any:
-        """Run the core computation for a creator operation.
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        """Assemble the tool command from params + prepared inputs.
 
-        Override to implement the operation's logic. Receives prepared inputs
-        from preprocess and writes output files to ``inputs.execute_dir``.
-        Config parameters are accessed via ``self``.
+        Command ops override this instead of ``execute_function()``; the
+        framework runs the returned argv — locally as a subprocess, or on
+        the deployed tool endpoint's worker under
+        ``compute_provider='modal'``. ``execute_as_tool`` ops do not
+        override this: the base implementation returns the generic
+        ``artisan op run`` argv for them.
 
-        The framework calls this method; direct calls bypass orchestration
-        (sandboxing, lineage, caching) and should only be used for testing.
+        Args:
+            inputs: Prepared inputs from ``preprocess()``
+                (``ExecuteInput.inputs``).
+
+        Returns:
+            The argv list, typically ``[*self.tool.parts(), ...]``.
+
+        Raises:
+            NotImplementedError: If the subclass neither overrides this
+                method nor sets ``execute_as_tool``.
+        """
+        if self.execute_as_tool:
+            return [
+                "artisan",
+                "op",
+                "run",
+                f"{type(self).__module__}:{type(self).__qualname__}",
+                "--params",
+                self.params_json(),
+                "--inputs",
+                _inputs_json(type(self).name, inputs),
+            ]
+        msg = f"{self.__class__.__name__} does not implement execute_command()"
+        raise NotImplementedError(msg)
+
+    def is_command_op(self) -> bool:
+        """True when this op runs via the framework tool path.
+
+        Command ops either set ``execute_as_tool`` (the framework
+        supplies the command) or declare a ``ToolSpec`` (``tool``) and
+        override ``execute_command()`` instead of ``execute_function()``.
+        """
+        return self.execute_as_tool or (
+            type(self).execute_command is not OperationDefinition.execute_command
+            and self.tool is not None
+        )
+
+    @classmethod
+    def declares_command_execute(cls) -> bool:
+        """Class-level twin of ``is_command_op()`` for deploy-time checks.
+
+        Reads field defaults rather than instance state —
+        ``endpoint_spec`` and the CLI consult class-level config only.
+        """
+        return cls.execute_as_tool or (
+            cls.execute_command is not OperationDefinition.execute_command
+            and cls.model_fields["tool"].default is not None
+        )
+
+    def params_json(self) -> str:
+        """The nested ``Params`` as JSON.
+
+        The unit that crosses process and wire boundaries — the endpoint
+        submit form and the ``artisan op run`` argv both carry exactly
+        this payload, and the worker/runner rebuild the op from it.
+
+        Returns:
+            ``self.params`` serialized via ``model_dump_json()``, or
+            ``"{}"`` when the op declares no ``Params``.
+        """
+        params = getattr(self, "params", None)
+        if isinstance(params, BaseModel):
+            return params.model_dump_json()
+        return "{}"
+
+    def execute_function(self, inputs: ExecuteInput) -> Any:
+        """Run the core computation for a creator operation, as a Python body.
+
+        The function form of the execute phase: override to receive prepared
+        inputs from preprocess, write output files to ``inputs.execute_dir``,
+        and access config parameters via ``self``. The work is code — it
+        runs where the lifecycle worker is. Ops whose work should ship to a
+        remote backend declare a ``tool`` + ``execute_command()`` instead.
+
+        The execution layer performs this slot (via ``invoke_op_work()``);
+        direct calls bypass orchestration (sandboxing, lineage, caching)
+        and should only be used for testing.
 
         Args:
             inputs: Prepared inputs from preprocess and the execute directory.
@@ -210,9 +393,10 @@ class OperationDefinition(BaseModel):
             Raw result of any type, passed to postprocess as memory_outputs.
 
         Raises:
-            NotImplementedError: If the subclass does not override this method.
+            NotImplementedError: If the subclass does not override this
+                method.
         """
-        msg = f"{self.__class__.__name__} must implement execute() method"
+        msg = f"{self.__class__.__name__} does not implement execute_function()"
         raise NotImplementedError(msg)
 
     def execute_curator(
@@ -223,10 +407,10 @@ class OperationDefinition(BaseModel):
     ) -> CuratorResult:
         """Run the core computation for a curator operation.
 
-        Override instead of ``execute()`` for operations that manipulate
-        artifact metadata without worker dispatch. Curator operations execute
-        locally, skip sandboxing, and receive DataFrames with at least an
-        ``artifact_id`` column per role.
+        Override instead of ``execute_function()`` for operations that
+        manipulate artifact metadata without worker dispatch. Curator
+        operations execute locally, skip sandboxing, and receive DataFrames
+        with at least an ``artifact_id`` column per role.
 
         Args:
             inputs: Role names mapped to DataFrames, each with an
@@ -254,13 +438,12 @@ class OperationDefinition(BaseModel):
         The default returns a successful result with no artifacts.
 
         Args:
-            inputs: File outputs, memory outputs, input context, and
+            _inputs: File outputs, memory outputs, input context, and
                 step metadata from the completed execution.
 
         Returns:
             ArtifactResult containing draft artifacts keyed by output role.
         """
-        # Default: success with no memory outputs
         return ArtifactResult(success=True)
 
     # ---------- Validation ----------
@@ -273,34 +456,92 @@ class OperationDefinition(BaseModel):
         """
         super().__pydantic_init_subclass__(**kwargs)
 
-        # Skip abstract classes (no name set)
-        if not cls.name:
+        # The empty string is the explicit marker for abstract operation bases.
+        # Other falsey values are malformed concrete declarations and must fail.
+        if cls.name == "":
             return
 
-        # Check if either execute or execute_curator is implemented
-        has_execute = cls.execute is not OperationDefinition.execute
+        cls._validate_registry_metadata()
+        cls._validate_parameter_shape()
+
+        # Exactly one execute slot must be implemented
+        has_execute_function = (
+            cls.execute_function is not OperationDefinition.execute_function
+        )
         has_execute_curator = (
             cls.execute_curator is not OperationDefinition.execute_curator
         )
-        if not has_execute and not has_execute_curator:
+        has_execute_command = (
+            cls.execute_command is not OperationDefinition.execute_command
+        )
+        if cls.execute_as_tool:
+            cls._validate_execute_as_tool(has_execute_function, has_execute_command)
+        if has_execute_command and cls.model_fields["tool"].default is None:
             msg = (
-                f"{cls.__name__} must implement either execute() (creator ops) "
-                "or execute_curator() (curator ops)"
+                f"{cls.__name__} implements execute_command() but declares no "
+                "ToolSpec — set the `tool` field"
+            )
+            raise TypeError(msg)
+        if (
+            not has_execute_function
+            and not has_execute_curator
+            and not has_execute_command
+        ):
+            msg = (
+                f"{cls.__name__} must implement execute_function() (creator "
+                "ops), execute_curator() (curator ops), or declare a ToolSpec "
+                "+ execute_command() (command ops)"
+            )
+            raise TypeError(msg)
+        filled = [
+            name
+            for name, has_slot in (
+                ("execute_function()", has_execute_function),
+                ("execute_command()", has_execute_command),
+                ("execute_curator()", has_execute_curator),
+            )
+            if has_slot
+        ]
+        if len(filled) > 1:
+            # A second slot would be silently dead code — fail at definition.
+            msg = (
+                f"{cls.__name__} fills {len(filled)} execute slots "
+                f"({', '.join(filled)}). Implement exactly one of "
+                "execute_function(), execute_command(), or execute_curator()."
             )
             raise TypeError(msg)
 
-        # Creator ops must declare explicit lineage for all outputs
-        if has_execute:
+        # Modal compute runs execute_command on a deployed tool endpoint —
+        # a class whose default provider is modal must be a command op.
+        provider_default = cls.model_fields["compute_provider"].default
+        if (
+            isinstance(provider_default, ComputeProvider)
+            and provider_default.active == "modal"
+            and not (has_execute_command or cls.execute_as_tool)
+        ):
+            msg = (
+                f"{cls.__name__} defaults compute_provider.active='modal' but "
+                "modal requires a command op — declare a ToolSpec + "
+                "execute_command(), or set execute_as_tool=True"
+            )
+            raise TypeError(msg)
+
+        cls._validate_lineage_roles()
+
+        # Creator ops (custom execute or tool command) must declare explicit
+        # lineage for all outputs
+        is_creator = has_execute_function or has_execute_command
+        if is_creator:
             for role_name, spec in cls.outputs.items():
-                if spec.infer_lineage_from is None:
+                if spec.derives_from is None:
                     msg = (
                         f"{cls.__name__}.outputs['{role_name}'] must set "
-                        "infer_lineage_from (explicit lineage required for creators)"
+                        "derives_from (explicit lineage required for creators)"
                     )
                     raise TypeError(msg)
 
         # Creator ops with inputs must implement preprocess
-        if has_execute and cls.inputs:
+        if is_creator and cls.inputs:
             has_preprocess = cls.preprocess is not OperationDefinition.preprocess
             if not has_preprocess:
                 msg = (
@@ -309,12 +550,336 @@ class OperationDefinition(BaseModel):
                 )
                 raise TypeError(msg)
 
-        validate_role_enums(cls, "operation")
+        validate_role_enums(cls)
         append_role_docs(cls)
+        cls._validate_params_documented()
 
-        # Register in operation registry (concrete ops only)
+        # Register in operation registry (concrete ops only). First
+        # registration wins; collisions are recorded for discovery.
         if cls.name:
-            OperationDefinition._registry[cls.name] = cls
+            existing = OperationDefinition._registry.get(cls.name)
+            if existing is None:
+                OperationDefinition._registry[cls.name] = cls
+            elif existing is not cls:
+                OperationDefinition._name_collisions.append(
+                    (cls.name, existing.__module__, cls.__module__)
+                )
+
+    @classmethod
+    def _validate_registry_metadata(cls) -> None:
+        """Validate metadata consumed by registry serialization and discovery."""
+        for field_name in ("name", "version"):
+            value = getattr(cls, field_name)
+            if not isinstance(value, str) or not value.strip():
+                msg = f"{cls.__name__}.{field_name} must be a non-empty string (got {value!r})"
+                raise TypeError(msg)
+        description: object = cls.description
+        if not isinstance(description, str):
+            msg = f"{cls.__name__}.description must be a string (got {description!r})"
+            raise TypeError(msg)
+        tags: object = cls.tags
+        if not isinstance(tags, list) or not all(
+            isinstance(tag, str) and bool(tag.strip()) for tag in tags
+        ):
+            msg = (
+                f"{cls.__name__}.tags must be a list of non-empty strings "
+                f"(got {tags!r})"
+            )
+            raise TypeError(msg)
+        examples: object = cls.examples
+        if not isinstance(examples, list) or not all(
+            isinstance(example, OperationExample) for example in examples
+        ):
+            msg = (
+                f"{cls.__name__}.examples must be a list of OperationExample instances "
+                f"(got {examples!r})"
+            )
+            raise TypeError(msg)
+        cls._validate_spec_mapping("inputs", cls.inputs, InputSpec)
+        cls._validate_spec_mapping("outputs", cls.outputs, OutputSpec)
+
+    @classmethod
+    def _validate_spec_mapping(
+        cls,
+        field_name: str,
+        value: Any,
+        spec_type: type[InputSpec] | type[OutputSpec],
+    ) -> None:
+        """Validate a role-to-spec mapping used by registry payloads."""
+        if not isinstance(value, dict) or not all(
+            isinstance(role, str) and isinstance(spec, spec_type)
+            for role, spec in value.items()
+        ):
+            msg = (
+                f"{cls.__name__}.{field_name} must be a dict mapping strings to "
+                f"{spec_type.__name__} instances (got {value!r})"
+            )
+            raise TypeError(msg)
+
+    @classmethod
+    def _validate_lineage_roles(cls) -> None:
+        """Validate each output's lineage references against declared roles."""
+        for output_role, spec in cls.outputs.items():
+            lineage = spec.derives_from
+            if lineage is None:
+                continue
+            input_refs = lineage.get("inputs")
+            if input_refs is not None:
+                unknown = [role for role in input_refs if role not in cls.inputs]
+                if unknown:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] references unknown "
+                        f"input roles {unknown}; declared roles are {list(cls.inputs)}"
+                    )
+                    raise TypeError(msg)
+            output_refs = lineage.get("outputs")
+            if output_refs is not None:
+                if output_role in output_refs:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] cannot derive "
+                        "lineage from itself"
+                    )
+                    raise TypeError(msg)
+                unknown = [role for role in output_refs if role not in cls.outputs]
+                if unknown:
+                    msg = (
+                        f"{cls.__name__}.outputs[{output_role!r}] references unknown "
+                        f"output roles {unknown}; declared roles are {list(cls.outputs)}"
+                    )
+                    raise TypeError(msg)
+
+        dependencies = {
+            role: (spec.derives_from or {}).get("outputs", [])
+            for role, spec in cls.outputs.items()
+        }
+        visited: set[str] = set()
+        visiting: set[str] = set()
+
+        def visit(role: str) -> None:
+            if role in visiting:
+                msg = f"{cls.__name__} has a cycle in output lineage at {role!r}"
+                raise TypeError(msg)
+            if role in visited:
+                return
+            visiting.add(role)
+            for parent in dependencies[role]:
+                visit(parent)
+            visiting.remove(role)
+            visited.add(role)
+
+        for role in dependencies:
+            visit(role)
+
+    @classmethod
+    def _validate_execute_as_tool(
+        cls, has_execute_function: bool, has_execute_command: bool
+    ) -> None:
+        """Reject execute_as_tool misdeclarations at class definition.
+
+        The flag wraps a Python body in a framework-generated command, so
+        the class must (1) live in an importable module, (2) implement
+        ``execute_function`` and nothing else in the command slot, (3)
+        declare no ``ToolSpec``. General subclass validation separately
+        enforces the one nested ``Params`` contract for every operation.
+
+        Raises:
+            TypeError: On any violation, naming the rule.
+        """
+        if cls.__module__ == "__main__":
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True but is defined in "
+                "__main__ — the runner resolves ops by module:qualname, so "
+                "flag-ops must live in an importable module"
+            )
+            raise TypeError(msg)
+        if not has_execute_function:
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True but does not "
+                "implement execute_function() — the flag runs a Python body "
+                "as a framework-generated command"
+            )
+            raise TypeError(msg)
+        if has_execute_command:
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True and overrides "
+                "execute_command() — the framework supplies the command for "
+                "flag-ops; implement execute_function() only"
+            )
+            raise TypeError(msg)
+        if cls.model_fields["tool"].default is not None:
+            msg = (
+                f"{cls.__name__} sets execute_as_tool=True and declares a "
+                "ToolSpec — `tool` means an external binary the op invokes; "
+                "the framework needs no ToolSpec for its own argv"
+            )
+            raise TypeError(msg)
+
+    @classmethod
+    def _validate_parameter_shape(cls) -> None:
+        """Require the single nested ``Params`` operation contract.
+
+        Concrete operations either declare no per-run parameter fields, or
+        declare the pair ``class Params(BaseModel)`` and ``params: Params``.
+        The pair may be inherited unchanged, but subclasses cannot redefine
+        only one half because that would split construction from schema and
+        hashing resolution.
+
+        Raises:
+            TypeError: If the operation declares a flat field or malformed
+                ``Params`` pair.
+        """
+        extra_fields = set(cls.model_fields) - set(OperationDefinition.model_fields)
+        flat_fields = extra_fields - {"params"}
+        if flat_fields:
+            msg = (
+                f"{cls.__name__} declares top-level model fields "
+                f"{sorted(flat_fields)}; move per-run configuration into the "
+                "nested Params model and `params` field"
+            )
+            raise TypeError(msg)
+
+        annotations = cls.__dict__.get("__annotations__", {})
+        defines_field = "params" in annotations
+        defines_model = "Params" in cls.__dict__
+        inherited_pair = any(
+            "params" in base.model_fields and hasattr(base, "Params")
+            for base in cls.__mro__[1:]
+            if issubclass(base, OperationDefinition)
+        )
+        if inherited_pair and defines_field != defines_model:
+            member = "params field" if defines_field else "Params class"
+            msg = (
+                f"{cls.__name__} redefines only its inherited {member}; redefine "
+                "both the nested Params class and `params` field, or inherit both"
+            )
+            raise TypeError(msg)
+
+        field = cls.model_fields.get("params")
+        params_cls = getattr(cls, "Params", None)
+        if field is None and params_cls is None:
+            return
+        if field is None:
+            msg = f"{cls.__name__} declares Params but no `params` model field"
+            raise TypeError(msg)
+        if params_cls is None:
+            msg = f"{cls.__name__} declares a `params` field but no nested Params class"
+            raise TypeError(msg)
+        if not isinstance(params_cls, type) or not issubclass(params_cls, BaseModel):
+            msg = f"{cls.__name__}.Params must subclass pydantic.BaseModel"
+            raise TypeError(msg)
+        if field.annotation is not params_cls:
+            msg = (
+                f"{cls.__name__}.params must be annotated as its exact nested "
+                "Params class"
+            )
+            raise TypeError(msg)
+        if field.is_required():
+            return
+        default = field.default
+        if type(default) is not params_cls:
+            msg = (
+                f"{cls.__name__}.params default must be an instance of its exact "
+                "nested Params class, not "
+                f"{type(default).__name__}"
+            )
+            raise TypeError(msg)
+
+    @classmethod
+    def _validate_params_documented(cls) -> None:
+        """Fail-fast if any ``Params`` field lacks a description source.
+
+        A description must come from either ``Field(description=...)`` or
+        the class docstring (``Attributes:`` or ``Args:`` section). Parameter-less
+        ops and ops with empty ``Params`` short-circuit; otherwise import
+        fails with ``ArtisanError(code=OP_PARAMS_UNDOCUMENTED)`` before the
+        op reaches the registry — so the gap surfaces at the contributor's
+        editor, not on the agent wire.
+        """
+        params_cls = _params_class(cls)
+        if params_cls is None or not params_cls.model_fields:
+            return
+        described = _extract_arg_descriptions(params_cls)
+        missing = [
+            name
+            for name, f in params_cls.model_fields.items()
+            if not f.description and name not in described
+        ]
+        if not missing:
+            return
+        raise ArtisanError(
+            code=ErrorCode.OP_PARAMS_UNDOCUMENTED,
+            error_type="config",
+            operation_name=cls.name,
+            message=(
+                f"Operation {cls.name!r}: Params fields {missing} have no "
+                f"description. Add a Google-style 'Attributes:' section to "
+                f"the Params docstring (or 'Args:'), or use "
+                f"Field(description=...) per field."
+            ),
+            hint="Document each Params field.",
+            recovery_hint="CHECK_INPUT",
+        )
+
+    # ---------- Introspection (agent-facing) ----------
+    @classmethod
+    def _copy_examples(cls) -> list[OperationExample]:
+        """Return examples without exposing mutable class-level model data."""
+        return [example.model_copy(deep=True) for example in cls.examples]
+
+    @classmethod
+    def _kind(cls) -> Literal["creator", "curator"]:
+        """Return ``"curator"`` if ``execute_curator`` is overridden, else ``"creator"``."""
+        if cls.execute_curator is not OperationDefinition.execute_curator:
+            return "curator"
+        return "creator"
+
+    @classmethod
+    def to_summary(cls) -> OperationSummary:
+        """Return the lightweight ``OperationSummary`` for ``list_operations()``."""
+        from artisan.registry.models import OperationSummary
+
+        return OperationSummary(
+            name=cls.name,
+            kind=cls._kind(),
+            description=cls.description,
+            input_roles=list(cls.inputs.keys()),
+            output_roles=list(cls.outputs.keys()),
+            tags=list(cls.tags),
+        )
+
+    @classmethod
+    def to_metadata(cls) -> OperationMetadata:
+        """Return the full ``OperationMetadata`` for ``describe(name)``."""
+        from artisan.registry.models import (
+            InputSpecMetadata,
+            OperationMetadata,
+            OutputSpecMetadata,
+        )
+        from artisan.registry.schemas import params_schema_for
+
+        return OperationMetadata(
+            **cls.to_summary().model_dump(),
+            inputs={
+                role: InputSpecMetadata(
+                    artifact_type=spec.artifact_type,
+                    required=spec.required,
+                    description=spec.description,
+                    materialize=spec.materialize,
+                )
+                for role, spec in cls.inputs.items()
+            },
+            outputs={
+                role: OutputSpecMetadata(
+                    artifact_type=spec.artifact_type,
+                    required=spec.required,
+                    description=spec.description,
+                )
+                for role, spec in cls.outputs.items()
+            },
+            params_schema=params_schema_for(cls),
+            examples=cls._copy_examples(),
+            source_module=cls.__module__,
+        )
 
     # ---------- Registry ----------
     @classmethod
@@ -330,9 +895,42 @@ class OperationDefinition(BaseModel):
         Raises:
             KeyError: If name is not registered.
         """
-        return get_registered(name, cls._registry, "operation")
+        result: type[OperationDefinition] = get_registered(
+            name, cls._registry, "operation"
+        )
+        return result
 
     @classmethod
     def get_all(cls) -> dict[str, type[OperationDefinition]]:
         """Return a copy of the operation registry."""
         return dict(cls._registry)
+
+
+def _inputs_json(op_name: str, inputs: dict[str, Any]) -> str:
+    """Serialize prepared inputs for the ``artisan op run`` argv.
+
+    This checks JSON serialization for the local execute-as-tool command.
+    Shared or multi-item lists remain intact. Remote endpoint file transport
+    separately enforces one file per input role.
+
+    Args:
+        op_name: Operation name for the error message.
+        inputs: ``ExecuteInput.inputs`` for one artifact.
+
+    Returns:
+        The inputs dict as JSON.
+
+    Raises:
+        TypeError: When a value is not JSON-serializable; names the
+            offending role.
+    """
+    for role, value in inputs.items():
+        try:
+            json.dumps(value)
+        except TypeError as exc:
+            msg = (
+                f"prepared input {role!r} of {op_name} is not "
+                "JSON-serializable for execute_as_tool"
+            )
+            raise TypeError(msg) from exc
+    return json.dumps(inputs)

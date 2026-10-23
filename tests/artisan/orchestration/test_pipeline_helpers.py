@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
+import json
 import re
+from pathlib import Path
+
+import pytest
 
 from artisan.orchestration.pipeline_manager import (
     _extract_name_from_run_id,
@@ -11,6 +15,7 @@ from artisan.orchestration.pipeline_manager import (
     _generate_step_run_id,
     _qualified_name,
     _serialize_input_refs,
+    _set_default,
 )
 from artisan.schemas.orchestration.output_reference import OutputReference
 
@@ -30,20 +35,25 @@ class TestGenerateRunId:
         assert len(parts[-1]) == 8
         assert re.match(r"^[0-9a-f]{8}$", parts[-1])
 
+    def test_unique_across_calls(self):
+        a = _generate_run_id("x")
+        b = _generate_run_id("x")
+        assert a != b
+
 
 class TestGenerateStepRunId:
     """Tests for _generate_step_run_id."""
 
     def test_length(self):
         """32-char hex string."""
-        step_run_id = _generate_step_run_id("spec_abc123")
+        step_run_id = _generate_step_run_id()
         assert len(step_run_id) == 32
         assert re.match(r"^[0-9a-f]{32}$", step_run_id)
 
-    def test_different_specs_different_ids(self):
-        """Different spec_ids produce different run_ids."""
-        id1 = _generate_step_run_id("spec_a")
-        id2 = _generate_step_run_id("spec_b")
+    def test_consecutive_calls_produce_different_ids(self):
+        """Each attempt receives a distinct run ID."""
+        id1 = _generate_step_run_id()
+        id2 = _generate_step_run_id()
         assert id1 != id2
 
 
@@ -55,8 +65,7 @@ class TestQualifiedName:
         from artisan.operations.curator.filter import Filter
 
         name = _qualified_name(Filter)
-        assert "artisan.operations.curator.filter" in name
-        assert "Filter" in name
+        assert name == f"{Filter.__module__}.{Filter.__qualname__}"
 
 
 class TestExtractSourceSteps:
@@ -118,6 +127,7 @@ class TestSerializeInputRefs:
         parsed = json.loads(result)
         assert len(parsed) == 2
         assert parsed[0]["type"] == "output_ref"
+        assert parsed[1]["source_step"] == 1
 
     def test_list_of_paths(self):
         """List of file paths."""
@@ -128,6 +138,16 @@ class TestSerializeInputRefs:
         parsed = json.loads(result)
         assert len(parsed) == 2
         assert parsed[0]["type"] == "literal"
+
+    def test_dict_with_literal(self):
+        inputs = {"data": ["some_artifact_id"]}
+        result = json.loads(_serialize_input_refs(inputs))
+        assert result["data"]["type"] == "literal"
+        assert result["data"]["value"] == ["some_artifact_id"]
+
+    def test_fallback_to_str(self):
+        result = json.loads(_serialize_input_refs(42))
+        assert result == "42"
 
 
 class TestExtractNameFromRunId:
@@ -144,107 +164,22 @@ class TestExtractNameFromRunId:
             == "example_pipeline"
         )
 
+    def test_name_with_underscores(self):
+        result = _extract_name_from_run_id("a_b_c_20240101_120000_abc12345")
+        assert result == "a_b_c"
 
-class TestBuildInputSpec:
-    """Tests for PipelineManager._build_input_spec."""
 
-    def test_output_refs(self):
-        """Dict OutputReferences mapped to upstream spec_ids."""
-        from pathlib import Path
+class TestSetDefault:
+    """Tests for _set_default JSON serializer."""
 
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+    def test_set_becomes_sorted_list(self):
+        result = _set_default({"c", "a", "b"})
+        assert result == ["a", "b", "c"]
 
-        config = PipelineConfig(
-            name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
-        )
-        pm = PipelineManager(config)
-        pm._step_spec_ids[0] = "upstream_spec_abc"
+    def test_path_becomes_string(self):
+        result = _set_default(Path("/tmp/foo"))
+        assert result == "/tmp/foo"
 
-        inputs = {"data": OutputReference(source_step=0, role="data")}
-        spec = pm._build_input_spec(inputs)
-        assert spec == {"data": ("upstream_spec_abc", "data")}
-
-    def test_file_paths(self):
-        """File paths produce _file_paths key with hash."""
-        from pathlib import Path
-
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
-        )
-        pm = PipelineManager(config)
-
-        inputs = ["/data/b.dat", "/data/a.dat"]
-        spec = pm._build_input_spec(inputs)
-        assert "_file_paths" in spec
-        assert len(spec["_file_paths"][0]) == 32  # hash
-
-        # Order independent
-        inputs2 = ["/data/a.dat", "/data/b.dat"]
-        spec2 = pm._build_input_spec(inputs2)
-        assert spec["_file_paths"] == spec2["_file_paths"]
-
-    def test_merged_streams(self):
-        """List of OutputReferences produce _merged_streams key."""
-        from pathlib import Path
-
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
-        )
-        pm = PipelineManager(config)
-        pm._step_spec_ids[0] = "spec_a"
-        pm._step_spec_ids[1] = "spec_b"
-
-        inputs = [
-            OutputReference(source_step=0, role="data"),
-            OutputReference(source_step=1, role="data"),
-        ]
-        spec = pm._build_input_spec(inputs)
-        assert "_merged_streams" in spec
-
-    def test_none_inputs(self):
-        """None returns empty dict."""
-        from pathlib import Path
-
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
-        )
-        pm = PipelineManager(config)
-        assert pm._build_input_spec(None) == {}
-
-    def test_literal_ids(self):
-        """Dict with literal artifact ID lists."""
-        from pathlib import Path
-
-        from artisan.orchestration.pipeline_manager import PipelineManager
-        from artisan.schemas.orchestration.pipeline_config import PipelineConfig
-
-        config = PipelineConfig(
-            name="test",
-            delta_root=Path("/tmp/delta"),
-            staging_root=Path("/tmp/staging"),
-        )
-        pm = PipelineManager(config)
-
-        inputs = {"data": ["artifact_id_1", "artifact_id_2"]}
-        spec = pm._build_input_spec(inputs)
-        assert "data" in spec
-        assert len(spec["data"][0]) == 32  # hash
-        assert spec["data"][1] == ""  # empty role for literals
+    def test_unsupported_type_raises(self):
+        with pytest.raises(TypeError, match="not JSON serializable"):
+            _set_default(object())

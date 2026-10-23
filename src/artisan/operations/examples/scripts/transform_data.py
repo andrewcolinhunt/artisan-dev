@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """Apply scaling and noise to a CSV file based on a JSON config.
 
 Standalone script invoked by DataTransformerScript. Reads config with
@@ -18,13 +17,19 @@ def main() -> None:
     """Parse arguments, read config, and write the transformed CSV."""
     parser = argparse.ArgumentParser(description="Transform CSV data")
     parser.add_argument("--config", required=True, type=Path, help="Config JSON file")
-    parser.add_argument("--output-dir", required=True, type=Path, help="Output directory")
-    parser.add_argument("--output-basename", type=str, help="Base name for output files")
+    parser.add_argument(
+        "--output-dir", required=True, type=Path, help="Output directory"
+    )
+    parser.add_argument(
+        "--output-basename", type=str, help="Base name for output files"
+    )
     args = parser.parse_args()
 
     config = json.loads(args.config.read_text())
     input_path = Path(config["input"])
-    output_basename = args.output_basename or config.get("output_basename") or input_path.stem
+    output_basename = (
+        args.output_basename or config.get("output_basename") or input_path.stem
+    )
     scale_factor = config.get("scale_factor", 1.0)
     noise_amplitude = config.get("noise_amplitude", 0.0)
     seed = config.get("seed")

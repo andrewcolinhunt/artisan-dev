@@ -1,0 +1,80 @@
+# Python API Lookup
+
+Find an interface in the public packages below, then inspect its installed
+signature and docstring for arguments, defaults, return values, and exceptions.
+
+## Find an interface
+
+| Task | Public package | Start with |
+| --- | --- | --- |
+| Run a pipeline or inspect its run history | `artisan.orchestration` | `PipelineManager`, `PipelineConfig`, `StepResult`, `list_runs` |
+| Declare artifact parents | `artisan.schemas` | `ArtifactResult.add_artifact`, `LineageMapping`, `OutputSpec` |
+| Match filenames inside an operation | `artisan.operations.lineage` | `match_outputs_to_inputs_by_stem` |
+| Define an operation | `artisan.operations.base` | `OperationDefinition`, `PerArtifact` |
+| Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
+| Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
+| Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |
+| Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
+| Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |
+| Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
+| Read stored artifacts | `artisan.storage` | `ArtifactStore` |
+| Inspect results, failures, and timing | `artisan.visualization` | `inspect_pipeline`, `inspect_data`, `inspect_failures`, `PipelineTimings` |
+| Discover and query bounded evidence | `artisan.inspection` | `list_inspections`, `describe_inspection`, `inspect_evidence` |
+| Read installed operating guidance | `artisan.inspection` | `list_operating_guides`, `read_operating_guide` |
+| Save and reload complete reports | `artisan.inspection` | `export_evidence`, `load_evidence_export` |
+| Assess recorded metrics or compare selected attempts | `artisan.visualization` | `OutcomeSelection`, `AssessmentSpec`, `assess_outcomes`, `ComparisonSpec`, `compare_runs` |
+| Traverse provenance | `artisan.provenance` | `provenance_edges`, `walk_forward`, `walk_backward` |
+| Implement a runner provider | `artisan.orchestration.runner_api` | `RunnerBase`, `LifecycleRouter`, `UnitResult` |
+
+For structured error definitions, see `artisan.errors`: `ArtisanError`,
+`ArtisanErrorEnvelope`, and `ErrorCode`. See
+[error handling](../concepts/error-handling.md#structured-failure-identity) for
+how these relate to failed steps and execution records.
+
+## Inspect the installed version
+
+An editor's hover information and “go to definition” show the same source and
+docstrings you can inspect from Python:
+
+```python
+import inspect
+
+from artisan.orchestration import PipelineManager
+
+print(inspect.signature(PipelineManager.run))
+help(PipelineManager.run)
+print(inspect.getsourcefile(PipelineManager))
+```
+
+For a Pydantic model, its JSON schema lists fields, defaults, constraints, and
+declared field descriptions:
+
+```python
+from pprint import pprint
+
+from artisan.schemas import BatchStrategy
+
+pprint(BatchStrategy.model_json_schema())
+```
+
+From a terminal, Python's documentation viewer is available in the project
+environment:
+
+```bash
+pixi run python -m pydoc artisan.orchestration.PipelineManager.run
+```
+
+Use `pixi run artisan --help` to find CLI commands, then append
+`--help` to a command for its options.
+
+## Find a working example
+
+- [Build a pipeline](../how-to-guides/building-a-pipeline.md).
+- [Configure execution](../how-to-guides/configuring-execution.md).
+- [Write an operation](../how-to-guides/writing-creator-operations.md).
+- [Resolve configuration references](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
+- [Write a composite](../how-to-guides/writing-composite-operations.md).
+- [Inspect a particular run](../how-to-guides/inspecting-provenance.md#select-the-run-you-want-to-inspect).
+- [Inspect bounded evidence locally](../how-to-guides/inspecting-evidence.md).
+- [Export complete evidence](../how-to-guides/exporting-evidence.md).
+- [Implement a runner provider](../contributing/coding-conventions.md#external-step-runner-providers).

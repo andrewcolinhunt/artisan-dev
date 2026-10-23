@@ -1,11 +1,11 @@
 # Contributing to Artisan
 
-Thank you for your interest in contributing to Artisan! This document explains
-how to get started, what we expect, and how we work together.
+Set up a development environment, make a focused change, and run the relevant
+checks before opening a pull request.
 
 ---
 
-## Before You Start
+## Before you start
 
 **Bug fixes** are always welcome as pull requests — no prior discussion needed.
 
@@ -17,38 +17,38 @@ contributors to propose a short design document outlining:
 - Proposed approach and alternatives considered
 - Any API or schema changes
 
-This helps us align on direction early and avoid wasted work. We will review
-the proposal and give feedback before you start coding.
+Wait for feedback on the proposal before implementing it.
 
 ---
 
-## Development Setup
+## Development setup
 
 ### Prerequisites
 
-- Python 3.12+
-- [Pixi](https://pixi.sh) (manages all dependencies and environments)
+- [Pixi 0.66.0](docs/getting-started/installation.md) supplies Python and the
+  project dependencies.
 
-### Getting Started
+### Getting started
 
 ```bash
 git clone https://github.com/dexterity-systems/artisan.git
 cd artisan
-pixi install
+pixi install -e dev
+pixi run -e dev setup
 ```
 
 ### Environments
 
-| Environment | Activate with        | Purpose                                       |
-| ----------- | -------------------- | --------------------------------------------- |
-| `default`   | `pixi run …`         | Core runtime — everything needed to run pipelines |
-| `dev`       | `pixi run -e dev …`  | Testing, linting, formatting, notebooks       |
-| `docs`      | `pixi run -e docs …` | Documentation building (Jupyter Book 2)       |
+| Environment | Activate with | Purpose |
+| --- | --- | --- |
+| `default` | `pixi run …` | Core runtime for pipelines |
+| `dev` | `pixi run -e dev …` | Testing, linting, formatting, notebooks |
+| `docs` | `pixi run -e docs …` | Documentation building (Jupyter Book 2) |
 
-### Install Pre-commit Hooks
+### Install pre-commit hooks
 
 ```bash
-pixi run -e dev pre-commit install
+pixi run -e dev install-hooks
 ```
 
 This ensures linting, formatting, and type checks run automatically on every
@@ -56,7 +56,7 @@ commit.
 
 ---
 
-## Making Changes
+## Making changes
 
 ### Workflow
 
@@ -66,16 +66,25 @@ commit.
 4. Run the checks below before pushing.
 5. Open a pull request against `main`.
 
-### Running Tests
+### Running tests
 
 ```bash
-pixi run -e dev test              # Unit (sequential) + integration (parallel)
-pixi run -e dev test-unit         # Unit tests only
-pixi run -e dev test-integration  # Integration tests only (parallel)
-pixi run -e dev test-seq          # All tests sequentially (for debugging)
+pixi run -e dev test
 ```
 
-### Formatting and Linting
+This runs unit, integration, S3, and local notebook tests. A local Docker engine
+is required and checked before unit tests start; the Docker test image is
+prepared automatically. S3 tests use Docker/MinIO or a configured endpoint.
+Modal tests and notebooks run separately.
+See the [development tasks](docs/getting-started/using-pixi.md#dev-environment)
+for the focused suites and their resource requirements.
+
+When changing documentation, follow the
+[documentation guide](docs/contributing/writing-docs.md): verify the examples'
+outcomes and build the site. Keep exact API descriptions with the source;
+guides should explain tasks and relevant behavior.
+
+### Formatting and linting
 
 ```bash
 pixi run -e dev fmt               # Ruff format + lint with auto-fix
@@ -89,7 +98,7 @@ pixi run -e dev pre-commit run --all-files
 
 ---
 
-## Pull Request Guidelines
+## Pull request guidelines
 
 - Fill out the pull request template.
 - Keep pull requests focused — one concern per PR.
@@ -99,11 +108,11 @@ pixi run -e dev pre-commit run --all-files
 
 ---
 
-## Code Style
+## Code style
 
 - We use [Ruff](https://docs.astral.sh/ruff/) for linting and formatting.
-- All modules must include `from __future__ import annotations` as the first
-  import (enforced by Ruff's isort rules).
+- Use `from __future__ import annotations` as the first import. Ruff enforces
+  this except for explicitly configured file-specific exceptions.
 - Type annotations are expected. We run [mypy](https://mypy-lang.org/) in
   strict mode.
 - Follow existing patterns in the codebase for naming, structure, and error
@@ -111,7 +120,7 @@ pixi run -e dev pre-commit run --all-files
 
 ---
 
-## Reporting Bugs
+## Reporting bugs
 
 Use the [bug report template](https://github.com/dexterity-systems/artisan/issues/new?template=bug_report.yml)
 on GitHub. Include:
@@ -123,7 +132,7 @@ on GitHub. Include:
 
 ---
 
-## Security Vulnerabilities
+## Security vulnerabilities
 
 **Do not open a public issue for security vulnerabilities.** See
 [SECURITY.md](.github/SECURITY.md) for responsible disclosure instructions.

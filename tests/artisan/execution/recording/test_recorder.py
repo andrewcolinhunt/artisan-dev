@@ -1,0 +1,339 @@
+"""Tests for execution edges and successful or failed execution recording."""
+
+from __future__ import annotations
+
+from datetime import UTC, datetime
+from enum import StrEnum, auto
+from pathlib import Path
+from typing import Any, ClassVar
+
+import polars as pl
+from fsspec.implementations.local import LocalFileSystem
+from pydantic import BaseModel, Field
+
+from artisan.execution.recording.recorder import (
+    build_execution_edges,
+    record_execution_failure,
+    record_execution_success,
+)
+from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.schemas.specs.input_spec import InputSpec
+from artisan.schemas.specs.output_spec import OutputSpec
+
+
+def _local_fs() -> LocalFileSystem:
+    """Create a local filesystem instance for test construction."""
+    return LocalFileSystem()
+
+
+class MockCreatorOp(OperationDefinition):
+    """Mock creator operation for testing."""
+
+    class InputRole(StrEnum):
+        data = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "mock_creator"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            derives_from={"inputs": ["data"]},
+        ),
+    }
+
+    class Params(BaseModel):
+        tolerance: float = Field(default=0.1, description="Allowed tolerance.")
+        max_steps: int = Field(default=100, description="Maximum step count.")
+
+    params: Params = Params()
+
+    def preprocess(self, inputs: Any) -> dict[str, Any]:
+        return {}
+
+    def execute_function(self, inputs):
+        return {"status": "ok"}
+
+
+class TestBuildExecutionEdges:
+    """Tests for build_execution_edges() — returns pl.DataFrame."""
+
+    def test_builds_input_rows_from_single_item_batch(self):
+        """Builds input provenance rows from single-item batch."""
+        inputs = {"data": ["a" * 32]}
+        df = build_execution_edges("run123", inputs, outputs={})
+
+        assert len(df) == 1
+        row = df.row(0, named=True)
+        assert row == {
+            "execution_run_id": "run123",
+            "direction": "input",
+            "role": "data",
+            "artifact_id": "a" * 32,
+        }
+
+    def test_builds_input_rows_from_multi_item_batch(self):
+        """Builds input provenance rows from multi-item batch."""
+        inputs = {"data": ["a" * 32, "b" * 32]}
+        df = build_execution_edges("run123", inputs, outputs={})
+
+        assert len(df) == 2
+        assert df["artifact_id"][0] == "a" * 32
+        assert df["artifact_id"][1] == "b" * 32
+
+    def test_builds_output_rows(self):
+        """Builds output provenance rows from outputs dict."""
+        outputs = {"output": ["c" * 32, "d" * 32]}
+        df = build_execution_edges("run123", inputs={}, outputs=outputs)
+
+        assert len(df) == 2
+        row = df.row(0, named=True)
+        assert row == {
+            "execution_run_id": "run123",
+            "direction": "output",
+            "role": "output",
+            "artifact_id": "c" * 32,
+        }
+        assert df["artifact_id"][1] == "d" * 32
+
+    def test_combined_input_and_output(self):
+        """Builds both input and output rows together."""
+        inputs = {"data": ["a" * 32]}
+        outputs = {"output": ["b" * 32]}
+        df = build_execution_edges("run123", inputs, outputs)
+
+        input_df = df.filter(pl.col("direction") == "input")
+        output_df = df.filter(pl.col("direction") == "output")
+
+        assert len(input_df) == 1
+        assert len(output_df) == 1
+
+    def test_multiple_output_roles(self):
+        """Multiple output roles are recorded with correct role names."""
+        outputs = {
+            "passthrough": ["p" * 32, "q" * 32],
+            "metric": ["m" * 32],
+        }
+        df = build_execution_edges("run123", inputs={}, outputs=outputs)
+
+        assert len(df) == 3
+        passthrough_df = df.filter(pl.col("role") == "passthrough")
+        assert len(passthrough_df) == 2
+        assert set(passthrough_df["artifact_id"].to_list()) == {"p" * 32, "q" * 32}
+
+    def test_outputs_combined_with_inputs(self):
+        """Outputs are added alongside inputs."""
+        inputs = {"data": ["a" * 32]}
+        outputs = {"metric": ["m" * 32], "passthrough": ["p" * 32]}
+        df = build_execution_edges("run123", inputs, outputs)
+
+        assert len(df) == 3
+        input_df = df.filter(pl.col("direction") == "input")
+        output_df = df.filter(pl.col("direction") == "output")
+
+        assert len(input_df) == 1
+        assert len(output_df) == 2
+
+    def test_empty_outputs_adds_no_rows(self):
+        """Empty outputs dict adds no rows."""
+        df = build_execution_edges("run123", inputs={}, outputs={})
+        assert df.is_empty()
+
+    def test_returns_dataframe_type(self):
+        """Return type is pl.DataFrame with correct columns."""
+        df = build_execution_edges("run123", inputs={}, outputs={})
+        assert isinstance(df, pl.DataFrame)
+        assert df.columns == [
+            "execution_run_id",
+            "direction",
+            "role",
+            "artifact_id",
+        ]
+
+
+class TestRecordExecutionSuccess:
+    """Tests for record_execution_success()."""
+
+    def test_records_success_with_artifacts(self, tmp_path):
+        """Records successful execution with artifacts."""
+
+        from artisan.schemas.execution.execution_context import ExecutionContext
+        from artisan.storage.core.artifact_store import ArtifactStore
+
+        staging_root = tmp_path / "staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        delta_root = tmp_path / "delta"
+        delta_root.mkdir(parents=True, exist_ok=True)
+
+        execution_context = ExecutionContext(
+            execution_run_id="run" + "0" * 29,
+            execution_spec_id="spec" + "0" * 28,
+            step_number=1,
+            timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            worker_id=0,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
+            operation_name="test_op",
+            operation=MockCreatorOp(),
+            compute_backend="local",
+        )
+
+        result = record_execution_success(
+            command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
+            execution_context=execution_context,
+            artifacts={},
+            lineage_edges=[],
+            inputs={},
+            timestamp_end=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
+            params={},
+        )
+
+        assert result.success is True
+        assert result.staging_path is not None
+        assert Path(result.staging_path).exists()
+        assert (Path(result.staging_path) / "executions.parquet").exists()
+
+    def test_records_input_provenance(self, tmp_path):
+        """Records input provenance for debugging."""
+        import polars as pl
+
+        from artisan.schemas.execution.execution_context import ExecutionContext
+        from artisan.storage.core.artifact_store import ArtifactStore
+
+        staging_root = tmp_path / "staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        delta_root = tmp_path / "delta"
+        delta_root.mkdir(parents=True, exist_ok=True)
+
+        execution_context = ExecutionContext(
+            execution_run_id="run" + "0" * 29,
+            execution_spec_id="spec" + "0" * 28,
+            step_number=1,
+            timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            worker_id=0,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
+            operation_name="test_op",
+            operation=MockCreatorOp(),
+            compute_backend="local",
+        )
+
+        result = record_execution_success(
+            command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
+            execution_context=execution_context,
+            artifacts={},
+            lineage_edges=[],
+            inputs={"data": ["input_id_" + "0" * 23]},
+            timestamp_end=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
+        )
+
+        prov_path = Path(result.staging_path) / "execution_edges.parquet"
+        assert prov_path.exists()
+        df = pl.read_parquet(prov_path)
+        assert len(df) == 1
+        assert df["direction"][0] == "input"
+
+
+class TestRecordExecutionFailure:
+    """Tests for record_execution_failure()."""
+
+    def test_records_failure_with_error(self, tmp_path):
+        """Records failed execution with error message."""
+        import polars as pl
+
+        from artisan.schemas.execution.execution_context import ExecutionContext
+        from artisan.storage.core.artifact_store import ArtifactStore
+
+        staging_root = tmp_path / "staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        delta_root = tmp_path / "delta"
+        delta_root.mkdir(parents=True, exist_ok=True)
+
+        execution_context = ExecutionContext(
+            execution_run_id="run" + "0" * 29,
+            execution_spec_id="spec" + "0" * 28,
+            step_number=1,
+            timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            worker_id=0,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
+            operation_name="test_op",
+            operation=MockCreatorOp(),
+            compute_backend="local",
+        )
+
+        result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
+            execution_context=execution_context,
+            error="Test error message",
+            inputs={"data": ["input_id_" + "0" * 23]},
+            timestamp_end=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
+        )
+
+        # StagingResult.success reflects execution success (False for failures)
+        assert result.success is False
+        assert result.error == "Test error message"
+        assert result.artifact_ids == []
+
+        exec_path = Path(result.staging_path) / "executions.parquet"
+        df = pl.read_parquet(exec_path)
+        assert df["success"][0] is False
+        assert df["error"][0] == "Test error message"
+
+    def test_records_input_provenance_on_failure(self, tmp_path):
+        """Records input provenance even on failure (aids debugging)."""
+        import polars as pl
+
+        from artisan.schemas.execution.execution_context import ExecutionContext
+        from artisan.storage.core.artifact_store import ArtifactStore
+
+        staging_root = tmp_path / "staging"
+        staging_root.mkdir(parents=True, exist_ok=True)
+        delta_root = tmp_path / "delta"
+        delta_root.mkdir(parents=True, exist_ok=True)
+
+        execution_context = ExecutionContext(
+            execution_run_id="run" + "0" * 29,
+            execution_spec_id="spec" + "0" * 28,
+            step_number=1,
+            timestamp_start=datetime(2024, 1, 1, 12, 0, 0, tzinfo=UTC),
+            worker_id=0,
+            artifact_store=ArtifactStore(str(delta_root), fs=_local_fs()),
+            staging_root=str(staging_root),
+            fs=_local_fs(),
+            operation_name="test_op",
+            operation=MockCreatorOp(),
+            compute_backend="local",
+        )
+
+        result = record_execution_failure(
+            command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
+            execution_context=execution_context,
+            error="Test error",
+            inputs={"data": ["input_a" + "0" * 24, "input_b" + "0" * 24]},
+            timestamp_end=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
+        )
+
+        prov_path = Path(result.staging_path) / "execution_edges.parquet"
+        assert prov_path.exists()
+        df = pl.read_parquet(prov_path)
+        assert len(df) == 2
+        assert df["direction"].to_list() == ["input", "input"]

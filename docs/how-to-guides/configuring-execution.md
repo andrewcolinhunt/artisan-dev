@@ -1,520 +1,529 @@
 # Configure Execution
 
-How to control where operations run, what resources they get, and how work
-is batched — from local development through production SLURM.
+Control worker concurrency, batching, resources, caching, and failure handling.
+Start with local execution; use an optional runner for cluster dispatch and a
+[tool endpoint](deploying-tool-endpoints.md) for remote execute phases.
 
-**Prerequisites:** [Operations Model](../concepts/operations-model.md),
-[Building a Pipeline](building-a-pipeline.md)
+**Prerequisites:** [Build a Pipeline](building-a-pipeline.md). See
+[Execution Flow](../concepts/execution-flow.md) for the worker lifecycle.
 
-**Key types:** `Backend`, `ResourceConfig`, `ExecutionConfig`, `ToolSpec`,
-`Environments`, `CachePolicy`, `FailurePolicy`
+## Run a local step with a worker limit
 
----
-
-## Minimal working example
-
-A pipeline running one step locally and one on SLURM with GPU resources:
+This example uses built-in operations and needs no cluster or cloud account:
 
 ```python
-from artisan.orchestration import Backend, PipelineManager
-from myops import PreprocessOp, InferenceOp
+from artisan.operations.examples import DataGenerator, DataTransformer
+from artisan.orchestration import PipelineManager, StepStatus
+from artisan.visualization import inspect_step
 
 pipeline = PipelineManager.create(
-    name="example",
+    name="local_configuration",
     delta_root="runs/delta",
     staging_root="runs/staging",
 )
+source = pipeline.run(DataGenerator, params={"count": 4, "seed": 7})
+transformed = pipeline.run(
+    DataTransformer,
+    inputs={"dataset": source.output("datasets")},
+    params={"variants": 1, "seed": 7},
+    batch_strategy={"artifacts_per_unit": 2, "max_workers": 2},
+)
+assert transformed.status is StepStatus.SUCCEEDED
+outputs = inspect_step(
+    "runs/delta",
+    transformed.step_number,
+    pipeline_run_id=pipeline.config.pipeline_run_id,
+)
+assert outputs.height == 4
+pipeline.finalize()
+```
 
-pipeline.run(operation=PreprocessOp, name="preprocess", params={"count": 100})
+The transform has two execution units with two inputs each. `max_workers` caps
+concurrent worker tasks. Successful-item counts describe processed inputs (or
+source executions), so inspect accepted outputs when verifying artifact counts.
 
-pipeline.run(
-    operation=InferenceOp,
-    name="inference",
-    inputs={"dataset": pipeline.output("preprocess", "dataset")},
-    backend=Backend.SLURM,
-    resources={"gpus": 1, "memory_gb": 32, "extra": {"partition": "gpu"}},
-    execution={"artifacts_per_unit": 1},
+## Load application definitions in every process
+
+For an installed package that registers custom artifact types or operations,
+select its trusted module when creating or resuming a pipeline. Replace
+`my_application` with your package's registration module:
+
+```python
+pipeline = PipelineManager.create(
+    name="application_run",
+    delta_root="runs/delta",
+    staging_root="runs/staging",
+    application_modules=("my_application",),
 )
 ```
 
-The rest of this guide breaks down each option.
+`ARTISAN_LOAD_MODULES` accepts comma-separated module names. Pipeline factories
+and store-reading CLI commands combine environment names, then explicit names,
+removing duplicates. The selection travels unchanged to creator and curator
+workers. Direct `PipelineConfig` and `RuntimeEnvironment` instances contain an
+explicit selection and do not merge the environment again.
 
----
-
-## Choose a compute backend
-
-Every step runs on a compute backend. Set it per step or as a pipeline-wide
-default:
+For standalone Python inspection, load the same installed definitions before
+opening the store:
 
 ```python
-from artisan.orchestration import Backend
+from artisan.registry import bootstrap_applications
+from artisan.storage import ArtifactStore
 
-# Pipeline-wide default
-pipeline = PipelineManager.create(..., backend=Backend.SLURM)
-
-# Step-level override
-pipeline.run(operation=MyOp, inputs=..., backend=Backend.LOCAL)
+bootstrap_applications(("my_application",))
+store = ArtifactStore("runs/delta")
 ```
 
-| Backend | How it runs | When to use |
-|---------|-------------|-------------|
-| `Backend.LOCAL` (default) | Process pool on your machine | Development, testing, lightweight ops |
-| `Backend.SLURM` | SLURM job array on cluster | Production, GPU work, HPC |
-| `Backend.SLURM_INTRA` | srun within existing SLURM allocation | Interactive salloc sessions, zero queue wait |
+Store-reading CLI commands accept repeatable `--load-module` arguments:
 
-For `SLURM_INTRA`, you must be inside an existing SLURM allocation
-(`salloc` or `sbatch`). Work is distributed via `srun` with no queue wait:
+```bash
+artisan store repair --delta-root runs/delta --staging-root runs/staging \
+    --load-module my_application --json
+```
+
+An absent artifact definition produces a configuration error, not evidence of
+store corruption. Correct the installed package or selected module and
+retry in a fresh interpreter after a failed import. Repair and startup recovery
+check registration before changing selected evidence.
+
+Resume and replay require trusted configuration again; recorded module names
+cannot authorize imports. Replay uses
+`RuntimeEnvironment.application_modules` and automatically resolves only builtin
+operations or operations within those authorized modules. An explicitly supplied,
+already imported `operation_class` still undergoes identity checks. Neither a
+stored module name nor `allow_code_change=True` grants import authority.
+
+## Choose a step runner
+
+The native local runner uses a process pool. Set `batch_strategy.max_workers`
+per step to limit it. To use SLURM, install and configure the optional
+`artisan-submitit` package on a cluster:
 
 ```python
+from artisan_submitit import SlurmRunner
+
 pipeline.run(
-    operation=MyOp,
-    inputs=...,
-    backend=Backend.SLURM_INTRA,
-    resources={"gpus": 1, "cpus": 4, "memory_gb": 16},
-)
-```
-
-For `LOCAL`, you can cap the number of concurrent workers per step:
-
-```python
-pipeline.run(operation=MyOp, inputs=..., execution={"max_workers": 8})
-```
-
-The default process pool size is 4.
-
----
-
-## Configure resources
-
-Pass a `resources` dict to override resource allocation for a step:
-
-```python
-pipeline.run(
-    operation=MyOp,
-    inputs=...,
-    backend=Backend.SLURM,
-    resources={
-        "gpus": 1,
-        "memory_gb": 32,
-        "time_limit": "04:00:00",
+    DataTransformer,
+    inputs={"dataset": source.output("datasets")},
+    step_runner=SlurmRunner(),
+    runner_resources={
         "cpus": 4,
-        "extra": {"partition": "gpu"},
+        "memory_gb": 16,
+        "time_limit": "01:00:00",
+        "extra": {"slurm_partition": "cpu"},
     },
 )
 ```
 
-### ResourceConfig fields
+Pass `default_step_runner=SlurmRunner()` to `PipelineManager.create` to select
+that provider for the pipeline. Use `SlurmIntraRunner()` inside an existing
+`salloc` or `sbatch` allocation when the provider should launch with `srun`.
+Provider installation and scheduler options belong to the provider's own docs.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `cpus` | `int` | `1` | CPU cores per task |
-| `memory_gb` | `int` | `4` | Memory in GB |
-| `gpus` | `int` | `0` | Number of GPUs requested |
-| `time_limit` | `str` | `"01:00:00"` | Wall-clock time limit (HH:MM:SS) |
-| `extra` | `dict` | `{}` | Backend-specific settings (e.g., `{"partition": "gpu"}`) |
+### Allocate resources at the right layer
 
-`ResourceConfig` is portable across backends — each backend translates these
-fields to its native format. Use `extra` for backend-specific settings like
-SLURM partition or account.
+`runner_resources` describes the lifecycle worker. A cluster runner translates
+it to a scheduler allocation. The local runner uses GPU requests to assign
+devices and constrain concurrency; it does not reserve CPU or memory like a
+cluster scheduler. Runner-specific `extra` settings need their matching runner.
 
-Step-level `resources` merge with operation defaults — you only need to specify
-the fields you want to override.
+`compute_provider` selects where execute runs. Ordinary Python function
+operations run in the lifecycle worker. Command operations can route execute to
+a deployed Modal endpoint while preprocess and postprocess stay in the worker:
 
----
+```python
+pipeline.run(MyCommandOp, inputs=..., compute_provider="modal")
+```
+
+The operation must declare a Modal configuration and have a compatible endpoint
+deployed first. `ComputeResources` declares deployment hardware, while
+`ModalComputeConfig` supplies the image, runtime, and transport settings.
+Changing GPU, CPU, or memory for an existing endpoint requires redeployment;
+a per-step `compute_resources` override does not resize the deployed worker.
+See [Deploy Tool Endpoints](deploying-tool-endpoints.md).
 
 ## Control batching
 
-Batching determines how many artifacts each worker processes. This is the main
-lever for tuning throughput.
+Use two settings to divide work:
+
+- `artifacts_per_unit` groups inputs into a logical execution unit, which shares
+  preprocess and postprocess work.
+- `units_per_worker` groups units into a worker task, reducing task submission
+  overhead. A process-pool worker can handle more than one task over its life.
+
+For example, 100 inputs with `artifacts_per_unit=10` form 10 units. With
+`units_per_worker=2`, those become five worker tasks:
 
 ```python
+pipeline.run(
+    DataTransformer,
+    inputs={"dataset": source.output("datasets")},
+    batch_strategy={
+        "artifacts_per_unit": 10,
+        "units_per_worker": 2,
+        "max_workers": 2,
+    },
+)
+```
+
+A unit is not necessarily one execute call. By default, creators dispatch
+execute once per input and collect the results for postprocess. Their preprocess
+output uses [`PerArtifact`](writing-creator-operations.md#creator-preprocess)
+for values that the framework should slice for each call; raw lists are shared.
+An operation that intentionally processes a batch in one call sets
+`per_artifact_dispatch=False`. That call receives the full prepared values,
+with `PerArtifact` wrappers unwrapped into lists.
+
+Increase batching for short tasks after measuring overhead. Larger units also
+increase the amount of work affected by a unit failure. See
+[Execution Flow](../concepts/execution-flow.md) and the
+[batching tutorial](../tutorials/04-batching/01-batching-and-performance.ipynb).
+
+## Set and override operation defaults
+
+Operations can declare resources and batching on the class. At a call site,
+pass only the values you want to change:
+
+```python
+from artisan.schemas import RunnerResources, ComputeResources
+
+pipeline.run(MyOp, inputs=..., runner_resources={"memory_gb": 32})
+```
+
+The operation supplies resource, batching, tool, environment, and compute
+settings. The pipeline supplies the default step runner, failure policy, and
+cache policy. A composite can supply defaults for its children; an explicit
+child setting takes precedence. See
+[composite overrides](writing-composite-operations.md#forward-execution-overrides).
+
+### Patch configuration without replacing defaults
+
+These model-valued step options share patch behavior:
+`runner_resources`, `batch_strategy`, `environment`, `tool`,
+`compute_provider`, and `compute_resources`.
+
+You can pass either a dict or the corresponding typed model. Both forms use
+the fields you supplied as the patch, including values that equal the model's
+schema default:
+
+```python
+# These are equivalent, even though RunnerResources.cpus defaults to 1.
+pipeline.run(operation=MyOp, inputs=..., runner_resources={"cpus": 1})
 pipeline.run(
     operation=MyOp,
     inputs=...,
-    execution={"artifacts_per_unit": 10},
+    runner_resources=RunnerResources(cpus=1),
 )
 ```
 
-With 100 input artifacts and `artifacts_per_unit=10`, the framework creates
-10 execution units, each processing a batch of 10 artifacts.
-
-### Two-level batching
-
-Batching happens at two levels:
-
-```
-100 artifacts
-    │
-    │  artifacts_per_unit = 10
-    ▼
-10 execution units (logical work packages)
-    │
-    │  units_per_worker = 2
-    ▼
-5 SLURM jobs (each runs 2 units sequentially)
-```
-
-**Level 1 — `artifacts_per_unit`**: How many artifacts each execution unit
-processes. Set this based on your operation's workload: 1 for GPU inference
-(one artifact per job), 50–100 for fast metrics calculations.
-
-**Level 2 — `units_per_worker`**: How many execution units a single SLURM job
-runs sequentially. Use this to amortize job startup overhead without changing
-your operation's batch logic.
-
-### ExecutionConfig fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `artifacts_per_unit` | `int` | `1` | Artifacts per execution unit |
-| `units_per_worker` | `int` | `1` | Execution units per SLURM job |
-| `max_workers` | `int \| None` | `None` | Cap on concurrent workers |
-| `max_artifacts_per_unit` | `int \| None` | `None` | Upper bound on artifacts per unit when using adaptive batching |
-| `estimated_seconds` | `float \| None` | `None` | Expected wall-clock time per unit, used for scheduler hints |
-| `job_name` | `str \| None` | `None` | Custom SLURM job name (defaults to operation name) |
-
----
-
-## Set operation-level defaults
-
-Operations can declare their own default resources and execution config so you
-don't repeat the same overrides at every step:
+Fields you omit retain the operation's declared values. Explicit `None` inside
+a patch resets an optional field instead of falling back to the operation
+default:
 
 ```python
-from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.resource_config import ResourceConfig
-from artisan.schemas.execution.execution_config import ExecutionConfig
-
-class GpuInference(OperationDefinition):
-    name = "gpu_inference"
-
-    resources: ResourceConfig = ResourceConfig(
-        gpus=1,
-        memory_gb=32,
-        time_limit="02:00:00",
-        extra={"partition": "gpu"},
-    )
-
-    execution: ExecutionConfig = ExecutionConfig(
-        artifacts_per_unit=1,
-        estimated_seconds=600.0,
-    )
-
-    # ... lifecycle methods ...
-```
-
-Step-level overrides merge on top of these defaults. For example, to give a
-specific step more memory without changing other settings:
-
-```python
-pipeline.run(operation=GpuInference, inputs=..., resources={"memory_gb": 64})
-# gpus, time_limit, extra keep their operation defaults
-```
-
-### Override precedence
-
-```
-Pipeline defaults (PipelineManager.create)
-    └── Operation defaults (class fields)
-            └── Step overrides (pipeline.run kwargs)   ← wins
-```
-
----
-
-## Configure external tools and environments
-
-Operations that wrap external tools declare two things: a `ToolSpec` (the
-binary/script to invoke) and an `Environments` configuration (the runtime
-that wraps the command):
-
-```python
-from pathlib import Path
-from artisan.operations.base import OperationDefinition
-from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.environment_spec import ApptainerEnvironmentSpec
-
-class ToolAOp(OperationDefinition):
-    name = "tool_a"
-
-    tool: ToolSpec = ToolSpec(
-        executable=Path("run_tool_a.sh"),
-        interpreter="bash",
-    )
-
-    environments: Environments = Environments(
-        active="apptainer",
-        apptainer=ApptainerEnvironmentSpec(
-            image=Path("/tools/tool_a.sif"),
-            gpu=True,
-            binds=[
-                (Path("/data/weights"), Path("/weights")),
-                (Path("/scratch"), Path("/scratch")),
-            ],
-        ),
-    )
-
-    # ... lifecycle methods ...
-```
-
-Override tool or environment settings at the step level:
-
-```python
+# Both clear an operation-level ComputeResources(gpu="A100") default.
+pipeline.run(operation=MyOp, inputs=..., compute_resources={"gpu": None})
 pipeline.run(
-    operation=ToolAOp,
+    operation=MyOp,
     inputs=...,
-    tool={"executable": "run_tool_a_v2.sh"},
-    environment={"apptainer": {"image": "/tools/tool_a_v2.sif"}},
+    compute_resources=ComputeResources(gpu=None),
 )
 ```
 
-When you pass a dict for `environment`, fields are deep-merged with the
-operation's existing environment config. This means partial overrides work
-without discarding other fields. To switch the active environment without
-changing any spec fields, pass a string instead:
+Nested non-empty mappings merge recursively, so updating one environment
+variable preserves its siblings. Scalars, lists, `None`, and empty mappings
+replace the inherited value:
 
 ```python
-pipeline.run(operation=ToolAOp, inputs=..., environment="local")
+# Preserve every existing variable except MODE.
+environment = {
+    "active": "docker",
+    "docker": {"env": {"MODE": "production"}},
+}
+
+# Clear the inherited env mapping.
+environment = {"active": "docker", "docker": {"env": {}}}
 ```
 
-The `binds` field takes a list of `(host_path, container_path)` tuples — not
-colon-delimited strings.
-
-### ToolSpec fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `executable` | `str \| Path` | (required) | Path or name of the binary/script. Resolved via PATH if not absolute. |
-| `interpreter` | `str \| None` | `None` | Interpreter prefix (e.g., `"bash"`, `"python -u"`) |
-| `subcommand` | `str \| None` | `None` | Subcommand inserted after the executable |
-
-### Environment spec types
-
-| Spec | Use case | Key fields |
-|------|----------|------------|
-| `ApptainerEnvironmentSpec` | Apptainer/Singularity containers (HPC) | `image` (Path), `gpu`, `binds` |
-| `DockerEnvironmentSpec` | Docker containers | `image` (str), `gpu`, `binds` |
-| `LocalEnvironmentSpec` | Local execution, optional virtualenv | `venv_path` |
-| `PixiEnvironmentSpec` | Pixi-managed environments | `pixi_environment`, `manifest_path` |
-
-All specs share a base `EnvironmentSpec` with an `env` dict for extra
-environment variables.
+An empty root patch such as `runner_resources={}` supplies no fields and is a
+no-op. Top-level `None` also means no override; use `None` inside a patch to
+reset an optional field.
 
 ---
+
+## Select an external tool environment
+
+Command operations declare their binary with `ToolSpec` and available runtimes
+with `Environments`. Select a declared runtime by name, or patch its settings:
+
+```python
+pipeline.run(MyCommandOp, inputs=..., environment="local")
+pipeline.run(
+    MyCommandOp,
+    inputs=...,
+    tool={"executable": "tool-v2"},
+    environment={
+        "active": "apptainer",
+        "apptainer": {"image": "/tools/tool-v2.sif"},
+    },
+)
+```
+
+Include `active` when configuring a provider in a dict. A string selects a
+provider already configured on the operation. Invalid or unconfigured targets
+fail before cache lookup.
+
+Docker commands run in the supplied execution directory, even when the image
+declares a different `WORKDIR`. Container mounts use tuples, such as
+`("/data", "/data", "ro")` for a read-only
+mount or `("/scratch", "/scratch")` for a writable mount. They are not
+colon-delimited strings. Runtime specs also accept environment variables.
+See [Write Creator Operations](writing-creator-operations.md#command-operations-external-tools)
+for a complete command wrapper, and [Python API](../reference/python-api.md)
+for supported configuration types and their source contracts.
+
+### Keep managed commands in the foreground
+
+Use `run_command` for tools that should stop with their execution unit. On
+Linux and macOS, Artisan starts an independent supervisor before launching
+managed commands. The supervisor can stop them even if the lifecycle worker
+exits unexpectedly.
+
+A successful call means the host process group and registered nested commands
+have stopped and command output has been collected. Children may run alongside
+their parent, but cannot remain as background services after the call completes.
+This applies during preprocessing, execution, postprocessing, curators, and
+replay.
+
+Nested Artisan commands inherit the enclosing command's ownership. Keep that
+environment intact and wait for nested calls before their parent exits. Join
+operation threads before returning from each phase. Starting a nested native
+pipeline or native replay inside managed work is unsupported and fails before
+dispatch. Catching an ownership error cannot turn incomplete work into a
+successful execution.
+
+Direct `subprocess` calls, detached sessions, deliberately changed process
+groups, and external daemon work fall outside this ownership contract. The
+selected environment determines what Artisan can confirm:
+
+| Environment | Cancellation evidence |
+| --- | --- |
+| Local | Host process group and registered nested commands have stopped. |
+| Built-in Docker with a local Unix daemon endpoint | Host commands have stopped and the exact owned container has been removed. |
+| Other Docker endpoints, custom Docker wrappers, Apptainer, Pixi | Host commands have stopped; termination of the external workload remains unconfirmed. |
+
+For built-in Docker, Artisan creates a stopped container and registers its full
+ID before starting it. Cleanup targets that container on the original daemon
+endpoint; changing the active Docker context cannot redirect it. The same
+contract applies to Docker Engine on Linux and Docker Desktop on macOS. A lost
+container ID or unavailable daemon evidence leaves cleanup `unknown`.
+
+External environments still permit ordinary execution. Once one has launched
+work, cancellation remains `unknown` without evidence that its external workload
+stopped, even if the host command finished earlier. Custom environment authors
+may declare `cancellation_scope="process_group"` only when all work stays inside
+the managed host group or registered nested commands. The default is
+`"external"`.
+
+Modal requests termination of the exact call and its worker container. An
+accepted provider request does not establish that the container stopped, so
+Artisan reports `unknown` and does not download or ingest the cancelled result.
+A retained result that completed before the request produces `rejected`;
+expired results and provider failures remain `unknown`.
+
+If cleanup cannot be confirmed, Artisan fails the execution and retains its
+workspace and uncommitted staging. It skips later user phases and output
+collection. Earlier independently completed units remain eligible for recovery.
+See [cancellation outcomes](../concepts/execution-flow.md#cancellation) and
+[diagnostic limits](debugging-executions.md#verify-replay) before retrying.
 
 ## Set failure policy
 
-Control what happens when some artifacts fail within a step:
+The default `FailurePolicy.CONTINUE` allows independent units to finish,
+retains their successful outputs, and records failures. Use `FAIL_FAST` when
+you want the step to stop after a failure:
 
 ```python
-from artisan.schemas.enums import FailurePolicy
+from artisan.schemas import FailurePolicy
 
-# Pipeline-wide default
-pipeline = PipelineManager.create(..., failure_policy=FailurePolicy.CONTINUE)
-
-# Step-level override
-pipeline.run(operation=MyOp, inputs=..., failure_policy=FailurePolicy.FAIL_FAST)
+step = pipeline.run(MyOp, inputs=..., failure_policy=FailurePolicy.FAIL_FAST)
 ```
 
-| Policy | Behavior |
-|--------|----------|
-| `FailurePolicy.CONTINUE` (default) | Commit successful artifacts, record failures, continue pipeline |
-| `FailurePolicy.FAIL_FAST` | Stop the step immediately on any failure |
-
-`CONTINUE` is the default because in large runs (thousands of artifacts), a
-single malformed input should not discard thousands of successful results.
-Failures are always recorded for diagnosis.
-
----
+Fail-fast returns a failed step result after preserving failure evidence and
+already completed sibling work. That failed result exposes no downstream output
+roles. Check the returned status; ordinary execution failures do not become an
+exception merely because you selected fail-fast. See
+[Error Handling](../concepts/error-handling.md) for durable outcomes and
+cancellation behavior.
 
 ## Set cache policy
 
-Cache policy controls when a previously completed step qualifies as a cache
-hit on re-run (e.g., when resuming a pipeline):
+Cache policy controls which previous terminal step qualifies as a whole-step
+cache hit. Set a pipeline default, then override individual steps as needed:
 
 ```python
-from artisan.schemas.enums import CachePolicy
+from artisan.schemas import CachePolicy
 
-pipeline = PipelineManager.create(..., cache_policy=CachePolicy.STEP_COMPLETED)
+pipeline = PipelineManager.create(..., cache_policy=CachePolicy.ALL_SUCCEEDED)
+pipeline.run(
+    operation=MyOp,
+    inputs=...,
+    cache_policy=CachePolicy.STEP_COMPLETED,
+)
 ```
 
 | Policy | Behavior |
 |--------|----------|
-| `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only when the step had zero execution failures |
-| `CachePolicy.STEP_COMPLETED` | Cache hit for any completed step, regardless of execution failure count |
+| `CachePolicy.ALL_SUCCEEDED` (default) | Cache hit only for a `succeeded` attempt |
+| `CachePolicy.STEP_COMPLETED` | Cache hit for a `succeeded` or `partial` attempt |
 
-Both policies block caching when infrastructure errors (dispatch or commit
-failures) occurred. The difference is whether partial-failure steps count as
-hits.
+Failed, cancelled, and skipped attempts never qualify under either policy.
 
 Use `STEP_COMPLETED` when you want to skip re-running a step that mostly
-succeeded, even if a few artifacts failed.
+succeeded, even if a few artifacts failed. `submit()` accepts the same argument.
+Pass a `CachePolicy` member; strings such as `"step_completed"` are rejected.
+Omitting the argument or passing `None` inherits the default.
 
----
+### Inherit policy through composites
 
-## Use non-blocking execution
-
-`pipeline.run()` blocks until the step completes. For steps that can overlap
-(e.g., independent branches), use `pipeline.submit()` to dispatch without
-waiting:
+`run_composite()` and `submit_composite()` set defaults for their children:
 
 ```python
-future = pipeline.submit(
-    operation=BranchAOp,
-    inputs={"data": pipeline.output("preprocess", "data")},
-    backend=Backend.SLURM,
-)
+pipeline.run_composite(MyComposite, inputs=..., cache_policy=CachePolicy.STEP_COMPLETED)
 
-# Submit another step concurrently
-pipeline.submit(
-    operation=BranchBOp,
-    inputs={"data": pipeline.output("preprocess", "data")},
-    backend=Backend.SLURM,
-)
+# Inside compose(), require complete success for this child:
+ctx.run(MyOp, inputs=..., cache_policy=CachePolicy.ALL_SUCCEEDED)
 
-# Downstream steps that depend on a submitted step automatically wait
-pipeline.run(
-    operation=MergeOp,
-    inputs={"a": pipeline.output("branch_a", "result"),
-            "b": pipeline.output("branch_b", "result")},
-)
+# Set a different default for an entire nested subtree:
+ctx.run(InnerComposite, inputs=..., cache_policy=CachePolicy.ALL_SUCCEEDED)
 ```
 
-`submit()` returns a `StepFuture`. The orchestrator tracks dependencies and
-blocks downstream steps until their inputs are ready.
+A leaf uses its explicit policy, then the nearest explicit enclosing composite
+policy, then the pipeline default. `None` continues that inheritance through
+nested composites. A deeper child can override either enum value again.
+
+### Retry unsuccessful execution units
+
+Whole-step caching and individual execution caching are separate. Suppose a
+step had three independent units, with two successes and one failure:
+
+- `STEP_COMPLETED` accepts the partial step without executing any units. The
+  result remains `partial`, including its failure count and error; downstream
+  steps receive its successful outputs.
+- `ALL_SUCCEEDED` rejects that partial whole-step hit, reuses the two successful
+  units, and retries the failed unit. Neither policy reuses a failed unit as a
+  successful execution.
+
+The current consumer's policy selects the newest eligible prior step. The
+source's policy does not restrict reuse. Changing policy preserves artifact
+IDs, step spec IDs, and execution spec IDs.
+
+### Bypass caching and resume
+
+Step `skip_cache=True` or pipeline `skip_cache=True` bypasses both cache layers.
+A child's explicit `skip_cache=False` can replace a composite default of
+`True`, but cannot disable pipeline-wide bypass. An operation declaring
+`cacheable=False` also bypasses both layers regardless of policy or skip flags.
+Diagnostic replay attempts are excluded from ordinary cache candidates under
+both policies.
+
+Each new attempt records its resolved policy, including cache hits, preparation
+failures, skips, and cancellations. `PipelineManager.resume(cache_policy=...)`
+sets the default for subsequent submissions. Previously accepted steps retain
+their outcomes and recorded policies, including partial cache hits. Omitting
+the resume argument uses `ALL_SUCCEEDED` for new steps; it does not recover a
+pipeline default from prior child policies.
 
 ---
 
-## Common patterns
+## Submit work while keeping the caller available
 
-### Development: inspectable sandboxes
+`submit()` lets the caller continue while a step executes. It prepares inputs
+and waits for referenced predecessors before returning a future. The current
+manager executes steps serially; see
+[`run()` vs `submit()`](building-a-pipeline.md#run-vs-submit).
 
-During development, you can make the working directory visible and persistent:
+```python
+future = pipeline.submit(MyOp, inputs=...)
+# Perform other caller-side work here.
+step = future.result()
+pipeline.finalize()
+```
+
+## Keep working files for diagnosis
+
+Choose an explicit local working root and preserve it when investigating an
+operation:
 
 ```python
 pipeline = PipelineManager.create(
-    ...,
+    name="debug",
+    delta_root="runs/delta",
+    staging_root="runs/staging",
     working_root="runs/working",
     preserve_working=True,
 )
 ```
 
-This writes sandboxes to `runs/working/` instead of `$TMPDIR` and keeps them
-after execution completes, so you can inspect input materialization and output
-files.
-
-For production, omit `working_root` — the default uses `$TMPDIR` (typically
-node-local SSD on SLURM clusters), which avoids shared filesystem contention.
-
-### Debugging: preserve staging files
-
-```python
-pipeline = PipelineManager.create(..., preserve_staging=True)
-```
-
-Keeps the raw Parquet files workers produce before commit. Useful for diagnosing
-staging or commit issues.
+Without an explicit working root, sandboxes use the system temporary directory.
+Use `preserve_staging=True` separately to keep staged Parquet files after they
+commit. Uncommitted staging is retained even without that flag, including after
+cancellation. See [Staging preservation](../concepts/storage-and-delta-lake.md#staging-preservation).
 
 ### Recovering from crashes
 
-By default, `PipelineManager.create` commits leftover staging files from prior
-crashed runs at pipeline initialization (`recover_staging=True`). To disable
-this:
+Confirm that no other orchestrator or repair process is writing the store.
+Then rerun your pipeline with `PipelineManager.create()` and the same roots.
+By default, startup recovers validated finished work before checking caches.
+Use `recover_staging=False` when you need to inspect the old evidence without
+startup recovery; add `preserve_staging=True` to retain files after recovery.
 
-```python
-pipeline = PipelineManager.create(..., recover_staging=False)
+For a read-only integrity audit that also includes finished, uncommitted executions:
+
+```bash
+artisan store repair --delta-root runs/delta --staging-root runs/staging \
+  --recover-staging
 ```
 
-### Naming steps
+Report mode checks historical commit effects without changing either root.
+Inspect affected execution and plan IDs. To apply recovery while keeping the
+staging evidence:
 
-By default, each step is named after the operation. Provide a custom `name` to
-disambiguate when the same operation appears multiple times:
-
-```python
-pipeline.run(operation=ScoreOp, name="score_round1", inputs=...)
-pipeline.run(operation=ScoreOp, name="score_round2", inputs=...)
-
-# Reference by name
-pipeline.output("score_round1", "scores")
+```bash
+artisan store repair --delta-root runs/delta --staging-root runs/staging \
+  --recover-staging --preserve-staging --apply
 ```
 
-### Tuning SLURM throughput
+Applied recovery groups finished executions by their source step and validates
+the batches it commits or cleans. Its report describes those actions; completed
+records skipped during recovery are not a historical integrity audit. Run the
+read-only command when you need that audit.
 
-For operations with fast per-artifact execution (< 1 second), increase
-`artifacts_per_unit` to reduce job overhead:
+Supply `--files-root` if the store uses a separately configured managed external
+files root. Without `--recover-staging`, repair only handles recorded plans.
+Incomplete or ineligible evidence can remain in a report after successful
+recovery; the CLI reports unresolved evidence with a nonzero exit status.
+Corrupt or conflicting recovery evidence requires diagnosis and blocks pipeline
+startup. Ordinary startup does not audit unrelated completed data.
 
-```python
-pipeline.run(
-    operation=FastMetrics,
-    inputs=...,
-    backend=Backend.SLURM,
-    execution={"artifacts_per_unit": 100, "units_per_worker": 5},
-)
-```
+Use `--abandon ID --reason ...` only after deciding that a particular
+logical commit should never finish. This retains its evidence and excludes it
+from recovery; abandonment and staging recovery are separate commands.
+See [Crash recovery](../concepts/storage-and-delta-lake.md#storage-crash-recovery) for
+eligibility, history, and restart-versus-resume behavior.
 
-For GPU operations, keep `artifacts_per_unit=1` and let SLURM handle
-parallelism via job arrays.
+## Inspect commands from an execution
 
-### Custom SLURM parameters
+Use `inspect_commands(delta_root, execution_run_id)` to read the arguments,
+environment wrapper, outcome, and evidence completeness recorded for a unit.
+The [execution debugging guide](debugging-executions.md#inspect-commands-from-an-execution)
+covers command evidence, credentials, and diagnostic replay together.
 
-Use `extra` for backend-specific parameters not covered by `ResourceConfig`:
+## Related guides
 
-```python
-pipeline.run(
-    operation=MyOp,
-    inputs=...,
-    resources={
-        "extra": {
-            "partition": "gpu",
-            "constraint": "a100",
-            "account": "my_allocation",
-            "exclude": "node[001-003]",
-        }
-    },
-)
-```
-
-### Disabling Delta Lake compaction
-
-Each `run()` call compacts Delta Lake tables after commit. To skip compaction
-(useful when running many small steps in sequence):
-
-```python
-pipeline.run(operation=MyOp, inputs=..., compact=False)
-```
-
----
-
-## Common pitfalls
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| SLURM jobs OOM-killed | Default `memory_gb=4` too low | Set `resources={"memory_gb": 32}` or add to operation defaults |
-| Thousands of tiny SLURM jobs | `artifacts_per_unit=1` on a fast operation | Increase `artifacts_per_unit` to batch work |
-| `binds` validation error | Using `"/host:/container"` strings | Use tuple pairs: `[("/host", "/container")]` |
-| Step ignores `resources` | Forgot `backend=Backend.SLURM` | Resources only apply to SLURM steps |
-| Workers contend on shared filesystem | Default `working_root` on NFS | Omit `working_root` — default uses `$TMPDIR` (node-local) |
-| GPU/extra resource warning on local | SLURM-specific resources on `Backend.LOCAL` | These are ignored locally — switch to `Backend.SLURM` or remove them |
-
----
-
-## Verify
-
-Confirm your configuration works by running a small test:
-
-```python
-step = pipeline.run(operation=MyOp, inputs=..., backend=Backend.LOCAL)
-assert step.success
-print(f"Processed {step.succeeded_count} artifacts")
-```
-
-Then switch to `Backend.SLURM` for production. Check SLURM job logs if
-failures occur — the job name format is `s{step_number}_{operation_name}`.
-
----
-
-## Cross-references
-
-- [Execution Flow](../concepts/execution-flow.md) — dispatch, execute, commit lifecycle
-- [SLURM Execution Tutorial](../tutorials/execution/07-slurm-execution.ipynb) — interactive SLURM walkthrough
-- [Writing Creator Operations](writing-creator-operations.md) — declaring operation-level defaults
+- [Deploy Tool Endpoints](deploying-tool-endpoints.md) — deployment, credentials,
+  and object-store transport.
+- [Compute Routing](../tutorials/07-compute-backends/01-compute-routing.ipynb) —
+  a runnable introduction to runner and compute choices.
+- [Python API](../reference/python-api.md) — configuration models and exact
+  method contracts.

@@ -1,20 +1,19 @@
 # Using Pixi
 
-Pixi manages Artisan's environments, dependencies, and tasks. This page covers
-what you need for day-to-day development. For general Pixi documentation, see the
+Pixi manages Artisan's environments, dependencies, and tasks. For general Pixi
+documentation, see the
 [official getting started guide](https://pixi.sh/latest/getting_started/).
 
 ---
 
 ## Running commands in an environment
 
-Artisan defines three environments. Each bundles the dependencies needed for a
-specific workflow.
+Choose the environment for your task:
 
 | Environment | Flag | What it includes | When to use it |
 |-------------|------|------------------|----------------|
-| `default` | *(none)* | Python 3.12, Artisan, Prefect, scientific stack | Running pipelines and scripts |
-| `dev` | `-e dev` | Everything in default + pytest, ruff, ipython, build tools | Testing, formatting, debugging |
+| `default` | *(none)* | Python 3.12, Artisan, scientific stack | Running pipelines and scripts |
+| `dev` | `-e dev` | Everything in default + pytest, ruff, ipython, build tools, read-only MCP server | Testing, formatting, debugging |
 | `docs` | `-e docs` | Everything in default + jupyter-book, Node.js | Building documentation |
 
 ```bash
@@ -27,19 +26,36 @@ pixi run -e docs docs-build
 ```
 
 All environments share a single solve group, so package versions are consistent
-across them.
+across them. `mcp` is a feature included in `dev`, not a separate environment.
+For local development, ordinary Pixi commands use or refresh the lockfile as
+needed. CI and agents use `--locked` for tasks unrelated to environment changes;
+see [reviewing lockfile changes](#reviewing-lockfile-changes).
+
+After installing an environment, run `setup` there to prepare Graphviz. Git
+hooks and notebook kernels have separate tasks with explicit side effects:
+
+```bash
+pixi install -e dev
+pixi run -e dev setup
+pixi run -e dev install-hooks
+pixi run -e dev install-kernel  # Only when using notebooks
+```
+
+`setup` is safe to repeat and only prepares the selected environment.
+`install-hooks` installs this repository's pre-commit hook. `install-kernel`
+registers a user **Artisan** kernel pointing to the environment that ran it;
+running it again from another environment replaces that kernel registration.
 
 ---
 
 ## Opening an interactive shell
 
-`pixi run` is best for one-off commands. For interactive work — debugging,
-exploring data, running multiple commands — open a shell instead:
+Use `pixi run` for one command or open a shell for interactive work:
 
 ```bash
-pixi shell                          # Default environment
-pixi shell -e dev                   # Dev environment (pytest, ruff, ipython)
-pixi shell -e docs                  # Docs environment (jupyter-book, node)
+pixi shell                 # Default environment
+pixi shell -e dev          # Dev environment (pytest, ruff, ipython)
+pixi shell -e docs         # Docs environment (jupyter-book, node)
 ```
 
 Inside a Pixi shell, commands run directly without the `pixi run` prefix:
@@ -51,15 +67,13 @@ $ pixi shell -e dev
 (artisan-dev) $ exit                # Return to your regular shell
 ```
 
-You can have multiple shells open in different terminals — each can use a
-different environment.
+Each terminal can use a different environment.
 
 ---
 
 ## Working across multiple projects with workspaces
 
-If you work across multiple Pixi projects, workspaces let you run tasks in one
-project from another without changing directories.
+Workspaces let you run tasks across Pixi projects without changing directories.
 
 ```bash
 # Register a workspace member (name comes from pyproject.toml)
@@ -103,63 +117,135 @@ After adding a dependency, `pixi.lock` updates automatically. Commit both
 
 ---
 
+(reviewing-lockfile-changes)=
+## Reviewing lockfile changes
+
+Keep `pixi.lock` in version control. After editing `pyproject.toml`, refresh the
+lockfile and review the changes:
+
+```bash
+pixi lock
+git diff -- pyproject.toml pixi.lock
+```
+
+Tooling edits can require a refresh even when dependencies stay the same. Pixi
+0.66 hashes the entire `pyproject.toml` for Artisan's editable package, so
+changing a task, lint setting, or comment can change its recorded `sha256`.
+Refreshing package metadata can also record a newer Git-derived version.
+
+Check that the lockfile changes match the manifest edits, and review any
+dependency version or source changes. Commit required lockfile updates with
+the corresponding manifest edits. Do not discard a diff solely because it
+only changes Artisan's `version` or `sha256`; a hash update may be necessary.
+For unexpected changes, investigate the cause before restoring anything.
+
+CI and agent tasks that should not rewrite the lockfile use `--locked`:
+
+```bash
+pixi run --locked -e dev test-unit
+```
+
+If this reports a stale lockfile after an intentional manifest edit, refresh
+and review it using the commands above, then rerun the check.
+
+---
+
 ## Using a local copy of a dependency
 
-If you need to edit a dependency's source code — to debug an issue, develop a
-feature, or test a fix — you can point Pixi at a local clone instead of the
-published package.
-
-Open `pyproject.toml` and add a path dependency override in the
-`[tool.pixi.pypi-dependencies]` section:
+To work on a dependency's source, point Pixi at a local clone. Add a path
+override to `pyproject.toml`:
 
 ```toml
 [tool.pixi.pypi-dependencies]
 some-package = { path = "/path/to/your/local-clone", editable = true }
 ```
 
-With `editable = true`, Python picks up your local changes immediately — no
-reinstall needed. This is the same concept as `pip install -e .` but managed
-through Pixi.
+With `editable = true`, Python picks up source changes without a reinstall.
 
-When you're done, remove the override and run `pixi install` to restore the
-locked version.
+Run `pixi install` to resolve the intentional dependency change. When you're
+done, remove the override and run `pixi install` again to resolve the published
+dependency. Review and commit `pyproject.toml` and `pixi.lock` together for each
+dependency change you keep.
 
 ---
 
 ## Task reference
 
-Tasks are shortcuts defined in `pyproject.toml`. They save you from remembering
-flags and command sequences.
+Tasks are defined in `pyproject.toml`. Run `pixi task list` to see the available
+tasks; the [project manifest](https://github.com/dexterity-systems/artisan/blob/main/pyproject.toml)
+contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 
 ### Default environment
 
-| Task | Command | Description |
-|------|---------|-------------|
-| `prefect-start` | `prefect-server start --bg` | Start the Prefect server in the background |
-| `prefect-stop` | `prefect-server stop --force` | Stop the Prefect server |
-| `install-kernel` | `python -m ipykernel install ...` | Register the Artisan Jupyter kernel |
+| Task | Purpose |
+|------|---------|
+| `setup` | Prepare Graphviz in the selected environment; safe to repeat |
+| `install-kernel` | Register the selected environment as the user Artisan kernel |
 
 ### Dev environment
 
-| Task | Command | Description |
-|------|---------|-------------|
-| `test` | `pytest -m 'not slow' && pytest -m slow -n 4` | Run unit tests (sequential) then integration tests (parallel) |
-| `test-unit` | `pytest -m 'not slow'` | Run only unit tests |
-| `test-integration` | `pytest -m slow -n 4` | Run only integration tests (parallel) |
-| `test-seq` | `pytest` | Run all tests sequentially (useful for debugging) |
-| `fmt` | `ruff format . && ruff check --fix .` | Format and lint the codebase |
-| `build-dist` | `rm -rf dist/ && python -m build` | Build distribution packages |
-| `check-dist` | `python -m twine check dist/*` | Validate distribution packages |
-| `upload-testpypi` | `python -m twine upload --repository testpypi dist/*` | Upload to Test PyPI |
-| `upload-pypi` | `python -m twine upload dist/*` | Upload to PyPI |
+| Task | Purpose and resource needs |
+|------|----------------------------|
+| `install-hooks` | Install this repository's Git hooks |
+| `test` | Run unit, integration, S3, and local tutorial suites; requires local Docker; S3 uses MinIO or a configured endpoint |
+| `test-unit` | Unit tests; no external services |
+| `test-integration` | End-to-end local pipelines and container checks; requires local Docker |
+| `test-docker` | Container cancellation and working-directory checks; requires local Docker |
+| `prepare-docker-tests` | Check the selected Docker engine and prepare or reuse the pinned test image |
+| `test-s3` | S3 tests; needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
+| `test-notebook` | CI-runnable tutorial notebooks; excludes Modal notebooks |
+| `test-notebook-modal` | Optional Modal tutorials; needs deployed endpoints and credentials, plus object storage for the R2 tutorial |
+| `test-seq` | Sequential tests for debugging; requires local Docker, excludes notebooks and Modal, includes S3 |
+| `test-modal` | Optional live Modal tests; needs cloud credentials and each test's prerequisites |
+| `test-modal-endpoint` | Deploy a test endpoint and exercise R2 delivery; needs Modal/R2 credentials and a worker secret |
+| `fmt` | Format and lint the codebase |
+| `build-dist` | Build distribution packages |
+| `check-dist` | Validate distribution packages |
+| `upload-testpypi` | Publish built distributions to Test PyPI |
+| `upload-pypi` | Publish built distributions to PyPI |
+
+To use an already-running local MinIO service for S3 checks:
+
+```bash
+ARTISAN_S3_ENDPOINT=http://127.0.0.1:9000 pixi run -e dev test-s3
+```
+
+The tests create and remove isolated buckets. Set `ARTISAN_S3_ACCESS_KEY` and
+`ARTISAN_S3_SECRET_KEY` if the service uses credentials other than `minioadmin`.
+The `test` and `test-s3` tasks require S3 checks to run: unavailable storage is
+an error. Without an explicit endpoint, tests start an isolated container from
+the immutable MinIO image pinned in `tests/conftest.py`. This is a third-party
+build of the upstream MinIO source from [coollabsio/minio](https://github.com/coollabsio/minio).
+Ad hoc `pytest` runs can still skip when storage is unavailable; add
+`--require-s3` when every selected S3 test must execute.
+
+The `test`, `test-integration`, `test-docker`, and `test-seq` tasks require a
+reachable local Linux Docker engine, including Docker Desktop on macOS. The
+full `test` task checks Docker before starting unit tests. Start Docker or select
+a working local context if setup reports an unavailable socket or access denied.
+The selected context is preserved; `DOCKER_CONTEXT` takes precedence over
+`DOCKER_HOST`.
+
+Setup automatically builds a small image from the pinned Alpine digest and
+reuses it on later runs. The first build needs registry access. An optional
+`ARTISAN_DOCKER_CWD_TEST_IMAGE` override selects an existing local Linux image
+with `sh` and a declared `WORKDIR`; an invalid override fails setup. Image build
+or pull failures are errors, not skips. No manual image export is needed for the
+default tasks.
+
+Ad hoc `pytest` runs prepare Docker only when a Docker test executes and may
+skip if the engine is unavailable. Add `--require-docker` to fail before
+collection instead. `--collect-only` never prepares Docker. For saved release
+evidence, follow the
+[container qualification](../contributing/coding-conventions.md#qualify-docker-commands).
 
 ### Docs environment
 
-| Task | Command | Description |
-|------|---------|-------------|
-| `docs-build` | `jupyter-book build --html` | Build the documentation site |
-| `docs-clean` | `jupyter-book clean` | Remove built documentation |
-| `docs-serve` | `python -m http.server -d _build/html 8000` | Serve docs locally on port 8000 |
+| Task | Purpose |
+|------|---------|
+| `docs-build` | Build the documentation site |
+| `docs-clean` | Remove built documentation |
+| `docs-serve` | Serve built docs locally on port 8000 |
 
 ---
 

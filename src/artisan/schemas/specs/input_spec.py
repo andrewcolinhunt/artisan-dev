@@ -6,9 +6,10 @@ they are delivered (materialized to disk or passed in memory).
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.specs._validators import validate_artifact_type_str
 
 
 class InputSpec(BaseModel):
@@ -20,8 +21,9 @@ class InputSpec(BaseModel):
             or a concrete type string.
         required: Whether this input is required. Default True.
         description: Documentation for this input.
-        materialize: If True (default), write artifact to disk and pass Path.
-            If False, pass artifact content directly in memory.
+        materialize: If True (default), write content to disk and set the input
+            artifact's ``materialized_path``. If False, skip file creation.
+            Both modes pass Artifact models; ``hydrate`` controls loaded content.
 
     Examples:
         # Required data input (default: materialized to disk)
@@ -50,7 +52,13 @@ class InputSpec(BaseModel):
     artifact_type: str = ArtifactTypes.ANY
     required: bool = True
     description: str = ""
-    materialize: bool = True  # If False, pass content directly in memory
+    materialize: bool = True
+    resolve_references: bool = False
+    """Resolve direct config references for both preparation and postprocessing.
+
+    Requires a hydrated, non-materialized config input. The config keeps its
+    reference markers; operations explicitly prepare any portable tool files.
+    """
 
     # Hydration control
     hydrate: bool = True
@@ -78,11 +86,32 @@ class InputSpec(BaseModel):
         InputSpec(artifact_type="data", with_associated=("data_annotation",))
     """
 
+    @field_validator("artifact_type")
+    @classmethod
+    def _validate_artifact_type(cls, v: str) -> str:
+        """Reject unregistered artifact type strings."""
+        return validate_artifact_type_str(v)
+
     @model_validator(mode="after")
     def _validate_materialize_as(self) -> InputSpec:
         """Ensure materialize_as is only set when materialize=True."""
         if self.materialize_as is not None and not self.materialize:
             msg = "materialize_as requires materialize=True"
+            raise ValueError(msg)
+        return self
+
+    @model_validator(mode="after")
+    def _validate_resolve_references(self) -> InputSpec:
+        """Keep typed reference delivery separate from config path substitution."""
+        if self.resolve_references and (
+            self.artifact_type != ArtifactTypes.CONFIG
+            or not self.hydrate
+            or self.materialize
+        ):
+            msg = (
+                "resolve_references requires artifact_type='config', "
+                "hydrate=True, and materialize=False"
+            )
             raise ValueError(msg)
         return self
 
@@ -97,6 +126,7 @@ class InputSpec(BaseModel):
                 self.hydrate,
                 self.materialize_as,
                 self.with_associated,
+                self.resolve_references,
             )
         )
 

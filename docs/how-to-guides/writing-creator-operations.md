@@ -1,67 +1,16 @@
 # Write Creator Operations
 
-How to build operations that run computation and produce artifacts using the
-three-phase lifecycle.
+Write a creator to prepare inputs, run computation, and return artifacts with
+explicit parents.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md),
 [Orientation](../getting-started/orientation.md)
-
-**Key types:** `OperationDefinition`, `PreprocessInput`, `ExecuteInput`,
-`PostprocessInput`, `ArtifactResult`
 
 ---
 
 ## Minimal working examples
 
-### Generative (no inputs)
-
-The simplest creator produces artifacts from nothing:
-
-```python
-from __future__ import annotations
-from enum import StrEnum
-from typing import ClassVar
-
-from artisan.operations.base import OperationDefinition
-from artisan.schemas import ArtifactResult, OutputSpec
-from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-
-
-class HelloGenerator(OperationDefinition):
-    name = "hello_generator"
-
-    class OutputRole(StrEnum):
-        DATASETS = "datasets"
-
-    inputs: ClassVar[dict] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.DATASETS: OutputSpec(
-            artifact_type="data",
-            infer_lineage_from={"inputs": []},
-        ),
-    }
-
-    def execute(self, inputs: ExecuteInput) -> None:
-        (inputs.execute_dir / "hello.csv").write_text("id,value\n1,42\n")
-
-    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = [
-            DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
-                step_number=inputs.step_number,
-            )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
-        ]
-        return ArtifactResult(success=True, artifacts={"datasets": drafts})
-```
-
-No `InputRole`, no `preprocess`. Generative outputs use
-`infer_lineage_from={"inputs": []}` to declare they have no parents.
-
-### With inputs
+### Transform existing data
 
 A creator that consumes artifacts adds an `InputRole`, `inputs` spec, and
 `preprocess`:
@@ -74,11 +23,13 @@ from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
-from artisan.operations.base import OperationDefinition
-from artisan.schemas import ArtifactResult, InputSpec, OutputSpec
-from artisan.schemas.artifact.data import DataArtifact
-from artisan.schemas.specs.input_models import (
+from artisan.operations.base import OperationDefinition, PerArtifact
+from artisan.schemas import (
+    ArtifactResult,
+    DataArtifact,
     ExecuteInput,
+    InputSpec,
+    OutputSpec,
     PostprocessInput,
     PreprocessInput,
 )
@@ -99,24 +50,33 @@ class ScaleData(OperationDefinition):
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
             artifact_type="data",
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
         ),
     }
 
     class Params(BaseModel):
-        factor: float = Field(default=2.0, ge=0.0)
+        factor: float = Field(default=2.0, ge=0.0, description="Multiplier for values.")
 
     params: Params = Params()
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            role: [a.materialized_path for a in artifacts]
-            for role, artifacts in inputs.input_artifacts.items()
+            "datasets": PerArtifact(
+                [
+                    {
+                        "path": a.materialized_path,
+                        "source_id": a.artifact_id,
+                        "name": a.original_name,
+                    }
+                    for a in inputs.input_artifacts["dataset"]
+                ]
+            )
         }
 
-    def execute(self, inputs: ExecuteInput) -> None:
-        for path_str in inputs.inputs["dataset"]:
-            path = Path(path_str)
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+        outputs = []
+        for item in inputs.inputs["datasets"]:
+            path = Path(item["path"])
             lines = path.read_text().splitlines()
             header, rows = lines[0], lines[1:]
             scaled = []
@@ -124,35 +84,54 @@ class ScaleData(OperationDefinition):
                 parts = row.split(",")
                 parts[1] = str(float(parts[1]) * self.params.factor)
                 scaled.append(",".join(parts))
-            out = inputs.execute_dir / path.name
+            out = Path(inputs.execute_dir) / path.name
             out.write_text(header + "\n" + "\n".join(scaled) + "\n")
+            outputs.append(
+                {
+                    "path": str(out),
+                    "source_id": item["source_id"],
+                    "name": f"{item['name']}_scaled.csv",
+                }
+            )
+        return {"outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts = [
-            DataArtifact.draft(
-                content=f.read_bytes(),
-                original_name=f.name,
+        result = ArtifactResult()
+        for item in inputs.memory_outputs["outputs"]:
+            draft = DataArtifact.draft(
+                content=Path(item["path"]).read_bytes(),
+                original_name=item["name"],
                 step_number=inputs.step_number,
             )
-            for f in inputs.file_outputs
-            if f.suffix == ".csv"
-        ]
-        return ArtifactResult(success=True, artifacts={"dataset": drafts})
+            result.add_artifact(
+                "dataset", draft, sources={"dataset": [item["source_id"]]}
+            )
+        return result
 ```
 
 ---
 
+## Generate data without inputs
+
+For a source operation, omit `InputRole`, declare `inputs = {}`, and use
+`derives_from={"inputs": []}` for its outputs. The default preprocess
+returns an empty dict. Its execute method can create files directly:
+
+```python
+def execute_function(self, inputs: ExecuteInput) -> None:
+    Path(inputs.execute_dir, "hello.csv").write_text("id,value\n1,42\n")
+```
+
+Build drafts from those files in postprocess and explicitly return roots:
+`ArtifactResult(artifacts={"datasets": drafts}, lineage={"datasets": []})`. See
+`DataGenerator` in `artisan.operations.examples` for a complete source operation.
+
 ## How data flows through the three phases
 
-For how data flows between the three phases, see
-[Operations Model](../concepts/operations-model.md#the-creator-lifecycle).
-The summary: `preprocess` adapts inputs (receives `PreprocessInput`, returns a
-plain dict), `execute` runs computation (receives `ExecuteInput`, writes files
-to `execute_dir`), `postprocess` constructs artifacts from results (receives
-`PostprocessInput`, returns `ArtifactResult`).
-
-The framework passes each phase's output to the next. You never call one
-phase from another.
+Artisan passes prepared inputs to execute, then passes its files and return
+value to postprocess. Do not call one phase from another. See
+[Operations Model](../concepts/operations-model.md#the-creator-lifecycle) for
+the lifecycle and execution boundaries.
 
 ---
 
@@ -192,48 +171,35 @@ inputs: ClassVar[dict[str, InputSpec]] = {
 }
 ```
 
-`InputSpec` fields:
+By default, inputs are hydrated and materialized to files. Use `required=False`
+for an optional role. See the [Python API](../reference/python-api.md) for the
+complete input contract and available materialization options.
 
-| Field | Type | Default | Effect |
-|-------|------|---------|--------|
-| `artifact_type` | `str` | `"any"` | Type constraint on accepted artifacts |
-| `required` | `bool` | `True` | Pipeline fails if this input is missing |
-| `materialize` | `bool` | `True` | Write artifact to disk (file path in preprocess) vs. pass content in memory |
-| `hydrate` | `bool` | `True` | Load full content vs. ID-only (for passthrough-style ops) |
-| `materialize_as` | `str \| None` | `None` | Target file format for materialization (e.g. `".dat"`). Requires `materialize=True` |
-| `with_associated` | `tuple[str, ...]` | `()` | Auto-resolve related artifacts via provenance (e.g., annotations) |
-| `description` | `str` | `""` | Human-readable documentation for this input |
-
-Set `materialize=False` for inputs you process in Python without needing a
-file on disk (metrics, configs). When `materialize=False`, access content
-directly via `artifact.content` instead of `artifact.materialized_path`.
+Set `materialize=False` for inputs you read directly through `artifact.content`,
+such as metrics or configs.
 
 ### Outputs
 
-Each entry maps a role name to an `OutputSpec`. Every creator output must set
-`infer_lineage_from`:
+Map each output role to an `OutputSpec`. Set `derives_from` to declare its
+required and allowed parent roles; select exact parents in postprocess:
 
 ```python
 outputs: ClassVar[dict[str, OutputSpec]] = {
     OutputRole.PROCESSED: OutputSpec(
         artifact_type="data",
-        infer_lineage_from={"inputs": ["data"]},
+        derives_from={"inputs": ["data"]},
     ),
     OutputRole.SCORES: OutputSpec(
         artifact_type="metric",
-        infer_lineage_from={"outputs": ["processed"]},
+        derives_from={"outputs": ["processed"]},
     ),
 }
 ```
 
-`OutputSpec` fields:
-
-| Field | Type | Default | Effect |
-|-------|------|---------|--------|
-| `artifact_type` | `str` | `"any"` | Type of artifact this output produces |
-| `infer_lineage_from` | `dict \| None` | `None` | Declares provenance parents (required for creators) |
-| `required` | `bool` | `True` | Warns if output is missing (does not fail) |
-| `description` | `str` | `""` | Human-readable documentation for this output |
+A required output role must be present and contain at least one artifact.
+Missing roles and empty required lists fail execution. Set `required=False`
+when an output may legitimately be absent. This validates each returned output
+role; it does not enforce a fixed number of outputs per input artifact.
 
 ### Lineage patterns
 
@@ -243,7 +209,8 @@ outputs: ClassVar[dict[str, OutputSpec]] = {
 | Derived from output | `{"outputs": ["role_name"]}` | Output derives from another output of the same operation |
 | Generative | `{"inputs": []}` | Output has no parents |
 
-`None` is only valid for curator operations. `{}` (empty dict) always raises
+`None` is only valid for passthrough outputs. Artifact-producing curators
+follow the same explicit contract as creators. `{}` (empty dict) always raises
 `ValidationError`. Combined `{"inputs": [...], "outputs": [...]}` is not
 supported — use separate output roles instead.
 
@@ -251,56 +218,70 @@ supported — use separate output roles instead.
 
 ## Add parameters
 
-Group algorithm-specific configuration into a nested `Params` model. Use
-Pydantic `Field` for defaults and validation:
+Inside the operation class, group algorithm-specific configuration into a
+nested `Params` model. Annotate `params` with that exact model. Use Pydantic
+`Field` for defaults and validation:
 
 ```python
 class Params(BaseModel):
-    scale_factor: float = Field(default=1.5, ge=0.0)
-    seed: int | None = Field(default=None)
+    scale_factor: float = Field(
+        default=1.5, ge=0.0, description="Multiplier for values."
+    )
+    seed: int | None = Field(default=None, description="Random seed.")
+
 
 params: Params = Params()
 ```
 
-Access in lifecycle methods via `self.params`:
-
-```python
-def execute(self, inputs: ExecuteInput) -> Any:
-    value = some_value * self.params.scale_factor
-    ...
-```
-
-Override at the pipeline step level:
+Access parameter values in lifecycle methods through `self.params`, such as
+`self.params.scale_factor`. Override them at the pipeline step level:
 
 ```python
 pipeline.run(operation=MyOp, inputs=..., params={"scale_factor": 2.0})
 ```
 
-Parameters are optional. If your operation has no configurable behavior, skip
-this (see `MetricCalculator` in `artisan.operations.examples`).
+Parameterless operations omit both `Params` and `params`; see `MetricCalculator`
+in `artisan.operations.examples`. Subclasses can inherit the pair unchanged or
+replace both together. Flat algorithm fields on an operation are rejected.
 
 ---
 
+(creator-preprocess)=
 ## Implement preprocess
 
-**Required** for operations with inputs. The framework raises `TypeError` at
-class definition time if missing. Generative operations skip this (the
-default returns `{}`).
+Operations with inputs must implement `preprocess`; omitting it raises
+`TypeError` at class definition. For generative operations, the default method
+returns `{}`.
 
-`preprocess` receives `PreprocessInput` containing the materialized artifacts
-and returns a plain dict. The most common pattern extracts file paths:
+Return a dict of prepared values from `PreprocessInput`. Carry the exact source
+ID and chosen name alongside each file path, as in `ScaleData`:
 
 ```python
 def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
     return {
-        role: [a.materialized_path for a in artifacts]
-        for role, artifacts in inputs.input_artifacts.items()
+        "datasets": PerArtifact(
+            [
+                {
+                    "path": a.materialized_path,
+                    "source_id": a.artifact_id,
+                    "name": a.original_name,
+                }
+                for a in inputs.input_artifacts["dataset"]
+            ]
+        )
     }
 ```
 
 `inputs.input_artifacts` is a `dict[str, list[Artifact]]` keyed by role name.
 Each artifact's `materialized_path` points to the file the framework wrote to
-the sandbox. Inputs are always lists, even when `artifacts_per_unit=1`.
+the sandbox. The input artifacts are always lists, even when `artifacts_per_unit=1`.
+
+Wrap each per-artifact value in `PerArtifact`. With the default per-artifact
+dispatch, execute receives a one-element list for that value. An ordinary list
+is shared unchanged with every invocation, so using one for file paths repeats
+the whole batch. Shared configuration can remain unwrapped. If the operation
+intentionally handles the whole batch in one call, declare
+`per_artifact_dispatch = False`.
 
 ### Non-materialized inputs
 
@@ -310,117 +291,67 @@ directly instead of using file paths:
 ```python
 def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
     configs = inputs.input_artifacts["config"]
-    return {"config": configs[0].content}
+    return {"config": PerArtifact([a.content for a in configs])}
 ```
 
 ### Associated artifacts
 
-When an `InputSpec` declares `with_associated`, retrieve the associated
-artifacts via `inputs.associated_artifacts()`:
-
-```python
-def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-    result = {}
-    for artifact in inputs.input_artifacts["data"]:
-        annotations = inputs.associated_artifacts(artifact, "data_annotation")
-        result[str(artifact.materialized_path)] = [
-            str(a.materialized_path) for a in annotations
-        ]
-    return {"data_with_annotations": result}
-```
-
-### PreprocessInput fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `preprocess_dir` | `Path` | Directory for writing intermediate files (configs, conversions) |
-| `input_artifacts` | `dict[str, list[Artifact]]` | Artifacts keyed by input role name |
-| `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
+Declare `with_associated` on the input spec, then call
+`inputs.associated_artifacts(artifact, "data_annotation")` to obtain that input's
+related artifacts. Preserve the same input order when preparing values for
+`PerArtifact`. See the [input model docstrings](../reference/python-api.md)
+for association access and grouping methods.
 
 ---
 
 ## Implement execute
 
-**Required** for all creator operations. Receives `ExecuteInput` with the dict
-from preprocess and a working directory.
-
-Write output files to `inputs.execute_dir`. Access parameters via
-`self.params`. The return value is passed to postprocess as
-`inputs.memory_outputs` — return computed data when your outputs are in-memory
-rather than file-based.
+Every creator implements execute. It receives the prepared dict in `ExecuteInput`.
+Write output files to `inputs.execute_dir` and read parameters from `self.params`.
+Return in-memory results for postprocess to read through `inputs.memory_outputs`.
 
 ```python
-def execute(self, inputs: ExecuteInput) -> Any:
-    for path_str in inputs.inputs["dataset"]:
-        data = Path(path_str).read_text()
-        transformed = do_something(data)
-        (inputs.execute_dir / Path(path_str).name).write_text(transformed)
-
-    return None  # or return computed data for memory_outputs
+def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+    outputs = []
+    for item in inputs.inputs["datasets"]:
+        path = Path(item["path"])
+        transformed = do_something(path.read_text())  # Your transformation.
+        out = Path(inputs.execute_dir) / path.name
+        out.write_text(transformed)
+        outputs.append(
+            {
+                "path": str(out),
+                "source_id": item["source_id"],
+                "name": f"{item['name']}_processed.csv",
+            }
+        )
+    return {"outputs": outputs}
 ```
 
-### ExecuteInput fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `execute_dir` | `Path` | Directory for writing output files. All files here are captured by postprocess |
-| `inputs` | `dict[str, Any]` | Prepared inputs from preprocess |
-| `log_path` | `Path \| None` | Path where external tool output should be written (provided by the framework) |
-| `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
-
-`ExecuteInput` is frozen — you cannot modify its fields.
+`ExecuteInput` is frozen. Do not mutate it or use another phase's working directory.
 
 ---
 
 ## Implement postprocess
 
-**Optional.** The default returns `ArtifactResult(success=True)` with no
-artifacts. Override when your operation produces output artifacts.
+Override `postprocess` when the operation produces artifacts; the default returns
+`ArtifactResult(success=True)` with none.
 
 `postprocess` receives `PostprocessInput` with two sources of data:
+
 - `inputs.file_outputs` — all files found in `execute_dir` after execute ran
 - `inputs.memory_outputs` — whatever `execute` returned
 
-Build draft artifacts and return them keyed by output role:
+Build drafts under the declared output roles, as in `ScaleData`.
 
-```python
-def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-    drafts = [
-        DataArtifact.draft(
-            content=f.read_bytes(),
-            original_name=f.name,
-            step_number=inputs.step_number,
-        )
-        for f in inputs.file_outputs
-        if f.suffix == ".csv"
-    ]
-    return ArtifactResult(success=True, artifacts={"dataset": drafts})
-```
+`original_name` is the human name you choose. The framework preserves it and
+never derives parents from it. Include a lineage declaration for every emitted
+role, and exact parents for every derived draft. The `add_artifact` helper in
+`ScaleData` constructs those records; equivalent manual mappings are also valid.
 
-`original_name` matters: the lineage matching algorithm uses it to pair
-output artifacts with their parent inputs. Use the input filename as the
-stem when there is a 1:1 relationship.
-
-### PostprocessInput fields
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `step_number` | `int` | Current pipeline step number (required for `draft()` calls) |
-| `postprocess_dir` | `Path` | Directory for any postprocess intermediates (rarely needed) |
-| `file_outputs` | `list[Path]` | All files in `execute_dir` after execute completes |
-| `memory_outputs` | `Any` | Whatever `execute` returned (`None`, dict, etc.) |
-| `input_artifacts` | `dict[str, list[Artifact]]` | Full input context with metadata for output naming and lineage |
-| `metadata` | `dict[str, Any]` | Escape hatch for additional data from the engine |
-
-### ArtifactResult fields
-
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `success` | `bool` | `True` | Whether execution completed successfully |
-| `error` | `str \| None` | `None` | Error message if `success` is `False` |
-| `artifacts` | `dict[str, list[Artifact]]` | `{}` | Output role -> draft artifact list |
-| `lineage` | `dict[str, list[LineageMapping]] \| None` | `None` | Explicit lineage declarations (framework infers if `None`) |
-| `metadata` | `dict[str, Any]` | `{}` | Additional metadata (logged, not stored as artifacts) |
+The framework finalizes and validates the returned drafts. Read the
+[public model docstrings](../reference/python-api.md) for additional
+`PostprocessInput` and `ArtifactResult` fields.
 
 ---
 
@@ -428,12 +359,13 @@ stem when there is a 1:1 relationship.
 
 ### Metric outputs (in-memory)
 
-When `execute` computes values rather than writing files, return them and
-construct artifacts from `memory_outputs` in postprocess:
+For a generative metric role declared with `derives_from={"inputs": []}`,
+return values from execute and explicitly declare a root in postprocess:
 
 ```python
-def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
     return {"accuracy": 0.95, "f1": 0.87}
+
 
 def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
     metric = MetricArtifact.draft(
@@ -441,7 +373,7 @@ def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         original_name=f"metrics_{inputs.step_number}",
         step_number=inputs.step_number,
     )
-    return ArtifactResult(success=True, artifacts={"metrics": [metric]})
+    return ArtifactResult(artifacts={"metrics": [metric]}, lineage={"metrics": []})
 ```
 
 `MetricArtifact.draft()` accepts a `dict[str, Any]` for `content` (not bytes)
@@ -457,104 +389,333 @@ class OutputRole(StrEnum):
     DATASETS = "datasets"
     METRICS = "metrics"
 
+
 outputs: ClassVar[dict[str, OutputSpec]] = {
     OutputRole.DATASETS: OutputSpec(
         artifact_type="data",
-        infer_lineage_from={"inputs": []},
+        derives_from={"inputs": []},
     ),
     OutputRole.METRICS: OutputSpec(
         artifact_type="metric",
-        infer_lineage_from={"outputs": ["datasets"]},
+        derives_from={"outputs": ["datasets"]},
     ),
 }
 ```
 
-The `{"outputs": ["datasets"]}` pattern links metrics to the co-produced
-datasets, creating output-to-output provenance edges. In postprocess, return
-both roles:
+The `{"outputs": ["datasets"]}` pattern links each metric to a co-produced
+dataset. Add the dataset first, retain the index returned by `add_artifact`,
+then declare that index as the metric's parent:
 
 ```python
-def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-    dataset_drafts = [
-        DataArtifact.draft(
-            content=f.read_bytes(),
-            original_name=f.name,
-            step_number=inputs.step_number,
-        )
-        for f in inputs.file_outputs
-        if f.suffix == ".csv"
-    ]
-    metric_drafts = [
-        MetricArtifact.draft(
-            content=metric_data,
-            original_name=metric_key,
-            step_number=inputs.step_number,
-        )
-        for metric_key, metric_data in inputs.memory_outputs.items()
-    ]
-    return ArtifactResult(
-        success=True,
-        artifacts={
-            "datasets": dataset_drafts,
-            "metrics": metric_drafts,
-        },
-    )
+result = ArtifactResult()
+dataset_index = result.add_artifact("datasets", dataset, sources={})
+result.add_artifact("metrics", metric, sources={"datasets": [dataset_index]})
 ```
 
 See `DataGeneratorWithMetrics` in `artisan.operations.examples` for a complete
-implementation.
+implementation, and the
+[Co-Produced Outputs tutorial](../tutorials/09-writing-operations/03-co-produced-outputs.ipynb)
+for a step-by-step walkthrough of authoring this pattern.
 
-### External tool operations
+(creator-explicit-lineage)=
+### Explicit lineage
 
-Set `tool` to a `ToolSpec` declaring the binary or script to invoke, and
-configure the execution environment with `environments`:
+Every artifact-producing operation declares exact parents. `derives_from`
+constrains the parent roles; `ArtifactResult.lineage` supplies the actual edges.
+Each emitted role must appear in both `artifacts` and `lineage`. For roots, use
+an empty list. For an optional role with no drafts, either omit it from both
+maps or supply empty lists in both.
+
+Manual mappings and `add_artifact` construct the same records. Given a draft
+`config` and the `dataset_id` it references, these two functions are equivalent:
 
 ```python
-from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.operation_config.environment_spec import (
-    DockerEnvironmentSpec,
-    LocalEnvironmentSpec,
+from artisan.schemas import ArtifactResult, ExecutionConfigArtifact, LineageMapping
+
+
+def manual_config(dataset_id: str, config: ExecutionConfigArtifact) -> ArtifactResult:
+    return ArtifactResult(
+        artifacts={"config": [config]},
+        lineage={
+            "config": [
+                LineageMapping(
+                    draft_index=0,
+                    source_role="dataset",
+                    source_artifact_id=dataset_id,
+                )
+            ]
+        },
+    )
+
+
+def helper_config(dataset_id: str, config: ExecutionConfigArtifact) -> ArtifactResult:
+    result = ArtifactResult()
+    result.add_artifact("config", config, sources={"dataset": [dataset_id]})
+    return result
+```
+
+`draft_index` addresses the draft's position within its output role. For a
+co-produced parent, use `source_output_index` in the named output role instead
+of `source_artifact_id`. Names may repeat; preserve list order after declaring
+indices. Invalid indices, wrong-role IDs, missing parents, duplicate mappings,
+and undeclared parent roles fail validation.
+
+The helper requires `sources`: strings name input IDs, integers name sibling
+output indices, and `{}` declares a root. It never chooses parents. Several IDs
+from one role are valid. For an output jointly derived from `data` and
+`reference`, its spec lists both input roles and the operation supplies both:
+
+```python
+result.add_artifact(
+    "aligned",
+    aligned,
+    sources={"data": [data.artifact_id], "reference": [reference.artifact_id]},
 )
-from artisan.schemas.operation_config.environments import Environments
-
-class MyToolOp(OperationDefinition):
-    name = "my_tool"
-
-    tool: ToolSpec = ToolSpec(
-        executable="/tools/run.sh",
-        interpreter="bash",
-    )
-    environments: Environments = Environments(
-        local=LocalEnvironmentSpec(),
-        docker=DockerEnvironmentSpec(image="my-registry/tool:latest"),
-    )
-    ...
 ```
 
-`ToolSpec` fields:
+Artisan labels the declared parent set with a deterministic group ID. This
+preserves the distinction between `S+A` and `S+B`; reference-only inputs do not
+become parents because they happened to share an execution.
 
-| Field | Type | Default | Description |
-|-------|------|---------|-------------|
-| `executable` | `str \| Path` | (required) | Path or name of the binary/script |
-| `interpreter` | `str \| None` | `None` | Interpreter prefix (e.g. `"python"`, `"bash"`) |
-| `subcommand` | `str \| None` | `None` | Subcommand inserted after the executable |
+### Config references and ancestry
 
-In `execute`, use `self.tool.parts()` to build the command prefix and
-`self.environments.current()` to get the active environment spec. Use
-`run_command()` from `artisan.utils.external_tools` to invoke the tool:
+A config can contain `{"input": {"$artifact": dataset_id}, "scale_factor": 2}`.
+Materialization substitutes the dataset's local path into the tool's config.
+The producing operation separately declares `dataset -> config`, using either
+form above and `derives_from={"inputs": ["dataset"]}`. The config's stored
+reference remains unchanged.
+
+For several referenced parents, an operation may call
+`config.get_artifact_references()`, deduplicate those IDs, choose the corresponding
+input roles, and declare them. The executor never scans config content for
+parents. See `DataTransformerConfig` in `artisan.operations.examples` for a
+parameter sweep that preserves every config's dataset ancestry.
+
+### Read typed config dependencies
+
+When preprocessing needs the referenced artifact objects, declare the config
+input with reference resolution enabled:
 
 ```python
-from artisan.utils.external_tools import format_args, run_command
-
-def execute(self, inputs: ExecuteInput) -> Any:
-    env = self.environments.current()
-    args = format_args({"input": inputs.inputs["data_path"], "output-dir": str(inputs.execute_dir)})
-    run_command(env, [*self.tool.parts(), *args], cwd=inputs.execute_dir)
-    return None
+inputs = {
+    "config": InputSpec(
+        artifact_type="config", materialize=False, resolve_references=True
+    )
+}
 ```
 
-See `DataTransformerScript` in `artisan.operations.examples` for a complete
-implementation with multi-input pairing and config artifacts.
+Inside `preprocess` or `postprocess`, call
+`inputs.referenced_artifacts(config)` for a config in
+`inputs.input_artifacts["config"]`. The returned read-only mapping contains its
+direct dependencies, keyed by artifact ID. Each dependency is hydrated and has
+a local `materialized_path`; repeated references share the same object. Config
+markers stay unchanged, and dependencies remain available through postprocessing.
+Malformed IDs, missing or corrupt artifacts, and references to other configs fail
+before preprocessing. The input spec must set `materialize=False` and retain
+`hydrate=True` (the default); invalid combinations fail when the spec is created.
+
+For endpoint execution, use these dependencies to prepare portable files under
+`inputs.preprocess_dir`, then return those files as declared execute inputs. Write
+required values or bytes into them; paths inside file contents are not rewritten
+when files move to a worker. The typed objects stay with the lifecycle worker.
+Check your preparation by moving the prepared files to another directory before
+execution and verifying that the result is unchanged.
+
+For example, this preprocess fragment embeds referenced UTF-8 text in a JSON
+file. It uses the imports from `ScaleData` plus `json` and
+`ExecutionConfigArtifact`:
+
+```python
+import json
+
+from artisan.schemas import ExecutionConfigArtifact
+
+
+def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+    paths = []
+    for config in inputs.input_artifacts["config"]:
+        if not isinstance(config, ExecutionConfigArtifact):
+            raise TypeError("Expected an execution config")
+        references = inputs.referenced_artifacts(config)
+        payload = {
+            "config_id": config.artifact_id,
+            "contents": [
+                Path(references[ref_id].materialized_path).read_text()
+                for ref_id in config.get_artifact_references()
+            ],
+        }
+        path = Path(inputs.preprocess_dir) / f"{config.artifact_id}.json"
+        path.write_text(json.dumps(payload))
+        paths.append(str(path))
+    return {"config": PerArtifact(paths)}
+```
+
+The execute phase reads the prepared JSON file. Its contents have no dependency
+on the original sandbox paths. Choose a format suited to your tool and data;
+large or binary inputs need a different packaging choice.
+
+Declare each output's config parent explicitly. Resolving dependencies does not
+add lineage edges. Replay reloads the same referenced IDs and verifies their
+content, so the source store and external content must remain available after
+working-directory cleanup.
+These resolved dependencies are not additional input roles or a pairing scheme.
+When adopting a different input or output contract, increment the operation's
+`version` to invalidate existing execution caches. Replay also checks the recorded
+reference-resolution setting against the current input declaration.
+
+### Command operations (external tools)
+
+A command operation declares `ToolSpec` and implements `execute_command`.
+Return the argument list; the framework invokes it in the execute directory and
+captures its log and command evidence. Prepared per-artifact file values arrive
+as scalar paths in this method.
+
+The following complete operation copies each input CSV using the system `cp`
+command. It requires `cp` in the selected environment:
+
+```python
+from enum import StrEnum
+from pathlib import Path
+from typing import Any, ClassVar
+
+from artisan.operations.base import OperationDefinition, PerArtifact
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
+from artisan.schemas import (
+    ArtifactResult,
+    DataArtifact,
+    InputSpec,
+    OutputSpec,
+    PostprocessInput,
+    PreprocessInput,
+    ToolSpec,
+)
+
+
+class CopyCsv(OperationDefinition):
+    name = "copy_csv"
+
+    class InputRole(StrEnum):
+        DATASET = "dataset"
+
+    class OutputRole(StrEnum):
+        DATASET = "dataset"
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "dataset": InputSpec(artifact_type="data"),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "dataset": OutputSpec(
+            artifact_type="data", derives_from={"inputs": ["dataset"]}
+        ),
+    }
+    tool: ToolSpec = ToolSpec(executable="cp")
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {
+            "dataset": PerArtifact(
+                [a.materialized_path for a in inputs.input_artifacts["dataset"]]
+            )
+        }
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        source = str(inputs["dataset"])
+        return [*self.tool.parts(), source, Path(source).name]
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        paths = [Path(f) for f in inputs.file_outputs if f.endswith(".csv")]
+        sources = inputs.input_artifacts["dataset"]
+        source_by_id = {a.artifact_id: a for a in sources}
+        parent_ids = match_outputs_to_inputs_by_stem(
+            [str(path) for path in paths],
+            [(a.materialized_path, a.artifact_id) for a in sources],
+        )
+        result = ArtifactResult()
+        for path, parent_id in zip(paths, parent_ids, strict=True):
+            source = source_by_id[parent_id]
+            draft = DataArtifact.draft(
+                content=path.read_bytes(),
+                original_name=f"{source.original_name}.csv",
+                step_number=inputs.step_number,
+            )
+            result.add_artifact("dataset", draft, sources={"dataset": [parent_id]})
+        return result
+```
+
+Use relative output paths because the framework sets the command's working
+directory. For another external tool, replace `ToolSpec` and the returned
+arguments with its CLI. Keep preprocess and postprocess responsible for the
+artifact boundary.
+
+Here the operation calls the public matcher explicitly, choosing materialized
+input basenames as its candidates. Unmatched or ambiguous names raise an error.
+The framework never calls this helper. Tools whose filenames do not identify
+parents can write an operation-owned manifest with relative output paths and
+exact source IDs, then read it in postprocess. Command transport does not return
+Python memory outputs.
+
+`WaitTool` in `artisan.operations.examples` is another complete command example.
+A Python `execute_function` that calls `run_command` manually is still a function
+operation; that form runs where the lifecycle worker runs. For remote command
+execution, follow [Deploy Tool Endpoints](deploying-tool-endpoints.md).
+
+(execute-as-tool)=
+### Python body as a command (`execute_as_tool`)
+
+Set `execute_as_tool=True` to run a Python body as a local subprocess, Modal
+endpoint, or standalone container command:
+
+```python
+class EmbedSequences(OperationDefinition):
+    name = "embed_sequences"
+    execute_as_tool: ClassVar[bool] = True
+    ...
+
+    class Params(BaseModel):
+        batch_size: int = Field(default=8, description="Sequences per batch.")
+
+    params: Params = Params()
+
+    def execute_function(
+        self, inputs: ExecuteInput
+    ) -> None: ...  # read input files, write output files to inputs.execute_dir
+```
+
+The framework supplies the command
+(`artisan op run <module:Qualname> --params … --inputs …`) and uses the command
+execution path: `artisan modal deploy` accepts it,
+`compute_provider='modal'` routes it, and a container with the operation's
+package installed can run it without a pipeline.
+
+This mode exchanges files across process boundaries. Validation happens at
+class definition where possible:
+
+- Prepared inputs are file paths, JSON-serializable. Wrap per-artifact
+  values in `PerArtifact` — raw lists pass through whole, as shared
+  data, to every per-artifact subprocess. Scalars belong in `Params`.
+- Outputs are files written to `execute_dir`; `execute_function`
+  returns `None` (a non-`None` return is a runtime error).
+- Put per-run configuration in the nested `Params` model. Top-level
+  fields, a `params` field not typed as the nested `Params` class, a
+  `ToolSpec`, or an `execute_command` override all fail at import.
+- `ExecuteInput.metadata` and `files_dir` are unavailable. Do not use
+  `log_path`; log to stdout/stderr, which the framework
+  captures to the unit log.
+- The operation's module and Artisan must be importable wherever the command
+  runs: installed in the container image (see
+  [Op Container Images](op-container-images.md)), installed in the
+  active environment locally.
+
+| Op shape | Use |
+|----------|-----|
+| Python body that runs in the lifecycle worker | Plain function op |
+| External binary with its own CLI | `tool` + `execute_command()` |
+| Python body that should deploy like a tool (GPU model, heavy transform) | `execute_as_tool = True` |
+
+Each command starts a subprocess. For short transforms, measure that overhead
+before choosing this execution form.
+
+See `CsvHead` in `artisan.operations.examples` for the complete
+reference implementation.
 
 ### Multi-input operations
 
@@ -563,30 +724,57 @@ how artifacts are paired across roles, and use `inputs.grouped()` in
 preprocess:
 
 ```python
-from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas import GroupByStrategy
+
 
 class AlignOp(OperationDefinition):
     name = "align"
-    group_by: ClassVar[GroupByStrategy | None] = GroupByStrategy.LINEAGE
+    group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
     ...
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         return {
-            "pairs": [
-                {
-                    "data": g["data"].materialized_path,
-                    "reference": g["reference"].materialized_path,
-                }
-                for g in inputs.grouped()
-            ]
+            "pairs": PerArtifact(
+                [
+                    {
+                        "data": g["data"].materialized_path,
+                        "reference": g["reference"].materialized_path,
+                        "data_id": g["data"].artifact_id,
+                        "reference_id": g["reference"].artifact_id,
+                    }
+                    for g in inputs.grouped()
+                ]
+            )
         }
 ```
 
 | Strategy | Behavior | Use when |
 |----------|----------|----------|
-| `LINEAGE` | Pairs artifacts sharing provenance ancestry | Inputs from different steps that process the same original |
+| `LINEAGE` | Follows a directed provenance path from a candidate to a target ancestor | Pair an artifact with its ancestor; sibling branches sharing a root do not qualify |
 | `ZIP` | Pairs by position (index-aligned) | Inputs in a known, consistent order |
 | `CROSS_PRODUCT` | Every combination across roles | Every input combined with every other |
+| `NAME` | Pairs artifacts whose `original_name` stems match | Independently-ingested streams that share filename conventions but no ancestry |
+
+#### Pairing by name
+
+Use `NAME` for independent input streams with matching filename stems. Artisan
+strips all extensions: `data.tar.gz` and `data.csv` both have the stem `data`.
+
+```python
+class JoinByName(OperationDefinition):
+    name = "join_by_name"
+    group_by: GroupByStrategy | None = GroupByStrategy.NAME
+
+    class InputRole(StrEnum):
+        sequences = "sequences"
+        annotations = "annotations"
+```
+
+Each role must have unique stems among artifacts with an `original_name`;
+duplicates raise `ValueError` during pairing. Both `run.log` and `run.cfg` have
+the stem `run`. Encode their distinction in the base name
+(`run_log.txt`, `run_cfg.txt`) when they need to coexist within one
+role.
 
 ### Resources and execution config
 
@@ -595,18 +783,20 @@ Set defaults on the class. Override per-step at the pipeline level:
 ```python
 class HeavyOp(OperationDefinition):
     name = "heavy_op"
-    resources: ResourceConfig = ResourceConfig(
-        cpus=4, memory_gb=32, gpus=1,
-        extra={"partition": "gpu"},
+    runner_resources: RunnerResources = RunnerResources(
+        cpus=4,
+        memory_gb=32,
+        gpus=1,
+        extra={"slurm_partition": "gpu"},
     )
-    execution: ExecutionConfig = ExecutionConfig(
-        artifacts_per_unit=5, estimated_seconds=3600.0,
+    batch_strategy: BatchStrategy = BatchStrategy(
+        artifacts_per_unit=5,
+        estimated_seconds=3600.0,
     )
     ...
 ```
 
-See [Configuring Execution](configuring-execution.md) for the full set of
-resource and batching options.
+See [Configuring Execution](configuring-execution.md) for resource and batching recipes.
 
 ---
 
@@ -617,11 +807,13 @@ resource and batching options.
 | `TypeError: must define OutputRole` | Missing `OutputRole(StrEnum)` inner class | Add enum with values matching `outputs` keys |
 | `TypeError: must define InputRole` | Missing `InputRole(StrEnum)` inner class | Add enum with values matching `inputs` keys |
 | `TypeError: must implement preprocess()` | Creator with non-empty `inputs` but no preprocess | Override `preprocess()` |
-| `TypeError: must set infer_lineage_from` | Creator output with `infer_lineage_from=None` | Set to `{"inputs": [...]}` or `{"inputs": []}` |
+| `TypeError: must set derives_from` | Creator output with `derives_from=None` | Set to `{"inputs": [...]}` or `{"inputs": []}` |
 | `ValidationError` on `OutputSpec` | Used `{}` for lineage | Use `{"inputs": []}` for generative outputs |
 | `ValidationError` on `OutputSpec` | Combined `{"inputs": [...], "outputs": [...]}` | Use separate output roles instead |
 | Empty artifacts after postprocess | Wrong file extension filter or missing files | Check `file_outputs` contents in the execute directory |
-| Wrong lineage connections | `original_name` doesn't match input filenames | Use input filename as the stem for 1:1 transforms |
+| Missing lineage | An emitted role or derived draft has no declaration | Return exact parents for each derived draft, and an empty list for roots |
+| `ValidationError` on `LineageMapping` | Set both source fields, or neither | Use `source_artifact_id` for input parents or `source_output_index` for co-produced outputs |
+| `LineageIntegrityError` | An index is outside the declared role or an input ID belongs to another role | Preserve role-local output order and carry the exact source IDs |
 | `ValueError: materialize_as requires materialize=True` | Set `materialize_as` on a non-materialized input | Remove `materialize_as` or set `materialize=True` |
 
 ---
@@ -634,7 +826,7 @@ Test your operation outside a pipeline by constructing inputs directly:
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
+from artisan.schemas import ExecuteInput, PostprocessInput
 
 op = ScaleData(params={"factor": 3.0})
 
@@ -643,42 +835,63 @@ with TemporaryDirectory() as tmp:
     execute_dir.mkdir()
 
     # Write a test input file
-    test_csv = execute_dir / "test.csv"
+    test_csv = Path(tmp) / "test.csv"
     test_csv.write_text("id,value\n1,10\n2,20\n")
 
-    # Run execute
-    execute_input = ExecuteInput(
-        execute_dir=execute_dir,
-        inputs={"dataset": [str(test_csv)]},
+    source = DataArtifact.draft(
+        content=test_csv.read_bytes(), original_name="test.csv", step_number=0
+    ).finalize()
+    source.materialized_path = str(test_csv)
+    prepared = op.preprocess(
+        PreprocessInput(
+            preprocess_dir=str(Path(tmp) / "pre"),
+            input_artifacts={"dataset": [source]},
+        )
     )
-    result = op.execute(execute_input)
+    execute_input = ExecuteInput(execute_dir=str(execute_dir), inputs=prepared)
+    result = op.execute_function(execute_input)
 
     # Run postprocess
     post_input = PostprocessInput(
         step_number=0,
-        postprocess_dir=Path(tmp) / "post",
-        file_outputs=list(execute_dir.iterdir()),
+        postprocess_dir=str(Path(tmp) / "post"),
+        file_outputs=[str(path) for path in execute_dir.iterdir()],
         memory_outputs=result,
     )
     artifact_result = op.postprocess(post_input)
 
     assert artifact_result.success
-    assert len(artifact_result.artifacts["dataset"]) > 0
+    assert (
+        artifact_result.lineage["dataset"][0].source_artifact_id == source.artifact_id
+    )
+    assert len(artifact_result.artifacts["dataset"]) == 1
+    assert (
+        artifact_result.artifacts["dataset"][0].content == b"id,value\n1,30.0\n2,60.0\n"
+    )
 ```
 
 For a full integration test, run in a pipeline (defaults to local backend):
 
 ```python
 from artisan.orchestration import PipelineManager
+from artisan.orchestration import StepStatus
+from artisan.operations.examples import DataGenerator
 
 pipeline = PipelineManager.create(
-    name="test", delta_root="test/delta", staging_root="test/staging",
+    name="test",
+    delta_root="test/delta",
+    staging_root="test/staging",
 )
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="source", params={"count": 3})
-step = pipeline.run(operation=ScaleData, inputs={"dataset": output("source", "datasets")})
-assert step.success
-assert step.succeeded_count > 0
+step = pipeline.run(
+    operation=ScaleData,
+    inputs={"dataset": output("source", "datasets")},
+    batch_strategy={"artifacts_per_unit": 3},
+)
+assert step.status is StepStatus.SUCCEEDED
+assert step.succeeded_count == 3
+pipeline.finalize()
 ```
 
 ---
@@ -692,3 +905,5 @@ assert step.succeeded_count > 0
 - [Writing Curator Operations](writing-curator-operations.md) — filter, merge,
   ingest operations
 - [Build a Pipeline](building-a-pipeline.md) — wiring operations into pipelines
+- [Op Container Images](op-container-images.md) — the image contract behind
+  `execute_as_tool` and external tool deployment

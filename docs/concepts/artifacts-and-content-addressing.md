@@ -1,59 +1,43 @@
 # Artifacts and Content Addressing
 
-Every piece of data flowing through a pipeline -- a metric value, a
-configuration file, a dataset, a file reference -- is an **artifact**.
-Artifacts are the fundamental unit of data in Artisan, and every other
-subsystem (provenance, caching, storage, execution) is built on top of them.
-
-Understanding how artifacts work and why they are content-addressed explains
-three properties you get for free: redundant computation is skipped
-automatically, provenance edges never go stale, and the same result is never
-stored twice.
+An **artifact** is typed pipeline data, such as a dataset, metric, configuration,
+or file reference. Its ID depends on its type, content, and semantic metadata.
+Changing those values creates a different artifact.
 
 ---
 
-## Content addressing: one idea, three consequences
+## Content addressing
 
-An artifact's identity is the hash of its content. Specifically,
-`artifact_id = xxh3_128(content)` -- a 128-bit hash represented as a 32-character
-hex string. There is no separate "name" or "version" field. The content *is* the
-identity.
+An artifact's identity is a versioned hash of three things: its registered type,
+its type-owned canonical content, and common semantic metadata such as its name,
+extension, and `metadata` mapping. The result is a 32-character hexadecimal
+string. Equal bytes in different types or with different semantic metadata
+identify distinct artifacts.
 
-This single decision produces three consequences that underpin the rest of the
-framework:
+Runtime state does not enter identity. The producing step number, source URI,
+managed storage URI, and materialized path may change without changing what the
+artifact means.
 
-**Deduplication.** If two operations produce identical output, only one copy is
-stored. The commit logic performs an anti-join on incoming artifact IDs against
-the existing Delta Lake table and silently drops duplicates. No configuration
-needed -- it is a structural guarantee.
+**Deduplication.** If two operations produce the same typed semantic artifact,
+only one content row is stored. Commit verification checks that content and
+semantic metadata agree before reusing an existing ID; a conflict is an
+integrity error.
 
-**Deterministic caching.** Cache keys are computed from the operation name,
-input artifact IDs, parameters, and any config overrides. Since artifact IDs are
-content hashes, identical computation always produces the same cache key. No
-manual cache invalidation, no cache drift, no stale entries.
+**Deterministic caching.** Cache keys include artifact identities and the declared
+invocation. Input roles, order, grouping, and duplicates affect the key.
 
-**Immutable provenance.** The artifact ID *is* the content. Modifying the content
-would change the hash, producing a different artifact. This means provenance
-edges are permanent: "A produced B" means "this exact content A was used to
-produce this exact content B." Edges cannot go stale because the things they
-point to cannot change.
+**Stable provenance references.** Finalization prevents assignment to durable
+fields. Serialization, verification, and materialization also check for nested
+mutation. A lineage edge refers to validated artifact identities; changing the
+content requires a new draft and identity.
 
 ---
 
 ## Why xxh3_128?
 
-The framework uses xxHash (xxh3_128) rather than a cryptographic hash like
-SHA-256. The choice is deliberate:
-
-- **Speed.** xxh3 processes data at memory bandwidth. On a typical pipeline
-  producing thousands of artifacts, hashing adds negligible overhead. A
-  cryptographic hash would be 10-50x slower with no benefit -- the threat model
-  does not include adversarial content manipulation.
-- **128-bit collision resistance.** 128 bits provides sufficient collision
-  resistance for artifact identity in scientific workflows. The birthday bound
-  is roughly 2^64 (~10^19) artifacts before a collision becomes probable.
-- **Determinism.** xxh3_128 is deterministic across platforms, architectures, and
-  Python versions. Same bytes in, same hash out, always.
+The framework uses the non-cryptographic xxHash algorithm `xxh3_128` for
+deterministic content hashing with low overhead. It does not authenticate
+untrusted content or provide protection against deliberate hash collisions.
 
 ---
 
@@ -71,180 +55,157 @@ Draft phase                          Finalize phase
 └──────────────────────┘             └──────────────────────┘
 ```
 
-**Why two phases?** Because you cannot compute the hash until the content is
-complete, and content construction can involve multiple steps (reading files,
-encoding JSON, computing derived fields). The draft phase gives operations
-freedom to build artifacts incrementally. Once `finalize()` is called, the
-content hash is computed and the artifact has its permanent identity.
+Build content, names, metadata, and derived fields during the draft phase.
+`finalize()` validates that state and assigns its identity.
 
-Finalization is idempotent -- calling it again on a finalized artifact is a
-no-op. The framework finalizes all draft artifacts in bulk after an operation's
-postprocess phase completes.
+Finalization is idempotent when the artifact is unchanged. Calling it again also
+checks the saved identity snapshot, so nested mutation cannot pass silently. The
+framework finalizes creator drafts after postprocess and curator drafts after
+`execute_curator`.
 
-**Why not freeze the model?** Artifact objects are Pydantic models, but they are
-intentionally *not* frozen (the model uses `extra="forbid"` without `frozen=True`).
-Drafts need mutation (setting content, metadata, original name). After
-finalization, immutability is semantic rather than enforced -- the content hash
-guarantees that any mutation would produce a different identity, making
-accidental mutation detectable.
+Drafts remain mutable while an operation builds them. After finalization,
+`materialized_path`
+and locators explicitly declared by external artifact types remain mutable;
+embedded source-path fields and all other durable state do not.
 
 ---
 
 ## Artifact types
 
-The framework defines four built-in artifact types. Each represents a
-different category of pipeline data, with storage characteristics matched to
-its purpose.
+The framework defines five built-in artifact types:
 
 | Type | What it stores | Content format | Why a separate type |
 |------|---------------|----------------|---------------------|
 | **Metric** | Computed properties (scores, statistics, counts) | JSON-encoded bytes | Queryable structured data, often aggregated across runs |
 | **Config** | Execution parameters and tool configurations | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
 | **Data** | Generic tabular data (CSV) | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
-| **File ref** | Pointers to external files | Metadata only (no embedded content) | Lightweight reference without copying large files into storage |
+| **File ref** | Complete external files, including existing inputs and generated outputs | Digest and size descriptor (bytes stay at a verified location) | Keeps files of any size outside content tables |
+| **Appendable** | Individual records in a shared JSONL file | Metadata only (each record lives in the JSONL file) | Many records share one file; each is addressed by `record_id` |
 
-Each type maps to its own Delta Lake table (e.g., `artifacts/metrics`,
-`artifacts/configs`, `artifacts/data`, `artifacts/file_refs`). This means you
-can query all metrics across a pipeline with a single table scan, without
-filtering through unrelated artifact types.
+Each type has its own Delta Lake table, so a metrics query can scan
+`artifacts/metrics` without reading unrelated artifact types.
 
-In addition to the per-type content tables, the framework maintains an
-**artifact index** -- a global table mapping every `artifact_id` to its type
-and origin step number. This index enables fast type lookups without scanning
-each content table, which matters when resolving provenance graphs or loading
-artifacts by ID without knowing their type in advance.
+The global **artifact index** maps each `artifact_id` to its type and origin
+step number. Readers use it to locate content by ID without scanning every
+type's table.
 
 ### Shared fields
 
-All artifact types inherit a common set of fields from the base artifact model:
+Content tables store `artifact_id`, `origin_step_number`, `metadata`, and the
+type-specific fields added by each concrete type. `artifact_type` is implied by
+the table and recorded explicitly in the artifact index. External locators are
+stored separately in `artifacts/locations`, where one artifact may have more
+than one verified URI. See the `Artifact` model through
+[Python API lookup](../reference/python-api.md) for field definitions.
 
-- **artifact_id** -- the content hash (None for drafts, 32-char hex when finalized)
-- **artifact_type** -- a string discriminator identifying the type
-- **origin_step_number** -- the pipeline step that produced this artifact
-- **metadata** -- a JSON-serializable dict for extensibility
-- **external_path** -- an optional path to external content on disk
-
-These shared fields appear in every content table. The artifact index stores
-a subset (`artifact_id`, `artifact_type`, `origin_step_number`, `metadata`).
-Type-specific fields (like `content`, `columns`, `row_count`, `content_hash`)
-are added by each concrete type.
+`origin_step_number` is global production metadata, not current-run ownership.
+When an artifact is served from cache, run-scoped queries derive its current
+logical step from that run's step-to-execution membership. Query results can
+therefore expose both an original step and a current step without rewriting or
+duplicating the content-addressed artifact.
 
 ### Config artifacts and cross-references
 
-Config artifacts have a unique capability: they can contain `$artifact`
-references -- JSON values like `{"$artifact": "60d12409ab3e78e8..."}` that point
-to other artifacts by ID. During materialization, the framework resolves these
-references to file paths, so the consuming operation receives a config file with
-real paths where it expects them.
+Config content can contain `$artifact` references: JSON objects such as
+`{"$artifact": "<32-character artifact ID>"}`. The consuming input spec chooses
+how to use them:
 
-This matters for operations that use configuration files referencing data files
-that need to exist on disk. The framework handles the resolution transparently:
-non-config artifacts are materialized first (so their paths are known), then
-config artifacts resolve their `$artifact` references against those paths.
+- With normal config materialization, Artisan writes referenced artifacts first
+  and substitutes their local paths into the config file. This path substitution
+  is local; endpoint execution rejects materialized configs with references.
+- With `materialize=False` and `resolve_references=True`, preprocessing receives
+  the unchanged config plus a read-only mapping of hydrated, materialized direct
+  dependencies. The mapping remains available in postprocess. References to
+  other configs are rejected in this mode.
 
-### File refs and the two-step hash
+For remote execution, the operation prepares portable files from those
+dependencies. Artisan does not rewrite paths embedded inside arbitrary file
+contents. Neither delivery mode creates lineage edges; the producing operation
+declares the config's parents explicitly. See
+[Read typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 
-File ref artifacts hash differently from other types. Instead of hashing the
-file content directly, they hash a JSON record containing the content hash,
-the original path, and the file size. This means two identical files at
-different paths produce different artifact IDs.
+### External artifacts and verified locations
 
-The rationale: file refs are *pointers*, and their identity should include
-where they point. If you ingest the same file from two different locations, those
-are two distinct provenance events, even though the underlying bytes are
-identical.
+`FileRefArtifact` (`file_ref`) represents a complete external file of any size.
+It identifies the bytes by their content digest and size, not by a path.
+Existing input files and generated output files use this same type; there is
+no size cutoff. `AppendableArtifact` identifies a record within a shared JSONL
+file and adds its record ID to the digest and size. Moving verified bytes to
+another URI preserves identity.
+
+File references expose their current local path or object-store URI as `path`;
+appendable records use `external_path`. The location table may hold several URIs
+for one artifact, allowing a relocated or replicated copy to remain usable
+without rewriting the artifact row. A missing, malformed, or mismatched location
+fails instead of returning unverified bytes.
+
+Where an operation writes a file determines how Artisan manages its location.
+A creator writes generated files under its supplied `files_dir`; after
+finalization, Artisan moves or uploads them to `files_root` and updates their
+locators before sandbox cleanup. References to existing files outside
+`files_dir` retain their locations. This lifecycle does not depend on file size.
+
+Verification and materialization stream bytes in bounded chunks and compare
+both digest and size. A finalized FileRef materializes to
+`directory/artifact_id/basename(path)`: distinct artifacts with the same source
+filename cannot overwrite each other, and filename-sensitive tools still see
+the source basename. Always use the path returned by `materialize_to()` rather
+than assuming the file sits directly in the requested directory. Drafts must
+be finalized before materialization. For small files, `read_content()` is a
+convenience that reads and caches the entire verified file in memory; for large
+files, read the materialized path incrementally.
 
 ---
 
 ## Extensibility: adding new artifact types
 
-The artifact type system is open. Domain layers register new types without
-modifying the framework.
+Applications add types by defining an artifact model and a type definition
+that binds its key, table path, and model. Registration happens when the type
+definition class is imported. It requires a matching concrete artifact type,
+a unique non-reserved table path, and, for external types, the common locator,
+verification, and materialization contract.
 
-Registration requires two things: an artifact model class (the data shape) and
-a type definition (the registry entry binding a key, table path, and model
-class together). Registration is automatic -- defining a type definition
-subclass triggers `__init_subclass__`, which validates that the model has the
-required serialization interface (`POLARS_SCHEMA`, `to_row`, `from_row`) and
-registers the type in both the type namespace and the type definition registry.
-
-**Why this matters:** the framework has zero knowledge of domain-specific data.
-A domain layer can add a custom artifact type, and the framework automatically
-provides Delta Lake persistence, content-addressed caching, deduplication, and
-provenance tracking. No framework modifications, no explicit wiring, no plugin
-loading. Define two classes, and the entire storage and execution infrastructure
-extends to cover the new type.
+Keep these classes in the application package. Every worker, reader, repair
+process, and replay process that needs the type must load its definitions.
+Declare trusted application modules before opening the store; importing a type
+in the driver alone is not enough for fresh processes. See
+[Create a New Artifact Type](../how-to-guides/creating-artifact-types.md#load-the-type-in-every-process).
 
 ---
 
 ## Hydration: controlling what gets loaded
 
-When the framework loads artifacts from storage, it can operate in two modes:
+Hydration controls what the operation receives. Full hydration supplies embedded
+content or external content descriptors. For FileRef, the store loads metadata,
+selects a location, and streams the file to verify its digest and size; it does
+not cache the complete file bytes. ID-only delivery supplies references for
+passthrough operations such as Filter and Merge. An input spec can choose a
+different mode for each role. Non-hydrated artifacts are not materialized to disk.
 
-**Full hydration** loads the complete artifact including content bytes. This is
-what operations need when they read or transform data.
-
-**ID-only mode** loads only the artifact ID and type, skipping the Delta Lake
-content table scan entirely. This is what passthrough operations need --
-operations like Filter and Merge that route artifacts without reading their
-content.
-
-Hydration is controlled at the input spec level, so different input roles on the
-same operation can use different modes. The framework also skips materialization
-(writing content to disk) for non-hydrated artifacts, since there is no content
-to write.
-
-**Why this matters for performance:** a Filter operation processing 10,000
-artifacts does not need to load 10,000 data files from Delta Lake. It loads
-only the metric artifacts it needs to evaluate filter conditions, and passes
-artifact IDs through unchanged. The difference can be orders of magnitude in
-I/O.
+Before cache lookup or dispatch, the orchestrator still loads input content
+to validate identities and verifies external bytes. Filter can therefore route
+dataset IDs while pipeline preparation still reads their content.
+For supported result queries, see
+[Reading pipeline results](storage-and-delta-lake.md#reading-pipeline-results).
 
 ---
 
 ## How content addressing enables caching
 
-Content addressing makes caching deterministic. The framework computes cache
-keys at two levels:
+Cache keys combine artifact identities with the operation, parameters, and
+effective configuration. Execution keys describe one batch; step keys describe
+the full prepared input snapshot and include the step number. Both use the same
+validated inputs, preserving roles, grouping, order, types, and duplicates.
 
-**Execution-level cache keys** are computed from the operation name, input
-artifact IDs (sorted and deduplicated across all roles), merged parameters,
-and any config overrides. Same data + same computation = same cache key, so
-identical work is never repeated regardless of when or where it runs.
+Both levels identify the declared invocation. Reuse also depends on the
+operation's cacheability and the applicable cache policy. Operations that read
+mutable external state must declare that they are not cacheable.
 
-**Step-level cache keys** operate on step references rather than resolved
-artifact IDs. They incorporate the operation name, step number (position in
-the pipeline), parameters, upstream step spec IDs, and config overrides. This
-enables the framework to determine that a step can be skipped before resolving
-its inputs, which avoids unnecessary upstream computation.
-
-Both levels share the same guarantee: no false hits (any input change
-invalidates the key), no false misses (identical computation always matches),
-and no manual invalidation.
+A hit reuses an existing execution and its output edges. The current step keeps
+its own attempt ID and records which executions it reused.
 
 For the full two-level caching mechanism, see
 [Execution Flow](execution-flow.md#two-level-caching).
-
----
-
-## Artifacts in the bigger picture
-
-Artifacts sit at the intersection of every other subsystem:
-
-- **Provenance** records edges between artifact IDs. Because IDs are immutable,
-  edges are permanent. Each edge captures source and target artifact IDs, their
-  types, their roles, and the execution that established the relationship.
-- **Storage** persists artifacts in Delta Lake tables, one table per type, plus
-  a global artifact index for type resolution. Deduplication is an anti-join on
-  artifact IDs during commit.
-- **Execution** materializes input artifacts to disk, runs operations, and
-  finalizes output drafts. The draft/finalize lifecycle ensures content is
-  complete before IDs are assigned.
-- **Caching** derives cache keys from artifact IDs. Same inputs = same key =
-  skip execution.
-
-Each of these relationships is a direct consequence of content addressing.
-Change the identity model, and every subsystem would need to change with it.
 
 ---
 
@@ -260,4 +221,4 @@ Change the identity model, and every subsystem would need to change with it.
   artifact IDs
 - [Creating Artifact Types](../how-to-guides/creating-artifact-types.md) --
   Step-by-step guide to adding new artifact types
-- [Exploring Results Tutorial](../tutorials/getting-started/02-exploring-results.ipynb) -- Query artifacts interactively in Delta Lake tables
+- [Exploring Results Tutorial](../tutorials/01-getting-started/02-exploring-results.ipynb) -- Query artifacts interactively in Delta Lake tables

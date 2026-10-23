@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artisan.execution.staging.recorder import _read_tool_output
+from artisan.execution.recording.recorder import _read_tool_output
 from artisan.schemas.specs.input_models import ExecuteInput
 
 

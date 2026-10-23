@@ -19,15 +19,32 @@ import pytest
 
 from artisan.execution.inputs.grouping import (
     compute_group_id,
-    group_inputs,
     match_inputs_to_primary,
     validate_stem_match_uniqueness,
 )
+from artisan.execution.inputs.grouping import (
+    group_inputs as _group_inputs,
+)
 from artisan.schemas.enums import GroupByStrategy
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
+
+def group_inputs(
+    inputs: dict[str, list[str]],
+    strategy: GroupByStrategy,
+    artifact_store: Mock | None = None,
+) -> tuple[dict[str, list[str]], list[str]]:
+    """Call the typed grouping contract with deterministic test types."""
+    artifact_types = {
+        artifact_id: f"{role}_type"
+        for role, artifact_ids in inputs.items()
+        for artifact_id in artifact_ids
+    }
+    return _group_inputs(
+        inputs,
+        strategy,
+        artifact_store,
+        artifact_types=artifact_types,
+    )
 
 
 def _provenance_map_to_edges(
@@ -69,9 +86,8 @@ def _make_mock_store(
         {k: v for k, v in step_numbers.items() if ids is None or k in ids}
     )
 
-    def _get_step_range(artifact_ids: pl.Series) -> tuple[int, int] | None:
-        id_list = artifact_ids.to_list()
-        steps = [step_numbers[aid] for aid in id_list if aid in step_numbers]
+    def _get_step_range(artifact_ids: list[str]) -> tuple[int, int] | None:
+        steps = [step_numbers[aid] for aid in artifact_ids if aid in step_numbers]
         if not steps:
             return None
         return (min(steps), max(steps))
@@ -83,25 +99,21 @@ def _make_mock_store(
     return store
 
 
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def mock_artifact_store():
     """Create a mock artifact store with provenance data.
 
     Simulates provenance graph::
 
-        Step 0: A ------------------- B
-                |                     |
-        Step 1: A1                    B1
-               /  \\                 /  \\
-        Step 2: A1a  M_A1           B1a  M_B1
+        Step 0: A         B
+                |         |
+        Step 1: A1        B1
+                |         |
+        Step 2: A1a       B1a
+                |         |
+        Step 3: M_A1      M_B1
 
-    A1a and M_A1 share ancestor A1 (step 1).
-    B1a and M_B1 share ancestor B1 (step 1).
+    M_A1 is a direct descendant of A1a; M_B1 of B1a.
     """
     A = "a" * 32
     B = "b" * 32
@@ -117,8 +129,8 @@ def mock_artifact_store():
         B1: [B],
         A1a: [A1],
         B1a: [B1],
-        M_A1: [A1],
-        M_B1: [B1],
+        M_A1: [A1a],
+        M_B1: [B1a],
     }
 
     step_numbers = {
@@ -128,8 +140,8 @@ def mock_artifact_store():
         B1: 1,
         A1a: 2,
         B1a: 2,
-        M_A1: 2,
-        M_B1: 2,
+        M_A1: 3,
+        M_B1: 3,
     }
 
     return _make_mock_store(
@@ -158,13 +170,12 @@ def mock_artifact_store_three_lineages():
                 |         |         |
         Step 1: S1        S2        S3
                 |         |         |
-        Step 2: P1  MA1   P2  MA2   P3  MA3
-                      |         |         |
-        Step 3:      MB1       MB2       MB3
+        Step 2: P1        P2        P3
+                / \\       / \\       / \\
+        Step 3: MA1 MB1   MA2 MB2   MA3 MB3
 
-    P = passthrough, MA/MB = metrics from roles A and B respectively.
-    S = intermediate (e.g., processing step output).
-    R = root ingest.
+    P = passthrough, MA/MB = metrics from roles A and B respectively;
+    each metric is a direct descendant of its passthrough.
     """
     R1 = "r1" + "0" * 30
     R2 = "r2" + "0" * 30
@@ -189,12 +200,12 @@ def mock_artifact_store_three_lineages():
         P1: [S1],
         P2: [S2],
         P3: [S3],
-        MA1: [S1],
-        MA2: [S2],
-        MA3: [S3],
-        MB1: [S1],
-        MB2: [S2],
-        MB3: [S3],
+        MA1: [P1],
+        MA2: [P2],
+        MA3: [P3],
+        MB1: [P1],
+        MB2: [P2],
+        MB3: [P3],
     }
 
     step_numbers = {
@@ -207,9 +218,9 @@ def mock_artifact_store_three_lineages():
         P1: 2,
         P2: 2,
         P3: 2,
-        MA1: 2,
-        MA2: 2,
-        MA3: 2,
+        MA1: 3,
+        MA2: 3,
+        MA3: 3,
         MB1: 3,
         MB2: 3,
         MB3: 3,
@@ -234,18 +245,17 @@ def mock_artifact_store_three_lineages():
 
 @pytest.fixture
 def mock_artifact_store_one_to_n():
-    """Mock store with 1:N lineage (1 dataset -> N configs via shared root).
+    """Mock store with 1:N lineage (1 dataset -> N configs directly descended).
 
     Provenance graph::
 
         Step 0: Root
                 |
         Step 1: Dataset
-                |  (shared ancestor Root)
-        Step 2: C1  C2  C3  C4  C5  C6
+                |
+        Step 2: C1  C2  C3  C4  C5  C6  (all direct children of Dataset)
 
-    Dataset and all configs share ancestor Root.
-    Dataset is the target (lower step), configs are candidates.
+    Dataset is the target (lower step); each config walks back directly to it.
     """
     root = "root" + "0" * 28
     dataset = "ds" + "0" * 30
@@ -253,7 +263,7 @@ def mock_artifact_store_one_to_n():
 
     provenance_map = {dataset: [root]}
     for c in configs:
-        provenance_map[c] = [root]
+        provenance_map[c] = [dataset]
 
     step_numbers = {root: 0, dataset: 1}
     for c in configs:
@@ -266,52 +276,43 @@ def mock_artifact_store_one_to_n():
     )
 
 
-# ---------------------------------------------------------------------------
-# Tests: compute_group_id
-# ---------------------------------------------------------------------------
-
-
 class TestComputeGroupId:
     """Tests for deterministic group_id computation."""
 
     def test_deterministic_for_same_inputs(self):
         """Same artifact IDs produce the same group_id."""
-        ids = ["artifact_abc", "artifact_def"]
-        assert compute_group_id(ids) == compute_group_id(ids)
+        artifacts = {"data": ("data", "artifact_abc")}
+        assert compute_group_id(artifacts) == compute_group_id(artifacts)
 
     def test_order_independent(self):
-        """Sorted internally, so order of IDs does not matter."""
-        ids_a = ["artifact_abc", "artifact_def"]
-        ids_b = ["artifact_def", "artifact_abc"]
-        assert compute_group_id(ids_a) == compute_group_id(ids_b)
+        """Dictionary insertion order does not affect the role-aware hash."""
+        artifacts_a = {
+            "data": ("data", "artifact_abc"),
+            "config": ("config", "artifact_def"),
+        }
+        artifacts_b = {
+            "config": ("config", "artifact_def"),
+            "data": ("data", "artifact_abc"),
+        }
+        assert compute_group_id(artifacts_a) == compute_group_id(artifacts_b)
 
     def test_different_inputs_produce_different_ids(self):
         """Different artifact IDs produce different group_ids."""
-        ids_a = ["artifact_abc", "artifact_def"]
-        ids_b = ["artifact_abc", "artifact_xyz"]
-        assert compute_group_id(ids_a) != compute_group_id(ids_b)
+        artifacts_a = {"data": ("data", "artifact_abc")}
+        artifacts_b = {"data": ("data", "artifact_xyz")}
+        assert compute_group_id(artifacts_a) != compute_group_id(artifacts_b)
 
     def test_produces_32_char_hex(self):
         """xxh3_128 produces a 32-character hex string."""
-        result = compute_group_id(["a", "b"])
+        result = compute_group_id({"data": ("data", "a")})
         assert len(result) == 32
         assert all(c in "0123456789abcdef" for c in result)
 
-    def test_same_ids_different_role_order_same_group_id(self):
-        """group_id is based on artifact IDs only, not role association.
-
-        When group_inputs() collects IDs per index, the role order
-        may differ. compute_group_id sorts, so the result is the same.
-        """
-        # Simulating two roles with different orderings
-        ids = ["id_role_a", "id_role_b"]
-        ids_reversed = ["id_role_b", "id_role_a"]
-        assert compute_group_id(ids) == compute_group_id(ids_reversed)
-
-
-# ---------------------------------------------------------------------------
-# Tests: group_inputs - ZIP strategy
-# ---------------------------------------------------------------------------
+    def test_role_swap_changes_group_id(self):
+        """Role assignment is part of group identity."""
+        artifacts = {"left": ("data", "a"), "right": ("config", "b")}
+        swapped = {"left": ("config", "b"), "right": ("data", "a")}
+        assert compute_group_id(artifacts) != compute_group_id(swapped)
 
 
 class TestGroupInputsZip:
@@ -387,11 +388,6 @@ class TestGroupInputsZip:
         assert group_ids == []
 
 
-# ---------------------------------------------------------------------------
-# Tests: group_inputs - CROSS_PRODUCT strategy
-# ---------------------------------------------------------------------------
-
-
 class TestGroupInputsCrossProduct:
     """Tests for group_inputs() with CROSS_PRODUCT strategy."""
 
@@ -433,7 +429,7 @@ class TestGroupInputsCrossProduct:
             "c": ["c1", "c2"],
         }
 
-        aligned, group_ids = group_inputs(inputs, GroupByStrategy.CROSS_PRODUCT)
+        _aligned, group_ids = group_inputs(inputs, GroupByStrategy.CROSS_PRODUCT)
         assert len(group_ids) == 8
 
     def test_empty_role_produces_empty(self):
@@ -454,16 +450,11 @@ class TestGroupInputsCrossProduct:
         assert len(set(group_ids)) == 4
 
 
-# ---------------------------------------------------------------------------
-# Tests: group_inputs - LINEAGE strategy
-# ---------------------------------------------------------------------------
-
-
 class TestGroupInputsLineage:
     """Tests for group_inputs() with LINEAGE strategy."""
 
-    def test_matched_by_shared_ancestor(self, mock_artifact_store):
-        """Artifacts with shared ancestor are paired correctly."""
+    def test_matched_by_directed_ancestry(self, mock_artifact_store):
+        """Candidates pair with the target in their directed ancestry."""
         ids = mock_artifact_store._test_ids
 
         inputs = {
@@ -486,10 +477,10 @@ class TestGroupInputsLineage:
     def test_unmatched_artifacts_excluded_with_warning(
         self, mock_artifact_store, caplog
     ):
-        """Artifacts without common ancestor are excluded; warning logged."""
+        """Artifacts with no directed path are excluded; warning logged."""
         ids = mock_artifact_store._test_ids
 
-        # A1a has no common ancestor with M_B1
+        # M_B1 has no directed path back to A1a (different lineage chain).
         inputs = {
             "results": [ids["A1a"]],
             "metrics": [ids["M_B1"]],
@@ -501,7 +492,7 @@ class TestGroupInputsLineage:
 
         assert len(aligned["results"]) == 0
         assert len(group_ids) == 0
-        assert "no common ancestor" in caplog.text.lower()
+        assert "no directed path" in caplog.text.lower()
 
     def test_requires_artifact_store(self):
         """LINEAGE without artifact_store raises RuntimeError."""
@@ -535,11 +526,11 @@ class TestGroupInputsLineage:
             "metrics": [ids["M_A1"], ids["M_B1"]],
         }
 
-        aligned, group_ids = group_inputs(
+        aligned, _group_ids = group_inputs(
             inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # Only A1a<->M_A1 should match (M_B1 has no common ancestor with A1a)
+        # Only A1a<->M_A1 should match (M_B1 has no directed path to A1a)
         assert len(aligned["results"]) == 1
         assert aligned["metrics"][0] == ids["M_A1"]
 
@@ -548,14 +539,14 @@ class TestGroupInputsLineage:
         ids = mock_artifact_store._test_ids
         inputs = {"results": [], "metrics": [ids["M_A1"]]}
 
-        aligned, group_ids = group_inputs(
+        _aligned, group_ids = group_inputs(
             inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
         assert len(group_ids) == 0
 
     def test_one_to_n_produces_n_matched_sets(self, mock_artifact_store_one_to_n):
-        """1 dataset + 6 configs with shared ancestor -> 6 matched sets."""
+        """1 dataset + 6 configs all directly descended -> 6 matched sets."""
         ids = mock_artifact_store_one_to_n._test_ids
 
         inputs = {
@@ -592,23 +583,180 @@ class TestGroupInputsLineage:
         assert len(group_ids[0]) == 32  # xxh3_128 hex digest
 
 
-# ---------------------------------------------------------------------------
-# Tests: group_id role-order independence
-# ---------------------------------------------------------------------------
+def _make_name_store(name_map: dict[str, str]) -> Mock:
+    """Build a Mock ArtifactStore that returns ``name_map`` for any subset."""
+    store = Mock()
+    store.load_original_names.side_effect = lambda ids: {
+        aid: name_map[aid] for aid in ids if aid in name_map
+    }
+    return store
+
+
+class TestGroupInputsName:
+    """Tests for group_inputs() with NAME strategy."""
+
+    def test_basic_two_roles(self):
+        """Two roles with matching stems pair correctly."""
+        store = _make_name_store(
+            {
+                "a1": "sample_001.json",
+                "a2": "sample_002.json",
+                "b1": "sample_001.cfg",
+                "b2": "sample_002.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1", "b2"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": ["a1", "a2"], "config": ["b1", "b2"]}
+        assert len(group_ids) == 2
+        assert all(len(gid) == 32 for gid in group_ids)
+
+    def test_three_roles_intersection(self):
+        """3-role intersection only emits stems present in all three roles."""
+        store = _make_name_store(
+            {
+                "a1": "s1.txt",
+                "a2": "s2.txt",
+                "b1": "s1.json",
+                "b2": "s2.json",
+                "c1": "s1.cfg",
+                "c2": "s2.cfg",
+            }
+        )
+        inputs = {"r1": ["a1", "a2"], "r2": ["b1", "b2"], "r3": ["c1", "c2"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned["r1"] == ["a1", "a2"]
+        assert aligned["r2"] == ["b1", "b2"]
+        assert aligned["r3"] == ["c1", "c2"]
+        assert len(group_ids) == 2
+
+    def test_missing_stem_skipped(self):
+        """Stems missing from any role are not emitted."""
+        store = _make_name_store(
+            {
+                "a1": "shared.txt",
+                "a2": "only_in_a.txt",
+                "b1": "shared.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1"]}
+
+        aligned, _ = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": ["a1"], "config": ["b1"]}
+
+    def test_duplicate_stem_raises(self):
+        """Duplicate stems within a role raise ValueError."""
+        store = _make_name_store(
+            {
+                "a1": "dup.txt",
+                "a2": "dup.json",
+                "b1": "dup.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1"]}
+
+        with pytest.raises(ValueError, match="duplicate original_name"):
+            group_inputs(inputs, GroupByStrategy.NAME, store)
+
+    def test_empty_role_returns_no_matches(self):
+        """One empty role short-circuits to empty result."""
+        store = _make_name_store({"a1": "x.txt"})
+        inputs: dict[str, list[str]] = {"data": ["a1"], "config": []}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": [], "config": []}
+        assert group_ids == []
+
+    def test_none_store_raises_runtime_error(self):
+        """NAME without an artifact_store raises RuntimeError."""
+        inputs = {"data": ["a1"], "config": ["b1"]}
+
+        with pytest.raises(RuntimeError, match="artifact_store"):
+            group_inputs(inputs, GroupByStrategy.NAME, None)
+
+    def test_greedy_extension_stripping(self):
+        """Multi-extension stems strip greedily: data.tar.gz and data.csv collide."""
+        store = _make_name_store(
+            {
+                "a1": "data.tar.gz",
+                "b1": "data.csv",
+            }
+        )
+        inputs = {"r1": ["a1"], "r2": ["b1"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"r1": ["a1"], "r2": ["b1"]}
+        assert len(group_ids) == 1
+
+    def test_case_sensitive(self):
+        """Stems with different case do not match."""
+        store = _make_name_store(
+            {
+                "a1": "Sample.txt",
+                "b1": "sample.cfg",
+            }
+        )
+        inputs = {"r1": ["a1"], "r2": ["b1"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"r1": [], "r2": []}
+        assert group_ids == []
+
+    def test_artifact_without_original_name_skipped(self):
+        """Artifacts missing from name_map are silently skipped."""
+        store = _make_name_store(
+            {
+                "a1": "shared.txt",
+                # a2 has no entry — load_original_names omits it
+                "b1": "shared.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1"]}
+
+        aligned, _ = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        assert aligned == {"data": ["a1"], "config": ["b1"]}
+
+    def test_group_id_deterministic_and_sorted(self):
+        """group_ids are deterministic and emitted in sorted-stem order."""
+        store = _make_name_store(
+            {
+                "a1": "zeta.txt",
+                "a2": "alpha.txt",
+                "b1": "zeta.cfg",
+                "b2": "alpha.cfg",
+            }
+        )
+        inputs = {"data": ["a1", "a2"], "config": ["b1", "b2"]}
+
+        aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
+
+        # Sorted by stem: alpha then zeta
+        assert aligned == {"data": ["a2", "a1"], "config": ["b2", "b1"]}
+        # Same group_ids on second call
+        _, group_ids_again = group_inputs(inputs, GroupByStrategy.NAME, store)
+        assert group_ids == group_ids_again
 
 
 class TestGroupIdRoleOrderIndependence:
     """Verify group_id is the same regardless of role ordering in inputs."""
 
     def test_zip_role_order_does_not_affect_group_id(self):
-        """Same artifact pair produces same group_id regardless of role names."""
+        """Dictionary insertion order does not change group identity."""
         inputs_ab = {"role_a": ["id_1", "id_2"], "role_b": ["id_3", "id_4"]}
         inputs_ba = {"role_b": ["id_3", "id_4"], "role_a": ["id_1", "id_2"]}
 
         _, ids_ab = group_inputs(inputs_ab, GroupByStrategy.ZIP)
         _, ids_ba = group_inputs(inputs_ba, GroupByStrategy.ZIP)
 
-        # group_id is computed from sorted artifact IDs, not role names
         assert ids_ab == ids_ba
 
     def test_cross_product_same_pair_same_group_id(self):
@@ -616,13 +764,8 @@ class TestGroupIdRoleOrderIndependence:
         inputs = {"a": ["x"], "b": ["y"]}
         _, group_ids = group_inputs(inputs, GroupByStrategy.CROSS_PRODUCT)
 
-        expected_id = compute_group_id(["x", "y"])
+        expected_id = compute_group_id({"a": ("a_type", "x"), "b": ("b_type", "y")})
         assert group_ids[0] == expected_id
-
-
-# ---------------------------------------------------------------------------
-# Tests: match_inputs_to_primary - LINEAGE strategy
-# ---------------------------------------------------------------------------
 
 
 class TestMatchInputsToPrimary:
@@ -677,8 +820,8 @@ class TestMatchInputsToPrimary:
         """Primary artifact matched in one role but not another is excluded."""
         ids = mock_artifact_store._test_ids
 
-        # A1a can match M_A1 in "metrics" but has no match for M_B1 in "other"
-        # since we only provide M_B1 in "other" and A1a shares no ancestor with M_B1
+        # A1a can match M_A1 in "metrics" (M_A1 is its direct descendant)
+        # but has no match for M_B1 in "other" (different lineage chain).
         inputs = {
             "passthrough": [ids["A1a"]],
             "metrics": [ids["M_A1"]],
@@ -689,8 +832,8 @@ class TestMatchInputsToPrimary:
             "passthrough", inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # A1a matches M_A1 in "metrics" but M_B1 in "other" has no common
-        # ancestor with A1a, so the match is incomplete -> excluded
+        # A1a matches M_A1 in "metrics" but M_B1 in "other" has no directed
+        # path to A1a, so the match is incomplete -> excluded
         assert len(result["passthrough"]) == 0
         assert len(result["metrics"]) == 0
         assert len(result["other"]) == 0
@@ -699,7 +842,7 @@ class TestMatchInputsToPrimary:
         """No matches at all returns empty aligned lists."""
         ids = mock_artifact_store._test_ids
 
-        # A1a vs M_B1: no common ancestor
+        # A1a vs M_B1: no directed path between them
         inputs = {
             "passthrough": [ids["A1a"]],
             "metrics": [ids["M_B1"]],
@@ -795,16 +938,124 @@ class TestMatchInputsToPrimary:
             match_inputs_to_primary("primary", inputs, GroupByStrategy.LINEAGE)
 
     def test_unsupported_strategy_raises(self):
-        """Non-LINEAGE strategy raises ValueError."""
+        """ZIP / CROSS_PRODUCT strategies raise ValueError."""
         inputs = {"primary": ["id1"], "other": ["id2"]}
 
-        with pytest.raises(ValueError, match="LINEAGE"):
+        with pytest.raises(ValueError, match="LINEAGE and NAME"):
             match_inputs_to_primary("primary", inputs, GroupByStrategy.ZIP)
 
+        with pytest.raises(ValueError, match="LINEAGE and NAME"):
+            match_inputs_to_primary("primary", inputs, GroupByStrategy.CROSS_PRODUCT)
 
-# ---------------------------------------------------------------------------
-# Tests: validate_stem_match_uniqueness
-# ---------------------------------------------------------------------------
+
+class TestMatchInputsToPrimaryName:
+    """Tests for match_inputs_to_primary() with NAME strategy."""
+
+    def test_basic_anchor_two_roles(self):
+        """Primary stems pair against one other role."""
+        store = _make_name_store(
+            {
+                "p1": "s1.csv",
+                "p2": "s2.csv",
+                "m1": "s1.json",
+                "m2": "s2.json",
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "metrics": ["m1", "m2"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {"primary": ["p1", "p2"], "metrics": ["m1", "m2"]}
+
+    def test_anchor_three_roles_intersection(self):
+        """Primary anchored against two other roles."""
+        store = _make_name_store(
+            {
+                "p1": "s1.x",
+                "p2": "s2.x",
+                "a1": "s1.y",
+                "a2": "s2.y",
+                "b1": "s1.z",
+                "b2": "s2.z",
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "a": ["a1", "a2"], "b": ["b1", "b2"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {
+            "primary": ["p1", "p2"],
+            "a": ["a1", "a2"],
+            "b": ["b1", "b2"],
+        }
+
+    def test_primary_unmatched_in_one_role_dropped(self):
+        """Primary artifact missing a match in any other role is excluded."""
+        store = _make_name_store(
+            {
+                "p1": "s1.x",
+                "p2": "s2.x",
+                "m1": "s1.y",
+                # m2 absent -- p2's stem s2 has no match in metrics
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "metrics": ["m1"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {"primary": ["p1"], "metrics": ["m1"]}
+
+    def test_preserves_primary_order(self):
+        """Output preserves the input order of the primary role."""
+        store = _make_name_store(
+            {
+                "p1": "zeta.x",
+                "p2": "alpha.x",
+                "p3": "mid.x",
+                "m1": "zeta.y",
+                "m2": "alpha.y",
+                "m3": "mid.y",
+            }
+        )
+        inputs = {"primary": ["p1", "p2", "p3"], "metrics": ["m1", "m2", "m3"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        # Primary order preserved, not sorted by stem
+        assert aligned["primary"] == ["p1", "p2", "p3"]
+        assert aligned["metrics"] == ["m1", "m2", "m3"]
+
+    def test_primary_without_original_name_skipped(self):
+        """Primary artifacts without an original_name are dropped."""
+        store = _make_name_store(
+            {
+                "p1": "shared.x",
+                # p2 absent
+                "m1": "shared.y",
+            }
+        )
+        inputs = {"primary": ["p1", "p2"], "metrics": ["m1"]}
+
+        aligned = match_inputs_to_primary(
+            "primary", inputs, GroupByStrategy.NAME, store
+        )
+
+        assert aligned == {"primary": ["p1"], "metrics": ["m1"]}
+
+    def test_none_store_raises_runtime_error(self):
+        """NAME anchor mode without a store raises RuntimeError."""
+        inputs = {"primary": ["p1"], "other": ["o1"]}
+
+        with pytest.raises(RuntimeError, match="artifact_store"):
+            match_inputs_to_primary("primary", inputs, GroupByStrategy.NAME, None)
 
 
 class TestValidateStemMatchUniqueness:
@@ -847,24 +1098,13 @@ class TestValidateStemMatchUniqueness:
         assert error_msg.count("x.json") >= 1
 
 
-# ---------------------------------------------------------------------------
-# Tests: edge cases and integration
-# ---------------------------------------------------------------------------
-
-
 class TestGroupInputsEdgeCases:
     """Edge cases for group_inputs()."""
 
     def test_unknown_strategy_raises(self):
         """Passing an invalid strategy raises ValueError."""
-        # GroupByStrategy is an enum, so we can't easily pass an invalid value.
-        # Instead verify all valid strategies are handled without raising
-        # "Unknown group_by strategy".
-        inputs = {"a": ["x"], "b": ["y"]}
-        for strategy in GroupByStrategy:
-            if strategy == GroupByStrategy.LINEAGE:
-                continue  # Needs artifact_store
-            group_inputs(inputs, strategy)
+        with pytest.raises(ValueError, match="Unknown group_by strategy"):
+            group_inputs({"a": ["x"], "b": ["y"]}, "unknown")  # type: ignore[arg-type]
 
     def test_single_role_zip(self):
         """ZIP with a single role (degenerate case) works."""

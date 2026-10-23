@@ -1,0 +1,1269 @@
+"""Tests for worker-side tool-request execution."""
+
+from __future__ import annotations
+
+import json
+import os
+import shutil
+import subprocess
+import sys
+import tarfile
+from enum import StrEnum, auto
+from io import BytesIO
+from typing import Any, ClassVar
+from unittest.mock import patch
+
+import httpx
+import pytest
+from botocore.exceptions import ClientError, EndpointConnectionError, NoCredentialsError
+from pydantic import ValidationError
+
+from artisan.execution.tool_endpoint import server as server_mod
+from artisan.execution.tool_endpoint import transport as transport_mod
+from artisan.execution.tool_endpoint.protocol import (
+    InputRef,
+    StoredOutputs,
+    ToolRequest,
+)
+from artisan.execution.tool_endpoint.server import (
+    instantiate_op,
+    run_tool_request,
+)
+from artisan.execution.tool_endpoint.spec import command_contract
+from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
+from artisan.operations.examples import WaitTool
+from artisan.operations.lineage import match_outputs_to_inputs_by_stem
+from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.operation_config.compute import (
+    ComputeProvider,
+    ModalComputeConfig,
+)
+from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
+from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.specs.input_models import PostprocessInput, PreprocessInput
+from artisan.schemas.specs.input_spec import InputSpec
+from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import compute_content_digest
+
+pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
+
+
+def test_tool_endpoint_imports_without_botocore() -> None:
+    """The base package must not require the optional S3 dependency stack."""
+    code = """
+import sys
+
+class BlockBotocore:
+    def find_spec(self, fullname, path=None, target=None):
+        if fullname == "botocore" or fullname.startswith("botocore."):
+            raise ModuleNotFoundError(f"No module named {fullname!r}", name=fullname)
+        return None
+
+sys.meta_path.insert(0, BlockBotocore())
+from artisan.execution.tool_endpoint import run_tool_request
+assert callable(run_tool_request)
+"""
+    subprocess.run([sys.executable, "-c", code], check=True)
+
+
+class FailTool(OperationDefinition):
+    """Tool op whose command always exits non-zero."""
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "fail_tool_test"
+    description: ClassVar[str] = "Always fails"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type="data",
+            derives_from={"inputs": []},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", "echo boom >&2; exit 3"]
+
+
+class CatTool(OperationDefinition):
+    """Tool op that copies its input file to an output file."""
+
+    class InputRole(StrEnum):
+        source = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "cat_tool_test"
+    description: ClassVar[str] = "Copies its input to copied.txt"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.source: InputSpec(artifact_type="data", required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type="data",
+            derives_from={"inputs": ["source"]},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    def preprocess(self, inputs):  # pragma: no cover - not exercised here
+        return {}
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", f'cat "{inputs["source"]}" > copied.txt']
+
+
+class NoopTool(OperationDefinition):
+    """Tool op that succeeds without writing any output files."""
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "noop_tool_test"
+    description: ClassVar[str] = "Succeeds, writes nothing"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type="data",
+            derives_from={"inputs": []},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", "true"]
+
+
+class _CloudInputTool(OperationDefinition):
+    """Endpoint-routed command op with a cloud ``file_ref`` input.
+
+    Names its output from the input file stem (``<stem>_waited.csv``) and
+    explicitly matches output names to transported input names in postprocess.
+    Endpoint routing must preserve that operation-owned naming convention.
+    """
+
+    class InputRole(StrEnum):
+        source = auto()
+
+    class OutputRole(StrEnum):
+        output = auto()
+
+    name: ClassVar[str] = "cloud_input_tool_test"
+    description: ClassVar[str] = "Echo a cloud input into <stem>_waited.csv"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        InputRole.source: InputSpec(artifact_type="file_ref", required=True),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.output: OutputSpec(
+            artifact_type="data",
+            derives_from={"inputs": ["source"]},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+    compute_provider: ComputeProvider = ComputeProvider(
+        active="modal", modal=ModalComputeConfig()
+    )
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {
+            "source": PerArtifact(
+                [a.materialized_path for a in inputs.input_artifacts["source"]]
+            )
+        }
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        src = inputs["source"]
+        return [
+            *self.tool.parts(),
+            "-c",
+            (
+                f'src="{src}"; stem="$(basename "$src")"; stem="${{stem%.*}}"; '
+                f'printf "ok\\n" > "${{stem}}_waited.csv"'
+            ),
+        ]
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        drafts: list[Any] = []
+        for file_path in inputs.file_outputs:
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
+                drafts.append(
+                    DataArtifact.draft(
+                        content=content,
+                        original_name=os.path.basename(file_path),
+                        step_number=inputs.step_number,
+                    )
+                )
+        source_ids = match_outputs_to_inputs_by_stem(
+            [draft.original_name for draft in drafts],
+            [
+                (a.materialized_path, a.artifact_id)
+                for a in inputs.input_artifacts["source"]
+            ],
+        )
+        result = ArtifactResult()
+        for draft, source_id in zip(drafts, source_ids, strict=True):
+            result.add_artifact("output", draft, sources={"source": [source_id]})
+        return result
+
+
+def _tar_names(payload: bytes) -> list[str]:
+    with tarfile.open(fileobj=BytesIO(payload), mode="r") as tar:
+        return sorted(tar.getnames())
+
+
+def _http_error() -> httpx.HTTPStatusError:
+    """A refused presigned PUT, as upload_outputs would raise it."""
+    request = httpx.Request("PUT", "https://store.example/obj")
+    response = httpx.Response(403, request=request)
+    return httpx.HTTPStatusError("403 Forbidden", request=request, response=response)
+
+
+class TestInstantiateOp:
+    def test_defaulted_nested_params_accept_empty_mapping(self) -> None:
+        operation = instantiate_op(WaitTool, {})
+
+        assert operation.params == WaitTool.Params()
+
+    def test_user_values_use_nested_params(self) -> None:
+        operation = instantiate_op(WaitTool, {"seconds": 4})
+
+        assert operation.params == WaitTool.Params(seconds=4)
+
+    def test_required_nested_params_reject_empty_mapping(self) -> None:
+        from fixtures.endpoint_ops import GpuTool
+
+        with pytest.raises(ValidationError):
+            instantiate_op(GpuTool, {})
+
+    def test_parameterless_operation_accepts_empty_mapping(self) -> None:
+        assert isinstance(instantiate_op(NoopTool, {}), NoopTool)
+
+    def test_parameterless_operation_rejects_nonempty_mapping(self) -> None:
+        with pytest.raises(ValidationError):
+            instantiate_op(NoopTool, {"unexpected": 1})
+
+
+def _policy(
+    *, inputs: tuple[str, ...] = (), outputs: tuple[str, ...] = ()
+) -> ToolEndpointDataPolicy:
+    return ToolEndpointDataPolicy(
+        input_allowlist=inputs,
+        output_allowlist=outputs,
+    )
+
+
+class TestRunToolRequest:
+    def test_success_returns_manifest_and_tar(self):
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                params={"seconds": 1},
+                inputs=[
+                    InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")
+                ],
+            ),
+        )
+        assert result.manifest.error is None
+        assert result.manifest.output_names == ["in_waited.csv"]
+        assert result.manifest.stored is None  # no output_store → inline
+        # The tool log stays separate from ordinary operation outputs.
+        assert result.manifest.log_tail is not None
+        assert "tick 1 / 1" in result.manifest.log_tail
+        assert result.output_tar is not None
+        assert _tar_names(result.output_tar) == ["in_waited.csv"]
+
+    def test_inputs_resolved_outside_outputs(self, tmp_path):
+        src = tmp_path / "in.txt"
+        src.write_text("payload")
+        result = run_tool_request(
+            CatTool,
+            ToolRequest(
+                expected_command_contract=command_contract(CatTool),
+                inputs=[InputRef(name="source", data=src.read_bytes())],
+            ),
+        )
+        assert result.manifest.error is None
+        # the input file must not be swept into the output tar
+        assert "source" not in result.manifest.output_names
+        assert "copied.txt" in result.manifest.output_names
+
+    def test_tool_failure_returns_envelope(self):
+        result = run_tool_request(
+            FailTool,
+            ToolRequest(
+                expected_command_contract=command_contract(FailTool),
+            ),
+        )
+        assert result.output_tar is None
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "op_execute_failed"
+        assert error.error_type == "compute"
+        assert error.operation_name == "fail_tool_test"
+        assert "exit code 3" in error.message
+        assert "boom" in error.message  # stderr tail rides the envelope
+        assert result.manifest.log_tail is not None
+
+    def test_invalid_params_returns_envelope(self):
+        # Direct worker calls must validate params without the /submit gate.
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                params={"no_such_param": 1},
+            ),
+        )
+        assert result.output_tar is None
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "param_type_mismatch"
+        assert error.error_type == "validation"
+        assert error.recovery_hint == "CHECK_INPUT"
+        assert error.operation_name == "wait_tool"
+
+    @pytest.mark.parametrize(
+        ("tool_request", "code"),
+        [
+            (
+                ToolRequest(
+                    expected_command_contract=command_contract(WaitTool),
+                    inputs=[
+                        InputRef(
+                            name="dataset",
+                            uri=(
+                                "https://user:password@private.example/input"
+                                "?signature=fake-secret"
+                            ),
+                            content_digest="a" * 32,
+                            size_bytes=1,
+                        )
+                    ],
+                ),
+                "input_resolution_failed",
+            ),
+            (
+                ToolRequest(
+                    expected_command_contract=command_contract(WaitTool),
+                    output_store=(
+                        "https://user:password@private.example/output"
+                        "?signature=fake-secret"
+                    ),
+                ),
+                "output_delivery_failed",
+            ),
+        ],
+    )
+    def test_denied_uri_fails_before_construction_workspace_or_effects(
+        self, tool_request, code
+    ):
+        construct = patch.object(server_mod, "instantiate_op")
+        workspace = patch.object(
+            server_mod.tempfile, "mkdtemp", wraps=server_mod.tempfile.mkdtemp
+        )
+        unpack = patch.object(server_mod.InlineTransport, "unpack_inputs")
+        execute = patch.object(server_mod, "invoke_op_work")
+        with (
+            construct as construct_mock,
+            workspace as workspace_mock,
+            unpack as unpack_mock,
+            execute as execute_mock,
+        ):
+            result = run_tool_request(WaitTool, tool_request)
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == code
+        assert error.recovery_hint == "CHECK_INPUT"
+        for secret in ("user", "password", "signature", "fake-secret"):
+            assert secret not in error.message
+        construct_mock.assert_not_called()
+        assert all(
+            not call.kwargs.get("prefix", "").startswith("artisan-tool-")
+            for call in workspace_mock.call_args_list
+        )
+        unpack_mock.assert_not_called()
+        execute_mock.assert_not_called()
+
+    def test_empty_policy_allows_inline_request(self):
+        result = run_tool_request(
+            CatTool,
+            ToolRequest(
+                expected_command_contract=command_contract(CatTool),
+                inputs=[InputRef(name="source", data=b"inline")],
+            ),
+        )
+        assert result.manifest.error is None
+
+    def test_copied_deployment_policy_is_revalidated_before_effects(self):
+        policy = ToolEndpointDataPolicy().model_copy(
+            update={"input_allowlist": ("file:///tmp",)}
+        )
+        with (
+            patch.object(server_mod, "instantiate_op") as construct,
+            patch.object(
+                server_mod.tempfile, "mkdtemp", wraps=server_mod.tempfile.mkdtemp
+            ) as workspace,
+        ):
+            result = run_tool_request(
+                CatTool,
+                ToolRequest(
+                    expected_command_contract=command_contract(CatTool),
+                ),
+                data_policy=policy,
+            )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "tool_endpoint_misconfigured"
+        assert error.message == "endpoint deployment data policy is invalid"
+        construct.assert_not_called()
+        assert all(
+            not call.kwargs.get("prefix", "").startswith("artisan-tool-")
+            for call in workspace.call_args_list
+        )
+
+    def test_bad_input_ref_returns_envelope(self):
+        # a ref carrying neither uri nor data raises ValueError in
+        # unpack_inputs when an internal caller bypasses InputRef validation
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest.model_construct(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[InputRef.model_construct(name="dataset")],
+            ),
+        )
+        assert result.output_tar is None
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == "CHECK_INPUT"
+
+    def test_duplicate_input_roles_return_envelope(self):
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[
+                    InputRef(name="dataset", data=b"one"),
+                    InputRef(name="dataset", data=b"two"),
+                ],
+            ),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.message == "could not resolve tool input"
+        assert error.recovery_hint == "CHECK_INPUT"
+
+    def test_input_resolution_error_does_not_echo_untrusted_path(self):
+        marker = "private-marker-" + "x" * 5_000
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[InputRef(name=marker, data=b"one")],
+            ),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.message == "could not resolve tool input"
+        assert marker not in error.message
+
+    def test_missing_input_filesystem_dependency_returns_envelope(self, monkeypatch):
+        def boom(self, refs, dest, policy=None):
+            msg = "Install s3fs to access S3"
+            raise ImportError(msg)
+
+        monkeypatch.setattr(server_mod.InlineTransport, "unpack_inputs", boom)
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        uri="s3://bucket/x",
+                        content_digest="a" * 32,
+                        size_bytes=1,
+                    )
+                ],
+            ),
+            data_policy=_policy(inputs=("s3://bucket",)),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "tool_endpoint_misconfigured"
+        assert error.error_type == "config"
+        assert error.recovery_hint == "REPORT_TO_USER"
+
+    def test_input_fetch_failure_returns_envelope(self, monkeypatch):
+        # an unreachable input URI surfaces as OSError from ref_fs.get; the
+        # (ValueError, OSError) guard maps it to the same CHECK_INPUT envelope
+        def boom(self, refs, dest, policy=None):
+            msg = "s3://bucket/missing.pdb"
+            raise FileNotFoundError(msg)
+
+        monkeypatch.setattr(
+            server_mod.InlineTransport, "unpack_inputs", boom, raising=True
+        )
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        uri="s3://bucket/missing.pdb",
+                        content_digest="a" * 32,
+                        size_bytes=1,
+                    )
+                ],
+            ),
+            data_policy=_policy(inputs=("s3://bucket",)),
+        )
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.recovery_hint == "CHECK_INPUT"
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            NoCredentialsError(),
+            EndpointConnectionError(endpoint_url="https://typo.example"),
+            ClientError(
+                {"Error": {"Code": "AccessDenied", "Message": "denied"}},
+                "GetObject",
+            ),
+        ],
+        ids=["no_credentials", "bad_endpoint", "service_error"],
+    )
+    def test_botocore_root_fetch_failure_returns_envelope(self, monkeypatch, exc):
+        def resolve(target: Any, **options: Any) -> Any:
+            raise exc
+
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolve)
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        uri="s3://bucket/x.csv",
+                        content_digest="a" * 32,
+                        size_bytes=1,
+                    )
+                ],
+            ),
+            data_policy=_policy(inputs=("s3://bucket",)),
+        )
+        assert result.output_tar is None
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "input_resolution_failed"
+        assert error.recovery_hint == "CHECK_INPUT"
+        assert str(exc) not in result.manifest.model_dump_json()
+
+    def test_input_failure_removes_job_dir(self, capture_tempdirs):
+        # warm-container reuse: an input-resolution failure still cleans up
+        created = capture_tempdirs()
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest.model_construct(
+                expected_command_contract=command_contract(WaitTool),
+                inputs=[InputRef.model_construct(name="dataset")],
+            ),
+        )
+        assert result.manifest.error is not None
+        assert created  # the job dir was allocated before unpack_inputs
+        assert all(not os.path.exists(p) for p in created)
+
+    def test_success_removes_job_dir(self, capture_tempdirs):
+        # warm-container reuse: the per-request job tree must not survive
+        created = capture_tempdirs()
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                params={"seconds": 1},
+                inputs=[
+                    InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")
+                ],
+            ),
+        )
+        assert result.manifest.error is None
+        assert created  # the worker did allocate a job dir
+        assert all(not os.path.exists(p) for p in created)
+
+    def test_tool_failure_removes_job_dir(self, capture_tempdirs):
+        created = capture_tempdirs()
+        result = run_tool_request(
+            FailTool,
+            ToolRequest(
+                expected_command_contract=command_contract(FailTool),
+            ),
+        )
+        assert result.manifest.error is not None
+        assert created  # the worker did allocate a job dir
+        assert all(not os.path.exists(p) for p in created)
+
+    def test_workspace_creation_failure_returns_envelope(self, monkeypatch):
+        mkdtemp = server_mod.tempfile.mkdtemp
+
+        def boom(*args, **kwargs):
+            if not kwargs.get("prefix", "").startswith("artisan-tool-"):
+                return mkdtemp(*args, **kwargs)
+            msg = "worker disk unavailable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod.tempfile, "mkdtemp", boom)
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "op_execute_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == "RETRY_LATER"
+
+    def test_execute_filesystem_failure_returns_envelope(self, monkeypatch):
+        def boom(*args, **kwargs):
+            msg = "cannot launch executable"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod, "invoke_op_work", boom)
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "op_execute_failed"
+        assert error.error_type == "compute"
+
+    def test_flag_op_spawns_op_run_with_wire_params_and_inputs(self):
+        """The worker path composes for execute_as_tool ops: instantiate
+        from wire params, then spawn the generated op-run argv whose
+        --inputs carry the protocol's bare-str paths (the runner re-wraps
+        them — the str→[str] leg of the local/remote symmetry)."""
+        from fixtures.endpoint_ops import FlagTool
+
+        with patch("artisan.execution.compute.invoke.run_command") as mock_run:
+            result = run_tool_request(
+                FlagTool,
+                ToolRequest(
+                    expected_command_contract=command_contract(FlagTool),
+                    params={"batch_size": 2},
+                    inputs=[InputRef(name="source", data=b"x")],
+                ),
+            )
+
+        assert result.manifest.error is None
+        argv = mock_run.call_args.args[1]
+        assert argv[:3] == ["artisan", "op", "run"]
+        assert argv[3] == "fixtures.endpoint_ops:FlagTool"
+        assert json.loads(argv[argv.index("--params") + 1]) == {"batch_size": 2}
+        inputs = json.loads(argv[argv.index("--inputs") + 1])
+        assert isinstance(inputs["source"], str)  # wire shape: one file per role
+        assert inputs["source"].endswith("source")
+
+
+class TestRunToolRequestStoredOutputs:
+    _REQUEST = ToolRequest(
+        expected_command_contract=command_contract(WaitTool),
+        params={"seconds": 1},
+        inputs=[InputRef(name="dataset", filename="in.csv", data=b"a,b\n1,2\n")],
+        output_store="s3://bucket/prefix",
+    )
+    _POLICY = _policy(outputs=("s3://bucket/prefix",))
+
+    def test_output_store_uploads_and_omits_tar(self, monkeypatch):
+        stored = StoredOutputs(uri="s3://bucket/p/wait_tool/x.tar.gz")
+        calls: dict = {}
+
+        def fake_upload(
+            src: str,
+            names: list,
+            store: str,
+            op_name: str,
+            policy=None,
+        ):
+            calls.update(names=names, store=store, op_name=op_name)
+            assert policy == self._POLICY
+            return stored
+
+        monkeypatch.setattr(server_mod, "upload_outputs", fake_upload)
+        result = run_tool_request(
+            WaitTool,
+            self._REQUEST,
+            data_policy=self._POLICY,
+        )
+        assert result.manifest.error is None
+        assert result.manifest.stored == stored
+        assert result.output_tar is None
+        assert result.manifest.output_names == ["in_waited.csv"]
+        assert calls == {
+            "names": ["in_waited.csv"],
+            "store": "s3://bucket/prefix",
+            "op_name": "wait_tool",
+        }
+
+    def test_stored_path_never_reaches_inline_cap(self, monkeypatch):
+        # Stored delivery must never invoke the inline output packer.
+        def fail_inline_pack(*_args, **_kwargs):
+            pytest.fail("stored delivery must not pack outputs inline")
+
+        monkeypatch.setattr(
+            transport_mod.InlineTransport,
+            "pack_outputs",
+            fail_inline_pack,
+        )
+        monkeypatch.setattr(
+            server_mod,
+            "upload_outputs",
+            lambda *args, **kwargs: StoredOutputs(uri="s3://b/x.tar.gz"),
+        )
+        result = run_tool_request(
+            WaitTool,
+            self._REQUEST,
+            data_policy=self._POLICY,
+        )
+        assert result.manifest.error is None
+        assert result.output_tar is None
+
+    def test_tool_failure_uploads_nothing(self, monkeypatch):
+        def explode(*args, **kwargs):
+            pytest.fail("upload_outputs must not run on tool failure")
+
+        monkeypatch.setattr(server_mod, "upload_outputs", explode)
+        result = run_tool_request(
+            FailTool,
+            ToolRequest(
+                expected_command_contract=command_contract(FailTool),
+                output_store="s3://b/p",
+            ),
+            data_policy=_policy(outputs=("s3://b/p",)),
+        )
+        assert result.manifest.error is not None
+        assert result.manifest.stored is None
+        assert result.output_tar is None
+
+    def test_no_outputs_falls_back_to_empty_inline_tar(self, monkeypatch):
+        def explode(*args, **kwargs):
+            pytest.fail("upload_outputs must not run with no outputs")
+
+        monkeypatch.setattr(server_mod, "upload_outputs", explode)
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+                output_store="s3://b/p",
+            ),
+            data_policy=_policy(outputs=("s3://b/p",)),
+        )
+        assert result.manifest.error is None
+        assert result.manifest.output_names == []
+        assert result.manifest.stored is None
+        assert result.output_tar is not None
+        assert _tar_names(result.output_tar) == []
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            OSError("disk full"),
+            _http_error(),
+            httpx.ConnectError(
+                "store unavailable",
+                request=httpx.Request("PUT", "https://store.example/obj"),
+            ),
+        ],
+        ids=["filesystem", "http_status", "request"],
+    )
+    def test_delivery_failure_returns_envelope_with_outputs(self, monkeypatch, exc):
+        # Delivery failure preserves completed output names and the tool log.
+        def failing_upload(*args, **kwargs):
+            raise exc
+
+        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == "RETRY_LATER"
+        assert result.manifest.output_names == ["in_waited.csv"]  # produced
+        assert result.manifest.log_tail is not None  # the tool's log survives
+        assert result.manifest.stored is None
+        assert result.output_tar is None
+
+    def test_invalid_delivery_returns_check_input_envelope(self, monkeypatch):
+        def failing_upload(*args, **kwargs):
+            msg = "Archive expands beyond budget"
+            raise ValueError(msg)
+
+        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.recovery_hint == "CHECK_INPUT"
+        assert result.manifest.output_names == ["in_waited.csv"]
+
+    @pytest.mark.parametrize(
+        "failure",
+        ["dependency", "signing", "transfer", "credentials", "endpoint", "service"],
+    )
+    def test_real_output_transport_preserves_error_category(self, monkeypatch, failure):
+        secret = "signed-capability-secret"
+
+        class Storage:
+            def sign(self, remote, expiration):
+                if failure == "signing":
+                    raise NotImplementedError(secret)
+                return "https://bucket.s3.amazonaws.com/result.tar.gz?signature=abc"
+
+            def put(self, source, remote):
+                raise OSError(secret)
+
+        def resolve(target, **options):
+            if failure == "dependency":
+                raise ImportError(secret)
+            if failure == "credentials":
+                raise NoCredentialsError()
+            if failure == "endpoint":
+                raise EndpointConnectionError(endpoint_url=f"https://{secret}.example")
+            if failure == "service":
+                raise ClientError(
+                    {"Error": {"Code": "AccessDenied", "Message": secret}}, "PutObject"
+                )
+            return Storage(), "bucket/result.tar.gz"
+
+        monkeypatch.setattr(transport_mod, "_resolve_s3", resolve)
+        policy = _policy(
+            outputs=("s3://bucket/prefix", "https://bucket.s3.amazonaws.com")
+        )
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=policy)
+        error = result.manifest.error
+        assert error is not None
+        if failure in {"transfer", "credentials", "endpoint", "service"}:
+            assert error.code == "output_delivery_failed"
+            assert error.error_type == "io"
+            assert error.recovery_hint == "RETRY_LATER"
+        else:
+            assert error.code == "tool_endpoint_misconfigured"
+            assert error.error_type == "config"
+            assert error.recovery_hint == "REPORT_TO_USER"
+        assert secret not in result.manifest.model_dump_json()
+        assert result.manifest.output_names == ["in_waited.csv"]
+        assert result.manifest.log_tail is not None
+        assert result.output_tar is None
+
+    def test_delivery_failure_removes_job_dir(self, monkeypatch, capture_tempdirs):
+        created = capture_tempdirs()
+
+        def failing_upload(*args, **kwargs):
+            msg = "disk full"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod, "upload_outputs", failing_upload)
+        result = run_tool_request(WaitTool, self._REQUEST, data_policy=self._POLICY)
+        assert result.manifest.error is not None
+        assert created  # the job dir was allocated
+        assert all(not os.path.exists(p) for p in created)
+
+
+class TestRunToolRequestInlinePackaging:
+    @pytest.mark.parametrize(
+        ("exc", "recovery_hint"),
+        [
+            (ValueError("archive budget exceeded"), "CHECK_INPUT"),
+            (OSError("disk read failed"), "RETRY_LATER"),
+            (tarfile.TarError("invalid archive member"), "RETRY_LATER"),
+        ],
+    )
+    def test_packaging_failure_returns_envelope(self, monkeypatch, exc, recovery_hint):
+        def failing_pack(self, src, names, *, max_bytes=None):
+            raise exc
+
+        monkeypatch.setattr(server_mod.InlineTransport, "pack_outputs", failing_pack)
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.error_type == "io"
+        assert error.recovery_hint == recovery_hint
+        assert result.output_tar is None
+
+    def test_output_enumeration_failure_returns_envelope(self, monkeypatch):
+        def failing_list(_outputs_dir):
+            msg = "cannot scan output directory"
+            raise OSError(msg)
+
+        monkeypatch.setattr(server_mod, "_list_outputs", failing_list)
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
+
+        error = result.manifest.error
+        assert error is not None
+        assert error.code == "output_delivery_failed"
+        assert error.recovery_hint == "RETRY_LATER"
+
+    def test_output_count_excludes_reserved_log(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(server_mod, "MAX_ARCHIVE_MEMBERS", 1)
+        output_dir = tmp_path / "outputs"
+        output_dir.mkdir()
+        (output_dir / "tool_output.log").write_text("log")
+        (output_dir / "result.csv").write_text("result")
+
+        assert server_mod._list_outputs(str(output_dir)) == ["result.csv"]
+
+        (output_dir / "second.csv").write_text("second")
+        with pytest.raises(ValueError, match="exceeds 1 members"):
+            server_mod._list_outputs(str(output_dir))
+
+
+class TestRunToolRequestUriInputMinIO:
+    """Resolve cloud URI inputs with worker credentials against MinIO."""
+
+    def test_uri_input_resolves_and_runs_below_inline_cap(
+        self, s3_fs, monkeypatch, configure_ambient_s3
+    ):
+        fs, storage, uri_prefix = s3_fs
+        bucket = uri_prefix.removeprefix("s3://")
+        # a 50 KB input; the tiny WaitTool output tars to one 10 KB record
+        fs.pipe_file(f"{bucket}/inputs/dataset_00001.csv", b"x" * 50_000)
+        configure_ambient_s3(storage)
+        # cap between the output tar (~10 KB) and the input (50 KB): the
+        # worker never checks the inline cap on the URI input path
+        # (pack_inputs is client-side) — a 50 KB input past a 20 KB cap
+        # still resolves and runs
+        monkeypatch.setattr(transport_mod, "MAX_INLINE_BYTES", 20_000)
+
+        result = run_tool_request(
+            WaitTool,
+            ToolRequest(
+                expected_command_contract=command_contract(WaitTool),
+                params={"seconds": 1},
+                inputs=[
+                    InputRef(
+                        name="dataset",
+                        filename="dataset_00001.csv",
+                        uri=f"{uri_prefix}/inputs/dataset_00001.csv",
+                        content_digest=compute_content_digest(b"x" * 50_000),
+                        size_bytes=50_000,
+                    )
+                ],
+            ),
+            data_policy=_policy(inputs=(f"{uri_prefix}/inputs",)),
+        )
+
+        assert result.manifest.error is None
+        assert result.manifest.output_names == ["dataset_00001_waited.csv"]
+        assert result.output_tar is not None
+
+
+class _WorkerLoopbackRouter:
+    """Drive the endpoint hop in-process: the client-side transport of
+    ``call_endpoint`` (``pack_inputs``) → the worker (``run_tool_request``,
+    which fetches ``s3://`` refs) → ``unpack_outputs`` into ``execute_dir``.
+
+    The HTTP/Modal hop is the only thing elided — the byte route (cloud
+    input by reference, tar output) is the real production code.
+    """
+
+    def __init__(self, op_cls: type[OperationDefinition]) -> None:
+        self._op_cls = op_cls
+
+    def route_execute(self, operation, execute_inputs, sandbox_root):
+        from artisan.execution.tool_endpoint.client import _file_inputs
+        from artisan.execution.tool_endpoint.transport import InlineTransport
+
+        params = json.loads(operation.params_json())
+        results: list[Any] = []
+        for execute_input in execute_inputs:
+            files = _file_inputs(operation.name, execute_input.inputs)
+            contracts = {
+                uri: (value["content_digest"], value["size_bytes"])
+                for uri, value in execute_input.metadata["external_integrity"].items()
+            }
+            refs = InlineTransport().pack_inputs(files, contracts)
+            policy = operation.compute_provider.modal.data_policy
+            result = run_tool_request(
+                self._op_cls,
+                ToolRequest(
+                    expected_command_contract=command_contract(self._op_cls),
+                    params=params,
+                    inputs=refs,
+                ),
+                data_policy=policy,
+            )
+            if result.manifest.error is not None:
+                results.append(RuntimeError(result.manifest.error.message))
+                continue
+            InlineTransport().unpack_outputs(
+                result.output_tar, execute_input.execute_dir
+            )
+            results.append(None)
+        return results
+
+
+class TestEndpointRoutedLineageMinIO:
+    """Preserve lineage and human names for cloud inputs sent by reference."""
+
+    def test_edge_and_name_preserved_under_skip(
+        self, s3_fs, tmp_path, configure_ambient_s3
+    ):
+        import polars as pl
+        from fixtures.store_format import commit_test_tables
+
+        from artisan.execution.executors.creator import run_creator_lifecycle
+        from artisan.execution.models.execution_unit import ExecutionUnit
+        from artisan.schemas.artifact.file_ref import FileRefArtifact
+        from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+        from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
+
+        fs, storage, uri_prefix = s3_fs
+        bucket = uri_prefix.removeprefix("s3://")
+        # the cloud input: bytes in MinIO, metadata in a local Delta store.
+        # The files_root object name preserves original_name, so the worker
+        # materializes under a basename whose stem is the artifact's name.
+        path = f"{uri_prefix}/files/dataset_00001.bin"
+        fs.pipe_file(f"{bucket}/files/dataset_00001.bin", b"weights")
+        art = FileRefArtifact.draft(
+            content_hash=compute_content_digest(b"weights"),
+            size_bytes=7,
+            step_number=0,
+            path=path,
+            original_name="dataset_00001",
+            extension=".bin",
+        ).finalize()
+
+        base = f"{uri_prefix}/delta"
+        staging = f"{uri_prefix}/staging"
+        commit_test_tables(
+            base,
+            staging,
+            fs,
+            {
+                "artifacts/file_refs": pl.DataFrame(
+                    [art.to_row()], schema=FileRefArtifact.POLARS_SCHEMA
+                ),
+                "artifacts/index": pl.DataFrame(
+                    [
+                        {
+                            "artifact_id": art.artifact_id,
+                            "artifact_type": "file_ref",
+                            "origin_step_number": 0,
+                            "metadata": "{}",
+                        }
+                    ],
+                    schema=ARTIFACT_INDEX_SCHEMA,
+                ),
+                "artifacts/locations": pl.DataFrame(
+                    [{"artifact_id": art.artifact_id, "uri": path}],
+                    schema={"artifact_id": pl.String, "uri": pl.String},
+                ),
+            },
+            step_run_id="1" * 32,
+            operation_name="cloud_input",
+            storage_options=storage.delta_storage_options(),
+        )
+        working = tmp_path / "working"
+        working.mkdir()
+        runtime_env = RuntimeEnvironment(
+            delta_root=base,
+            working_root=str(working),
+            staging_root=staging,
+            files_root=f"{uri_prefix}/files",
+            storage=storage,
+        )
+        # ambient creds so the worker fetches path from MinIO
+        configure_ambient_s3(storage)
+
+        operation = _CloudInputTool(
+            compute_provider=ComputeProvider(
+                active="modal",
+                modal=ModalComputeConfig(
+                    data_policy=_policy(inputs=(f"{uri_prefix}/files",))
+                ),
+            )
+        )
+        unit = ExecutionUnit(
+            operation=operation,
+            inputs={"source": [art.artifact_id]},
+            execution_spec_id="spec_fr" + "0" * 26,
+            step_number=1,
+        )
+        result = run_creator_lifecycle(
+            unit, runtime_env, execute_router=_WorkerLoopbackRouter(_CloudInputTool)
+        )
+
+        outputs = result.artifacts["output"]
+        assert len(outputs) == 1
+        out = outputs[0]
+        # human-readable name from the natural basename — no artifact_id
+        # prefix to strip; postprocess selects the natural output name.
+        assert out.original_name == "dataset_00001_waited"
+        assert not out.original_name.startswith(art.artifact_id)
+        # The operation explicitly matches the transported basename and
+        # declares the input-to-output relationship.
+        edges = {(e.source_artifact_id, e.target_artifact_id) for e in result.edges}
+        assert (art.artifact_id, out.artifact_id) in edges
+
+
+def test_request_commands_share_one_slot_and_warm_worker_starts_fresh(monkeypatch):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def command(self, inputs):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        return [sys.executable, "-c", "pass"]
+
+    monkeypatch.setattr(NoopTool, "execute_command", command)
+    for _ in range(2):
+        result = run_tool_request(
+            NoopTool,
+            ToolRequest(
+                expected_command_contract=command_contract(NoopTool),
+            ),
+        )
+        assert result.manifest.error is None
+        commands = result.manifest.command_recording.commands
+        assert [(c.invocation, c.sequence) for c in commands] == [(0, 0), (0, 1)]
+        assert all(c.location == "endpoint" for c in commands)
+        assert all(c.environment.type == "LocalEnvironmentSpec" for c in commands)
+        assert commands[-1].tool.executable == "bash"
+
+
+@pytest.mark.parametrize("failure", ["construction", "launch", "delivery"])
+def test_ordinary_endpoint_failure_preserves_earlier_commands(monkeypatch, failure):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def command(self, inputs):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        if failure == "construction":
+            msg = "command construction failed"
+            raise RuntimeError(msg)
+        return (
+            ["/no-such-executable"]
+            if failure == "launch"
+            else [sys.executable, "-c", "pass"]
+        )
+
+    monkeypatch.setattr(NoopTool, "execute_command", command)
+    if failure == "delivery":
+        monkeypatch.setattr(
+            transport_mod.InlineTransport,
+            "pack_outputs",
+            lambda *args, **kwargs: (_ for _ in ()).throw(OSError("delivery failed")),
+        )
+    result = run_tool_request(
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+        ),
+    )
+    assert result.manifest.error is not None
+    commands = result.manifest.command_recording.commands
+    assert commands[0].outcome == "succeeded"
+    assert len(commands) == (1 if failure == "construction" else 2)
+    if failure == "delivery":
+        assert result.manifest.error.code == "output_delivery_failed"
+    if failure == "launch":
+        assert commands[-1].outcome == "launch_failed"
+
+
+def test_preflight_failure_returns_explicit_complete_empty_recording():
+    from artisan.schemas.execution.command_record import CommandRecording
+
+    result = run_tool_request(
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+            output_store="s3://not-authorized/output",
+        ),
+    )
+    assert result.manifest.error is not None
+    assert result.manifest.command_recording == CommandRecording.empty()
+
+
+def test_request_scope_captures_helper_before_parameter_construction_failure(
+    monkeypatch,
+):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def instantiate(*args):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        msg = "custom operation construction failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(server_mod, "instantiate_op", instantiate)
+    result = run_tool_request(
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+        ),
+    )
+    assert result.manifest.error is not None
+    assert len(result.manifest.command_recording.commands) == 1
+    assert result.manifest.command_recording.commands[0].outcome == "succeeded"
+
+
+def test_python_endpoint_failure_keeps_helper_evidence(monkeypatch):
+    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from artisan.utils.external_tools import run_command
+
+    def execute(*args):
+        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        msg = "Python body failed"
+        raise RuntimeError(msg)
+
+    monkeypatch.setattr(NoopTool, "is_command_op", lambda self: False)
+    monkeypatch.setattr(NoopTool, "execute_function", execute)
+    result = run_tool_request(
+        NoopTool,
+        ToolRequest(
+            expected_command_contract=command_contract(NoopTool),
+        ),
+    )
+    assert result.manifest.error is not None
+    assert len(result.manifest.command_recording.commands) == 1
+    assert result.manifest.command_recording.commands[0].outcome == "succeeded"

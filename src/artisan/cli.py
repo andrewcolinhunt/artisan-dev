@@ -1,0 +1,758 @@
+"""Artisan command-line interface.
+
+Expose operation discovery and execution, container builds, endpoint deployment,
+store inspection, diagnostic execution replay, and logical-commit repair.
+Use ``artisan --help`` and subcommand help for available commands and flags.
+
+Heavy artisan imports are deferred into the command functions so
+``--help`` and argument errors stay fast. Under ``--json``, handled
+failures serialize as ``ArtisanError.to_dict()`` envelopes on stdout
+with exit code 1 — the CLI is a machine-read boundary per the
+error-envelope policy.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from artisan._cli_output import _diagnostics_to_stderr
+
+if TYPE_CHECKING:
+    from collections.abc import Callable, Sequence
+
+    from artisan.errors import ArtisanError
+    from artisan.operations.base.operation_definition import OperationDefinition
+
+_CONTAINER_VIEW_FIELDS = (
+    "image",
+    "env",
+    "volumes",
+    "secrets",
+    "gpu",
+    "cpu",
+    "memory_mb",
+    "timeout",
+)
+"""``op image --json`` fields: what running the container anywhere needs.
+
+Deliberately excludes endpoint-deploy concerns (op module/qualname,
+params schema, description/input_roles, retries/scaling).
+"""
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Entry point for the ``artisan`` console script."""
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+    return int(args.func(args))
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="artisan", description="Artisan pipeline framework CLI"
+    )
+    sub = parser.add_subparsers(dest="command", required=True)
+
+    modal_parser = sub.add_parser("modal", help="Modal tool-endpoint commands")
+    modal_sub = modal_parser.add_subparsers(dest="modal_command", required=True)
+    deploy = modal_sub.add_parser(
+        "deploy",
+        help="Explicitly deploy an operation's declared tool endpoint to Modal",
+    )
+    deploy.add_argument(
+        "operation", help="Registered operation name (e.g. 'wait_tool')"
+    )
+    deploy.add_argument(
+        "--overlay",
+        action="append",
+        metavar="PKG",
+        help=(
+            "Dev mode: mount a local Python package source onto the worker "
+            "image, shadowing the baked version (repeatable). Production "
+            "deploys bake code into the image instead."
+        ),
+    )
+    deploy.set_defaults(func=_modal_deploy)
+
+    op_parser = sub.add_parser("op", help="Operation commands")
+    op_sub = op_parser.add_subparsers(dest="op_command", required=True)
+
+    op_list = op_sub.add_parser("list", help="List registered operations")
+    op_list.add_argument(
+        "--kind", choices=["creator", "curator"], help="Restrict to one op kind"
+    )
+    op_list.add_argument(
+        "--query", help="Substring match on name or description (case-insensitive)"
+    )
+    op_list.add_argument("--json", action="store_true", help="Emit JSON")
+    op_list.set_defaults(func=_op_list)
+
+    describe = op_sub.add_parser(
+        "describe", help="Full metadata for one operation (schemas, examples)"
+    )
+    describe.add_argument("operation", help="Registered operation name")
+    describe.add_argument("--json", action="store_true", help="Emit JSON")
+    describe.set_defaults(func=_op_describe)
+
+    image = op_sub.add_parser(
+        "image", help="Print the container image ref an operation runs in"
+    )
+    image.add_argument("operation", help="Registered operation name")
+    image.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit the container view (image, env, volumes, secrets, hardware)",
+    )
+    image.set_defaults(func=_op_image)
+
+    run = op_sub.add_parser(
+        "run",
+        help=(
+            "Run an execute_as_tool op's Python body (the framework-generated "
+            "command behind such ops)"
+        ),
+    )
+    run.add_argument(
+        "target", help="Op class as module:Qualname (e.g. 'mypkg.ops:EmbedSequences')"
+    )
+    run.add_argument("--params", default="{}", help="Nested Params model as JSON")
+    run.add_argument(
+        "--inputs", default="{}", help="Prepared inputs as JSON (role -> path(s))"
+    )
+    run.add_argument(
+        "--execute-dir",
+        default=None,
+        help="Directory for output files (defaults to the working directory)",
+    )
+    run.set_defaults(func=_op_run)
+
+    docker_parser = sub.add_parser("docker", help="Container image commands")
+    docker_sub = docker_parser.add_subparsers(dest="docker_command", required=True)
+    build = docker_sub.add_parser(
+        "build",
+        help=(
+            "Build an operation's image from docker/<image-name>/Dockerfile, "
+            "tagged with the ref its config declares (run from the repo root)"
+        ),
+    )
+    build.add_argument("operation", help="Registered operation name")
+    build.set_defaults(func=_docker_build)
+
+    runs = sub.add_parser("runs", help="List persisted pipeline runs")
+    _add_store_args(runs)
+    runs.set_defaults(func=_runs)
+
+    failures = sub.add_parser(
+        "failures", help="Failure report — one row per failed execution"
+    )
+    _add_store_args(failures)
+    failures.add_argument("--run", help="Filter to one pipeline run id")
+    failures.set_defaults(func=_failures)
+
+    provenance = sub.add_parser(
+        "provenance", help="Provenance edges around one artifact"
+    )
+    provenance.add_argument("artifact_id", help="Artifact to walk from")
+    _add_store_args(provenance)
+    provenance.add_argument(
+        "--direction",
+        choices=["backward", "forward"],
+        default="backward",
+        help="Walk toward ancestors (backward) or descendants (forward)",
+    )
+    provenance.add_argument(
+        "--depth", type=int, default=3, help="Maximum hops from the artifact"
+    )
+    provenance.set_defaults(func=_provenance)
+
+    execution = sub.add_parser("execution", help="Execution diagnostics")
+    execution_sub = execution.add_subparsers(dest="execution_command", required=True)
+    replay = execution_sub.add_parser(
+        "replay", help="Replay one committed execution unit"
+    )
+    replay.add_argument("execution_run_id")
+    _add_store_args(replay)
+    replay.add_argument("--debug-root", required=True)
+    replay.add_argument("--staging-root")
+    replay.add_argument("--files-root")
+    replay.add_argument("--local-runner", action="store_true")
+    replay.add_argument(
+        "--supply", action="append", default=[], metavar="POINTER=ENV_NAME"
+    )
+    replay.add_argument("--allow-code-change", action="store_true")
+    replay.set_defaults(func=_execution_replay)
+
+    store_parser = sub.add_parser("store", help="Persisted store commands")
+    store_sub = store_parser.add_subparsers(dest="store_command", required=True)
+    repair = store_sub.add_parser(
+        "repair", help="Inspect store integrity or repair staged commits"
+    )
+    _add_store_args(repair)
+    repair.add_argument("--staging-root", required=True, help="Worker staging root")
+    repair.add_argument(
+        "--storage-config",
+        type=Path,
+        help="JSON file containing a StorageConfig object",
+    )
+    repair.add_argument(
+        "--apply",
+        action="store_true",
+        help="Finish pending commits and clean verified staging without a full audit",
+    )
+    repair.add_argument(
+        "--recover-staging",
+        action="store_true",
+        help="Include finished worker executions without a commit plan",
+    )
+    repair.add_argument(
+        "--preserve-staging",
+        action="store_true",
+        help="Keep staged files after verified commitment",
+    )
+    repair.add_argument(
+        "--files-root", help="Root for Artisan-managed external content"
+    )
+    repair.add_argument(
+        "--abandon", metavar="LOGICAL_COMMIT_ID", help="Abandon one planned commit"
+    )
+    repair.add_argument("--reason", help="Required explanation for --abandon")
+    repair.set_defaults(func=_store_repair)
+
+    _add_inspection_commands(sub)
+    return parser
+
+
+def _add_inspection_commands(sub: Any) -> None:
+    """Register local evidence interfaces without loading readers."""
+    inspect = sub.add_parser("inspect", help="Discover and query bounded evidence")
+    commands = inspect.add_subparsers(dest="inspection_command", required=True)
+    listing = commands.add_parser("list", help="List installed inspection contracts")
+    describe = commands.add_parser("describe", help="Show one inspection's schemas")
+    describe.add_argument("capability")
+    for command in (listing, describe):
+        command.add_argument("--json", action="store_true", help="Emit JSON")
+        command.set_defaults(func=_inspection_command)
+    run = commands.add_parser("run", help="Run one bounded inspection")
+    run.add_argument("capability")
+    run.add_argument("--request", metavar="FILE|-", help="JSON object (default: {})")
+    _add_store_args(run)
+    run.set_defaults(func=_inspection_command)
+
+    guide = sub.add_parser("guide", help="Read installed operating guidance")
+    guides = guide.add_subparsers(dest="inspection_command", required=True)
+    guide_list = guides.add_parser("list", help="List installed guidance topics")
+    show = guides.add_parser("show", help="Read one operating guide topic")
+    show.add_argument("guide_id", choices=["pipeline-operate"])
+    show.add_argument("--topic", default="workflow")
+    for command in (guide_list, show):
+        command.add_argument("--json", action="store_true", help="Emit JSON")
+        command.set_defaults(func=_inspection_command)
+
+    evidence = sub.add_parser("evidence", help="Save complete evidence reports")
+    exports = evidence.add_subparsers(dest="inspection_command", required=True)
+    export = exports.add_parser(
+        "export", help="Export one complete assessment or comparison"
+    )
+    export.add_argument("capability", choices=["assess_outcomes", "compare_runs"])
+    export.add_argument("--request", required=True, metavar="FILE|-")
+    export.add_argument("--output", required=True, metavar="DIRECTORY")
+    export.add_argument("--expected-evidence-id")
+    _add_store_args(export)
+    export.set_defaults(func=_inspection_command)
+
+
+def _inspection_command(args: argparse.Namespace) -> int:
+    """Enter the isolated machine-response boundary only after parsing."""
+    from artisan._inspection_cli import run_command
+
+    return run_command(args)
+
+
+def _add_store_args(parser: argparse.ArgumentParser) -> None:
+    """Add shared store-location and JSON-output flags."""
+    parser.add_argument(
+        "--delta-root",
+        default=None,
+        help="Delta Lake root (falls back to ARTISAN_DELTA_ROOT)",
+    )
+    parser.add_argument("--json", action="store_true", help="Emit JSON")
+    parser.add_argument(
+        "--load-module",
+        action="append",
+        default=[],
+        metavar="MODULE",
+        help="Load an installed trusted application before reading the store (repeatable)",
+    )
+
+
+def _resolve_op_cls(operation: str) -> type[OperationDefinition] | None:
+    """Resolve a registered op class; print the registry error on a miss."""
+    from artisan.operations.base.operation_definition import OperationDefinition
+    from artisan.registry.discovery import discover
+
+    discover()
+    try:
+        return OperationDefinition.get(operation)
+    except KeyError as exc:
+        sys.stderr.write(f"{exc.args[0] if exc.args else exc}\n")
+        return None
+
+
+def _emit(args: argparse.Namespace, payload_fn: Callable[[], Any]) -> int:
+    """Run a command body; serialize the result, or the error envelope.
+
+    ``FileNotFoundError`` from store-reading bodies wraps into a
+    ``CHECK_INPUT`` envelope: an agent pointing at an empty or wrong
+    root is a recoverable input error, not a bug. Other non-Artisan
+    exceptions propagate as tracebacks.
+    """
+    from artisan.errors import ArtisanError, ErrorCode
+
+    try:
+        with _diagnostics_to_stderr():
+            if hasattr(args, "load_module"):
+                from artisan.registry.discovery import bootstrap_applications
+                from artisan.utils.application_modules import (
+                    resolve_application_modules,
+                )
+
+                args.application_modules = resolve_application_modules(args.load_module)
+                bootstrap_applications(
+                    args.application_modules, purpose="CLI store access"
+                )
+            payload = payload_fn()
+            rendered = _render(payload, json_mode=args.json)
+    except FileNotFoundError as exc:
+        err = ArtisanError(
+            ErrorCode.STORE_NOT_FOUND,
+            str(exc),
+            error_type="io",
+            hint="no Delta tables at this root — check --delta-root / ARTISAN_DELTA_ROOT",
+            recovery_hint="CHECK_INPUT",
+        )
+        err.__cause__ = exc
+        return _emit_error(args, err)
+    except ArtisanError as exc:
+        return _emit_error(args, exc)
+    sys.stdout.write(rendered + "\n")
+    return 0
+
+
+def _emit_error(args: argparse.Namespace, exc: ArtisanError) -> int:
+    """Write the failure: envelope JSON on stdout under ``--json``, else stderr."""
+    if args.json:
+        sys.stdout.write(json.dumps(exc.to_dict()) + "\n")  # machine boundary
+    else:
+        sys.stderr.write(f"{exc}\n")
+    return 1
+
+
+def _render(payload: Any, *, json_mode: bool) -> str:
+    """Serialize a command payload for stdout.
+
+    JSON mode: Pydantic model → its dump; list of models →
+    ``{"items": [...]}``; DataFrame → ``{"items": to_dicts()}``
+    (``default=str`` covers Datetime columns). Human mode: DataFrames
+    render as Polars tables, registry summaries as aligned lines,
+    models as indented JSON.
+    """
+    import polars as pl
+    from pydantic import BaseModel
+
+    if json_mode:
+        if isinstance(payload, pl.DataFrame):
+            data: Any = {"items": payload.to_dicts()}
+        elif isinstance(payload, BaseModel):
+            data = payload.model_dump(mode="json")
+        else:
+            data = {"items": [item.model_dump(mode="json") for item in payload]}
+        return json.dumps(data, default=str)
+    if isinstance(payload, pl.DataFrame):
+        return str(payload)
+    if isinstance(payload, BaseModel):
+        return json.dumps(payload.model_dump(), indent=2, default=str)
+    lines = [f"{s.name:<32} {s.kind:<8} {s.description}" for s in payload]
+    return "\n".join(lines) if lines else "(no operations registered)"
+
+
+def _require_delta_root(args: argparse.Namespace) -> str:
+    """Resolve the Delta root from ``--delta-root`` or the environment."""
+    root = args.delta_root or os.environ.get("ARTISAN_DELTA_ROOT")
+    if not root:
+        from artisan.errors import ArtisanError, ErrorCode
+
+        raise ArtisanError(
+            ErrorCode.DELTA_ROOT_UNSET,
+            "no Delta root given",
+            error_type="config",
+            hint="pass --delta-root or set ARTISAN_DELTA_ROOT",
+            recovery_hint="CHECK_INPUT",
+        )
+    return root
+
+
+def _op_list(args: argparse.Namespace) -> int:
+    """List registered operations (``OperationSummary`` rows)."""
+
+    def payload() -> Any:
+        from artisan import registry
+
+        registry.discover()
+        return registry.list_operations(kind=args.kind, query=args.query)
+
+    return _emit(args, payload)
+
+
+def _op_describe(args: argparse.Namespace) -> int:
+    """Full ``OperationMetadata`` for one op (examples included)."""
+
+    def payload() -> Any:
+        from artisan import registry
+
+        registry.discover()
+        return registry.describe(args.operation)
+
+    return _emit(args, payload)
+
+
+def _runs(args: argparse.Namespace) -> int:
+    """List persisted pipeline runs from the steps table."""
+
+    def payload() -> Any:
+        from artisan.orchestration.run_history import list_runs
+
+        return list_runs(_require_delta_root(args))
+
+    return _emit(args, payload)
+
+
+def _failures(args: argparse.Namespace) -> int:
+    """Failure report with deserialized envelope columns."""
+
+    def payload() -> Any:
+        from artisan.visualization.inspect import inspect_failures
+
+        return inspect_failures(_require_delta_root(args), pipeline_run_id=args.run)
+
+    return _emit(args, payload)
+
+
+def _provenance(args: argparse.Namespace) -> int:
+    """Bounded provenance edge list around one artifact."""
+
+    def payload() -> Any:
+        from artisan.provenance import provenance_edges
+
+        return provenance_edges(
+            _require_delta_root(args),
+            args.artifact_id,
+            direction=args.direction,
+            depth=args.depth,
+        )
+
+    return _emit(args, payload)
+
+
+def _execution_replay(args: argparse.Namespace) -> int:
+    """Emit the durable replay outcome while reserving stdout for its JSON."""
+    from urllib.parse import urlsplit
+
+    from artisan.errors import ArtisanError, ErrorCode
+    from artisan.orchestration import replay_execution
+    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+    from artisan.schemas.execution.storage_config import StorageConfig
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
+
+    outcome = None
+
+    def payload() -> Any:
+        nonlocal outcome
+        root = _require_delta_root(args)
+        protocol = urlsplit(root).scheme or "file"
+        if protocol != "file" and (not args.staging_root or not args.files_root):
+            raise ArtisanError(
+                code=ErrorCode.REPLAY_CONFIGURATION_INVALID,
+                message="Cloud replay requires --staging-root and --files-root",
+                error_type="config",
+            )
+        replacements = {}
+        for supplied in args.supply:
+            pointer, separator, variable = supplied.partition("=")
+            if (
+                not separator
+                or not pointer.startswith("/")
+                or not variable
+                or pointer in replacements
+            ):
+                raise ArtisanError(
+                    code=ErrorCode.REPLAY_CONFIGURATION_INVALID,
+                    message="--supply requires unique POINTER=ENV_NAME entries",
+                    error_type="config",
+                )
+            replacements[pointer] = variable
+        debug = Path(args.debug_root).resolve()
+        runtime = RuntimeEnvironment(  # type: ignore[call-arg]  # Pydantic runtime defaults
+            delta_root=root,
+            application_modules=args.application_modules,
+            staging_root=args.staging_root or str(debug / "staging"),
+            files_root=args.files_root or str(debug / "files"),
+            working_root=str(debug / "work"),
+            failure_logs_root=str(debug / "logs"),
+            storage=StorageConfig(protocol=protocol),
+        )
+        outcome = replay_execution(
+            args.execution_run_id,
+            runtime=runtime,
+            step_runner="local" if args.local_runner else None,
+            replacement_env=replacements,
+            allow_code_change=args.allow_code_change,
+        )
+        return outcome
+
+    code = _emit(args, payload)
+    if code == 0 and outcome is not None:
+        return int(
+            outcome.step_result.status != StepStatus.SUCCEEDED
+            or outcome.diagnostic_status != "complete"
+        )
+    return code
+
+
+def _store_repair(args: argparse.Namespace) -> int:
+    """Report, replay, or explicitly abandon immutable commit evidence."""
+    if args.apply and args.abandon is not None:
+        sys.stderr.write("--apply and --abandon are separate actions\n")
+        return 2
+    if args.recover_staging and args.abandon is not None:
+        sys.stderr.write("--recover-staging and --abandon are separate actions\n")
+        return 2
+    if args.abandon is not None and not args.reason:
+        sys.stderr.write("--abandon requires --reason\n")
+        return 2
+    if args.abandon is None and args.reason is not None:
+        sys.stderr.write("--reason requires --abandon\n")
+        return 2
+
+    result: dict[str, Any] = {}
+
+    def payload() -> Any:
+        from artisan.schemas.execution.storage_config import StorageConfig
+        from artisan.storage.io.repair import repair_store
+
+        storage = (
+            StorageConfig.model_validate_json(args.storage_config.read_text())
+            if args.storage_config is not None
+            else StorageConfig()
+        )
+        report = repair_store(
+            delta_root=_require_delta_root(args),
+            staging_root=args.staging_root,
+            fs=storage.filesystem(),
+            storage_options=storage.delta_storage_options(),
+            apply=args.apply,
+            recover_staging=args.recover_staging,
+            preserve_staging=args.preserve_staging,
+            files_root=args.files_root,
+            abandon=args.abandon,
+            reason=args.reason,
+        )
+        result["report"] = report
+        return report
+
+    exit_code = _emit(args, payload)
+    report = result.get("report")
+    if exit_code == 0 and report is not None and report.unresolved:
+        return 1
+    return exit_code
+
+
+def _modal_deploy(args: argparse.Namespace) -> int:
+    """Resolve the op, build its app, and deploy it as a persistent Modal app."""
+    from artisan.execution.tool_endpoint._optional import MODAL_EXTRA_MESSAGE
+    from artisan.execution.tool_endpoint.deploy import build_app
+
+    op_cls = _resolve_op_cls(args.operation)
+    if op_cls is None:
+        return 1
+    try:
+        app = build_app(op_cls, overlay=args.overlay)
+    except ImportError as exc:
+        if str(exc) != MODAL_EXTRA_MESSAGE:
+            raise
+        sys.stderr.write(MODAL_EXTRA_MESSAGE + "\n")
+        return 1
+    app.deploy()
+    sys.stdout.write(f"Deployed artisan-tool-{op_cls.name}\n")
+    return 0
+
+
+def _op_image(args: argparse.Namespace) -> int:
+    """Print the op's image ref, or the ``--json`` container view."""
+    with _diagnostics_to_stderr():
+        from artisan.execution.tool_endpoint.spec import endpoint_spec
+
+        op_cls = _resolve_op_cls(args.operation)
+        if op_cls is None:
+            return 1
+        try:
+            spec = endpoint_spec(op_cls)
+        except ValueError as exc:
+            sys.stderr.write(f"{exc}\n")
+            return 1
+        if args.json:
+            view = {field: getattr(spec, field) for field in _CONTAINER_VIEW_FIELDS}
+            rendered = json.dumps(view, indent=2)
+        else:
+            rendered = spec.image
+    sys.stdout.write(rendered + "\n")
+    return 0
+
+
+def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
+    """Normalize wire-delivered inputs to the list shape preprocess produced.
+
+    A bare string is a single file (the endpoint protocol's
+    one-file-per-role shape, wrapped str → [str]); lists of paths pass
+    through. This is what makes ``execute_function``'s view identical
+    in-process, under the local command adapter, and behind the endpoint worker.
+
+    Args:
+        inputs: Parsed ``--inputs`` JSON (role → path or paths).
+
+    Returns:
+        Role → list-of-paths.
+
+    Raises:
+        ValueError: When a value is neither a path nor a list of paths.
+    """
+    normalized: dict[str, list[str]] = {}
+    for role, value in inputs.items():
+        if isinstance(value, str):
+            normalized[role] = [value]
+        elif isinstance(value, list) and all(isinstance(v, str) for v in value):
+            normalized[role] = value
+        else:
+            msg = (
+                f"input {role!r} is {type(value).__name__}, not a file path — "
+                "execute_as_tool ops receive role -> path(s); scalars belong "
+                "in Params"
+            )
+            raise ValueError(msg)
+    return normalized
+
+
+def _op_run(args: argparse.Namespace) -> int:
+    """Establish inherited command ownership before importing operation code."""
+    from artisan.utils.command_supervisor import (
+        CommandOwnershipError,
+        attachment_sensitive_values,
+        managed_invocation,
+    )
+    from artisan.utils.external_tools import redact_values
+    from artisan.utils.traceback import format_error
+
+    sensitive_values = attachment_sensitive_values()
+    try:
+        with managed_invocation():
+            sensitive_values = (*sensitive_values, *attachment_sensitive_values())
+            return _op_run_managed(args)
+    except CommandOwnershipError:
+        sys.stderr.write("Managed command ownership could not be confirmed\n")
+        return 1
+    except Exception as error:
+        sys.stderr.write(redact_values(format_error(error), sensitive_values) + "\n")
+        return 1
+
+
+def _op_run_managed(args: argparse.Namespace) -> int:
+    """Run an execute_as_tool op's function through the command adapter.
+
+    Resolves the class by ``module:Qualname`` (no registry discovery),
+    rebuilds the op from the params JSON, and calls the Python body
+    directly. The log path points at a throwaway tempfile so nothing
+    pollutes output collection; logging that matters goes to stdout,
+    which the parent ``run_command`` captures to the unit log.
+    """
+    from artisan.execution.tool_endpoint.server import instantiate_op
+    from artisan.registry.resolve import resolve_operation
+    from artisan.schemas.specs.input_models import ExecuteInput
+    from artisan.utils.command_supervisor import (
+        attachment_sensitive_values,
+        close_command_scope,
+    )
+    from artisan.utils.external_tools import redact_values
+
+    module, sep, qualname = args.target.partition(":")
+    if not sep or not module or not qualname:
+        sys.stderr.write(
+            redact_values(
+                f"target {args.target!r} is not module:Qualname\n",
+                attachment_sensitive_values(),
+            )
+        )
+        return 1
+    try:
+        op_cls = resolve_operation(f"{module}:{qualname}")
+        normalized = _file_shaped(json.loads(args.inputs))
+        op = instantiate_op(op_cls, json.loads(args.params))
+    except (ImportError, AttributeError, TypeError, ValueError) as exc:
+        sys.stderr.write(redact_values(f"{exc}\n", attachment_sensitive_values()))
+        return 1
+    fd, log_path = tempfile.mkstemp(prefix="artisan-op-run-", suffix=".log")
+    os.close(fd)
+    try:
+        result = op.execute_function(
+            ExecuteInput(
+                execute_dir=args.execute_dir or os.getcwd(),
+                inputs=normalized,
+                log_path=log_path,
+            )
+        )
+    except BaseException as error:
+        if close_command_scope(error):
+            Path(log_path).unlink(missing_ok=True)
+        raise
+    else:
+        close_command_scope()
+        Path(log_path).unlink(missing_ok=True)
+    if result is not None:
+        sys.stderr.write(
+            redact_values(
+                f"{op_cls.__name__}.execute_function returned "
+                f"{type(result).__name__} — execute_as_tool ops must write files "
+                "to execute_dir and return None\n",
+                attachment_sensitive_values(),
+            )
+        )
+        return 1
+    return 0
+
+
+def _docker_build(args: argparse.Namespace) -> int:
+    """Build the op's image from its conventional Dockerfile."""
+    from artisan.execution.tool_endpoint.docker import build_image
+
+    op_cls = _resolve_op_cls(args.operation)
+    if op_cls is None:
+        return 1
+    try:
+        ref = build_image(op_cls, Path.cwd())
+    except (ValueError, FileNotFoundError) as exc:
+        sys.stderr.write(f"{exc}\n")
+        return 1
+    except subprocess.CalledProcessError as exc:
+        sys.stderr.write(f"docker build failed with exit code {exc.returncode}\n")
+        return 1
+    sys.stdout.write(f"{ref}\n")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

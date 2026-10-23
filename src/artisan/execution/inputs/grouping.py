@@ -6,21 +6,20 @@ Two pairing patterns:
 2. ``match_inputs_to_primary`` -- one anchor role paired independently
    against N other roles (e.g., Filter matching passthrough vs. metrics).
 
-Strategies: ZIP (positional), LINEAGE (provenance ancestry), CROSS_PRODUCT.
+Strategies: ZIP (positional), LINEAGE (provenance ancestry), CROSS_PRODUCT
+(cartesian), NAME (shared ``original_name`` stem).
 """
 
 from __future__ import annotations
 
-import json
 import logging
 from itertools import product
 from typing import TYPE_CHECKING
 
-import polars as pl
-import xxhash
-
 from artisan.execution.inputs.lineage_matching import match_by_ancestry
 from artisan.schemas.enums import GroupByStrategy
+from artisan.utils.filename import strip_extensions
+from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 
 if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
@@ -28,26 +27,39 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-def compute_group_id(artifact_ids: list[str]) -> str:
-    """Compute a deterministic group_id from sorted source artifact IDs.
+def compute_group_id(artifacts: dict[str, tuple[str, str]]) -> str:
+    """Compute a role- and type-aware group identifier.
 
     The group_id is a content-addressed hash that identifies a particular
-    pairing of source artifacts, independent of role names or target outputs.
+    pairing by role, artifact type and artifact ID. Dictionary insertion order
+    and target outputs do not affect it.
 
     Args:
-        artifact_ids: All source artifact IDs in the pairing (one per role).
+        artifacts: Role to ``(artifact_type, artifact_id)`` mapping.
 
     Returns:
         32-character xxh3_128 hex digest.
     """
-    content = json.dumps(sorted(artifact_ids), sort_keys=True).encode("utf-8")
-    return xxhash.xxh3_128(content).hexdigest()
+    payload = {
+        "domain": "input-group-v2",
+        "artifacts": [
+            {
+                "role": role,
+                "artifact_type": artifacts[role][0],
+                "artifact_id": artifacts[role][1],
+            }
+            for role in sorted(artifacts)
+        ],
+    }
+    return compute_content_digest(canonical_json_bytes(payload))
 
 
 def group_inputs(
     inputs: dict[str, list[str]],
     strategy: GroupByStrategy,
     artifact_store: ArtifactStore | None = None,
+    *,
+    artifact_types: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Pair multi-role input artifact IDs using the given strategy.
 
@@ -58,18 +70,20 @@ def group_inputs(
     Args:
         inputs: Role-name to artifact-ID-list mapping (unaligned, possibly
             different lengths).
-        strategy: ZIP, LINEAGE, or CROSS_PRODUCT.
-        artifact_store: Required for LINEAGE strategy (provenance access).
+        strategy: ZIP, LINEAGE, CROSS_PRODUCT, or NAME.
+        artifact_store: Required for LINEAGE and NAME strategies (provenance
+            and ``original_name`` access respectively).
+        artifact_types: Bulk ID-to-type map for the concrete input snapshot.
 
     Returns:
         Tuple of:
         - Aligned inputs: same roles, same length, positionally paired.
         - group_ids: list of group_id strings, one per paired index.
-          group_id = deterministic hash of sorted source artifact IDs in the pair.
+          Each hash includes the role, type and ID of every paired input.
 
     Raises:
         ValueError: If inputs are incompatible with the chosen strategy.
-        RuntimeError: If LINEAGE strategy is used without artifact_store.
+        RuntimeError: If LINEAGE or NAME strategy is used without artifact_store.
     """
     if strategy == GroupByStrategy.ZIP:
         matched_sets = _match_zip(inputs)
@@ -77,11 +91,14 @@ def group_inputs(
         matched_sets = _match_cross_product(inputs)
     elif strategy == GroupByStrategy.LINEAGE:
         matched_sets = _match_by_ancestry(inputs, artifact_store)
+    elif strategy == GroupByStrategy.NAME:
+        matched_sets = _match_by_name(inputs, artifact_store)
     else:
-        msg = f"Unknown group_by strategy: {strategy}"
+        # Defensive branch for non-enum values; mypy sees enum as exhausted.
+        msg = f"Unknown group_by strategy: {strategy}"  # type: ignore[unreachable]
         raise ValueError(msg)
 
-    return _matched_sets_to_aligned(inputs, matched_sets)
+    return _matched_sets_to_aligned(inputs, matched_sets, artifact_types)
 
 
 def match_inputs_to_primary(
@@ -92,17 +109,18 @@ def match_inputs_to_primary(
 ) -> dict[str, list[str]]:
     """Pair each non-primary role independently against a primary role.
 
-    For each primary artifact, finds the best match in EVERY other role.
-    Only complete matches (matched in all roles) are returned. This is
-    the pairing pattern used by FilterOp: primary_input paired independently
-    with each metric role.
+    Return only primary artifacts with matches in every other role. LINEAGE
+    retains all candidates matched to each primary and expands their
+    cross-product; NAME permits one match per role. Filter uses this pattern
+    to pair selected artifacts with metric roles.
 
     Args:
         primary_role: The anchor role name (e.g., "passthrough").
         inputs: Role-name to artifact-ID-list mapping. Must contain
             primary_role and at least one other role.
-        strategy: Matching strategy (typically LINEAGE).
-        artifact_store: Required for LINEAGE strategy.
+        strategy: LINEAGE (provenance ancestry) or NAME (shared
+            ``original_name`` stem).
+        artifact_store: Required for both LINEAGE and NAME strategies.
 
     Returns:
         Aligned inputs: all roles have same length, positionally aligned
@@ -110,8 +128,9 @@ def match_inputs_to_primary(
         in every other role. Unmatched primary artifacts are excluded.
 
     Raises:
-        ValueError: If primary_role is not in inputs or no other roles exist.
-        RuntimeError: If LINEAGE strategy is used without artifact_store.
+        ValueError: If primary_role is not in inputs, no other roles exist,
+            or strategy is not LINEAGE or NAME.
+        RuntimeError: If LINEAGE or NAME is used without artifact_store.
     """
     if primary_role not in inputs:
         msg = f"Primary role '{primary_role}' not found in inputs. Got: {sorted(inputs.keys())}"
@@ -127,10 +146,13 @@ def match_inputs_to_primary(
             primary_role, inputs, other_roles, artifact_store
         )
 
-    # For non-LINEAGE strategies, fall back to group_inputs per primary-other pair
-    # and intersect on complete matches. This is a generalisation but LINEAGE is
-    # the expected usage.
-    msg = f"match_inputs_to_primary currently supports LINEAGE strategy only, got: {strategy}"
+    if strategy == GroupByStrategy.NAME:
+        return _match_primary_by_name(primary_role, inputs, other_roles, artifact_store)
+
+    msg = (
+        "match_inputs_to_primary supports LINEAGE and NAME strategies only, "
+        f"got: {strategy}"
+    )
     raise ValueError(msg)
 
 
@@ -140,13 +162,12 @@ def validate_stem_match_uniqueness(
 ) -> None:
     """Validate that artifacts in the stem-matched role have unique names.
 
-    The stem-matching algorithm in ``capture_lineage_metadata()`` requires
-    unique ``original_name`` values within the stem-matched role. Duplicate
-    names cause ambiguous matches and silently dropped lineage edges.
+    NAME grouping requires one artifact per stripped filename stem in each
+    role so pairing is unambiguous.
 
     Args:
         role_name: Name of the role being validated (for error messages).
-        artifact_names: List of ``original_name`` values from the role's artifacts.
+        artifact_names: Extension-stripped names from one input role.
 
     Raises:
         ValueError: If any names are duplicated.
@@ -163,7 +184,7 @@ def validate_stem_match_uniqueness(
         msg = (
             f"Stem-matched role '{role_name}' has duplicate original_name values: "
             f"{sorted(duplicates)}. Each artifact in the stem-matched role must "
-            f"have a unique name for lineage inference."
+            f"have a unique name for NAME input grouping."
         )
         raise ValueError(msg)
 
@@ -210,7 +231,7 @@ def _match_cross_product(inputs: dict[str, list[str]]) -> list[dict[str, str]]:
 
     matched_sets: list[dict[str, str]] = []
     for combo in product(*lists):
-        matched_sets.append(dict(zip(roles, combo, strict=False)))
+        matched_sets.append(dict(zip(roles, combo, strict=True)))
 
     return matched_sets
 
@@ -253,8 +274,7 @@ def _match_by_ancestry(
     else:
         # Fallback: smaller set as targets for efficiency
         logger.warning(
-            "LINEAGE matching: step numbers unavailable, using smaller "
-            "role as targets"
+            "LINEAGE matching: step numbers unavailable, using smaller role as targets"
         )
         if len(inputs[role_a]) <= len(inputs[role_b]):
             target_role, candidate_role = role_a, role_b
@@ -265,7 +285,7 @@ def _match_by_ancestry(
     candidate_ids_by_role = {candidate_role: inputs[candidate_role]}
 
     # Load edges scoped to the step range of the involved artifacts
-    all_ids = pl.Series(list(inputs[role_a]) + list(inputs[role_b]))
+    all_ids = list(inputs[role_a]) + list(inputs[role_b])
     step_range = artifact_store.provenance.get_step_range(all_ids)
     if step_range is None:
         return []
@@ -278,6 +298,45 @@ def _match_by_ancestry(
         for candidate_id in role_matches[candidate_role]:
             matched_sets.append({target_role: target_id, candidate_role: candidate_id})
     return matched_sets
+
+
+def _match_by_name(
+    inputs: dict[str, list[str]],
+    artifact_store: ArtifactStore | None,
+) -> list[dict[str, str]]:
+    """Match artifacts whose ``original_name`` stem appears in every role.
+
+    Stems are computed via :func:`strip_extensions` (greedy ``strip_all=True``).
+    Each role must have unique stems among artifacts with a non-null
+    ``original_name``; duplicates raise ``ValueError``. For every stem present
+    in all roles, emits a matched set.
+
+    Artifacts without an ``original_name`` are silently skipped.
+    """
+    if artifact_store is None:
+        msg = "NAME matching requires artifact_store for original_name access."
+        raise RuntimeError(msg)
+
+    if any(not ids for ids in inputs.values()):
+        return []
+
+    stems_by_role = _build_stems_by_role(inputs, artifact_store)
+    role_stem_sets = [set(stems) for stems in stems_by_role.values()]
+    common_stems = set.intersection(*role_stem_sets)
+
+    missing = set.union(*role_stem_sets) - common_stems
+    if missing:
+        logger.warning(
+            "NAME matching: %d stem(s) present in some roles but not all; "
+            "skipped (sample: %s)",
+            len(missing),
+            sorted(missing)[:5],
+        )
+
+    return [
+        {role: stems_by_role[role][stem] for role in inputs}
+        for stem in sorted(common_stems)
+    ]
 
 
 def _match_primary_by_ancestry(
@@ -302,7 +361,7 @@ def _match_primary_by_ancestry(
     all_id_list = list(inputs[primary_role])
     for role in other_roles:
         all_id_list.extend(inputs[role])
-    step_range = artifact_store.provenance.get_step_range(pl.Series(all_id_list))
+    step_range = artifact_store.provenance.get_step_range(all_id_list)
     if step_range is None:
         return {role: [] for role in inputs}
     edges = artifact_store.provenance.load_edges_df(*step_range)
@@ -325,15 +384,92 @@ def _match_primary_by_ancestry(
     return aligned
 
 
+def _match_primary_by_name(
+    primary_role: str,
+    inputs: dict[str, list[str]],
+    other_roles: list[str],
+    artifact_store: ArtifactStore | None,
+) -> dict[str, list[str]]:
+    """Anchor-based NAME matching: primary stems against each other role.
+
+    For each primary artifact with an ``original_name``, find the artifact
+    in each other role that shares the same stem. With unique stems per role,
+    each primary matches at most one artifact per other role. Primary
+    artifacts unmatched in any role are dropped; output preserves the input
+    order of the primary role.
+    """
+    if artifact_store is None:
+        msg = "NAME matching requires artifact_store for original_name access."
+        raise RuntimeError(msg)
+
+    aligned: dict[str, list[str]] = {role: [] for role in inputs}
+
+    if any(not ids for ids in inputs.values()):
+        return aligned
+
+    stems_by_role = _build_stems_by_role(inputs, artifact_store)
+
+    # Forward lookup: primary_id -> stem. Reverse the role's stem dict.
+    primary_id_to_stem = {
+        aid: stem for stem, aid in stems_by_role[primary_role].items()
+    }
+
+    for primary_id in inputs[primary_role]:
+        stem = primary_id_to_stem.get(primary_id)
+        if stem is None:
+            continue
+        if not all(stem in stems_by_role[role] for role in other_roles):
+            continue
+        aligned[primary_role].append(primary_id)
+        for role in other_roles:
+            aligned[role].append(stems_by_role[role][stem])
+
+    return aligned
+
+
+def _build_stems_by_role(
+    inputs: dict[str, list[str]],
+    artifact_store: ArtifactStore,
+) -> dict[str, dict[str, str]]:
+    """Build per-role ``{stem: artifact_id}`` index for NAME matching.
+
+    Loads ``original_name`` for all input IDs in one pass, strips
+    extensions, and validates uniqueness within each role. Artifacts
+    without an ``original_name`` are silently skipped.
+
+    Raises:
+        ValueError: If any role has duplicate stems among named artifacts.
+    """
+    all_ids = [aid for ids in inputs.values() for aid in ids]
+    name_map = artifact_store.load_original_names(all_ids)
+
+    skipped = len(all_ids) - len(name_map)
+    if skipped:
+        logger.debug(
+            "NAME matching: %d artifact(s) skipped — no original_name", skipped
+        )
+
+    stems_by_role: dict[str, dict[str, str]] = {}
+    for role, ids in inputs.items():
+        role_stems = [
+            (strip_extensions(name_map[aid]), aid) for aid in ids if aid in name_map
+        ]
+        validate_stem_match_uniqueness(role, [stem for stem, _ in role_stems])
+        stems_by_role[role] = dict(role_stems)
+    return stems_by_role
+
+
 def _matched_sets_to_aligned(
     inputs: dict[str, list[str]],
     matched_sets: list[dict[str, str]],
+    artifact_types: dict[str, str],
 ) -> tuple[dict[str, list[str]], list[str]]:
     """Convert a list of matched dicts to positionally-aligned lists + group_ids.
 
     Args:
         inputs: Original inputs (used for role ordering).
         matched_sets: Each element is {role: artifact_id} for one pairing.
+        artifact_types: Concrete type keyed by artifact ID.
 
     Returns:
         Tuple of (aligned dict, group_ids list).
@@ -343,11 +479,16 @@ def _matched_sets_to_aligned(
     group_ids: list[str] = []
 
     for matched_set in matched_sets:
-        ids_at_index: list[str] = []
+        artifacts_at_index: dict[str, tuple[str, str]] = {}
         for role in roles:
             artifact_id = matched_set[role]
             aligned[role].append(artifact_id)
-            ids_at_index.append(artifact_id)
-        group_ids.append(compute_group_id(ids_at_index))
+            try:
+                artifact_type = artifact_types[artifact_id]
+            except KeyError as exc:
+                msg = f"Missing artifact type for grouped input {artifact_id}"
+                raise ValueError(msg) from exc
+            artifacts_at_index[role] = (artifact_type, artifact_id)
+        group_ids.append(compute_group_id(artifacts_at_index))
 
     return aligned, group_ids

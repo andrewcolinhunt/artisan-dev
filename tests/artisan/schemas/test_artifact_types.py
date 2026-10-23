@@ -10,7 +10,7 @@ from artisan.schemas.artifact.types import ArtifactTypes
 
 
 class TestBuiltinTypes:
-    """Built-in types are plain strings with correct values."""
+    """Built-in types compare equal to their string values."""
 
     def test_data_is_string(self) -> None:
         assert ArtifactTypes.DATA == "data"
@@ -26,21 +26,7 @@ class TestBuiltinTypes:
 
     def test_string_equality_both_directions(self) -> None:
         assert ArtifactTypes.DATA == "data"
-        assert ArtifactTypes.DATA == "data"
-
-
-class TestGet:
-    """String lookup via get()."""
-
-    def test_get_existing(self) -> None:
-        assert ArtifactTypes.get("data") == "data"
-
-    def test_get_unknown_raises(self) -> None:
-        try:
-            ArtifactTypes.get("nonexistent")
-            assert False, "Should have raised KeyError"
-        except KeyError:
-            pass
+        assert "data" == ArtifactTypes.DATA  # noqa: SIM300 -- Test the reverse comparison.
 
 
 class TestMembership:
@@ -105,20 +91,6 @@ class TestAnySentinel:
 
     def test_any_not_registered(self) -> None:
         assert ArtifactTypes.is_registered("any") is False
-
-
-class TestIsConcrete:
-    """Tests for is_concrete() helper."""
-
-    def test_builtin_is_concrete(self) -> None:
-        assert ArtifactTypes.is_concrete("data") is True
-        assert ArtifactTypes.is_concrete("metric") is True
-
-    def test_any_is_not_concrete(self) -> None:
-        assert ArtifactTypes.is_concrete("any") is False
-
-    def test_unknown_is_not_concrete(self) -> None:
-        assert ArtifactTypes.is_concrete("nonexistent") is False
 
 
 class TestMatches:

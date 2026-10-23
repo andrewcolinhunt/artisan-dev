@@ -1,122 +1,214 @@
 """Main coordinator for step execution.
 
 Ties together the three-phase workflow (dispatch, execute, commit) for
-both creator operations (dispatched via Prefect) and curator operations
-(executed locally in a subprocess).
+creator and curator operations.
 """
 
 from __future__ import annotations
 
 import logging
 import multiprocessing
+import os
 import resource
-import shutil
 import threading
 import time
-from concurrent.futures import ProcessPoolExecutor
+from collections.abc import Callable
+from concurrent.futures import CancelledError, Future, ProcessPoolExecutor, wait
 from concurrent.futures.process import BrokenProcessPool
+from contextvars import copy_context
+from copy import deepcopy
+from dataclasses import replace
 from datetime import UTC, datetime
-from pathlib import Path
-from typing import Any
+from typing import Any, Never, cast
 
-from artisan.execution.context.builder import build_curator_execution_context
+from fsspec import AbstractFileSystem
+from pydantic import BaseModel
+
+from artisan.errors import PersistenceIntegrityError
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator import (
-    _get_params,
     is_curator_operation,
     run_curator_flow,
 )
-from artisan.execution.inputs.grouping import group_inputs
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import record_execution_failure
+from artisan.execution.recording.commands import capture_commands
+from artisan.execution.recording.durable import configuration_recorder
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import record_execution_failure
+from artisan.execution.recording.replay_snapshot import build_replay_snapshot
+from artisan.execution.tool_endpoint.spec import validate_deployment_overrides
+from artisan.execution.utils import generate_execution_run_id
+from artisan.operations.base._param_docs import _params_class
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration.backends.base import BackendBase
 from artisan.orchestration.engine.batching import (
     generate_execution_unit_batches,
     get_batch_config,
 )
-from artisan.orchestration.engine.dispatch import _save_units
-from artisan.orchestration.engine.inputs import resolve_inputs
+from artisan.orchestration.engine.dispatch import failure_results_for_units
+from artisan.orchestration.engine.inputs import PreparedInputs, prepare_inputs
+from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
+from artisan.orchestration.engine.native_pool import _NativePoolOwnership
 from artisan.orchestration.engine.results import (
     aggregate_results,
+    classify_step_status,
     extract_execution_run_ids,
 )
+from artisan.orchestration.engine.worker_logs import persist_worker_logs
+from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
+from artisan.schemas.execution.cache_result import CacheHit
+from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.replay import RemoteObservation, ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+    StepDisposition,
+    StepStatus,
+)
+from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
-from artisan.storage.cache.cache_lookup import CacheHit, cache_lookup
+from artisan.storage.cache.cache_lookup import cache_lookup
 from artisan.storage.io.staging_verification import await_staging_files
-from artisan.utils.hashing import serialize_params
+from artisan.utils.command_supervisor import initialize_native_worker
+from artisan.utils.external_tools import redact_values
+from artisan.utils.hashing import effective_config_payload, serialize_params
+from artisan.utils.path import (
+    cancel_sentinel_path,
+    uri_join,
+    uri_parent,
+)
+from artisan.utils.process_call import execute_process_call, serialize_process_call
 from artisan.utils.spawn import suppress_main_reimport
 from artisan.utils.timing import phase_timer
 
 logger = logging.getLogger(__name__)
 
 
+def _validated_model_update[ModelT: BaseModel](
+    base_model: ModelT,
+    patch: dict[str, Any],
+) -> ModelT:
+    """Deep-merge a detached patch and validate the complete target model."""
+
+    def _merge(base: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+        merged = deepcopy(base)
+        for key, value in update.items():
+            current = merged.get(key)
+            if isinstance(current, dict) and isinstance(value, dict) and value:
+                merged[key] = _merge(current, value)
+            else:
+                merged[key] = deepcopy(value)
+        return merged
+
+    model_cls = type(base_model)
+    return model_cls.model_validate(_merge(base_model.model_dump(mode="python"), patch))
+
+
+def _raise_invalid_override(field_name: str, value: object) -> Never:
+    """Reject a malformed internal override carrier with a useful error."""
+    msg = f"{field_name} override must be a mapping, got {type(value).__name__}"
+    raise TypeError(msg)
+
+
 def instantiate_operation(
     operation_class: type[OperationDefinition],
-    params: dict[str, Any] | None,
-    resources: dict[str, Any] | None = None,
-    execution: dict[str, Any] | None = None,
-    environment: str | dict[str, Any] | None = None,
-    tool: dict[str, Any] | None = None,
+    ov: StepOverrides,
 ) -> OperationDefinition:
-    """Construct an operation instance from class, params, and overrides.
+    """Construct an operation instance from a class and coerced overrides.
+
+    Applies ``ov``'s params and per-step config overrides (runner resources,
+    batch strategy, environment, tool, compute provider, compute resources,
+    group_by) onto the class default. String selectors compile to ``active``
+    patches, and every model-valued patch is recursively merged into the
+    operation default and validated by the concrete target model.
 
     Args:
         operation_class: The operation class to instantiate.
-        params: User-provided parameters (merged into params sub-model or flat fields).
-        resources: Optional resource overrides (applied via model_copy).
-        execution: Optional execution overrides (applied via model_copy).
-        environment: Optional environment override. String selects the active
-            environment; dict deep-merges nested EnvironmentSpec fields.
-        tool: Optional tool overrides (applied via model_copy on instance.tool).
+        ov: The coerced per-step overrides.
 
     Returns:
         Fully configured operation instance.
     """
-    from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
+    params = ov.params
+    runner_resources: object = ov.runner_resources
+    batch_strategy: object = ov.batch_strategy
+    environment: object = ov.environment
+    tool: object = ov.tool
+    compute_provider: object = ov.compute_provider
+    compute_resources: object = ov.compute_resources
+    group_by = ov.group_by
 
     init_kwargs: dict[str, Any] = {}
-
-    if params:
-        if "params" in operation_class.model_fields:
-            # New-style: wrap user params into the params sub-model
-            params_cls = operation_class.model_fields["params"].annotation
-            init_kwargs["params"] = params_cls(**params)
+    params_cls = _params_class(operation_class)
+    if params is not None:
+        if params_cls is None:
+            if params:
+                msg = f"Operation {operation_class.name!r} declares no Params"
+                raise ValueError(msg)
         else:
-            # Flat fields
-            init_kwargs.update(params)
+            init_kwargs["params"] = params_cls.model_validate(params)
 
     instance = operation_class(**init_kwargs)
 
-    # Apply overrides via model_copy
+    # ``from_user`` has normalized every model-valued input to a mapping patch.
     updates: dict[str, Any] = {}
-    if resources:
-        updates["resources"] = instance.resources.model_copy(update=resources)
-    if execution:
-        updates["execution"] = instance.execution.model_copy(update=execution)
-    if tool and instance.tool is not None:
-        updates["tool"] = instance.tool.model_copy(update=tool)
-    if environment is not None:
-        if isinstance(environment, str):
-            updates["environments"] = instance.environments.model_copy(
-                update={"active": environment}
+    if runner_resources is not None:
+        if isinstance(runner_resources, dict):
+            updates["runner_resources"] = _validated_model_update(
+                instance.runner_resources,
+                runner_resources,
             )
         else:
-            # Deep-merge nested environment specs so partial overrides
-            # (e.g. {"docker": {"image": "v2"}}) don't discard other fields.
-            env_updates: dict[str, Any] = {}
-            for key, value in environment.items():
-                current = getattr(instance.environments, key, None)
-                if isinstance(current, EnvironmentSpec) and isinstance(value, dict):
-                    env_updates[key] = current.model_copy(update=value)
-                else:
-                    env_updates[key] = value
-            updates["environments"] = instance.environments.model_copy(
-                update=env_updates
+            _raise_invalid_override("runner_resources", runner_resources)
+    if batch_strategy is not None:
+        if isinstance(batch_strategy, dict):
+            updates["batch_strategy"] = _validated_model_update(
+                instance.batch_strategy,
+                batch_strategy,
             )
+        else:
+            _raise_invalid_override("batch_strategy", batch_strategy)
+    if tool is not None:
+        if not isinstance(tool, dict):
+            _raise_invalid_override("tool", tool)
+        if tool:
+            if instance.tool is None:
+                msg = f"Operation '{operation_class.name}' has no tool to override"
+                raise ValueError(msg)
+            updates["tool"] = _validated_model_update(instance.tool, tool)
+    if environment is not None:
+        environment_patch = (
+            {"active": environment} if isinstance(environment, str) else environment
+        )
+        if not isinstance(environment_patch, dict):
+            _raise_invalid_override("environment", environment)
+        environments = _validated_model_update(instance.environments, environment_patch)
+        environments.current()
+        updates["environments"] = environments
+    if compute_provider is not None:
+        provider_patch = (
+            {"active": compute_provider}
+            if isinstance(compute_provider, str)
+            else compute_provider
+        )
+        if not isinstance(provider_patch, dict):
+            _raise_invalid_override("compute_provider", compute_provider)
+        provider = _validated_model_update(instance.compute_provider, provider_patch)
+        provider.current()
+        updates["compute_provider"] = provider
+    if compute_resources is not None:
+        if isinstance(compute_resources, dict):
+            updates["compute_resources"] = _validated_model_update(
+                instance.compute_resources,
+                compute_resources,
+            )
+        else:
+            _raise_invalid_override("compute_resources", compute_resources)
+    if group_by is not None:
+        updates["group_by"] = group_by
     if updates:
         instance = instance.model_copy(update=updates)
 
@@ -125,25 +217,32 @@ def instantiate_operation(
 
 def check_cache_for_batch(
     execution_spec_id: str,
-    delta_root: Path,
+    delta_root: str,
+    config: PipelineConfig | None = None,
 ) -> CacheHit | None:
     """Check if an ExecutionUnit can be skipped due to cache hit.
 
     Args:
         execution_spec_id: Deterministic hash for the batch.
-        delta_root: Root path for Delta Lake tables.
+        delta_root: Root URI for Delta Lake tables.
+        config: Pipeline config for the storage backend. When None,
+            uses local filesystem defaults.
 
     Returns:
         CacheHit if a successful execution exists, None otherwise.
     """
-    executions_path = delta_root / TablePath.EXECUTIONS
-    execution_edges_path = delta_root / TablePath.EXECUTION_EDGES
-    result = cache_lookup(
-        executions_path,
+    from artisan.schemas.execution.storage_config import StorageConfig
+
+    storage = config.storage if config is not None else StorageConfig()
+    fs = storage.filesystem()
+    storage_options = storage.delta_storage_options()
+
+    return cache_lookup(
+        delta_root,
         execution_spec_id,
-        execution_edges_path=execution_edges_path,
+        fs=fs,
+        storage_options=storage_options,
     )
-    return result if isinstance(result, CacheHit) else None
 
 
 def build_step_result(
@@ -154,6 +253,11 @@ def build_step_result(
     failure_policy: FailurePolicy,
     metadata: dict[str, Any] | None = None,
     step_run_id: str | None = None,
+    disposition: StepDisposition | None = StepDisposition.EXECUTED,
+    status: StepStatus | None = None,
+    cancellation_status: CancellationStatus | None = None,
+    error: str | None = None,
+    actual_output_types: dict[str, str] | None = None,
 ) -> StepResult:
     """Build StepResult after step execution completes.
 
@@ -165,14 +269,28 @@ def build_step_result(
         failure_policy: Failure handling policy enum.
         metadata: Optional metadata dict (timings, diagnostics, etc.).
         step_run_id: Unique ID for this step attempt.
+        disposition: Whether usable results were executed or reused.
+        status: Explicit terminal status; otherwise classify counts by policy.
+        cancellation_status: Evidence associated with a cancellation request.
+        error: Failure or cancellation diagnostic.
+        actual_output_types: Verified output types for an empty-declaration curator.
 
     Returns:
         StepResult with execution metadata.
     """
-    # Extract output roles and types from operation
-    output_roles = {}
-    for role, spec in operation.outputs.items():
-        output_roles[role] = spec.artifact_type
+    classified = status or classify_step_status(
+        succeeded_count,
+        failed_count,
+        failure_policy,
+    )
+
+    # Unusable terminal states cannot expose output references.
+    output_roles: dict[str, str | None] = {}
+    if classified in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+        for role, spec in operation.outputs.items():
+            output_roles[role] = spec.artifact_type
+        if is_curator_operation(operation) and not operation.outputs:
+            output_roles.update(actual_output_types or {})
 
     builder = StepResultBuilder(
         step_name=operation.name,
@@ -184,18 +302,22 @@ def build_step_result(
     builder.add_success(succeeded_count)
     builder.add_failure(failed_count)
 
-    # With fail_fast, any failure means step failure
-    success_override = None
-    if failure_policy == FailurePolicy.FAIL_FAST and failed_count > 0:
-        success_override = False
-
-    return builder.build(success_override=success_override, metadata=metadata)
+    if classified in {StepStatus.FAILED, StepStatus.SKIPPED, StepStatus.CANCELLED}:
+        disposition = None
+    return builder.build(
+        classified,
+        disposition=disposition,
+        cancellation_status=cancellation_status,
+        error=error,
+        metadata=metadata,
+    )
 
 
 def _cancelled_result(
     operation: type[OperationDefinition] | OperationDefinition,
     step_number: int,
     failure_policy: FailurePolicy,
+    step_run_id: str | None = None,
 ) -> StepResult:
     """Build a StepResult indicating the step was cancelled before completion."""
     return build_step_result(
@@ -204,8 +326,53 @@ def _cancelled_result(
         succeeded_count=0,
         failed_count=0,
         failure_policy=failure_policy,
-        metadata={"cancelled": True},
+        status=StepStatus.CANCELLED,
+        cancellation_status=CancellationStatus.CONFIRMED,
+        step_run_id=step_run_id,
     )
+
+
+def _validate_cache_reuse(
+    config: PipelineConfig,
+    current_step_run_id: str | None,
+    cached_execution_run_ids: set[str],
+) -> list[str]:
+    """Validate the complete execution-cache selection in one bulk pass."""
+    if not cached_execution_run_ids or current_step_run_id is None:
+        return []
+    from artisan.storage.core.run_scope import validate_cached_executions
+
+    return validate_cached_executions(
+        config.delta_root,
+        current_step_run_id,
+        cached_execution_run_ids,
+        fs=config.storage.filesystem(),
+        storage_options=config.storage.delta_storage_options(),
+        files_root=config.files_root,
+    )
+
+
+def _stage_cache_reuse(
+    config: PipelineConfig,
+    current_step_run_id: str | None,
+    cached_execution_run_ids: list[str],
+    *,
+    step_number: int,
+    operation_name: str,
+) -> bool:
+    """Stage already-validated cache-reuse rows for the current step."""
+    if current_step_run_id is None or not cached_execution_run_ids:
+        return False
+    from artisan.storage.io.staging import StagingManager
+
+    staging = StagingManager(config.staging_root, config.storage.filesystem())
+    staging.stage_cache_reuse(
+        current_step_run_id,
+        cached_execution_run_ids,
+        step_number=step_number,
+        operation_name=operation_name,
+    )
+    return True
 
 
 def _all_inputs_empty(resolved_inputs: dict[str, list[str]]) -> bool:
@@ -225,6 +392,7 @@ def _skip_for_empty_inputs(
     failure_policy: FailurePolicy,
     *,
     log_label: str = "",
+    step_run_id: str | None = None,
 ) -> StepResult | None:
     """Return a skip StepResult if all input roles are empty, else None."""
     if not _all_inputs_empty(resolved_inputs):
@@ -241,103 +409,142 @@ def _skip_for_empty_inputs(
         succeeded_count=0,
         failed_count=0,
         failure_policy=failure_policy,
-        metadata={"skipped": True, "skip_reason": "empty_inputs"},
+        status=StepStatus.SKIPPED,
+        disposition=None,
+        metadata={"skip_reason": "empty_inputs"},
+        step_run_id=step_run_id,
     )
 
 
-def _commit_and_compact(
-    config: PipelineConfig,
-    runtime_env: RuntimeEnvironment,
-    step_number: int,
-    operation_name: str,
-    timings: dict[str, Any],
-    *,
-    has_work: bool,
-    compact: bool,
-) -> str | None:
-    """Run commit and compact phases, returning any commit error message."""
-    commit_error = None
-    with phase_timer("commit", timings):
-        if has_work:
-            try:
-                from artisan.storage.io.commit import DeltaCommitter
+def _persist_result(
+    result: StepResult,
+    execution_run_ids: list[str],
+    persist: Callable[[StepResult, tuple[str, ...]], StepResult] | None,
+) -> StepResult:
+    """Hand one terminal result and its exact dispatch IDs to the manager."""
+    if persist is None:
+        return result
+    return persist(result, tuple(execution_run_ids))
 
-                committer = DeltaCommitter(config.delta_root, config.staging_root)
-                committer.commit_all_tables(
-                    cleanup_staging=not runtime_env.preserve_staging,
-                    step_number=step_number,
-                    operation_name=operation_name,
+
+def _require_recorded_execution_ids(
+    results: list[UnitResult],
+) -> list[str]:
+    """Reject dispatched work that produced no committable worker seal identity."""
+    missing = [
+        index
+        for index, result in enumerate(results)
+        if not result.execution_run_ids
+        or any(not execution_id for execution_id in result.execution_run_ids)
+    ]
+    if missing:
+        msg = f"Dispatched execution results lack sealed staging identities: {missing}"
+        raise PersistenceIntegrityError(msg)
+    execution_ids = extract_execution_run_ids(results)
+    if len(execution_ids) != len(set(execution_ids)):
+        msg = "Dispatched execution results contain duplicate staging identities"
+        raise PersistenceIntegrityError(msg)
+    return execution_ids
+
+
+def _result_error(results: list[UnitResult], fallback: str | None = None) -> str | None:
+    """Return the first unit diagnostic, then an infrastructure fallback."""
+    return next(
+        (result.error for result in results if not result.success and result.error),
+        fallback,
+    )
+
+
+def _aggregate_cancellation(
+    results: list[UnitResult],
+    router_outcome: CancellationAcknowledgement | None,
+) -> CancellationAcknowledgement | None:
+    """Combine provider and per-unit cancellation evidence conservatively."""
+    outcomes = [
+        outcome
+        for outcome in [
+            router_outcome,
+            *(result.cancellation_acknowledgement for result in results),
+        ]
+        if outcome is not None
+    ]
+    if not outcomes:
+        return None
+    for status in (
+        CancellationStatus.UNKNOWN,
+        CancellationStatus.REQUESTED,
+        CancellationStatus.REJECTED,
+        CancellationStatus.CONFIRMED,
+    ):
+        matching = [outcome for outcome in outcomes if outcome.status == status]
+        if matching:
+            selected = matching[0]
+            if status == CancellationStatus.REQUESTED:
+                return CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    selected.message or "Cancellation remained unconfirmed",
                 )
-            except Exception as exc:
-                commit_error = f"{type(exc).__name__}: {exc}"
-                logger.error("Commit failed for step %d: %s", step_number, commit_error)
-
-    with phase_timer("compact", timings):
-        if has_work and compact:
-            _compact_step_tables(config.delta_root, config.staging_root)
-
-    return commit_error
+            return selected
+    return None
 
 
-def _build_step_metadata(
-    timings: dict[str, Any],
-    commit_error: str | None,
-    dispatch_error: str | None,
-) -> dict[str, Any]:
-    """Build the metadata dict for a StepResult."""
-    metadata: dict[str, Any] = {"timings": timings}
-    if commit_error:
-        metadata["commit_error"] = commit_error
-    if dispatch_error:
-        metadata["dispatch_error"] = dispatch_error
-    return metadata
-
-
-def _handle_dispatch_exception(
-    exc: Exception,
+def _unknown_cancellation_result(
+    operation: type[OperationDefinition] | OperationDefinition,
     step_number: int,
+    failure_policy: FailurePolicy,
+    outcome: CancellationAcknowledgement,
     *,
-    label: str = "Dispatch",
-    unit_count: int = 1,
-) -> tuple[str, list, int, int]:
-    """Handle a generic dispatch exception; returns (error, results, succeeded, failed)."""
-    dispatch_error = f"{type(exc).__name__}: {exc}"
-    logger.error(
-        "%s failed for step %d: %s",
-        label,
-        step_number,
-        dispatch_error,
+    step_run_id: str | None,
+) -> StepResult:
+    """Build a fail-closed terminal result for indeterminate cancellation."""
+    return build_step_result(
+        operation=operation,
+        step_number=step_number,
+        succeeded_count=0,
+        failed_count=0,
+        failure_policy=failure_policy,
+        status=StepStatus.FAILED,
+        disposition=None,
+        cancellation_status=CancellationStatus.UNKNOWN,
+        error=outcome.message or "Cancellation outcome is unknown",
+        step_run_id=step_run_id,
     )
-    return dispatch_error, [], 0, unit_count
+
+
+def _router_cancellation_evidence(
+    router: LifecycleRouter | None,
+) -> CancellationAcknowledgement:
+    """Keep missing or malformed dispatched ownership evidence uncertain."""
+    if router is None:
+        return CancellationAcknowledgement(
+            CancellationStatus.UNKNOWN,
+            "Dispatched work has no cancellation ownership evidence",
+        )
+    evidence = router.cancellation_acknowledgement
+    if evidence is None:
+        evidence = router.cancel()
+    return LifecycleRouter._validated_cancellation_evidence(evidence)
 
 
 def _verify_staging_if_needed(
-    backend: BackendBase,
-    results: list[dict[str, Any]],
+    step_runner: RunnerBase,
+    results: list[UnitResult],
     config: PipelineConfig,
     step_number: int,
     operation_name: str,
     timings: dict[str, Any],
 ) -> None:
-    """Run staging verification when the backend requires it."""
+    """Run staging verification when the step_runner requires it."""
     with phase_timer("verify_staging", timings):
-        if backend.orchestrator_traits.needs_staging_verification:
+        if step_runner.orchestrator_traits.needs_staging_verification:
             execution_run_ids = extract_execution_run_ids(results)
-            try:
-                await_staging_files(
-                    staging_root=config.staging_root,
-                    execution_run_ids=execution_run_ids,
-                    timeout_seconds=backend.orchestrator_traits.staging_verification_timeout,
-                    step_number=step_number,
-                    operation_name=operation_name,
-                )
-            except TimeoutError:
-                logger.warning(
-                    "Staging file verification timed out for step %d (%s). "
-                    "Proceeding to commit with available files.",
-                    step_number,
-                    operation_name,
-                )
+            await_staging_files(
+                staging_root=config.staging_root,
+                execution_run_ids=execution_run_ids,
+                timeout_seconds=step_runner.orchestrator_traits.staging_verification_timeout,
+                step_number=step_number,
+                operation_name=operation_name,
+            )
 
 
 def _finalize_timings(
@@ -354,85 +561,105 @@ def _finalize_timings(
 def _create_runtime_environment(
     config: PipelineConfig,
     operation: type[OperationDefinition] | OperationDefinition,
-    backend: BackendBase | None = None,
+    step_runner: RunnerBase | None = None,
 ) -> RuntimeEnvironment:
-    """Build a RuntimeEnvironment from pipeline config and backend traits."""
+    """Build a RuntimeEnvironment from pipeline config and step_runner traits."""
     # Curator operations don't need a sandbox (no materialization)
     is_curator = is_curator_operation(operation)
 
+    # failure_logs_root must be local (recorder._write_failure_log uses
+    # os.makedirs/open). For local delta_root keep the sibling-of-delta
+    # layout. For cloud delta_root derive from
+    # working_root, which RuntimeEnvironment already declares local.
+    if config.storage.is_local:
+        failure_logs_root = uri_join(uri_parent(config.delta_root), "logs", "failures")
+    else:
+        failure_logs_root = os.path.join(config.working_root, "logs", "failures")
+
     return RuntimeEnvironment(
-        delta_root_path=config.delta_root,
-        staging_root_path=config.staging_root,
-        working_root_path=None if is_curator else config.working_root,
-        failure_logs_root=config.delta_root.parent / "logs" / "failures",
+        delta_root=config.delta_root,
+        application_modules=config.application_modules,
+        staging_root=config.staging_root,
+        working_root=None if is_curator else config.working_root,
+        files_root=config.files_root,
+        failure_logs_root=failure_logs_root,
         preserve_staging=config.preserve_staging,
         preserve_working=config.preserve_working,
-        worker_id_env_var=backend.worker_traits.worker_id_env_var if backend else None,
-        shared_filesystem=backend.worker_traits.shared_filesystem if backend else False,
-        compute_backend_name=backend.name if backend else "local",
+        worker_id_env_var=step_runner.worker_traits.worker_id_env_var
+        if step_runner
+        else None,
+        shared_filesystem=step_runner.worker_traits.shared_filesystem
+        if step_runner
+        else False,
+        compute_backend_name=step_runner.name if step_runner else "local",
+        storage=config.storage,
     )
 
 
 def execute_step(
-    operation_class: type[OperationDefinition],
+    operation: OperationDefinition,
     inputs: Any,
-    params: dict[str, Any] | None,
-    backend: BackendBase,
-    resources: dict[str, Any] | None = None,
-    execution: dict[str, Any] | None = None,
-    environment: str | dict[str, Any] | None = None,
-    tool: dict[str, Any] | None = None,
+    ov: StepOverrides,
+    step_runner: RunnerBase,
+    *,
     step_number: int = 0,
     config: PipelineConfig | None = None,
-    failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
-    compact: bool = True,
-    step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
-    skip_cache: bool = False,
     step_run_id: str | None = None,
     step_run_ids: dict[int, str] | None = None,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
 ) -> StepResult:
     """Execute a single pipeline step.
 
     This is the main entry point called by PipelineManager.run().
     It coordinates the three-phase workflow: dispatch, execute, commit.
 
-    For curator operations (MergeOp, FilterOp), a separate execution
-    path is used that executes locally without worker dispatch.
+    Curators use one local spawned worker for memory isolation. Creators
+    dispatch through the configured lifecycle runner.
 
     Args:
-        operation_class: OperationDefinition subclass to execute.
+        operation: Prepared operation instance to execute.
         inputs: Input specification (see PipelineManager.run() for formats).
-        params: Parameter overrides.
-        backend: Backend to use for execution.
-        resources: Resource overrides (cpus, memory_gb, etc.).
-        execution: Batching/scheduling overrides (artifacts_per_unit, etc.).
-        environment: Environment override (string or dict).
-        tool: Tool overrides (executable, interpreter, etc.).
+        ov: Coerced per-step overrides (params + cache/runtime knobs).
+        step_runner: Resolved lifecycle runner to use for execution.
         step_number: Pipeline step number.
         config: Pipeline configuration.
-        failure_policy: "continue" or "fail_fast".
-        compact: Whether to run Delta Lake compaction.
-        step_spec_id: Pre-computed step spec ID from PipelineManager. When
-            provided for curator ops, used directly as execution_spec_id to
-            skip the O(N log N) compute_execution_spec_id call.
-        skip_cache: Bypass execution-level cache lookups.
+        cancel_event: Set to request cooperative cancellation between phases.
         step_run_id: Unique ID for this step attempt (for output isolation).
-        step_run_ids: Mapping of upstream step_number to step_run_id
-            for scoped output resolution.
+        step_run_ids: Upstream attempt IDs for unprepared input references.
+        persist_result: Manager callback that commits the terminal result and
+            exact worker execution IDs before publishing success.
 
     Returns:
         StepResult with output references and execution metadata.
     """
-    operation = instantiate_operation(
-        operation_class, params, resources, execution, environment, tool
+    validate_deployment_overrides(operation)
+    user_overrides = ov.params or {}
+    config = cast(PipelineConfig, config)
+    if not isinstance(inputs, PreparedInputs):
+        inputs = prepare_inputs(
+            inputs,
+            config.delta_root,
+            config.storage.filesystem(),
+            group_by=operation.group_by,
+            step_run_ids=step_run_ids,
+            storage_options=config.storage.delta_storage_options(),
+            files_root=config.files_root,
+        )
+
+    # Cache-affecting config (environment, tool, compute_provider,
+    # compute_resources, group_by, version) read off the instantiated op —
+    # class defaults + applied overrides — folded into config_overrides for
+    # hashing, symmetric with the merged-params channel.
+    config_overrides = effective_config_payload(operation)
+
+    # Resolve runtime knobs against pipeline defaults: ov carries the raw
+    # per-step values; an unset one falls back to config.
+    failure_policy = (
+        ov.failure_policy if ov.failure_policy is not None else config.failure_policy
     )
-    user_overrides = params or {}
+    skip_cache = ov.skip_cache or config.skip_cache or not operation.cacheable
 
-    # Merge environment + tool into config_overrides for hashing
-    config_overrides = _merge_config_overrides(environment, tool)
-
-    # Check if this is a curator operation
     if is_curator_operation(operation):
         return _execute_curator_step(
             operation=operation,
@@ -441,142 +668,166 @@ def execute_step(
             step_number=step_number,
             config=config,
             failure_policy=failure_policy,
-            compact=compact,
             user_overrides=user_overrides,
-            step_spec_id=step_spec_id,
             cancel_event=cancel_event,
             skip_cache=skip_cache,
             step_run_id=step_run_id,
-            step_run_ids=step_run_ids,
+            persist_result=persist_result,
         )
 
-    # Standard creator operation execution
     return _execute_creator_step(
         operation=operation,
         inputs=inputs,
-        backend=backend,
+        step_runner=step_runner,
         config_overrides=config_overrides,
         step_number=step_number,
         config=config,
         failure_policy=failure_policy,
-        compact=compact,
         user_overrides=user_overrides,
         cancel_event=cancel_event,
         skip_cache=skip_cache,
         step_run_id=step_run_id,
-        step_run_ids=step_run_ids,
+        persist_result=persist_result,
     )
 
 
-def _merge_config_overrides(
-    environment: str | dict[str, Any] | None,
-    tool: dict[str, Any] | None,
-) -> dict[str, Any] | None:
-    """Merge environment and tool overrides into a single dict for hashing."""
-    merged: dict[str, Any] = {}
-    if environment is not None:
-        if isinstance(environment, str):
-            merged["environment"] = environment
-        else:
-            merged["environment"] = environment
-    if tool:
-        merged["tool"] = tool
-    return merged or None
+def execute_prepared_unit(
+    unit: ExecutionUnit,
+    runtime: RuntimeEnvironment,
+    runner: RunnerBase,
+    config: PipelineConfig,
+    cancel_event: threading.Event,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult],
+) -> StepResult:
+    """Dispatch precisely one configured unit without preparation or cache lookup."""
+    kwargs: dict[str, Any] = {
+        "operation": unit.operation,
+        "inputs": None,
+        "step_number": unit.step_number,
+        "config": config,
+        "failure_policy": config.failure_policy,
+        "user_overrides": unit.user_overrides,
+        "cancel_event": cancel_event,
+        "skip_cache": True,
+        "step_run_id": unit.step_run_id,
+        "persist_result": persist_result,
+        "prepared_unit": unit,
+        "prepared_runtime": runtime,
+    }
+    if is_curator_operation(unit.operation):
+        return _execute_curator_step(**kwargs)
+    return _execute_creator_step(step_runner=runner, **kwargs)
+
+
+def _synthetic_replay_snapshot(unit: ExecutionUnit) -> ReplaySnapshot:
+    """Keep driver evidence while admitting that lost remote work is unknown."""
+    snapshot = unit.replay_snapshot or ReplaySnapshot.unavailable(
+        "worker_evidence_unavailable"
+    )
+    if unit.operation.compute_provider.active != "local":
+        snapshot = snapshot.model_copy(
+            update={
+                "remote_identity": [
+                    RemoteObservation(dispatch_index=0, status="unavailable")
+                ]
+            }
+        )
+    if snapshot.diagnostic is not None:
+        snapshot = snapshot.model_copy(
+            update={
+                "diagnostic": snapshot.diagnostic.model_copy(
+                    update={"status": "unavailable"}
+                )
+            }
+        )
+    return snapshot
 
 
 def _execute_curator_step(
     operation: OperationDefinition,
-    inputs: Any,
+    inputs: PreparedInputs | None,
     config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
-    compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
-    step_spec_id: str | None = None,
     cancel_event: threading.Event | None = None,
     skip_cache: bool = False,
     step_run_id: str | None = None,
-    step_run_ids: dict[int, str] | None = None,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
+    prepared_unit: ExecutionUnit | None = None,
+    prepared_runtime: RuntimeEnvironment | None = None,
 ) -> StepResult:
-    """Execute a curator operation locally without Prefect dispatch.
+    """Execute a curator operation locally in an isolated subprocess.
 
-    Curator ops produce a single ExecutionUnit and run in a subprocess
-    for memory isolation, bypassing Prefect's JSONB size limit.
+    Curator ops produce a single ExecutionUnit and use a subprocess for
+    memory isolation.
 
     Args:
         operation: Fully configured curator operation instance.
         inputs: Input specification.
-        config_overrides: Merged environment + tool overrides (for hashing only).
+        config_overrides: Effective operation configuration used for hashing.
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
-        compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
-        step_spec_id: Pre-computed step spec ID; when provided, reused as
-            execution_spec_id and cache check is skipped.
+        cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
-        step_run_ids: Upstream step_number to step_run_id mapping.
+        persist_result: Manager callback for the result and worker seal IDs.
+        prepared_unit: Exact diagnostic unit that bypasses preparation and caches.
+        prepared_runtime: Diagnostic runtime whose roots must be preserved.
 
     Returns:
         StepResult with output references and execution metadata.
     """
+    # All production callers supply config; narrow for type-checker only.
+    config = cast(PipelineConfig, config)
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
 
-    # --- resolve_inputs phase ---
-    with phase_timer("resolve_inputs", timings):
-        resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
-        )
-        total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
-        if total_artifacts > 0:
-            logger.debug(
-                "Step %d (%s): resolved %d input artifacts",
+    if prepared_unit is None:
+        assert inputs is not None
+        # --- resolve_inputs phase ---
+        with phase_timer("resolve_inputs", timings):
+            paired_inputs = inputs.inputs
+            group_ids = inputs.group_ids
+            total_artifacts = sum(len(ids) for ids in paired_inputs.values())
+            if total_artifacts > 0:
+                logger.debug(
+                    "Step %d (%s): resolved %d input artifacts",
+                    step_number,
+                    operation.name,
+                    total_artifacts,
+                )
+
+            skip_result = _skip_for_empty_inputs(
+                operation,
+                paired_inputs,
                 step_number,
-                operation.name,
-                total_artifacts,
+                failure_policy,
+                step_run_id=step_run_id,
             )
+            if skip_result is not None:
+                return skip_result
 
-        skip_result = _skip_for_empty_inputs(
-            operation, resolved_inputs, step_number, failure_policy
-        )
-        if skip_result is not None:
-            return skip_result
-
-        # Framework pairing for curator ops with group_by
-        if operation.group_by is not None:
-            from artisan.storage.core.artifact_store import ArtifactStore
-
-            artifact_store = ArtifactStore(config.delta_root)
-            paired_inputs, group_ids = group_inputs(
-                resolved_inputs, operation.group_by, artifact_store
-            )
-        else:
-            paired_inputs = resolved_inputs
-            group_ids = None
-
-    # --- batch_and_cache phase ---
-    with phase_timer("batch_and_cache", timings):
-        if step_spec_id is not None:
-            # Fast path: step-level cache in PipelineManager already validated
-            # inputs via step_spec_id. Reuse it directly as execution_spec_id
-            # to skip the O(N log N) compute_execution_spec_id call.
-            spec_id = step_spec_id
-        else:
-            # Fallback: direct calls without PipelineManager (tests, standalone)
+        # --- batch_and_cache phase ---
+        with phase_timer("batch_and_cache", timings):
             merged_params = serialize_params(operation)
             from artisan.utils.hashing import compute_execution_spec_id
 
             spec_id = compute_execution_spec_id(
                 operation_name=operation.name,
-                inputs=paired_inputs,
+                inputs=inputs.cache_inputs,
                 params=merged_params,
                 config_overrides=config_overrides,
             )
             if not skip_cache:
-                cache_result = check_cache_for_batch(spec_id, config.delta_root)
+                cache_result = check_cache_for_batch(
+                    spec_id,
+                    config.delta_root,
+                    config=config,
+                )
                 if cache_result is not None:
                     logger.info(
                         "Step %d (%s) CACHED — skipping execution",
@@ -584,55 +835,109 @@ def _execute_curator_step(
                         operation.name,
                     )
                     cached_count = sum(len(ids) for ids in paired_inputs.values()) or 1
-                    return build_step_result(
+                    validated_reuse = _validate_cache_reuse(
+                        config,
+                        step_run_id,
+                        {cache_result.execution_run_id},
+                    )
+                    if cancel_event is not None and cancel_event.is_set():
+                        return _cancelled_result(
+                            operation,
+                            step_number,
+                            failure_policy,
+                            step_run_id=step_run_id,
+                        )
+                    _stage_cache_reuse(
+                        config,
+                        step_run_id,
+                        validated_reuse,
+                        step_number=step_number,
+                        operation_name=operation.name,
+                    )
+                    cached_types, cached_metadata = _curator_summary(
+                        config, cache_result.execution_run_id
+                    )
+                    _finalize_timings(timings, total_start, step_number, "Curator")
+                    result = build_step_result(
                         operation=operation,
                         step_number=step_number,
                         succeeded_count=cached_count,
                         failed_count=0,
                         failure_policy=failure_policy,
+                        disposition=StepDisposition.CACHE_HIT,
+                        metadata={**cached_metadata, "timings": timings},
+                        actual_output_types=cached_types,
+                        step_run_id=step_run_id,
                     )
+                    return _persist_result(result, [], persist_result)
 
-    # --- cancel check: before execute ---
-    if cancel_event is not None and cancel_event.is_set():
-        return _cancelled_result(operation, step_number, failure_policy)
+        # --- cancel check: before execute ---
+        if cancel_event is not None and cancel_event.is_set():
+            return _cancelled_result(
+                operation, step_number, failure_policy, step_run_id=step_run_id
+            )
 
-    # Create single ExecutionUnit with all inputs
-    unit = ExecutionUnit(
-        operation=operation,
-        inputs=paired_inputs,
-        execution_spec_id=spec_id,
-        step_number=step_number,
-        group_ids=group_ids,
-        user_overrides=user_overrides,
-        step_run_id=step_run_id,
-    )
+        unit = ExecutionUnit(
+            operation=operation,
+            inputs=paired_inputs,
+            execution_spec_id=spec_id,
+            step_number=step_number,
+            group_ids=group_ids,
+            user_overrides=user_overrides,
+            step_run_id=step_run_id,
+        )
+
+        unit.replay_snapshot = build_replay_snapshot(
+            unit, _create_runtime_environment(config, operation), inputs.cache_inputs
+        )
+
+    else:
+        unit = prepared_unit
+        paired_inputs = unit.inputs
 
     # --- execute phase ---
     dispatch_error: str | None = None
+    actual_types: dict[str, str] = {}
+    metadata: dict[str, Any] = {}
+    native_ownership: _NativePoolOwnership | None = None
+    native_returned = False
     with phase_timer("execute", timings):
-        # Create RuntimeEnvironment
-        runtime_env = _create_runtime_environment(config, operation)
+        runtime_env = prepared_runtime or _create_runtime_environment(config, operation)
 
         # Capture before subprocess spawn — needed for failure record on kill
         timestamp_start = datetime.now(UTC)
-        params_dict = _get_params(operation)
 
-        # Execute in subprocess for memory isolation
         try:
-            staging_result = _run_curator_in_subprocess(unit, runtime_env, cancel_event)
+            native_ownership = _NativePoolOwnership()
+            staging_result = _run_curator_in_subprocess(
+                unit, runtime_env, cancel_event, ownership=native_ownership
+            )
+            native_returned = True
             results = [
-                {
-                    "success": staging_result.success,
-                    "error": staging_result.error,
-                    "item_count": (
+                UnitResult(
+                    success=staging_result.success,
+                    error=staging_result.error,
+                    item_count=(
                         len(staging_result.artifact_ids)
                         if staging_result.success
-                        else 1
+                        else unit.get_batch_size() or 1
                     ),
-                    "execution_run_ids": [staging_result.execution_run_id],
-                }
+                    execution_run_ids=[staging_result.execution_run_id]
+                    if staging_result.execution_run_id
+                    else [],
+                    cancellation_acknowledgement=staging_result.cancellation_acknowledgement,
+                )
             ]
-            succeeded, failed = aggregate_results(results, failure_policy)
+            if staging_result.cancellation_acknowledgement is None:
+                results = _synthesize_missing_failure_records(
+                    [unit],
+                    results,
+                    runtime_env,
+                    timestamp_start,
+                    user_overrides,
+                    step_run_id=step_run_id,
+                )
+            succeeded, failed = aggregate_results(results)
 
             # Log filter-specific diagnostics
             if operation.name == "filter":
@@ -645,102 +950,241 @@ def _execute_curator_step(
                     total_input,
                     total_input - succeeded,
                 )
-        except BrokenProcessPool:
-            if cancel_event is not None and cancel_event.is_set():
-                error_msg = "Curator subprocess killed during cancellation"
-            else:
-                error_msg = _format_subprocess_kill_error(unit)
-            logger.error("Step %d (%s): %s", step_number, operation.name, error_msg)
-
-            synthetic_run_id = f"killed-{unit.execution_spec_id[:24]}"
-            execution_context = build_curator_execution_context(
-                execution_run_id=synthetic_run_id,
-                execution_spec_id=unit.execution_spec_id,
-                step_number=unit.step_number,
-                timestamp_start=timestamp_start,
-                worker_id=0,
-                delta_root_path=runtime_env.delta_root_path,
-                staging_root_path=runtime_env.staging_root_path,
-                operation=unit.operation,
-                compute_backend_name=runtime_env.compute_backend_name,
-                shared_filesystem=runtime_env.shared_filesystem,
+        except Exception as exc:
+            dispatch_error, results, succeeded, failed = _record_dispatch_failure(
+                exc,
+                [unit],
+                runtime_env,
+                timestamp_start,
+                user_overrides,
+                step_number=step_number,
                 step_run_id=step_run_id,
             )
-            staging_result = record_execution_failure(
-                execution_context=execution_context,
-                error=error_msg,
-                inputs=unit.inputs,
-                timestamp_end=datetime.now(UTC),
-                params=params_dict,
-                user_overrides=user_overrides,
-                failure_logs_root=runtime_env.failure_logs_root,
-            )
-            results = [
-                {
-                    "success": False,
-                    "error": error_msg,
-                    "item_count": 1,
-                    "execution_run_ids": [synthetic_run_id],
-                }
-            ]
-            succeeded, failed = 0, 1
-        except RuntimeError:
-            raise  # fail_fast — intentional abort
-        except Exception as exc:
-            dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
-                exc, step_number
-            )
+        finally:
+            if native_ownership is not None:
+                native_ownership.finish(
+                    failed=not native_returned, cancel_event=cancel_event
+                )
 
-    # --- verify_staging phase (no-op: curator runs in-process, no NFS delay) ---
+    # The curator child uses local staging, so no shared-filesystem poll is needed.
     with phase_timer("verify_staging", timings):
         pass
 
-    # --- cancel check: before commit ---
+    cancellation_outcome = _aggregate_cancellation(results, None)
     if cancel_event is not None and cancel_event.is_set():
-        return _cancelled_result(operation, step_number, failure_policy)
+        if native_ownership is None:
+            native_outcome = CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN, "Curator ownership evidence is missing"
+            )
+        elif native_ownership.cancelled:
+            native_outcome = native_ownership.acknowledgement()
+        elif native_ownership.closed:
+            native_outcome = CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Curator scope completed before cancellation",
+            )
+        else:
+            native_outcome = CancellationAcknowledgement(
+                CancellationStatus.UNKNOWN, native_ownership.reason
+            )
+        cancellation_outcome = _aggregate_cancellation(results, native_outcome)
+    if (
+        cancellation_outcome is not None
+        and cancellation_outcome.status == CancellationStatus.UNKNOWN
+    ):
+        return _unknown_cancellation_result(
+            operation,
+            step_number,
+            failure_policy,
+            cancellation_outcome,
+            step_run_id=step_run_id,
+        )
 
-    commit_error = _commit_and_compact(
-        config,
-        runtime_env,
-        step_number,
-        operation.name,
-        timings,
-        has_work=bool(results),
-        compact=compact,
-    )
+    if (
+        cancellation_outcome is not None
+        and cancellation_outcome.status == CancellationStatus.CONFIRMED
+    ):
+        return _cancelled_result(
+            operation, step_number, failure_policy, step_run_id=step_run_id
+        )
+
     _finalize_timings(timings, total_start, step_number, "Curator")
 
-    return build_step_result(
+    status = classify_step_status(
+        succeeded,
+        failed,
+        failure_policy,
+        infrastructure_error=dispatch_error is not None,
+    )
+
+    if status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+        actual_types, metadata = _curator_summary(
+            config,
+            staging_result.execution_run_id,
+            staging_path=staging_result.staging_path,
+        )
+
+    result = build_step_result(
         operation=operation,
         step_number=step_number,
         succeeded_count=succeeded,
         failed_count=failed,
         failure_policy=failure_policy,
-        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
+        status=status,
+        disposition=StepDisposition.EXECUTED,
+        cancellation_status=(
+            CancellationStatus.REJECTED
+            if cancellation_outcome is not None
+            and cancellation_outcome.status == CancellationStatus.REJECTED
+            else None
+        ),
+        error=_result_error(results, dispatch_error),
+        metadata={**metadata, "timings": timings},
+        actual_output_types=actual_types,
         step_run_id=step_run_id,
     )
+    execution_ids = extract_execution_run_ids(results)
+    if persist_result is not None:
+        execution_ids = _require_recorded_execution_ids(results)
+    return _persist_result(result, execution_ids, persist_result)
+
+
+def _curator_summary(
+    config: PipelineConfig,
+    execution_run_id: str | None,
+    *,
+    staging_path: str | None = None,
+) -> tuple[dict[str, str], dict[str, Any]]:
+    """Read the successful curator's sealed or committed result evidence."""
+    from artisan.storage.core.curator_result import (
+        curator_result_summary,
+        read_result_evidence,
+    )
+    from artisan.storage.io.worker_seal import read_worker_files
+
+    staged = None
+    if staging_path is not None:
+        files = read_worker_files(staging_path, config.storage.filesystem())
+        staged = {
+            table.value: files[f"{table.table_name}.parquet"][1]
+            for table in (
+                TablePath.EXECUTIONS,
+                TablePath.EXECUTION_EDGES,
+                TablePath.ARTIFACT_INDEX,
+            )
+            if f"{table.table_name}.parquet" in files
+        }
+    frames = read_result_evidence(
+        config.delta_root,
+        fs=config.storage.filesystem(),
+        storage_options=config.storage.delta_storage_options(),
+        staged=staged,
+    )
+    return curator_result_summary(
+        frames, {execution_run_id} if execution_run_id else set()
+    )
+
+
+def _dispatch_curator(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    ownership: _NativePoolOwnership,
+) -> Future[Future[StagingResult]]:
+    """Keep user serialization and process creation off the cancellation observer."""
+    dispatched: Future[Future[StagingResult]] = Future()
+    if not ownership.begin_dispatch():
+        dispatched.set_exception(CancelledError())
+        return dispatched
+
+    def submit() -> None:
+        try:
+            call = serialize_process_call(run_curator_flow, unit, runtime_env)
+            if ownership.cancelled:
+                raise CancelledError
+            with suppress_main_reimport():
+                pool = ProcessPoolExecutor(
+                    max_workers=1,
+                    mp_context=multiprocessing.get_context("spawn"),
+                    initializer=initialize_native_worker,
+                    initargs=(ownership.supervisor.attachment,),
+                )
+                ownership.executor = pool
+                dispatched.set_result(pool.submit(execute_process_call, call))
+        except BaseException as exc:
+            dispatched.set_exception(exc)
+        finally:
+            ownership.end_dispatch()
+
+    context = copy_context()
+    dispatcher = threading.Thread(target=lambda: context.run(submit), daemon=True)
+    try:
+        dispatcher.start()
+    except BaseException:
+        ownership.end_dispatch()
+        raise
+    return dispatched
 
 
 def _run_curator_in_subprocess(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
     cancel_event: threading.Event | None = None,
+    *,
+    ownership: _NativePoolOwnership,
 ) -> StagingResult:
-    """Run curator flow in a spawned subprocess for memory isolation."""
-    ctx = multiprocessing.get_context("spawn")
-    with (
-        suppress_main_reimport(),
-        ProcessPoolExecutor(max_workers=1, mp_context=ctx) as pool,
-    ):
-        future = pool.submit(run_curator_flow, unit, runtime_env, 0)
+    """Run a curator under the same native command/worker ownership as creators."""
+    result = StagingResult(success=False, error="Curator work did not complete")
+    failed = False
+    try:
+        dispatched = _dispatch_curator(unit, runtime_env, ownership)
+        future: Future[StagingResult] | None = None
         while True:
-            try:
-                return future.result(timeout=0.5)
-            except TimeoutError as err:
-                if cancel_event is not None and cancel_event.is_set():
-                    msg = "Curator interrupted by cancellation"
-                    raise RuntimeError(msg) from err
-                continue
+            if cancel_event is not None and cancel_event.is_set():
+                ownership.request_cancel(time.monotonic() + 10.0)
+            if dispatched.done():
+                if future is None:
+                    future = dispatched.result()
+                if future.done():
+                    result = future.result()
+                    break
+            if ownership.advance():
+                failed = True
+                break
+            if future is None:
+                wait([dispatched], timeout=0.02)
+            else:
+                wait([future], timeout=0.02)
+    except Exception as exc:
+        failed = True
+        error = (
+            _format_subprocess_kill_error(unit)
+            if isinstance(exc, BrokenProcessPool)
+            else f"{type(exc).__name__}: {exc}"
+        )
+        recorder = configuration_recorder(unit.operation)
+        error = recorder.sanitize(error)
+        error = redact_values(error, (ownership.supervisor.attachment["secret"],))
+        result = StagingResult(success=False, error=error)
+    except (KeyboardInterrupt, SystemExit):
+        failed = True
+        raise
+    finally:
+        closed = ownership.finish(failed=failed, cancel_event=cancel_event)
+    if not closed:
+        result = replace(result, success=False, error=ownership.reason)
+    if ownership.cancelled:
+        result = replace(
+            result, cancellation_acknowledgement=ownership.acknowledgement()
+        )
+    elif cancel_event is not None and cancel_event.is_set():
+        result = replace(
+            result,
+            cancellation_acknowledgement=CancellationAcknowledgement(
+                CancellationStatus.REJECTED,
+                "Curator scope completed before cancellation",
+            ),
+        )
+    return result
 
 
 def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
@@ -754,7 +1198,7 @@ def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
     ]
 
     try:
-        with Path("/proc/meminfo").open() as f:
+        with open("/proc/meminfo") as f:
             meminfo = {}
             for line in f:
                 key, _, value = line.partition(":")
@@ -775,189 +1219,385 @@ def _format_subprocess_kill_error(unit: ExecutionUnit) -> str:
     return " ".join(parts)
 
 
+def _synthesize_failure_record(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    error: str,
+    timestamp_start: datetime,
+    user_overrides: dict[str, Any] | None,
+    *,
+    step_run_id: str | None,
+) -> str:
+    """Stage a synthetic failure record for a unit the worker left unrecorded.
+
+    Covers the two shapes where the worker stages nothing itself: a process
+    pool break (``BrokenProcessPool``) that kills the worker mid-run, and a
+    pre-try failure (an unimportable or unpicklable op caught in the dispatch
+    task) that fails before the executor's own record path. Also writes the
+    human failure log. Fully best-effort — any synthesis error is swallowed so
+    it never crashes the step.
+
+    Args:
+        unit: The execution unit whose failure went unrecorded.
+        runtime_env: Runtime paths and storage for the failing step.
+        error: Error string to persist (and write to the failure log).
+        timestamp_start: Start time captured before dispatch.
+        user_overrides: User-provided parameter overrides for the record.
+        step_run_id: Owning attempt ID, or None for direct executor calls.
+
+    Returns:
+        The fresh synthetic execution run id, or ``""`` if
+        synthesis itself failed.
+    """
+    synthetic_run_id = generate_execution_run_id(
+        unit.execution_spec_id, datetime.now(UTC), worker_id=0
+    )
+    try:
+        execution_context = build_execution_context(
+            execution_run_id=synthetic_run_id,
+            execution_spec_id=unit.execution_spec_id,
+            step_number=unit.step_number,
+            timestamp_start=timestamp_start,
+            runtime_env=runtime_env.model_copy(update={"worker_id": 0}),
+            operation=unit.operation,
+            step_run_id=step_run_id,
+        )
+        with capture_commands(unit.operation) as commands:
+            configuration_recorder(
+                unit.operation, params=user_overrides, recorder=commands
+            )
+            commands.add_environment(
+                {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
+            )
+            record_execution_failure(
+                command_recording=CommandRecording.unavailable(),
+                replay_snapshot=_synthetic_replay_snapshot(unit),
+                replay_of_execution_run_id=unit.replay_of_execution_run_id,
+                execution_context=execution_context,
+                error=error,
+                inputs=unit.inputs,
+                timestamp_end=datetime.now(UTC),
+                params=serialize_params(unit.operation),
+                user_overrides=user_overrides,
+                failure_logs_root=runtime_env.failure_logs_root,
+            )
+    except Exception:
+        logger.exception(
+            "Failed to synthesize failure record for unit %s",
+            unit.execution_spec_id,
+        )
+        return ""
+    return synthetic_run_id
+
+
+def _synthesize_missing_failure_records(
+    units: list[ExecutionUnit],
+    results: list[UnitResult],
+    runtime_env: RuntimeEnvironment,
+    timestamp_start: datetime,
+    user_overrides: dict[str, Any] | None,
+    *,
+    step_run_id: str | None,
+) -> list[UnitResult]:
+    """Backfill records for failed units whose worker recorded nothing.
+
+    A ``UnitResult`` that failed before the executor's try-block staged
+    anything (an unimportable or unpicklable op caught in the dispatch task)
+    carries an empty ``execution_run_ids``. Synthesize a failure record for
+    each so ``inspect_failures`` can see it. Results are paired to units
+    positionally; a length mismatch skips the backfill (best-effort).
+
+    Args:
+        units: The dispatched units, positionally aligned with ``results``.
+        results: Unit results from aggregation.
+        runtime_env: Runtime paths and storage for the failing step.
+        timestamp_start: Start time captured before dispatch.
+        user_overrides: User-provided parameter overrides for the record.
+        step_run_id: Owning attempt ID, or None for direct executor calls.
+
+    Returns:
+        Results with synthetic run ids filled in for the backfilled units.
+    """
+    if len(results) != len(units):
+        return results
+    patched: list[UnitResult] = []
+    for unit, result in zip(units, results, strict=True):
+        if result.success or result.execution_run_ids:
+            patched.append(result)
+            continue
+        error = result.error or (
+            "Operation failed before recording (no execution record staged)."
+        )
+        run_id = _synthesize_failure_record(
+            unit,
+            runtime_env,
+            error,
+            timestamp_start,
+            user_overrides,
+            step_run_id=step_run_id,
+        )
+        patched.append(replace(result, execution_run_ids=[run_id] if run_id else []))
+    return patched
+
+
+def _record_dispatch_failure(
+    exc: Exception,
+    units: list[ExecutionUnit],
+    runtime_env: RuntimeEnvironment,
+    timestamp_start: datetime,
+    user_overrides: dict[str, Any] | None,
+    *,
+    step_number: int,
+    step_run_id: str | None,
+) -> tuple[str, list[UnitResult], int, int]:
+    """Create ordered, inspectable failure results for a dispatch exception."""
+    dispatch_error = f"{type(exc).__name__}: {exc}"
+    logger.error(
+        "Dispatch failed for step %d: %s",
+        step_number,
+        dispatch_error,
+    )
+    results = failure_results_for_units(units, dispatch_error)
+    results = _synthesize_missing_failure_records(
+        units,
+        results,
+        runtime_env,
+        timestamp_start,
+        user_overrides,
+        step_run_id=step_run_id,
+    )
+    succeeded, failed = aggregate_results(results)
+    return dispatch_error, results, succeeded, failed
+
+
 def _execute_creator_step(
     operation: OperationDefinition,
-    inputs: Any,
-    backend: BackendBase,
+    inputs: PreparedInputs | None,
+    step_runner: RunnerBase,
     config_overrides: dict[str, Any] | None = None,
     step_number: int = 0,
     config: PipelineConfig | None = None,
     failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
-    compact: bool = True,
     user_overrides: dict[str, Any] | None = None,
     cancel_event: threading.Event | None = None,
     skip_cache: bool = False,
     step_run_id: str | None = None,
-    step_run_ids: dict[int, str] | None = None,
+    persist_result: Callable[[StepResult, tuple[str, ...]], StepResult] | None = None,
+    prepared_unit: ExecutionUnit | None = None,
+    prepared_runtime: RuntimeEnvironment | None = None,
 ) -> StepResult:
-    """Execute a creator operation step by dispatching to workers via Prefect.
+    """Execute a creator operation step through its lifecycle runner.
 
     Args:
         operation: Fully configured creator operation instance.
         inputs: Input specification.
-        backend: Backend for worker dispatch.
-        config_overrides: Merged environment + tool overrides (for hashing only).
+        step_runner: Resolved lifecycle runner for worker dispatch.
+        config_overrides: Effective operation configuration used for hashing.
         step_number: Pipeline step number.
         config: Pipeline configuration.
         failure_policy: Continue or fail-fast on errors.
-        compact: Whether to run Delta Lake compaction.
         user_overrides: User-provided parameter overrides.
+        cancel_event: Set to request cooperative cancellation between phases.
         skip_cache: Bypass per-batch execution-level cache lookups.
         step_run_id: Unique ID for this step attempt (for output isolation).
-        step_run_ids: Upstream step_number to step_run_id mapping.
+        persist_result: Manager callback for the result and worker seal IDs.
+        prepared_unit: Exact diagnostic unit that bypasses preparation and caches.
+        prepared_runtime: Diagnostic runtime whose roots must be preserved.
 
     Returns:
         StepResult with output references and execution metadata.
     """
+    # All production callers supply config; narrow for type-checker only.
+    config = cast(PipelineConfig, config)
     timings: dict[str, Any] = {}
     total_start = time.perf_counter()
 
-    # =========================================================================
-    # PHASE 1: DISPATCH
-    # =========================================================================
+    if prepared_unit is None:
+        assert inputs is not None
+        # =========================================================================
+        # PHASE 1: DISPATCH
+        # =========================================================================
 
-    # --- resolve_inputs phase ---
-    with phase_timer("resolve_inputs", timings):
-        # Resolve inputs to artifact IDs
-        resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
-        )
+        # --- resolve_inputs phase ---
+        with phase_timer("resolve_inputs", timings):
+            paired_inputs = inputs.inputs
+            group_ids = inputs.group_ids
 
-        skip_result = _skip_for_empty_inputs(
-            operation, resolved_inputs, step_number, failure_policy
-        )
-        if skip_result is not None:
-            return skip_result
+            skip_result = _skip_for_empty_inputs(
+                operation,
+                paired_inputs,
+                step_number,
+                failure_policy,
+                step_run_id=step_run_id,
+            )
+            if skip_result is not None:
+                return skip_result
 
-        total_artifacts = sum(len(ids) for ids in resolved_inputs.values())
+            total_artifacts = sum(len(ids) for ids in paired_inputs.values())
+            logger.debug(
+                "Step %d (%s): resolved %d input artifacts",
+                step_number,
+                operation.name,
+                total_artifacts,
+            )
+
+        # --- batch_and_cache phase ---
+        with phase_timer("batch_and_cache", timings):
+            batch_config = get_batch_config(operation)
+
+            merged_params = serialize_params(operation)
+
+            # Import lazily to avoid package import cycles during module initialization.
+            from artisan.utils.hashing import compute_execution_spec_id
+
+            execution_unit_batches = generate_execution_unit_batches(
+                paired_inputs,
+                batch_config,
+                group_ids=group_ids,
+                cache_inputs=inputs.cache_inputs,
+            )
+
+            units_to_dispatch: list[ExecutionUnit] = []
+            cached_count = 0
+            cached_units = 0
+            cached_execution_run_ids: set[str] = set()
+
+            for (
+                execution_unit_inputs,
+                batch_group_ids,
+                execution_cache_inputs,
+            ) in execution_unit_batches:
+                spec_id = compute_execution_spec_id(
+                    operation_name=operation.name,
+                    inputs=execution_cache_inputs,
+                    params=merged_params,
+                    config_overrides=config_overrides,
+                )
+
+                cache_result = (
+                    None
+                    if skip_cache
+                    else check_cache_for_batch(
+                        spec_id, config.delta_root, config=config
+                    )
+                )
+
+                if cache_result is not None:
+                    cached_count += (
+                        sum(len(ids) for ids in execution_unit_inputs.values()) or 1
+                    )
+                    cached_units += 1
+                    cached_execution_run_ids.add(cache_result.execution_run_id)
+                    continue
+
+                unit = ExecutionUnit(
+                    operation=operation,
+                    inputs=execution_unit_inputs,
+                    execution_spec_id=spec_id,
+                    step_number=step_number,
+                    group_ids=batch_group_ids,
+                    user_overrides=user_overrides,
+                    step_run_id=step_run_id,
+                )
+                unit.replay_snapshot = build_replay_snapshot(
+                    unit,
+                    _create_runtime_environment(config, operation, step_runner),
+                    execution_cache_inputs,
+                )
+                units_to_dispatch.append(unit)
+
+            validated_reuse = _validate_cache_reuse(
+                config,
+                step_run_id,
+                cached_execution_run_ids,
+            )
+
+        total_units = len(units_to_dispatch) + cached_units
         logger.debug(
-            "Step %d (%s): resolved %d input artifacts",
+            "Step %d (%s): %d artifacts -> %d execution units",
             step_number,
             operation.name,
             total_artifacts,
+            total_units,
         )
-
-        # Framework pairing for multi-input creator ops with group_by
-        if operation.group_by is not None:
-            from artisan.storage.core.artifact_store import ArtifactStore
-
-            artifact_store = ArtifactStore(config.delta_root)
-            paired_inputs, group_ids = group_inputs(
-                resolved_inputs, operation.group_by, artifact_store
+        if cached_units > 0:
+            logger.debug(
+                "Step %d (%s): %d units cached, %d to dispatch",
+                step_number,
+                operation.name,
+                cached_units,
+                len(units_to_dispatch),
             )
-        else:
-            paired_inputs = resolved_inputs
-            group_ids = None
 
-    # --- batch_and_cache phase ---
-    with phase_timer("batch_and_cache", timings):
-        # Get batch configuration from the instance
-        batch_config = get_batch_config(operation)
-
-        merged_params = serialize_params(operation)
-
-        # Import lazily to avoid package import cycles during module initialization.
-        from artisan.utils.hashing import compute_execution_spec_id
-
-        # Generate ExecutionUnit batches (Level 1)
-        execution_unit_batches = generate_execution_unit_batches(
-            paired_inputs, batch_config, group_ids=group_ids
-        )
-
-        # Create ExecutionUnits with cache checking
-        units_to_dispatch: list[ExecutionUnit] = []
+    else:
+        units_to_dispatch = [prepared_unit]
         cached_count = 0
-        cached_units = 0
-
-        for execution_unit_inputs, batch_group_ids in execution_unit_batches:
-            # Compute spec_id for cache lookup
-            spec_id = compute_execution_spec_id(
-                operation_name=operation.name,
-                inputs=execution_unit_inputs,
-                params=merged_params,
-                config_overrides=config_overrides,
-            )
-
-            # Cache lookup
-            cache_result = (
-                None
-                if skip_cache
-                else check_cache_for_batch(spec_id, config.delta_root)
-            )
-
-            if cache_result is not None:
-                # Cache hit - skip this unit
-                cached_count += (
-                    sum(len(ids) for ids in execution_unit_inputs.values()) or 1
-                )
-                cached_units += 1
-                continue
-
-            # Cache miss - create ExecutionUnit with operation instance
-            unit = ExecutionUnit(
-                operation=operation,
-                inputs=execution_unit_inputs,
-                execution_spec_id=spec_id,
-                step_number=step_number,
-                group_ids=batch_group_ids,
-                user_overrides=user_overrides,
-                step_run_id=step_run_id,
-            )
-            units_to_dispatch.append(unit)
-
-    total_units = len(units_to_dispatch) + cached_units
-    logger.debug(
-        "Step %d (%s): %d artifacts -> %d execution units",
-        step_number,
-        operation.name,
-        total_artifacts,
-        total_units,
-    )
-    if cached_units > 0:
-        logger.debug(
-            "Step %d (%s): %d units cached, %d to dispatch",
-            step_number,
-            operation.name,
-            cached_units,
-            len(units_to_dispatch),
-        )
+        validated_reuse = []
 
     # =========================================================================
-    # PHASE 2: EXECUTE (via Prefect)
+    # PHASE 2: EXECUTE
     # =========================================================================
 
     # --- cancel check: before execute ---
     if cancel_event is not None and cancel_event.is_set():
-        return _cancelled_result(operation, step_number, failure_policy)
+        return _cancelled_result(
+            operation, step_number, failure_policy, step_run_id=step_run_id
+        )
 
-    dispatch_dir = config.staging_root / "_dispatch"
+    staging_fs = config.storage.filesystem()
+    cancellation_outcome: CancellationAcknowledgement | None = None
+    router: LifecycleRouter | None = None
     try:
         # --- execute phase ---
         dispatch_error: str | None = None
         with phase_timer("execute", timings):
-            # Create RuntimeEnvironment with backend traits
-            runtime_env = _create_runtime_environment(config, operation, backend)
+            runtime_env = prepared_runtime or _create_runtime_environment(
+                config, operation, step_runner
+            )
 
             succeeded = 0
             failed = 0
+            results: list[UnitResult] = []
+            # Captured before dispatch — start time for any synthesized record.
+            timestamp_start = datetime.now(UTC)
 
             if units_to_dispatch:
                 try:
-                    backend.validate_operation(operation)
-                    units_path = _save_units(
-                        units_to_dispatch, config.staging_root, step_number
-                    )
-                    step_flow = backend.create_flow(
-                        operation.resources,
-                        operation.execution,
+                    # Axis 1 only: every creator step rides the step_runner's
+                    # lifecycle router. The compute provider (axis 2) is
+                    # consulted inside the lifecycle, in create_execute_router.
+                    step_runner.validate_operation(operation)
+                    router = step_runner.create_lifecycle_router(
+                        operation.runner_resources,
+                        operation.batch_strategy,
                         step_number,
-                        job_name=operation.execution.job_name or operation.name,
-                        log_folder=config.delta_root.parent / "logs" / "slurm",
+                        job_name=operation.batch_strategy.job_name or operation.name,
+                        staging_root=config.staging_root,
                     )
-                    results = step_flow(
-                        units_path=str(units_path), runtime_env=runtime_env
+
+                    results = router.run(
+                        units_to_dispatch,
+                        runtime_env,
+                        cancel_event=cancel_event,
+                        cancellation_confirmation_timeout=(
+                            step_runner.orchestrator_traits.cancellation_confirmation_timeout
+                        ),
                     )
-                    succeeded, failed = aggregate_results(results, failure_policy)
+                    cancellation_outcome = _aggregate_cancellation(
+                        results,
+                        router.cancellation_acknowledgement,
+                    )
+                    succeeded, failed = aggregate_results(results)
+                    # Backfill any pre-try failures the worker never recorded
+                    # (unimportable/unpicklable op -> empty execution_run_ids).
+                    results = _synthesize_missing_failure_records(
+                        units_to_dispatch,
+                        results,
+                        runtime_env,
+                        timestamp_start,
+                        user_overrides,
+                        step_run_id=step_run_id,
+                    )
                 except BrokenProcessPool:
                     dispatch_error = "Worker process killed (signal or OOM)"
                     logger.warning(
@@ -966,21 +1606,64 @@ def _execute_creator_step(
                         operation.name,
                         dispatch_error,
                     )
+                    # The pool died before workers could stage records —
+                    # synthesize one failure record per lost unit (attribution
+                    # is imperfect after a crash; be conservative).
                     results = []
-                    succeeded, failed = 0, len(units_to_dispatch)
-                except RuntimeError:
-                    raise  # fail_fast — intentional abort
+                    for lost_unit in units_to_dispatch:
+                        run_id = _synthesize_failure_record(
+                            lost_unit,
+                            runtime_env,
+                            dispatch_error,
+                            timestamp_start,
+                            user_overrides,
+                            step_run_id=step_run_id,
+                        )
+                        results.append(
+                            UnitResult(
+                                success=False,
+                                error=dispatch_error,
+                                item_count=lost_unit.get_batch_size() or 1,
+                                execution_run_ids=[run_id] if run_id else [],
+                            )
+                        )
+                    succeeded, failed = aggregate_results(results)
                 except Exception as exc:
                     dispatch_error, results, succeeded, failed = (
-                        _handle_dispatch_exception(
-                            exc, step_number, unit_count=len(units_to_dispatch)
+                        _record_dispatch_failure(
+                            exc,
+                            units_to_dispatch,
+                            runtime_env,
+                            timestamp_start,
+                            user_overrides,
+                            step_number=step_number,
+                            step_run_id=step_run_id,
                         )
                     )
+                finally:
+                    if cancel_event is not None and cancel_event.is_set():
+                        cancellation_outcome = _aggregate_cancellation(
+                            results, _router_cancellation_evidence(router)
+                        )
+
+        if (
+            cancellation_outcome is not None
+            and cancellation_outcome.status == CancellationStatus.UNKNOWN
+        ):
+            return _unknown_cancellation_result(
+                operation,
+                step_number,
+                failure_policy,
+                cancellation_outcome,
+                step_run_id=step_run_id,
+            )
 
         # --- verify_staging phase ---
         if units_to_dispatch:
+            if persist_result is not None:
+                _require_recorded_execution_ids(results)
             _verify_staging_if_needed(
-                backend, results, config, step_number, operation.name, timings
+                step_runner, results, config, step_number, operation.name, timings
             )
         else:
             with phase_timer("verify_staging", timings):
@@ -989,11 +1672,11 @@ def _execute_creator_step(
         # --- capture_logs phase ---
         with phase_timer("capture_logs", timings):
             if units_to_dispatch:
-                backend.capture_logs(
+                persist_worker_logs(
                     results,
-                    config.staging_root,
+                    config.delta_root,
                     runtime_env.failure_logs_root,
-                    operation.name,
+                    fs=staging_fs,
                 )
 
         # =====================================================================
@@ -1001,205 +1684,153 @@ def _execute_creator_step(
         # =====================================================================
 
         # --- cancel check: before commit ---
-        if cancel_event is not None and cancel_event.is_set():
-            return _cancelled_result(operation, step_number, failure_policy)
+        if (
+            units_to_dispatch
+            and cancellation_outcome is None
+            and cancel_event is not None
+            and cancel_event.is_set()
+        ):
+            cancellation_outcome = _aggregate_cancellation(
+                results, _router_cancellation_evidence(router)
+            )
+            if (
+                cancellation_outcome is not None
+                and cancellation_outcome.status == CancellationStatus.UNKNOWN
+            ):
+                return _unknown_cancellation_result(
+                    operation,
+                    step_number,
+                    failure_policy,
+                    cancellation_outcome,
+                    step_run_id=step_run_id,
+                )
+        if (
+            cancel_event is not None
+            and cancel_event.is_set()
+            and (
+                (not units_to_dispatch and cancellation_outcome is None)
+                or (
+                    cancellation_outcome is not None
+                    and cancellation_outcome.status == CancellationStatus.CONFIRMED
+                )
+            )
+        ):
+            return _cancelled_result(
+                operation, step_number, failure_policy, step_run_id=step_run_id
+            )
 
-        commit_error = _commit_and_compact(
+        _stage_cache_reuse(
             config,
-            runtime_env,
-            step_number,
-            operation.name,
-            timings,
-            has_work=bool(units_to_dispatch),
-            compact=compact,
+            step_run_id,
+            validated_reuse,
+            step_number=step_number,
+            operation_name=operation.name,
         )
+
     finally:
-        if dispatch_dir.exists():
-            shutil.rmtree(dispatch_dir, ignore_errors=True)
+        if step_run_id is not None:
+            sentinel = cancel_sentinel_path(config.staging_root, step_run_id)
+            try:
+                if staging_fs.exists(sentinel):
+                    staging_fs.rm(sentinel)
+            except Exception:
+                pass
 
     _finalize_timings(timings, total_start, step_number, "Creator")
 
-    return build_step_result(
+    status = classify_step_status(
+        succeeded + cached_count,
+        failed,
+        failure_policy,
+        infrastructure_error=dispatch_error is not None,
+    )
+
+    result = build_step_result(
         operation=operation,
         step_number=step_number,
         succeeded_count=succeeded + cached_count,
         failed_count=failed,
         failure_policy=failure_policy,
-        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
+        status=status,
+        disposition=(
+            StepDisposition.EXECUTED if units_to_dispatch else StepDisposition.CACHE_HIT
+        ),
+        cancellation_status=(
+            CancellationStatus.REJECTED
+            if cancellation_outcome is not None
+            and cancellation_outcome.status == CancellationStatus.REJECTED
+            else None
+        ),
+        error=(
+            _result_error(results, dispatch_error)
+            or (
+                cancellation_outcome.message
+                if cancellation_outcome is not None
+                and cancellation_outcome.status == CancellationStatus.REJECTED
+                else None
+            )
+        ),
+        metadata={"timings": timings},
         step_run_id=step_run_id,
     )
-
-
-def execute_composite_step(
-    composite_class: type,
-    inputs: Any,
-    params: dict[str, Any] | None,
-    backend: BackendBase,
-    composite_resources: Any,  # ResourceConfig
-    composite_execution: Any,  # ExecutionConfig
-    intermediates: Any,  # CompositeIntermediates
-    step_number: int = 0,
-    config: PipelineConfig | None = None,
-    failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
-    compact: bool = True,
-    step_run_ids: dict[int, str] | None = None,
-    step_run_id: str | None = None,
-) -> StepResult:
-    """Execute a composite operation as a single pipeline step.
-
-    Builds an ExecutionComposite, dispatches it through the backend, and
-    handles commit and compaction.
-
-    Args:
-        composite_class: CompositeDefinition subclass.
-        inputs: Initial inputs (same formats as execute_step).
-        params: Parameter overrides.
-        backend: Backend for worker dispatch.
-        composite_resources: Composite-level ResourceConfig.
-        composite_execution: Composite-level ExecutionConfig.
-        intermediates: CompositeIntermediates enum value.
-        step_number: Pipeline step number.
-        config: Pipeline configuration.
-        failure_policy: Continue or fail-fast on errors.
-        compact: Whether to run Delta Lake compaction.
-        step_run_ids: Upstream step_number to step_run_id mapping.
-        step_run_id: Unique ID for this step attempt.
-
-    Returns:
-        StepResult with output references and execution metadata.
-    """
-    from artisan.execution.models.execution_composite import ExecutionComposite
-    from artisan.utils.hashing import compute_execution_spec_id
-
-    timings: dict[str, Any] = {}
-    total_start = time.perf_counter()
-
-    # --- resolve_inputs phase ---
-    with phase_timer("resolve_inputs", timings):
-        resolved_inputs = resolve_inputs(
-            inputs, config.delta_root, step_run_ids=step_run_ids
-        )
-
-        instance = instantiate_operation(composite_class, params)
-        skip_result = _skip_for_empty_inputs(
-            instance,
-            resolved_inputs,
-            step_number,
-            failure_policy,
-            log_label="composite",
-        )
-        if skip_result is not None:
-            return skip_result
-
-    # --- build_composite phase ---
-    with phase_timer("build_composite", timings):
-        merged_params = serialize_params(instance)
-
-        spec_id = compute_execution_spec_id(
-            operation_name=instance.name,
-            inputs=resolved_inputs,
-            params=merged_params,
-        )
-
-        composite_transport = ExecutionComposite(
-            composite=instance,
-            inputs=resolved_inputs,
-            step_number=step_number,
-            execution_spec_id=spec_id,
-            resources=composite_resources,
-            execution=composite_execution,
-            intermediates=intermediates,
-            step_run_id=step_run_id,
-        )
-
-    # --- execute phase ---
-    dispatch_error: str | None = None
-    dispatch_dir = config.staging_root / "_dispatch"
-    try:
-        with phase_timer("execute", timings):
-            runtime_env = _create_runtime_environment(config, instance, backend)
-
-            succeeded = 0
-            failed = 0
-
-            try:
-                units_path = _save_units(
-                    [composite_transport], config.staging_root, step_number
-                )
-                step_flow = backend.create_flow(
-                    composite_resources,
-                    composite_execution,
-                    step_number,
-                    job_name=composite_execution.job_name or "composite",
-                    log_folder=config.delta_root.parent / "logs" / "slurm",
-                )
-                results = step_flow(units_path=str(units_path), runtime_env=runtime_env)
-                succeeded, failed = aggregate_results(results, failure_policy)
-            except RuntimeError:
-                raise
-            except Exception as exc:
-                dispatch_error, results, succeeded, failed = _handle_dispatch_exception(
-                    exc, step_number, label="Composite dispatch"
-                )
-
-        _verify_staging_if_needed(
-            backend, results, config, step_number, instance.name, timings
-        )
-
-        commit_error = _commit_and_compact(
-            config,
-            runtime_env,
-            step_number,
-            instance.name,
-            timings,
-            has_work=True,
-            compact=compact,
-        )
-    finally:
-        if dispatch_dir.exists():
-            shutil.rmtree(dispatch_dir, ignore_errors=True)
-
-    _finalize_timings(timings, total_start, step_number, "Composite")
-
-    return build_step_result(
-        operation=instance,
-        step_number=step_number,
-        succeeded_count=succeeded,
-        failed_count=failed,
-        failure_policy=failure_policy,
-        metadata=_build_step_metadata(timings, commit_error, dispatch_error),
-        step_run_id=step_run_id,
-    )
+    return _persist_result(result, extract_execution_run_ids(results), persist_result)
 
 
 def _compact_step_tables(
-    delta_root: Path,
-    staging_root: Path,
+    delta_root: str,
+    staging_root: str,
     tables: list[str] | None = None,
+    *,
+    fs: AbstractFileSystem | None = None,
+    storage_options: dict[str, str] | None = None,
 ) -> None:
-    """Compact Delta Lake tables to merge small parquet files.
+    """Best-effort compaction after terminal state is authoritative.
 
     Args:
-        delta_root: Root path for Delta Lake tables.
-        staging_root: Root staging directory (for DeltaCommitter init).
+        delta_root: Root URI for Delta Lake tables.
+        staging_root: Root URI for staging directory (for DeltaCommitter init).
         tables: Specific tables to compact. If None, compact all.
+        fs: Filesystem implementation. Uses local filesystem if None.
+        storage_options: Delta-rs storage options.
     """
     from artisan.storage.io.commit import DeltaCommitter
+    from artisan.storage.io.staging import StagingManager
 
-    committer = DeltaCommitter(delta_root, staging_root)
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
 
-    if tables is None:
-        from artisan.schemas.artifact.registry import ArtifactTypeDef
+        fs = LocalFileSystem()
 
-        artifact_tables = [td.table_path for td in ArtifactTypeDef.get_all().values()]
-        tables = [
-            *artifact_tables,
-            TablePath.ARTIFACT_INDEX.value,
-            TablePath.EXECUTIONS.value,
-        ]
+    try:
+        staging_manager = StagingManager(staging_root, fs)
+        committer = DeltaCommitter(
+            delta_root,
+            staging_manager,
+            fs=fs,
+            storage_options=storage_options,
+        )
+
+        if tables is None:
+            from artisan.schemas.artifact.registry import ArtifactTypeDef
+
+            artifact_tables = [
+                type_def.table_path for type_def in ArtifactTypeDef.get_all().values()
+            ]
+            tables = [
+                *artifact_tables,
+                TablePath.ARTIFACT_INDEX.value,
+                TablePath.EXECUTIONS.value,
+            ]
+    except Exception as exc:
+        logger.warning(
+            "Compaction setup failed after terminalization: %s: %s",
+            type(exc).__name__,
+            exc,
+        )
+        return
 
     for table in tables:
-        table_name = Path(table).name
+        table_name = table.rsplit("/", 1)[-1]
         try:
             committer.compact_table(table)
         except Exception as exc:

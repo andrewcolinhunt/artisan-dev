@@ -1,9 +1,5 @@
-"""Lineage capture, edge building, and validation (internal).
+"""Explicit lineage validation, reference resolution, and typed edges (internal).
 
-Import symbols directly from their submodules:
-
-- ``artisan.execution.lineage.builder``
-- ``artisan.execution.lineage.capture``
-- ``artisan.execution.lineage.enrich``
-- ``artisan.execution.lineage.validation``
+Import implementation symbols from ``builder``, ``enrich``, or ``validation``.
+Operation authors use the optional helpers in ``artisan.operations.lineage``.
 """

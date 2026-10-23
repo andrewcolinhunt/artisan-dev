@@ -1,10 +1,7 @@
-"""DataFrame-based provenance graph traversal.
+"""Traverse provenance edges with DataFrame joins for artifact discovery.
 
-Forward and backward BFS walks through provenance edges using iterative
-DataFrame joins. Used for metric discovery, lineage matching, and
-multi-input pairing.
-
-Complexity: O(D x E) where D = max depth, E = edges per hop.
+Backward walks find the first nearest target per candidate; forward walks
+collect all reachable targets. Strict input matching has separate rules.
 """
 
 from __future__ import annotations
@@ -34,7 +31,7 @@ def walk_backward(
     """
     empty = pl.DataFrame(schema={"candidate_id": pl.String, "target_id": pl.String})
 
-    if candidates.is_empty() or targets.is_empty() or edges.is_empty():
+    if candidates.is_empty() or targets.is_empty():
         return empty
 
     target_ids = targets.select(pl.col("artifact_id").alias("_target_id"))
@@ -50,19 +47,20 @@ def walk_backward(
     # visited: (candidate_id, node) — all nodes visited per candidate
     visited = frontier.select("candidate_id", pl.col("current_node").alias("node"))
 
-    # Check if any candidates are themselves targets
+    # Depth-zero matches do not require any provenance edges.
     initial_matches = frontier.join(
         target_ids, left_on="current_node", right_on="_target_id", how="semi"
     ).select(
         pl.col("candidate_id"),
         pl.col("current_node").alias("target_id"),
     )
+    if edges.is_empty():
+        return initial_matches
 
     all_matched: list[pl.DataFrame] = []
     if not initial_matches.is_empty():
         all_matched.append(initial_matches)
 
-    # Remove matched candidates from frontier
     frontier = frontier.join(
         initial_matches.select("candidate_id"),
         on="candidate_id",
@@ -95,7 +93,6 @@ def walk_backward(
         if stepped.is_empty():
             break
 
-        # Add to visited
         visited = pl.concat(
             [
                 visited,
@@ -103,7 +100,6 @@ def walk_backward(
             ]
         )
 
-        # Check for target matches — semi-join with targets
         new_matches = stepped.join(
             target_ids, left_on="current_node", right_on="_target_id", how="semi"
         )
@@ -118,7 +114,6 @@ def walk_backward(
             )
             all_matched.append(new_matches)
 
-            # Remove matched candidates from frontier
             stepped = stepped.join(
                 new_matches.select("candidate_id"),
                 on="candidate_id",
@@ -158,8 +153,16 @@ def walk_forward(
     Returns:
         DataFrame with columns [source_id, target_id] for matched pairs.
         Sources without a matching target are omitted.
+
+    Raises:
+        ValueError: A target type is requested but edges lack the
+            ``target_artifact_type`` column, including empty frames.
     """
     empty = pl.DataFrame(schema={"source_id": pl.String, "target_id": pl.String})
+
+    if target_type is not None and "target_artifact_type" not in edges.columns:
+        msg = "target_type requires a target_artifact_type column in edges"
+        raise ValueError(msg)
 
     if sources.is_empty() or edges.is_empty():
         return empty
@@ -208,7 +211,6 @@ def walk_forward(
         if stepped.is_empty():
             break
 
-        # Add to visited
         visited = pl.concat(
             [
                 visited,
@@ -216,8 +218,7 @@ def walk_forward(
             ]
         )
 
-        # Check for target matches
-        if target_type is not None and "target_artifact_type" in stepped.columns:
+        if target_type is not None:
             new_matches = stepped.filter(
                 pl.col("target_artifact_type") == target_type
             ).select(

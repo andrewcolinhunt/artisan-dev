@@ -8,8 +8,6 @@ These tests verify the core data flow patterns supported by the pipeline framewo
 5. Passthrough: Artifact identity preservation through Filter (direct-input)
 6. Batch Processing: Multi-item batch execution
 7. Comprehensive: Complex multi-pattern pipeline
-
-Reference: docs/design/design_data_flow_integration_tests.md
 """
 
 from __future__ import annotations
@@ -20,13 +18,12 @@ from pathlib import Path
 import polars as pl
 import pytest
 
-# Mark all tests in this module as slow (integration tests)
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.curator import Filter, IngestData, Merge
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
 
 from .conftest import (
     count_artifacts_by_step,
@@ -38,7 +35,7 @@ from .conftest import (
 )
 
 # =============================================================================
-# Test 1: Linear Chain
+# Linear Chain
 # =============================================================================
 
 
@@ -62,7 +59,7 @@ def linear_chain_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Transform datasets (1 variant each)
@@ -75,20 +72,20 @@ def linear_chain_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Calculate metrics
     pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
 
 
-def test_linear_chain(pipeline_env: dict[str, Path]):
+def test_linear_chain(pipeline_env: dict[str, str]):
     """Test 1: Linear chain data flow.
 
     Verifies:
@@ -122,7 +119,7 @@ def test_linear_chain(pipeline_env: dict[str, Path]):
 
 
 # =============================================================================
-# Test 2: Fan-Out (Execution)
+# Fan-Out (Execution)
 # =============================================================================
 
 
@@ -147,7 +144,7 @@ def fan_out_execution_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Shared reference for both branches
@@ -163,7 +160,7 @@ def fan_out_execution_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Transform with seed 200 (Branch B)
@@ -176,13 +173,13 @@ def fan_out_execution_pipeline(
             "variants": 1,
             "seed": 200,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
 
 
-def test_fan_out_execution(pipeline_env: dict[str, Path]):
+def test_fan_out_execution(pipeline_env: dict[str, str]):
     """Test 2: Fan-out at execution level.
 
     Verifies:
@@ -203,16 +200,16 @@ def test_fan_out_execution(pipeline_env: dict[str, Path]):
     # Both branches receive same input IDs
     step1_input_ids = get_execution_inputs(delta_root, 1, "dataset")
     step2_input_ids = get_execution_inputs(delta_root, 2, "dataset")
-    assert set(step1_input_ids) == set(
-        step2_input_ids
-    ), "Both branches should receive identical input artifact IDs"
+    assert set(step1_input_ids) == set(step2_input_ids), (
+        "Both branches should receive identical input artifact IDs"
+    )
 
     # Total: 2 (gen) + 2 (A) + 2 (B) = 6
     assert count_artifacts_by_type(delta_root, "data") == 6
 
 
 # =============================================================================
-# Test 3: Fan-Out (Data)
+# Fan-Out (Data)
 # =============================================================================
 
 
@@ -237,7 +234,7 @@ def fan_out_data_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 1, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Create 3 variants
@@ -250,13 +247,13 @@ def fan_out_data_pipeline(
             "variants": 3,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
 
 
-def test_fan_out_data(pipeline_env: dict[str, Path]):
+def test_fan_out_data(pipeline_env: dict[str, str]):
     """Test 3: Fan-out at data level.
 
     Verifies:
@@ -287,7 +284,7 @@ def test_fan_out_data(pipeline_env: dict[str, Path]):
 
 
 # =============================================================================
-# Test 4: Fan-In (Merge)
+# Fan-In (Merge)
 # =============================================================================
 
 
@@ -312,14 +309,14 @@ def fan_in_merge_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate 2 datasets (Branch B)
     step1 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 100},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Merge both branches
@@ -329,13 +326,13 @@ def fan_in_merge_pipeline(
             "branch_a": step0.output("datasets"),
             "branch_b": step1.output("datasets"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
 
 
-def test_fan_in_merge(pipeline_env: dict[str, Path]):
+def test_fan_in_merge(pipeline_env: dict[str, str]):
     """Test 4: Fan-in via Merge curator.
 
     Verifies:
@@ -354,9 +351,9 @@ def test_fan_in_merge(pipeline_env: dict[str, Path]):
     assert result["overall_success"], "Pipeline should complete successfully"
 
     # Merge doesn't create new artifacts in artifact_index
-    assert (
-        count_artifacts_by_step(delta_root, 2) == 0
-    ), "Merge is passthrough, no new artifacts"
+    assert count_artifacts_by_step(delta_root, 2) == 0, (
+        "Merge is passthrough, no new artifacts"
+    )
 
     # But merged output references 4 artifacts
     merged_outputs = get_execution_outputs(delta_root, 2, "merged")
@@ -369,7 +366,7 @@ def test_fan_in_merge(pipeline_env: dict[str, Path]):
 
 
 # =============================================================================
-# Test 5: Passthrough
+# Passthrough
 # =============================================================================
 
 
@@ -394,14 +391,14 @@ def passthrough_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Calculate metrics
-    step1 = pipeline.run(
+    pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Filter (forward-walk metric discovery, always pass with min >= 0)
@@ -415,7 +412,7 @@ def passthrough_pipeline(
                 {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Transform the passthrough datasets
@@ -428,13 +425,13 @@ def passthrough_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
 
 
-def test_passthrough(pipeline_env: dict[str, Path]):
+def test_passthrough(pipeline_env: dict[str, str]):
     """Test 6: Passthrough identity preservation.
 
     Verifies:
@@ -457,16 +454,16 @@ def test_passthrough(pipeline_env: dict[str, Path]):
     step0_ids = get_execution_outputs(delta_root, 0, "datasets")
 
     for pt_id in passthrough_ids:
-        assert (
-            pt_id in step0_ids
-        ), "Passthrough IDs must reference original artifacts, not copies"
+        assert pt_id in step0_ids, (
+            "Passthrough IDs must reference original artifacts, not copies"
+        )
 
     # Downstream receives correct count
     assert count_artifacts_by_step(delta_root, 3) == len(passthrough_ids)
 
 
 # =============================================================================
-# Test 7: Batch Processing
+# Batch Processing
 # =============================================================================
 
 
@@ -491,7 +488,7 @@ def batch_processing_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 5, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Batch transform with artifacts_per_unit=2 via execution override
@@ -504,14 +501,14 @@ def batch_processing_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        execution={"artifacts_per_unit": 2},
-        backend=Backend.LOCAL,
+        batch_strategy={"artifacts_per_unit": 2},
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
 
 
-def test_batch_processing(pipeline_env: dict[str, Path]):
+def test_batch_processing(pipeline_env: dict[str, str]):
     """Test 7: Batch execution unit creation.
 
     Verifies:
@@ -560,7 +557,7 @@ def test_batch_processing(pipeline_env: dict[str, Path]):
 
 
 # =============================================================================
-# Test 8: Comprehensive
+# Comprehensive
 # =============================================================================
 
 
@@ -592,14 +589,14 @@ def comprehensive_pipeline(
     step0 = pipeline.run(
         operation=IngestData,
         inputs=[str(f) for f in source_files],
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate 2 additional datasets
     step1 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 9999},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Merge ingest + generated
@@ -609,7 +606,7 @@ def comprehensive_pipeline(
             "ingested": step0.output("data"),
             "generated": step1.output("datasets"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Stage 2: Parallel Branches
@@ -624,7 +621,7 @@ def comprehensive_pipeline(
             "seed": 100,
             "output_prefix": "A",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: DataTransformer B
@@ -638,7 +635,7 @@ def comprehensive_pipeline(
             "seed": 200,
             "output_prefix": "B",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 5: Merge both branches
@@ -648,15 +645,15 @@ def comprehensive_pipeline(
             "branch_a": step3.output("dataset"),
             "branch_b": step4.output("dataset"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Stage 3: Metrics & Filter
     # Step 6: Calculate metrics
-    step6 = pipeline.run(
+    pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step5.output("merged")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 7: Filter based on median_score (forward-walk metric discovery)
@@ -674,7 +671,7 @@ def comprehensive_pipeline(
                 },
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Stage 4: Final Fan-Out
@@ -688,13 +685,13 @@ def comprehensive_pipeline(
             "variants": 2,
             "seed": 300,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
 
 
-def test_comprehensive(pipeline_env: dict[str, Path], sample_csv_files: list[Path]):
+def test_comprehensive(pipeline_env: dict[str, str], sample_csv_files: list[Path]):
     """Test 8: Comprehensive multi-pattern pipeline.
 
     Verifies:

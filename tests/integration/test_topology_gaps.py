@@ -8,13 +8,12 @@ diamond DAG, composite-then-downstream, and passthrough_failures downstream.
 from __future__ import annotations
 
 from enum import StrEnum
-from pathlib import Path
 from typing import ClassVar
 
 import polars as pl
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.curator import Filter, Merge
@@ -25,7 +24,8 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.output_spec import OutputSpec
 
 from .conftest import (
@@ -63,7 +63,7 @@ class _GenerateAndTransform(CompositeDefinition):
         ctx.output("dataset", transformed.output("dataset"))
 
 
-def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
+def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
     """Downstream creator receives only filter-passed artifacts with correct provenance."""
     delta_root = pipeline_env["delta_root"]
 
@@ -78,7 +78,7 @@ def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Transform (no noise to ensure distribution.min stays >= 0)
@@ -91,14 +91,14 @@ def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Metrics on transformed data
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Filter (distribution.min >= 0 should pass all; data is 0-10)
@@ -110,7 +110,7 @@ def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
                 {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Downstream creator on filter output
@@ -123,7 +123,7 @@ def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 200,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -151,7 +151,7 @@ def test_filter_then_creator(pipeline_env: dict[str, Path]) -> None:
         assert any(s in step1_outputs for s in sources)
 
 
-def test_empty_filter_cascade(pipeline_env: dict[str, Path]) -> None:
+def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
     """Impossible filter causes skip cascade with correct skip reasons."""
     delta_root = pipeline_env["delta_root"]
 
@@ -166,7 +166,7 @@ def test_empty_filter_cascade(pipeline_env: dict[str, Path]) -> None:
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Filter with impossible criterion on co-produced metrics
@@ -178,7 +178,7 @@ def test_empty_filter_cascade(pipeline_env: dict[str, Path]) -> None:
                 {"metric": "mean_score", "operator": "gt", "value": 99999},
             ],
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: DataTransformer (should be skipped — empty inputs)
@@ -191,14 +191,14 @@ def test_empty_filter_cascade(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
-    # Step 3: MetricCalculator (should be skipped — pipeline stopped)
+    # Empty upstream outputs propagate the skip to MetricCalculator.
     step3_result = pipeline.run(
         MetricCalculator,
-        inputs={"dataset": step2_result.output("dataset")},
-        backend=Backend.LOCAL,
+        inputs={"dataset": pipeline.output("data_transformer", "dataset")},
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -208,16 +208,15 @@ def test_empty_filter_cascade(pipeline_env: dict[str, Path]) -> None:
     passthrough_ids = get_execution_outputs(delta_root, 1, "passthrough")
     assert len(passthrough_ids) == 0
 
-    # Post-filter steps are skipped (check via StepResult metadata)
-    assert step2_result.metadata.get("skipped") is True
-    assert step3_result.metadata.get("skipped") is True
+    assert step2_result.status is StepStatus.SKIPPED
+    assert step3_result.status is StepStatus.SKIPPED
 
     # Skipped steps produce 0 artifacts
     assert count_artifacts_by_step(delta_root, 2) == 0
     assert count_artifacts_by_step(delta_root, 3) == 0
 
 
-def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
+def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
     """Multi-round refine loop with OutputReference reassignment."""
     delta_root = pipeline_env["delta_root"]
 
@@ -232,7 +231,7 @@ def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     current_data = step0.output("datasets")
@@ -243,7 +242,7 @@ def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": current_data},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         # Filter: lenient threshold so we keep some but not all
@@ -255,7 +254,7 @@ def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
                     {"metric": "distribution.median", "operator": "gt", "value": 0.3},
                 ],
             },
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         # Transform survivors
@@ -268,7 +267,7 @@ def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
                 "variants": 1,
                 "seed": 100 + round_idx,
             },
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
         # Reassign for next round
@@ -307,7 +306,7 @@ def test_iterative_refinement(pipeline_env: dict[str, Path]) -> None:
         assert visited & gen_outputs
 
 
-def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
+def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
     """Diamond: gen -> two branches -> merge -> downstream."""
     delta_root = pipeline_env["delta_root"]
 
@@ -322,7 +321,7 @@ def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     shared_ref = step0.output("datasets")
@@ -338,7 +337,7 @@ def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
             "seed": 100,
             "output_prefix": "A",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Branch B (scale=2.0)
@@ -352,7 +351,7 @@ def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
             "seed": 200,
             "output_prefix": "B",
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Merge
@@ -362,14 +361,14 @@ def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
             "branch_a": step1.output("dataset"),
             "branch_b": step2.output("dataset"),
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Metrics on merged set
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step3.output("merged")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -400,7 +399,7 @@ def test_diamond_dag(pipeline_env: dict[str, Path]) -> None:
     assert source_data_ids & branch_b_ids
 
 
-def test_composite_then_downstream(pipeline_env: dict[str, Path]) -> None:
+def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
     """Composite output consumed by a regular downstream step."""
     delta_root = pipeline_env["delta_root"]
 
@@ -411,31 +410,32 @@ def test_composite_then_downstream(pipeline_env: dict[str, Path]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: collapsed composite (DataGenerator -> DataTransformer)
-    composite_step = pipeline.run(
+    # Steps 0-1: composite expands to DataGenerator (step 0) then
+    # DataTransformer (step 1); the composite output maps to step 1.
+    composite_step = pipeline.run_composite(
         _GenerateAndTransform,
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
-    # Step 1: MetricCalculator on composite output
+    # Step 2: MetricCalculator on composite output
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": composite_step.output("dataset")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Composite produced 2 data artifacts
+    # DataGenerator (step 0) produced 2 data artifacts
     assert count_artifacts_by_step(delta_root, 0) == 2
 
-    # MetricCalculator produced 2 metric artifacts
-    assert count_artifacts_by_step(delta_root, 1) == 2
+    # MetricCalculator (step 2) produced 2 metric artifacts
+    assert count_artifacts_by_step(delta_root, 2) == 2
 
-    # Metric artifacts have provenance to composite outputs
-    metric_ids = get_execution_outputs(delta_root, 1, "metrics")
-    composite_ids = set(get_execution_outputs(delta_root, 0, "dataset"))
+    # Metric artifacts have provenance to the composite output (step 1)
+    metric_ids = get_execution_outputs(delta_root, 2, "metrics")
+    composite_ids = set(get_execution_outputs(delta_root, 1, "dataset"))
     assert len(metric_ids) == 2
 
     df_edges = read_table(delta_root, "provenance/artifact_edges")
@@ -446,7 +446,7 @@ def test_composite_then_downstream(pipeline_env: dict[str, Path]) -> None:
         assert any(s in composite_ids for s in sources)
 
 
-def test_passthrough_failures_downstream(pipeline_env: dict[str, Path]) -> None:
+def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
     """passthrough_failures=True passes all artifacts to downstream."""
     delta_root = pipeline_env["delta_root"]
 
@@ -461,7 +461,7 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, Path]) -> None:
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Filter with impossible criterion + passthrough_failures
@@ -474,7 +474,7 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, Path]) -> None:
             ],
             "passthrough_failures": True,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Downstream transformer (scale != 1.0 to ensure distinct content)
@@ -487,7 +487,7 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, Path]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

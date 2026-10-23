@@ -10,7 +10,9 @@ from typing import Any
 
 from pydantic import BaseModel, Field, model_validator
 
+from artisan.execution.inputs._validation import is_hex_id
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.execution.replay import ReplaySnapshot
 
 
 class ExecutionUnit(BaseModel):
@@ -21,12 +23,13 @@ class ExecutionUnit(BaseModel):
     ``independent_input_streams``.
 
     Attributes:
-        operation (OperationDefinition): Fully configured operation instance.
-        inputs: Role-keyed lists of 32-char hex artifact IDs.
+        operation: Fully configured operation instance.
+        inputs: Role-keyed lists of 32-character artifact IDs.
         execution_spec_id: Deterministic xxh3_128 hash for cache lookup.
         step_number: Pipeline step number for artifact metadata.
         group_ids: Per-index group IDs from framework pairing (optional).
         user_overrides: User-provided parameter overrides before merge.
+        step_run_id: Step run ID for output isolation scoping (optional).
     """
 
     operation: OperationDefinition
@@ -52,6 +55,11 @@ class ExecutionUnit(BaseModel):
         default=None,
         description="Step run ID for output isolation scoping",
     )
+    replay_snapshot: ReplaySnapshot | None = Field(default=None, repr=False)
+    replay_of_execution_run_id: str | None = None
+    replay_sensitive_values: tuple[str, ...] = Field(
+        default=(), exclude=True, repr=False
+    )
 
     @model_validator(mode="after")
     def validate_inputs(self) -> ExecutionUnit:
@@ -65,15 +73,9 @@ class ExecutionUnit(BaseModel):
             )
             raise ValueError(msg)
 
-        # Check if operation accepts runtime-defined inputs
         runtime_defined = getattr(self.operation, "runtime_defined_inputs", False)
 
-        if runtime_defined:
-            # Runtime-defined inputs: skip role name validation
-            # Any role names are allowed (user-provided or auto-generated)
-            pass
-        else:
-            # Fixed inputs: validate against inputs
+        if not runtime_defined:
             op_name = type(self.operation).__name__
             for role in self.inputs:
                 if role not in op_inputs:
@@ -83,20 +85,14 @@ class ExecutionUnit(BaseModel):
                     )
                     raise ValueError(msg)
 
-        # Validate all values are lists of 32-char hex strings
-        for role, artifact_ids in self.inputs.items():
-            if not isinstance(artifact_ids, list):
-                msg = f"inputs['{role}'] must be a list, got {type(artifact_ids).__name__}"
-                raise ValueError(msg)
+        for artifact_ids in self.inputs.values():
             for artifact_id in artifact_ids:
-                if not isinstance(artifact_id, str) or len(artifact_id) != 32:
+                if not is_hex_id(artifact_id):
                     msg = (
                         f"artifact_id must be 32-char hex string, got: {artifact_id!r}"
                     )
                     raise ValueError(msg)
 
-        # Validate all roles have same batch size
-        # Some operations (e.g., MergeOp) allow independent input streams
         independent = getattr(self.operation, "independent_input_streams", False)
         if self.inputs and not independent:
             sizes = {role: len(ids) for role, ids in self.inputs.items()}
@@ -114,5 +110,5 @@ class ExecutionUnit(BaseModel):
         return len(next(iter(self.inputs.values())))
 
     def get_input_artifact_ids(self) -> dict[str, list[str]]:
-        """Return a copy of the input artifact IDs keyed by role."""
-        return dict(self.inputs)
+        """Copy the role mapping and each input artifact ID list."""
+        return {role: list(ids) for role, ids in self.inputs.items()}

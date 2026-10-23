@@ -3,47 +3,54 @@
 from __future__ import annotations
 
 import logging
-import shutil
-import tempfile
 import time
-from dataclasses import dataclass, field
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
-from artisan.execution.context.builder import build_creator_execution_context
-from artisan.execution.context.sandbox import create_sandbox, output_snapshot
-from artisan.execution.inputs.instantiation import instantiate_inputs
-from artisan.execution.inputs.materialization import materialize_inputs
-from artisan.execution.lineage.builder import build_edges
-from artisan.execution.lineage.capture import capture_lineage_metadata
-from artisan.execution.lineage.enrich import build_artifact_edges_from_dict
-from artisan.execution.lineage.validation import (
-    validate_artifacts_match_specs,
-    validate_lineage_completeness,
-    validate_lineage_integrity,
-)
-from artisan.execution.models.artifact_source import ArtifactSource
+from artisan.execution.compute.base import ExecuteRouter
+from artisan.execution.compute.routing import create_execute_router
+from artisan.execution.context.builder import build_execution_context
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.staging.parquet_writer import StagingResult
-from artisan.execution.staging.recorder import (
+from artisan.execution.recording.commands import (
+    capture_commands,
+    command_snapshot,
+    sanitize_diagnostic,
+)
+from artisan.execution.recording.durable import configuration_recorder
+from artisan.execution.recording.parquet_writer import StagingResult
+from artisan.execution.recording.recorder import (
     _read_tool_output,
+    error_envelope_dict,
+    execution_is_sealed,
     record_execution_failure,
     record_execution_success,
 )
-from artisan.execution.utils import finalize_artifacts, generate_execution_run_id
+from artisan.execution.recording.replay_snapshot import (
+    capture_replay,
+    replay_recording_fields,
+    verify_replay_worker,
+)
+from artisan.execution.tool_endpoint.client import EndpointCancellationError
+from artisan.execution.utils import generate_execution_run_id
+from artisan.registry.discovery import bootstrap_applications
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.specs.input_models import (
-    ExecuteInput,
-    PostprocessInput,
-    PreprocessInput,
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
 )
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.utils.errors import format_error
-from artisan.utils.path import shard_path
+from artisan.utils.command_supervisor import (
+    check_command_scope,
+    close_command_scope,
+    managed_invocation,
+)
+from artisan.utils.hashing import serialize_params
+from artisan.utils.path import cancel_sentinel_path
 from artisan.utils.timing import phase_timer
+from artisan.utils.traceback import format_error
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +59,12 @@ class _PostprocessFailure(Exception):
     """Raised when postprocess returns success=False with a clean error message."""
 
 
+class _UploadFailure(_PostprocessFailure):
+    """Report output relocation failure through postprocess error recording."""
+
+
 class _ExecuteFailure(Exception):
-    """Raised when execute() throws, carrying the formatted error and tool output."""
+    """Raised when the execute phase throws, carrying the formatted error and tool output."""
 
     def __init__(self, error: str, tool_output: str | None = None) -> None:
         super().__init__(error)
@@ -69,273 +80,204 @@ class LifecycleResult:
         artifacts: Finalized output artifacts keyed by role.
         edges: Provenance edges linking inputs to outputs.
         timings: Phase name to elapsed seconds.
+        tool_output: Captured unit log (tool stdout/stderr), read before
+            sandbox cleanup. None when no log was written (function ops).
     """
 
     input_artifacts: dict[str, list[Artifact]]
     artifacts: dict[str, list[Artifact]]
     edges: list[ArtifactProvenanceEdge]
     timings: dict[str, float] = field(default_factory=dict)
+    tool_output: str | None = None
+    cancellation_acknowledgement: CancellationAcknowledgement | None = None
 
 
 def run_creator_lifecycle(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
-    worker_id: int = 0,
     execution_run_id: str | None = None,
-    sources: dict[str, ArtifactSource] | None = None,
+    execute_router: ExecuteRouter | None = None,
 ) -> LifecycleResult:
     """Run one operation through setup → preprocess → execute → postprocess → lineage.
 
-    This is the inner lifecycle extracted from run_creator_flow(). It raises
-    on any failure — the caller is responsible for error recording and sandbox
-    cleanup.
+    Raise on failure so the caller can record it. Successful execution removes
+    the sandbox unless ``preserve_working`` is set; failures leave it available
+    for inspection.
+
+    Internally delegates to ``prep_unit()`` (setup + preprocess) and
+    ``post_unit()`` (postprocess + lineage). Prep splits per artifact
+    (honoring the op's ``per_artifact_dispatch``); the execute router
+    receives the full per-artifact list and owns the iteration strategy.
 
     Args:
         unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and backend configuration for this run.
-        worker_id: Numeric worker identifier for concurrency tracking.
+        runtime_env: Paths and runner configuration for this run.
         execution_run_id: Pre-generated run ID. Generated if None.
-        sources: Optional pre-resolved artifact sources keyed by role.
-            When provided, hydrate from sources instead of unit.inputs.
-            Used by the composite executor for in-memory artifact passing.
+        execute_router: Optional pre-created router for execute-phase dispatch.
+            When None, created from the operation's compute_provider config.
 
     Returns:
         LifecycleResult with artifacts, edges, and timings.
 
     Raises:
-        ValueError: If working_root_path is not set.
+        ValueError: If working_root is not set.
         Exception: Any failure from preprocess/execute/postprocess/lineage.
     """
-    timings: dict[str, Any] = {}
-    operation = unit.operation
-    operation_class = type(operation)
-    original_inputs = _extract_inputs(unit)
-    _validate_operation_outputs(operation_class)
+    from artisan.execution.executors.creator_phases import post_unit, prep_unit
 
-    if execution_run_id is None:
-        timestamp_start = datetime.now(UTC)
-        execution_run_id = generate_execution_run_id(
-            unit.execution_spec_id, timestamp_start, worker_id
-        )
-    else:
-        timestamp_start = datetime.now(UTC)
-
-    # --- setup phase ---
-    with phase_timer("setup", timings):
-        working_root = runtime_env.working_root_path
-        if working_root is None:
-            msg = "RuntimeEnvironment.working_root_path must be set to create a sandbox"
-            raise ValueError(msg)
-
-        if working_root == Path(tempfile.gettempdir()):
-            sandbox_path = working_root / execution_run_id
-        else:
-            sandbox_path = shard_path(
-                working_root,
-                execution_run_id,
-                unit.step_number,
-                operation_name=operation.name,
-            )
-
-        sandbox_path, preprocess_dir, execute_dir, postprocess_dir = create_sandbox(
-            sandbox_path,
-        )
-
-        log_path = sandbox_path / "tool_output.log"
-        materialized_dir = sandbox_path / "materialized_inputs"
-        materialized_dir.mkdir(parents=True, exist_ok=True)
-
-        execution_context = build_creator_execution_context(
-            execution_run_id=execution_run_id,
-            execution_spec_id=unit.execution_spec_id,
-            step_number=unit.step_number,
-            timestamp_start=timestamp_start,
-            worker_id=worker_id,
-            delta_root_path=runtime_env.delta_root_path,
-            staging_root_path=runtime_env.staging_root_path,
-            operation=operation,
-            sandbox_path=sandbox_path,
-            compute_backend_name=runtime_env.compute_backend_name,
-            shared_filesystem=runtime_env.shared_filesystem,
-            step_run_id=unit.step_run_id,
-        )
-        artifact_store = execution_context.artifact_store
-
-        input_specs = getattr(operation_class, "inputs", {})
-        default_hydrate = getattr(operation_class, "hydrate_inputs", True)
-
-        if sources is not None:
-            # Hydrate from pre-resolved sources (composite executor path)
-            input_artifacts: dict[str, list[Artifact]] = {}
-            for role, source in sources.items():
-                spec = input_specs.get(role, InputSpec())
-                input_artifacts[role] = source.hydrate(
-                    artifact_store, spec, default_hydrate
-                )
-            associated: dict[tuple[str, str], list[Artifact]] = {}
-        else:
-            # Standard path: instantiate from Delta-backed IDs
-            input_artifacts, associated = instantiate_inputs(
-                original_inputs,
-                artifact_store,
-                input_specs,
-                default_hydrate,
-            )
-        input_artifacts = materialize_inputs(
-            input_artifacts,
-            input_specs,
-            materialized_dir,
-            artifact_store,
-        )
-
-    # --- preprocess phase ---
-    with phase_timer("preprocess", timings):
-        preprocess_input = PreprocessInput(
-            preprocess_dir=preprocess_dir,
-            input_artifacts=input_artifacts,
-            _associated=associated,
-        )
-        prepared_inputs = operation.preprocess(preprocess_input)
-        execute_input = ExecuteInput(
-            inputs=prepared_inputs,
-            execute_dir=execute_dir,
-            log_path=log_path,
-        )
+    prepped = prep_unit(unit, runtime_env, execution_run_id=execution_run_id)
 
     # --- execute phase ---
-    with phase_timer("execute", timings):
+    with phase_timer("execute", prepped.timings):
+        if execute_router is None:
+            config = prepped.operation.compute_provider.current()
+            execute_router = create_execute_router(
+                config,
+                prepped.operation,
+                cancel_check=_cancel_check(runtime_env, unit.step_run_id),
+            )
         try:
-            raw_result = operation.execute(execute_input)
+            raw_results = execute_router.route_execute(
+                prepped.operation,
+                prepped.artifact_execute_inputs,
+                prepped.sandbox_path,
+            )
         except Exception as exc:
-            error = format_error(exc)
+            commands_closed = close_command_scope(exc)
+            error = sanitize_diagnostic(format_error(exc))
             if hasattr(exc, "stdout") and exc.stdout:
                 tail = "\n".join(exc.stdout.splitlines()[-30:])
                 error += f"\n--- tool stdout (last 30 lines) ---\n{tail}"
-            tool_output = _read_tool_output(log_path)
+            tool_output = (
+                _read_tool_output(prepped.log_path) if commands_closed else None
+            )
             raise _ExecuteFailure(error, tool_output=tool_output) from exc
-
-    # Capture tool output after execute phase
-    tool_output = _read_tool_output(log_path)
-
-    # --- postprocess phase ---
-    with phase_timer("postprocess", timings):
-        file_outputs = output_snapshot(execute_dir)
-        postprocess_input = PostprocessInput(
-            file_outputs=file_outputs,
-            memory_outputs=raw_result,
-            input_artifacts=_extract_artifacts_from_input(input_artifacts),
-            step_number=unit.step_number,
-            postprocess_dir=postprocess_dir,
-            _associated=associated,
-        )
-        op_result = operation.postprocess(postprocess_input)
-
-        if not op_result.success:
-            raise _PostprocessFailure(op_result.error or "Postprocess failed")
-
-        finalized_artifacts = finalize_artifacts(op_result.artifacts)
-        validate_artifacts_match_specs(finalized_artifacts, operation_class.outputs)
-
-    # --- lineage phase ---
-    with phase_timer("lineage", timings):
-        flat_input_artifacts = _extract_artifacts_from_input(input_artifacts)
-        if op_result.lineage is None:
-            lineage = capture_lineage_metadata(
-                output_artifacts=finalized_artifacts,
-                input_artifacts=flat_input_artifacts,
-                output_specs=operation_class.outputs,
-                group_by=getattr(operation_class, "group_by", None),
-                group_ids=unit.group_ids,
+        # Reject failed entries before postprocessing while retaining the
+        # original error and cancellation evidence from the execute router.
+        cancellation_failures = [
+            result
+            for result in raw_results
+            if isinstance(result, EndpointCancellationError)
+        ]
+        if cancellation_failures:
+            unknown = next(
+                (
+                    failure
+                    for failure in cancellation_failures
+                    if failure.acknowledgement.status == CancellationStatus.UNKNOWN
+                ),
+                None,
             )
-        else:
-            validate_lineage_integrity(
-                op_result.lineage,
-                flat_input_artifacts,
-                finalized_artifacts,
+            raise unknown or cancellation_failures[0]
+        failures = [r for r in raw_results if isinstance(r, Exception)]
+        if failures:
+            commands_closed = close_command_scope(failures[0])
+            msg = (
+                f"{len(failures)}/{len(raw_results)} artifact executions "
+                f"failed; first: {format_error(failures[0])}"
             )
-            lineage = op_result.lineage
+            # Chain the first failure so a structured client ArtisanError
+            # (the endpoint batch contract returns it as a raw_results entry)
+            # survives as __cause__ for error_envelope_dict to persist.
+            raise _ExecuteFailure(
+                msg,
+                tool_output=(
+                    _read_tool_output(prepped.log_path) if commands_closed else None
+                ),
+            ) from failures[0]
 
-        edge_pairs = build_edges(
-            lineage=lineage,
-            finalized_artifacts=finalized_artifacts,
-            input_artifacts=flat_input_artifacts,
-            output_specs=operation_class.outputs,
-        )
-
-        validate_lineage_completeness(
-            finalized_artifacts,
-            operation_class.outputs,
-            lineage,
-        )
-        built_artifacts: dict[str, Artifact] = {}
-        for artifact_list in finalized_artifacts.values():
-            for artifact in artifact_list:
-                if artifact.artifact_id is not None:
-                    built_artifacts[artifact.artifact_id] = artifact
-        for artifact_list in flat_input_artifacts.values():
-            for artifact in artifact_list:
-                if artifact.artifact_id is not None:
-                    built_artifacts[artifact.artifact_id] = artifact
-
-        artifact_edges = build_artifact_edges_from_dict(
-            edge_pairs,
-            execution_run_id,
-            built_artifacts,
-        )
-
-    # Clean up sandbox
-    if (
-        sandbox_path is not None
-        and not runtime_env.preserve_working
-        and sandbox_path.exists()
-    ):
-        shutil.rmtree(sandbox_path, ignore_errors=True)
-
-    return LifecycleResult(
-        input_artifacts=flat_input_artifacts,
-        artifacts=finalized_artifacts,
-        edges=artifact_edges,
-        timings=timings,
+    result = post_unit(prepped, raw_results, runtime_env)
+    acknowledgements = getattr(
+        execute_router,
+        "cancellation_acknowledgements",
+        (),
     )
+    if acknowledgements:
+        result.cancellation_acknowledgement = acknowledgements[0]
+    return result
+
+
+def _cancel_check(
+    runtime_env: RuntimeEnvironment, step_run_id: str | None
+) -> Callable[[], bool] | None:
+    """Existence probe for the orchestrator's cancel sentinel.
+
+    The lifecycle router writes the sentinel on the staging filesystem
+    when the pipeline cancel event fires; execute routers whose calls
+    outlive the orchestrator's threads poll this probe. None when the
+    unit carries no ``step_run_id`` or
+    no staging root is configured.
+    """
+    if step_run_id is None or runtime_env.staging_root is None:
+        return None
+    sentinel = cancel_sentinel_path(runtime_env.staging_root, step_run_id)
+    fs = runtime_env.storage.filesystem()
+    return lambda: bool(fs.exists(sentinel))
 
 
 def run_creator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
-    worker_id: int = 0,
+    execute_router: ExecuteRouter | None = None,
 ) -> StagingResult:
-    """Execute a creator operation through ordered execution phases.
-
-    Phases: setup, preprocess, execute, postprocess, lineage, record.
-    Failures at any phase are caught and staged as error records.
+    """Execute a creator and stage its result with command and replay evidence.
 
     Args:
-        unit: Execution unit specifying the operation and its inputs.
-        runtime_env: Paths and backend configuration for this run.
-        worker_id: Numeric worker identifier for concurrency tracking.
+        unit: Configured operation and concrete input batch.
+        runtime_env: Resolved worker identity, runtime paths and storage.
+        execute_router: Optional router for the execute phase.
 
     Returns:
-        StagingResult indicating success or failure with staged paths.
+        Staged success or failure, or an unstaged failure when setup or
+        cancellation prevents recording.
     """
+    with (
+        managed_invocation(),
+        capture_commands(unit.operation) as commands,
+    ):
+        bootstrap_applications(
+            runtime_env.application_modules, purpose="creator worker"
+        )
+        configuration_recorder(
+            unit.operation, params=unit.user_overrides, recorder=commands
+        )
+        commands.add_environment(
+            {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
+        )
+        with capture_replay(unit, runtime_env):
+            return _run_creator_flow(unit, runtime_env, execute_router)
+
+
+def _run_creator_flow(
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    execute_router: ExecuteRouter | None = None,
+) -> StagingResult:
+    """Run lifecycle phases and record success, failure or cancellation."""
     timings: dict[str, Any] = {}
     timestamp_start = datetime.now(UTC)
     operation = unit.operation
-    original_inputs = _extract_inputs(unit)
+    original_inputs = unit.get_input_artifact_ids()
     user_overrides = unit.user_overrides
 
     execution_run_id = generate_execution_run_id(
         unit.execution_spec_id,
         timestamp_start,
-        worker_id,
+        runtime_env.worker_id,
     )
 
     total_start = time.perf_counter()
     execution_context = None
     params_dict = None
     try:
+        check_command_scope()
+        verify_replay_worker(unit)
         # Run the lifecycle (setup → lineage)
         lifecycle_result = run_creator_lifecycle(
-            unit, runtime_env, worker_id, execution_run_id
+            unit,
+            runtime_env,
+            execution_run_id=execution_run_id,
+            execute_router=execute_router,
         )
         timings.update(lifecycle_result.timings)
 
@@ -344,15 +286,17 @@ def run_creator_flow(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )
-        params_dict = _get_params_dict(operation)
+        params_dict = serialize_params(operation)
 
         # --- record phase ---
         with phase_timer("record", timings):
+            close_command_scope()
             staging_result = record_execution_success(
+                **replay_recording_fields(),
+                command_recording=command_snapshot(),
                 execution_context=execution_context,
                 artifacts=lifecycle_result.artifacts,
                 lineage_edges=lifecycle_result.edges,
@@ -361,25 +305,51 @@ def run_creator_flow(
                 params=params_dict,
                 result_metadata={"timings": timings},
                 user_overrides=user_overrides,
+                tool_output=lifecycle_result.tool_output,
             )
+            staging_result = replace(
+                staging_result,
+                cancellation_acknowledgement=(
+                    lifecycle_result.cancellation_acknowledgement
+                ),
+            )
+    except EndpointCancellationError as exc:
+        commands_closed = close_command_scope(exc)
+        staging_result = StagingResult(
+            success=False,
+            error=sanitize_diagnostic(str(exc)),
+            execution_run_id=execution_run_id,
+            artifact_ids=[],
+            cancellation_acknowledgement=replace(
+                exc.acknowledgement,
+                status=(
+                    exc.acknowledgement.status
+                    if commands_closed
+                    else CancellationStatus.UNKNOWN
+                ),
+                message=(
+                    sanitize_diagnostic(exc.acknowledgement.message)
+                    if commands_closed
+                    else "Local command cleanup could not be confirmed"
+                ),
+            ),
+        )
     except (_PostprocessFailure, _ExecuteFailure) as exc:
+        close_command_scope(exc)
         # Lifecycle failures with clean error messages
-        if isinstance(exc, _ExecuteFailure):
-            error = str(exc)
-            tool_output = exc.tool_output
-        else:
-            error = str(exc)
-            tool_output = None
+        tool_output = exc.tool_output if isinstance(exc, _ExecuteFailure) else None
+        error = "\n".join([str(exc), *getattr(exc, "__notes__", ())])
         execution_context = _build_execution_context(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )
-        params_dict = _get_params_dict(operation)
+        params_dict = serialize_params(operation)
         staging_result = record_execution_failure(
+            **replay_recording_fields(),
+            command_recording=command_snapshot(),
             execution_context=execution_context,
             error=error,
             inputs=original_inputs,
@@ -388,14 +358,17 @@ def run_creator_flow(
             user_overrides=user_overrides,
             tool_output=tool_output,
             failure_logs_root=runtime_env.failure_logs_root,
+            error_envelope=error_envelope_dict(exc),
         )
     except Exception as exc:
-        error = format_error(exc)
+        close_command_scope(exc)
+        if execution_context is not None and execution_is_sealed(execution_context):
+            raise
+        error = sanitize_diagnostic(format_error(exc))
         execution_context = _try_build_execution_context(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )
@@ -408,8 +381,10 @@ def run_creator_flow(
                 artifact_ids=[],
             )
         else:
-            params_dict = _get_params_dict(operation)
+            params_dict = serialize_params(operation)
             staging_result = record_execution_failure(
+                **replay_recording_fields(),
+                command_recording=command_snapshot(),
                 execution_context=execution_context,
                 error=error,
                 inputs=original_inputs,
@@ -417,6 +392,7 @@ def run_creator_flow(
                 params=params_dict,
                 user_overrides=user_overrides,
                 failure_logs_root=runtime_env.failure_logs_root,
+                error_envelope=error_envelope_dict(exc),
             )
 
     timings["total"] = round(time.perf_counter() - total_start, 4)
@@ -424,38 +400,25 @@ def run_creator_flow(
     return staging_result
 
 
-def _get_params_dict(operation: Any) -> dict[str, Any]:
-    """Extract serialized params from an operation."""
-    from artisan.utils.hashing import serialize_params
-
-    return serialize_params(operation)
-
-
 def _build_execution_context(
     execution_run_id: str,
     unit: ExecutionUnit,
     timestamp_start: datetime,
-    worker_id: int,
     runtime_env: RuntimeEnvironment,
     operation: Any,
 ) -> Any:
-    """Build an execution context, raising if working_root_path is missing."""
-    working_root = runtime_env.working_root_path
+    """Build an execution context, raising if working_root is missing."""
+    working_root = runtime_env.working_root
     if working_root is None:
-        msg = "RuntimeEnvironment.working_root_path must be set"
+        msg = "RuntimeEnvironment.working_root must be set"
         raise ValueError(msg)
-    return build_creator_execution_context(
+    return build_execution_context(
         execution_run_id=execution_run_id,
         execution_spec_id=unit.execution_spec_id,
         step_number=unit.step_number,
         timestamp_start=timestamp_start,
-        worker_id=worker_id,
-        delta_root_path=runtime_env.delta_root_path,
-        staging_root_path=runtime_env.staging_root_path,
+        runtime_env=runtime_env,
         operation=operation,
-        sandbox_path=working_root / "dummy",
-        compute_backend_name=runtime_env.compute_backend_name,
-        shared_filesystem=runtime_env.shared_filesystem,
         step_run_id=unit.step_run_id,
     )
 
@@ -464,43 +427,31 @@ def _try_build_execution_context(
     execution_run_id: str,
     unit: ExecutionUnit,
     timestamp_start: datetime,
-    worker_id: int,
     runtime_env: RuntimeEnvironment,
     operation: Any,
 ) -> Any | None:
-    """Try to build an execution context, returning None on failure."""
+    """Try to build an execution context, returning None on failure.
+
+    A missing ``working_root`` (the expected setup failure) returns None
+    silently so the caller stages a bare StagingResult. Any other failure
+    is logged with its cause before returning None, so an unexpected
+    context-build error is not masked behind the caller's generic
+    "Creator setup failed" message.
+    """
     try:
         return _build_execution_context(
             execution_run_id,
             unit,
             timestamp_start,
-            worker_id,
             runtime_env,
             operation,
         )
-    except (ValueError, Exception):
+    except ValueError:
         return None
-
-
-def _extract_inputs(unit: ExecutionUnit) -> dict[str, list[str]]:
-    """Copy input artifact IDs from the execution unit."""
-    if not unit.inputs:
-        return {}
-    return {role: list(ids) for role, ids in unit.inputs.items()}
-
-
-def _validate_operation_outputs(operation_class: type) -> None:
-    """Raise ValueError if the operation class has no outputs declared."""
-    if getattr(operation_class, "outputs", None) is None:
-        msg = (
-            f"{operation_class.__name__} must define outputs. "
-            "Add a ClassVar like: outputs: ClassVar[dict[str, OutputSpec]] = {}"
+    except Exception as exc:
+        logger.error(
+            "Unexpected failure building execution context for %s: %s",
+            execution_run_id,
+            sanitize_diagnostic(format_error(exc)),
         )
-        raise ValueError(msg)
-
-
-def _extract_artifacts_from_input(
-    input_artifacts: dict[str, list[Artifact]],
-) -> dict[str, list[Artifact]]:
-    """Shallow-copy the input artifacts dict to avoid mutation."""
-    return {role: list(artifacts) for role, artifacts in input_artifacts.items()}
+        return None

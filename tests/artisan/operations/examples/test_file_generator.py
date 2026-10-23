@@ -1,0 +1,148 @@
+"""Tests for FileGenerator operation."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+
+import pytest
+
+from artisan.execution.executors.creator import run_creator_lifecycle
+from artisan.execution.models.execution_unit import ExecutionUnit
+from artisan.operations.examples.file_generator import FileGenerator
+from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
+from artisan.utils.hashing import compute_content_digest, digest_utf8
+
+
+def _run(
+    tmp_path: Path,
+    count: int = 2,
+    file_size_bytes: int = 1000,
+    seed: int | None = 42,
+) -> tuple[dict, ArtifactResult]:
+    """Run execute + postprocess and return both results."""
+    files_dir = str(tmp_path / "files")
+    os.makedirs(files_dir, exist_ok=True)
+    execute_dir = str(tmp_path / "execute")
+    os.makedirs(execute_dir, exist_ok=True)
+
+    op = FileGenerator(
+        params=FileGenerator.Params(
+            count=count,
+            file_size_bytes=file_size_bytes,
+            seed=seed,
+        ),
+    )
+
+    execute_input = ExecuteInput(
+        execute_dir=execute_dir,
+        files_dir=files_dir,
+    )
+    raw = op.execute_function(execute_input)
+
+    post_input = PostprocessInput(
+        step_number=0,
+        postprocess_dir=str(tmp_path / "post"),
+        memory_outputs=raw,
+    )
+    result = op.postprocess(post_input)
+    return raw, result
+
+
+class TestFileGenerator:
+    """Tests for the FileGenerator operation."""
+
+    def test_generates_correct_file_count(self, tmp_path: Path) -> None:
+        raw, result = _run(tmp_path, count=3)
+        assert len(raw["files"]) == 3
+        assert len(result.artifacts["files"]) == 3
+
+    def test_file_size_matches_param(self, tmp_path: Path) -> None:
+        raw, _ = _run(tmp_path, count=1, file_size_bytes=500)
+        file_path = raw["files"][0]["path"]
+        assert os.path.getsize(file_path) == 500
+
+    def test_reproducible_with_seed(self, tmp_path: Path) -> None:
+        _, r1 = _run(tmp_path / "a", seed=99)
+        _, r2 = _run(tmp_path / "b", seed=99)
+        hashes_1 = [a.content_hash for a in r1.artifacts["files"]]
+        hashes_2 = [a.content_hash for a in r2.artifacts["files"]]
+        assert hashes_1 == hashes_2
+
+    def test_different_seeds_different_output(self, tmp_path: Path) -> None:
+        _, r1 = _run(tmp_path / "a", seed=1)
+        _, r2 = _run(tmp_path / "b", seed=2)
+        hashes_1 = [a.content_hash for a in r1.artifacts["files"]]
+        hashes_2 = [a.content_hash for a in r2.artifacts["files"]]
+        assert hashes_1 != hashes_2
+
+    def test_one_artifact_per_file(self, tmp_path: Path) -> None:
+        _raw, result = _run(tmp_path, count=3)
+        paths = {a.path for a in result.artifacts["files"]}
+        assert len(paths) == 3
+
+    def test_requires_files_dir(self, tmp_path: Path) -> None:
+        op = FileGenerator()
+        ei = ExecuteInput(execute_dir=str(tmp_path), files_dir=None)
+        with pytest.raises(ValueError, match="files_dir required"):
+            op.execute_function(ei)
+
+    def test_artifact_type_is_file_ref(self, tmp_path: Path) -> None:
+        _, result = _run(tmp_path)
+        for art in result.artifacts["files"]:
+            assert art.artifact_type == "file_ref"
+
+    def test_content_hash_correct(self, tmp_path: Path) -> None:
+        raw, _ = _run(tmp_path, count=1, file_size_bytes=100)
+        file_path = raw["files"][0]["path"]
+        with open(file_path, "rb") as fh:
+            data = fh.read()
+        expected = compute_content_digest(data)
+        assert raw["files"][0]["content_hash"] == expected
+
+
+class TestFileGeneratorLifecycle:
+    """End-to-end creator lifecycle for FileGenerator on both backends.
+
+    Regression guard for the files_root upload path: without
+    ``_upload_files_to_root`` the cloud run would leak a literal-colon
+    directory under the executor and store a local path in
+    ``path``.
+    """
+
+    def test_path_resolves_on_parametrized_backend(
+        self, backend_env, tmp_path: Path
+    ) -> None:
+        fs, storage, delta_root, files_root, working_root = backend_env
+
+        env = RuntimeEnvironment(
+            delta_root=delta_root,
+            working_root=working_root,
+            staging_root=str(tmp_path / "staging"),
+            files_root=files_root,
+            storage=storage,
+        )
+        unit = ExecutionUnit(
+            operation=FileGenerator(
+                params=FileGenerator.Params(count=2, file_size_bytes=256, seed=0)
+            ),
+            inputs={},
+            execution_spec_id=digest_utf8("file-generator-lifecycle"),
+            step_number=3,
+        )
+
+        result = run_creator_lifecycle(unit, env)
+
+        artifacts = result.artifacts["files"]
+        assert len(artifacts) == 2
+        for art in artifacts:
+            assert art.path is not None
+            assert art.path.startswith(files_root), (
+                f"path {art.path!r} not under {files_root!r}"
+            )
+            assert fs.exists(art.path), f"path {art.path!r} does not resolve on {fs}"
+            content = fs.cat_file(art.path)
+            assert len(content) == art.size_bytes == 256
+            assert compute_content_digest(content) == art.content_hash

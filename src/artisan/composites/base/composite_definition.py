@@ -19,8 +19,6 @@ from artisan.operations.base._role_docs import (
     get_registered,
     validate_role_enums,
 )
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -48,12 +46,6 @@ class CompositeDefinition(BaseModel):
 
     # ---------- Outputs ----------
     outputs: ClassVar[dict[str, OutputSpec]] = {}
-
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig()
-
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig()
 
     # ---------- Compose ----------
     def compose(self, ctx: CompositeContext) -> None:
@@ -83,7 +75,7 @@ class CompositeDefinition(BaseModel):
             msg = f"{cls.__name__} must implement compose() method"
             raise TypeError(msg)
 
-        validate_role_enums(cls, "composite")
+        validate_role_enums(cls)
         append_role_docs(cls)
 
         # Register in composite registry
@@ -103,7 +95,10 @@ class CompositeDefinition(BaseModel):
         Raises:
             KeyError: If name is not registered.
         """
-        return get_registered(name, cls._registry, "composite")
+        result: type[CompositeDefinition] = get_registered(
+            name, cls._registry, "composite"
+        )
+        return result
 
     @classmethod
     def get_all(cls) -> dict[str, type[CompositeDefinition]]:

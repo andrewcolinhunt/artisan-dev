@@ -8,45 +8,78 @@ preparation for the artifact_index.
 
 from __future__ import annotations
 
-from pathlib import Path
+from typing import cast
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
+from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external import sanitized_uri, validate_persistable_uri
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.committed_scan import read_committed, scan_committed
 from artisan.storage.core.provenance_store import ProvenanceStore
+from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import get_schema
+from artisan.utils.path import uri_join
 
 
 class ArtifactStore:
     """Query and prepare artifacts stored in Delta Lake tables.
 
     Attributes:
-        base_path (Path): Root directory for Delta Lake tables.
+        base_path: Root URI/path for Delta Lake tables.
     """
 
-    def __init__(self, base_path: Path | str):
+    def __init__(
+        self,
+        base_path: str,
+        *,
+        fs: AbstractFileSystem | None = None,
+        storage_options: dict[str, str] | None = None,
+        files_root: str | None = None,
+    ):
         """Initialize with the Delta Lake root directory.
 
         Args:
-            base_path: Root directory containing artifact and framework
+            base_path: Root URI/path containing artifact and framework
                 Delta tables (e.g. ``file_refs/``, ``data/``,
                 ``artifact_index/``).
+            fs: Filesystem implementation (LocalFileSystem, S3FileSystem,
+                etc.). Defaults to ``LocalFileSystem()`` when None.
+            storage_options: Credentials/config passed to delta-rs calls.
+            files_root: Root URI/path for Artisan-managed external files.
+                None when external file storage is not configured.
         """
-        self.base_path = Path(base_path)
+        if fs is None:
+            from fsspec.implementations.local import LocalFileSystem
+
+            fs = LocalFileSystem()
+        self.base_path = base_path
+        self._fs = fs
+        self._storage_options = storage_options or {}
+        self.files_root = files_root
         self._provenance: ProvenanceStore | None = None
+        assert_store_format(self.base_path, self._fs, self._storage_options)
 
     @property
     def provenance(self) -> ProvenanceStore:
         """Lazy-initialized provenance store for graph queries."""
         if self._provenance is None:
-            self._provenance = ProvenanceStore(self.base_path)
+            self._provenance = ProvenanceStore(
+                self.base_path, fs=self._fs, storage_options=self._storage_options
+            )
         return self._provenance
 
-    def _table_path(self, table: TablePath) -> Path:
-        """Resolve the filesystem path for a Delta table."""
-        return self.base_path / table
+    @property
+    def filesystem(self) -> AbstractFileSystem:
+        """Return the configured filesystem used for artifact I/O."""
+        return self._fs
+
+    def _table_path(self, table: TablePath) -> str:
+        """Resolve the URI for a Delta table."""
+        return uri_join(self.base_path, table)
 
     # -------------------------------------------------------------------------
     # Read operations
@@ -63,36 +96,51 @@ class ArtifactStore:
 
         Args:
             artifact_id: Content-addressed artifact identifier.
-            artifact_type: Type key hint. When provided, skips the
-                artifact_index lookup to determine the storage table.
-            hydrate: If True, load all fields from the content table.
+            artifact_type: Expected type, checked against the artifact index.
+            hydrate: If True, load content fields and verify external bytes.
                 If False, return a minimal model with only the ID and
                 type populated.
 
         Returns:
             Typed artifact model, or None if the ID is not found in
             the index or content table.
-        """
-        # Determine which table to query
-        if artifact_type is None:
-            artifact_type = self.get_artifact_type(artifact_id)
-            if artifact_type is None:
-                return None
 
-        # ID-only mode - return minimal artifact
+        Raises:
+            ArtifactIntegrityError: If the indexed type conflicts with the
+                expected type, persisted content is invalid, or an external
+                artifact has no readable location with matching content.
+        """
+        stored_type = self.get_artifact_type(artifact_id)
+        if stored_type is None:
+            return None
+        if artifact_type is not None and artifact_type != stored_type:
+            msg = (
+                f"Artifact {artifact_id} is indexed as {stored_type!r}, "
+                f"not {artifact_type!r}"
+            )
+            raise ArtifactIntegrityError(msg)
+        artifact_type = stored_type
+
         if not hydrate:
             model_cls = ArtifactTypeDef.get_model(artifact_type)
-            return model_cls(artifact_id=artifact_id, artifact_type=artifact_type)
+            return cast(
+                "Artifact",
+                model_cls(artifact_id=artifact_id, artifact_type=artifact_type),
+            )
 
-        # Full hydration - load from storage
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
-        table_path = self.base_path / table_path_str
+        table_path = uri_join(self.base_path, table_path_str)
 
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return None
 
         result = (
-            pl.scan_delta(str(table_path))
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id") == artifact_id)
             .limit(1)
             .collect()
@@ -103,7 +151,9 @@ class ArtifactStore:
 
         row = result.row(0, named=True)
         model_cls = ArtifactTypeDef.get_model(artifact_type)
-        return model_cls.from_row(row)
+        artifact = cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
+        self._attach_verified_location(artifact)
+        return artifact
 
     def get_artifacts_by_type(
         self,
@@ -120,18 +170,27 @@ class ArtifactStore:
         Returns:
             Mapping of artifact ID to typed model. IDs not found in
             storage are silently omitted.
+
+        Raises:
+            ArtifactIntegrityError: If persisted content is invalid or an
+                external artifact has no readable location with matching content.
         """
         if not artifact_ids:
             return {}
 
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
-        table_path = self.base_path / table_path_str
+        table_path = uri_join(self.base_path, table_path_str)
 
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return {}
 
         result = (
-            pl.scan_delta(str(table_path))
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .collect()
         )
@@ -139,13 +198,138 @@ class ArtifactStore:
         if result.is_empty():
             return {}
 
+        return self._hydrate_rows(artifact_type, result)
+
+    def _hydrate_rows(
+        self,
+        artifact_type: str,
+        rows: pl.DataFrame,
+        locations: pl.DataFrame | None = None,
+    ) -> dict[str, Artifact]:
+        """Hydrate committed or staged rows through the same integrity boundary."""
         model_cls = ArtifactTypeDef.get_model(artifact_type)
         artifacts: dict[str, Artifact] = {}
-        for row in result.iter_rows(named=True):
-            artifact = model_cls.from_row(row)
+        for row in rows.iter_rows(named=True):
+            artifact = cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
+            # Artifacts loaded from storage are always finalized (artifact_id
+            # is non-None).
+            assert artifact.artifact_id is not None
+            self._attach_verified_location(artifact, locations)
             artifacts[artifact.artifact_id] = artifact
 
         return artifacts
+
+    def validate_staged_artifacts(
+        self,
+        frames: dict[str, pl.DataFrame],
+        references: dict[str, set[str]],
+        *,
+        per_execution_artifact_ids: dict[str, set[str]],
+        committed_frames: dict[str, pl.DataFrame] | None = None,
+    ) -> dict[str, str]:
+        """Validate per-worker references, then hydrate their unique union once."""
+        committed_index = self._validation_rows(
+            TablePath.ARTIFACT_INDEX.value, committed_frames
+        )
+        committed_ids = set(committed_index["artifact_id"].to_list())
+        for execution_id, artifact_ids in references.items():
+            missing = (
+                artifact_ids - committed_ids - per_execution_artifact_ids[execution_id]
+            )
+            if missing:
+                msg = f"Missing staged artifact references for {execution_id}: {sorted(missing)!r}"
+                raise ArtifactIntegrityError(msg)
+        referenced_ids = set().union(*references.values())
+        index = self._candidate_rows(
+            TablePath.ARTIFACT_INDEX.value, frames, committed=committed_index
+        )
+        locations = self._candidate_rows(
+            TablePath.ARTIFACT_LOCATIONS.value,
+            frames,
+            committed=self._validation_rows(
+                TablePath.ARTIFACT_LOCATIONS.value, committed_frames
+            ),
+        )
+        for frame in frames.values():
+            if "artifact_id" in frame.columns:
+                referenced_ids.update(frame["artifact_id"].to_list())
+        selected = index.filter(pl.col("artifact_id").is_in(referenced_ids))
+        types: dict[str, str] = {}
+        for artifact_id, artifact_type in selected.select(
+            "artifact_id", "artifact_type"
+        ).iter_rows():
+            if not isinstance(artifact_type, str) or not artifact_type:
+                msg = "Invalid staged artifact type"
+                raise ArtifactIntegrityError(msg)
+            ArtifactTypeDef.get(artifact_type)
+            if types.setdefault(artifact_id, artifact_type) != artifact_type:
+                msg = f"Conflicting staged artifact type for {artifact_id}"
+                raise ArtifactIntegrityError(msg)
+        missing = referenced_ids - types.keys()
+        if missing:
+            msg = f"Missing staged artifact references: {sorted(missing)!r}"
+            raise ArtifactIntegrityError(msg)
+        for artifact_type in sorted(set(types.values())):
+            definition = ArtifactTypeDef.get(artifact_type)
+            ids = {key for key, kind in types.items() if kind == artifact_type}
+            content = self._candidate_rows(
+                definition.table_path,
+                frames,
+                committed=self._validation_rows(
+                    definition.table_path, committed_frames
+                ),
+            ).filter(pl.col("artifact_id").is_in(ids))
+            loaded = self._hydrate_rows(artifact_type, content, locations)
+            if ids != loaded.keys():
+                msg = f"Missing staged content for {sorted(ids - loaded.keys())!r}"
+                raise ArtifactIntegrityError(msg)
+        for definition in ArtifactTypeDef.get_all().values():
+            candidate_frame = frames.get(definition.table_path)
+            if candidate_frame is not None and any(
+                types.get(value) != definition.key
+                for value in candidate_frame["artifact_id"]
+            ):
+                msg = "Staged content disagrees with its artifact index"
+                raise ArtifactIntegrityError(msg)
+        return types
+
+    def _validation_rows(
+        self, table: str, snapshot: dict[str, pl.DataFrame] | None
+    ) -> pl.DataFrame:
+        """Use an audited snapshot as authoritative, including unavailable tables."""
+        if snapshot is None:
+            return read_committed(
+                self.base_path,
+                table,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+        if table not in snapshot:
+            msg = f"Missing audited table {table!r}: its physical data was unreadable"
+            raise ArtifactIntegrityError(msg)
+        return snapshot[table]
+
+    def _candidate_rows(
+        self,
+        table: str,
+        frames: dict[str, pl.DataFrame],
+        *,
+        committed: pl.DataFrame | None = None,
+    ) -> pl.DataFrame:
+        """Overlay candidate evidence for validation without changing stored data."""
+        if committed is None:
+            committed = read_committed(
+                self.base_path,
+                table,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+        candidate = frames.get(table)
+        if candidate is None:
+            return committed
+        return pl.concat(
+            [committed, candidate.select(committed.columns)], how="vertical"
+        ).unique(maintain_order=True)
 
     def artifact_exists(self, artifact_id: str) -> bool:
         """Check whether an artifact exists via the artifact_index.
@@ -165,35 +349,117 @@ class ArtifactStore:
             Artifact type string, or None if not in the index.
         """
         index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not index_path.exists():
+        if not self._fs.exists(index_path):
             return None
 
         result = (
-            pl.scan_delta(str(index_path))
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id") == artifact_id)
             .select("artifact_type")
-            .limit(1)
             .collect()
         )
 
         if result.is_empty():
             return None
 
-        return result["artifact_type"][0]
+        stored_types = set(result["artifact_type"].to_list())
+        if len(stored_types) != 1:
+            msg = (
+                f"Artifact {artifact_id} has contradictory index types {stored_types!r}"
+            )
+            raise ArtifactIntegrityError(msg)
+        return cast("str", next(iter(stored_types)))
 
-    def get_ancestor_artifact_ids(self, artifact_id: str) -> list[str]:
-        """Return direct ancestor (source) artifact IDs.
+    def load_type_map(self, artifact_ids: list[str]) -> dict[str, str]:
+        """Bulk-load and validate unique type assignments for artifact IDs."""
+        if not artifact_ids:
+            return {}
+        result = (
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_INDEX,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
+            .filter(pl.col("artifact_id").is_in(artifact_ids))
+            .select(["artifact_id", "artifact_type"])
+            .collect()
+        )
+        type_map: dict[str, str] = {}
+        for artifact_id, artifact_type in result.iter_rows():
+            previous = type_map.setdefault(artifact_id, artifact_type)
+            if previous != artifact_type:
+                msg = (
+                    f"Artifact {artifact_id} has contradictory index types "
+                    f"{previous!r} and {artifact_type!r}"
+                )
+                raise ArtifactIntegrityError(msg)
+        return type_map
 
-        Delegates to ``self.provenance.get_direct_ancestors``.
-        """
-        return self.provenance.get_direct_ancestors(artifact_id)
+    def _attach_verified_location(
+        self, artifact: Artifact, candidate_locations: pl.DataFrame | None = None
+    ) -> None:
+        """Select and verify a deterministic location for an external artifact."""
+        if not artifact.EXTERNALLY_BACKED:
+            return
+        assert artifact.artifact_id is not None
+        locations_path = self._table_path(TablePath.ARTIFACT_LOCATIONS)
+        if candidate_locations is not None:
+            rows = candidate_locations.filter(
+                pl.col("artifact_id") == artifact.artifact_id
+            ).select("uri")
+        elif self._fs.exists(locations_path):
+            rows = (
+                scan_committed(
+                    self.base_path,
+                    TablePath.ARTIFACT_LOCATIONS,
+                    fs=self._fs,
+                    storage_options=self._storage_options,
+                )
+                .filter(pl.col("artifact_id") == artifact.artifact_id)
+                .select("uri")
+                .collect()
+            )
+        else:
+            rows = pl.DataFrame(schema={"uri": pl.String})
+        locations = sorted(
+            set(rows["uri"].to_list()),
+            key=lambda uri: (not self._is_managed_location(uri), uri),
+        )
+        attempted: list[str] = []
+        locator = next(iter(artifact.LOCATOR_FIELDS))
+        for uri in locations:
+            attempted.append(sanitized_uri(uri))
+            try:
+                validate_persistable_uri(uri)
+            except ValueError as exc:
+                msg = f"Persisted artifact location is invalid: {sanitized_uri(uri)!r}"
+                raise ArtifactIntegrityError(msg) from exc
+            setattr(artifact, locator, uri)
+            try:
+                artifact.verify_external_content(fs=self._fs)
+            except ArtifactIntegrityError:
+                raise
+            except Exception:
+                continue
+            return
+        msg = (
+            f"External {artifact.artifact_type} artifact {artifact.artifact_id} "
+            f"has no readable verified location; attempted {attempted!r}"
+        )
+        raise ArtifactIntegrityError(msg)
 
-    def load_provenance_map(self) -> dict[str, list[str]]:
-        """Load the full backward provenance map.
-
-        Delegates to ``self.provenance.load_backward_map``.
-        """
-        return self.provenance.load_backward_map()
+    def _is_managed_location(self, uri: str) -> bool:
+        """Return whether a URI is under the configured managed files root."""
+        if self.files_root is None:
+            return False
+        root = self.files_root.rstrip("/")
+        return uri == root or uri.startswith(f"{root}/")
 
     def get_associated(
         self,
@@ -235,76 +501,6 @@ class ArtifactStore:
                 result[source_id] = artifacts
         return result
 
-    def get_descendant_artifact_ids(
-        self,
-        source_artifact_ids: set[str],
-        target_artifact_type: str | None = None,
-    ) -> dict[str, list[str]]:
-        """Delegates to ``self.provenance.get_direct_descendants``."""
-        return self.provenance.get_direct_descendants(
-            source_artifact_ids, target_artifact_type
-        )
-
-    def load_step_number_map(
-        self, artifact_ids: set[str] | None = None
-    ) -> dict[str, int]:
-        """Delegates to ``self.provenance.load_step_map``."""
-        return self.provenance.load_step_map(artifact_ids)
-
-    def get_step_range(self, artifact_ids: pl.Series) -> tuple[int, int] | None:
-        """Delegates to ``self.provenance.get_step_range``."""
-        return self.provenance.get_step_range(artifact_ids)
-
-    def get_descendant_ids_df(
-        self,
-        source_ids: pl.Series,
-        target_artifact_type: str | None = None,
-    ) -> pl.DataFrame:
-        """Delegates to ``self.provenance.get_descendant_ids_df``."""
-        return self.provenance.get_descendant_ids_df(source_ids, target_artifact_type)
-
-    def get_artifact_step_number(self, artifact_id: str) -> int | None:
-        """Delegates to ``self.provenance.get_artifact_step_number``."""
-        return self.provenance.get_artifact_step_number(artifact_id)
-
-    def load_artifact_type_map(
-        self, artifact_ids: list[str] | None = None
-    ) -> dict[str, str]:
-        """Delegates to ``self.provenance.load_type_map``."""
-        return self.provenance.load_type_map(artifact_ids)
-
-    def load_artifact_ids_by_type(
-        self,
-        artifact_type: str,
-        *,
-        step_numbers: list[int] | None = None,
-        artifact_ids: list[str] | None = None,
-    ) -> set[str]:
-        """Delegates to ``self.provenance.load_artifact_ids_by_type``."""
-        return self.provenance.load_artifact_ids_by_type(
-            artifact_type, step_numbers=step_numbers, artifact_ids=artifact_ids
-        )
-
-    def load_forward_provenance_map(self) -> dict[str, list[str]]:
-        """Delegates to ``self.provenance.load_forward_map``."""
-        return self.provenance.load_forward_map()
-
-    def load_step_name_map(self, pipeline_run_id: str | None = None) -> dict[int, str]:
-        """Delegates to ``self.provenance.load_step_name_map``."""
-        return self.provenance.load_step_name_map(pipeline_run_id)
-
-    def load_provenance_edges_df(
-        self,
-        step_min: int,
-        step_max: int,
-        *,
-        include_target_type: bool = False,
-    ) -> pl.DataFrame:
-        """Delegates to ``self.provenance.load_edges_df``."""
-        return self.provenance.load_edges_df(
-            step_min, step_max, include_target_type=include_target_type
-        )
-
     def load_metrics_df(self, artifact_ids: list[str]) -> pl.DataFrame:
         """Load metric artifacts as a two-column DataFrame.
 
@@ -324,19 +520,88 @@ class ArtifactStore:
             return empty
 
         table_path_str = ArtifactTypeDef.get_table_path("metric")
-        table_path = self.base_path / table_path_str
+        table_path = uri_join(self.base_path, table_path_str)
 
-        if not table_path.exists():
+        if not self._fs.exists(table_path):
             return empty
 
         result = (
-            pl.scan_delta(str(table_path))
+            scan_committed(
+                self.base_path,
+                table_path_str,
+                fs=self._fs,
+                storage_options=self._storage_options,
+            )
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(["artifact_id", "content"])
             .collect()
         )
 
         return result if not result.is_empty() else empty
+
+    def load_original_names(self, artifact_ids: list[str]) -> dict[str, str]:
+        """Bulk-load ``original_name`` values for the given artifact IDs.
+
+        Used by name-based input pairing (``GroupByStrategy.NAME``) to
+        obtain the source filenames needed for stem matching. Two-phase
+        lookup: an index scan resolves each artifact's type, then per-type
+        content tables are scanned with an ``is_in`` filter to fetch
+        ``(artifact_id, original_name)`` pairs.
+
+        Types whose schema does not declare ``original_name`` are skipped
+        silently. Artifacts whose row exists but whose ``original_name``
+        is ``None`` are also omitted.
+
+        Args:
+            artifact_ids: IDs to look up. An empty list returns ``{}``
+                immediately without scanning.
+
+        Returns:
+            Mapping of artifact ID to ``original_name``. IDs missing
+            from the index, missing from their content table, or with a
+            null ``original_name`` are omitted.
+        """
+        if not artifact_ids:
+            return {}
+
+        type_map = self.provenance.load_type_map(artifact_ids)
+        if not type_map:
+            return {}
+
+        ids_by_type: dict[str, list[str]] = {}
+        for artifact_id, artifact_type in type_map.items():
+            ids_by_type.setdefault(artifact_type, []).append(artifact_id)
+
+        names: dict[str, str] = {}
+        for artifact_type, ids in ids_by_type.items():
+            schema = ArtifactTypeDef.get_schema(artifact_type)
+            if "original_name" not in schema:
+                continue
+
+            table_path = uri_join(
+                self.base_path, ArtifactTypeDef.get_table_path(artifact_type)
+            )
+            if not self._fs.exists(table_path):
+                continue
+
+            df = (
+                scan_committed(
+                    self.base_path,
+                    ArtifactTypeDef.get_table_path(artifact_type),
+                    fs=self._fs,
+                    storage_options=self._storage_options,
+                )
+                .filter(pl.col("artifact_id").is_in(ids))
+                .select(["artifact_id", "original_name"])
+                .collect()
+            )
+
+            for row in df.iter_rows(named=True):
+                name = row["original_name"]
+                if name:
+                    names[row["artifact_id"]] = name
+
+        return names
 
     # -------------------------------------------------------------------------
     # Write preparation (returns DataFrames for staging)
@@ -354,7 +619,7 @@ class ArtifactStore:
 
         Returns:
             Single-row DataFrame matching the artifact_index schema,
-            ready to be staged via ``StagingArea.stage_dataframe``.
+            ready for ``StagingManager.stage_orchestrator_dataframe``.
         """
 
         data = {
@@ -364,3 +629,14 @@ class ArtifactStore:
             "metadata": ["{}"],
         }
         return pl.DataFrame(data, schema=get_schema(TablePath.ARTIFACT_INDEX))
+
+    def prepare_artifact_location_entry(
+        self,
+        artifact_id: str,
+        uri: str,
+    ) -> pl.DataFrame:
+        """Build one ownerless global artifact-location row."""
+        return pl.DataFrame(
+            {"artifact_id": [artifact_id], "uri": [uri]},
+            schema=get_schema(TablePath.ARTIFACT_LOCATIONS),
+        )

@@ -1,0 +1,123 @@
+"""Generate binary files stored externally.
+
+Demonstrates the one-to-one external-content pattern: each artifact
+maps to a complete file in files_root. Delta stores only metadata
+(hash, size, name), regardless of file size.
+"""
+
+from __future__ import annotations
+
+import os
+import random
+from enum import StrEnum, auto
+from typing import Any, ClassVar
+
+from pydantic import BaseModel, Field
+
+from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.file_ref import FileRefArtifact
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
+from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.utils.hashing import compute_content_digest
+
+
+class FileGenerator(OperationDefinition):
+    """Generate binary files stored externally.
+
+    Produces pseudo-random binary files of a specified size, reproducible
+    when an explicit seed is supplied. Each file becomes a FileRefArtifact with
+    path pointing to the file in files_root.
+
+    Output Roles:
+        files (file_ref) -- Generated binary files
+    """
+
+    name = "file_generator"
+    description = "Generate binary files stored externally"
+
+    inputs: ClassVar[dict[str, Any]] = {}
+
+    class OutputRole(StrEnum):
+        files = auto()
+
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.files: OutputSpec(
+            artifact_type="file_ref",
+            description="Generated binary files",
+            derives_from={"inputs": []},
+        ),
+    }
+
+    class Params(BaseModel):
+        """Algorithm parameters for FileGenerator."""
+
+        count: int = Field(default=1, ge=1, description="Number of files to generate")
+        file_size_bytes: int = Field(
+            default=1_000_000,
+            ge=1,
+            description="Size in bytes of each generated file",
+        )
+        seed: int | None = Field(
+            default=None, description="Random seed for reproducibility"
+        )
+
+    params: Params = Params()
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="file_generator")  # type: ignore[call-arg]  # pydantic defaults
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+        """Generate binary files in files_dir, reproducible with an explicit seed."""
+        if inputs.files_dir is None:
+            msg = "files_dir required for FileGenerator"
+            raise ValueError(msg)
+
+        rng = random.Random(self.params.seed)
+        files_meta: list[dict[str, Any]] = []
+
+        for i in range(self.params.count):
+            filename = f"output_{i:05d}.bin"
+            output_path = os.path.join(inputs.files_dir, filename)
+            data = rng.randbytes(self.params.file_size_bytes)
+            with open(output_path, "wb") as f:
+                f.write(data)
+            files_meta.append(
+                {
+                    "path": output_path,
+                    "content_hash": compute_content_digest(data),
+                    "size_bytes": len(data),
+                    "original_name": f"output_{i:05d}",
+                    "extension": ".bin",
+                }
+            )
+
+        return {"files": files_meta}
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        """Create FileRefArtifact drafts from execute metadata."""
+        files = inputs.memory_outputs["files"]
+
+        drafts: list[Artifact] = [
+            FileRefArtifact.draft(
+                content_hash=f["content_hash"],
+                size_bytes=f["size_bytes"],
+                step_number=inputs.step_number,
+                path=f["path"],
+                original_name=f["original_name"],
+                extension=f["extension"],
+            )
+            for f in files
+        ]
+
+        return ArtifactResult(
+            success=True,
+            artifacts={"files": drafts},
+            lineage={"files": []},
+        )

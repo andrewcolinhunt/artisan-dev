@@ -7,18 +7,17 @@ and input type mismatches — all BEFORE any predecessor wait or execution.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
-pytestmark = pytest.mark.slow
+pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.backends import Backend
+from artisan.orchestration.runners import Runner
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 
-def test_invalid_params_raises(pipeline_env: dict[str, Path]):
+def test_invalid_params_raises(pipeline_env: dict[str, str]):
     """Unknown param keys raise ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_params",
@@ -31,14 +30,14 @@ def test_invalid_params_raises(pipeline_env: dict[str, Path]):
         pipeline.run(
             DataGenerator,
             params={"count": 2, "nonexistent_param": 42},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
     summary = pipeline.finalize()
     assert summary["total_steps"] == 0
 
 
-def test_invalid_resources_raises(pipeline_env: dict[str, Path]):
+def test_invalid_resources_raises(pipeline_env: dict[str, str]):
     """Unknown resource keys raise ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_resources",
@@ -51,12 +50,12 @@ def test_invalid_resources_raises(pipeline_env: dict[str, Path]):
         pipeline.run(
             DataGenerator,
             params={"count": 2},
-            resources={"bogus_resource": 99},
-            backend=Backend.LOCAL,
+            runner_resources={"bogus_resource": 99},
+            step_runner=Runner.LOCAL,
         )
 
 
-def test_invalid_execution_raises(pipeline_env: dict[str, Path]):
+def test_invalid_execution_raises(pipeline_env: dict[str, str]):
     """Unknown execution keys raise ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_execution",
@@ -69,12 +68,12 @@ def test_invalid_execution_raises(pipeline_env: dict[str, Path]):
         pipeline.run(
             DataGenerator,
             params={"count": 2},
-            execution={"nonexistent_key": True},
-            backend=Backend.LOCAL,
+            batch_strategy={"nonexistent_key": True},
+            step_runner=Runner.LOCAL,
         )
 
 
-def test_invalid_input_role_raises(pipeline_env: dict[str, Path]):
+def test_invalid_input_role_raises(pipeline_env: dict[str, str]):
     """Unknown input role raises ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_invalid_input_role",
@@ -86,18 +85,18 @@ def test_invalid_input_role_raises(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     with pytest.raises(ValueError, match="Unknown input roles"):
         pipeline.run(
             DataTransformer,
             inputs={"nonexistent_role": step0.output("datasets")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
-def test_missing_required_input_raises(pipeline_env: dict[str, Path]):
+def test_missing_required_input_raises(pipeline_env: dict[str, str]):
     """Missing required input role raises ValueError before execution."""
     pipeline = PipelineManager.create(
         name="test_missing_required",
@@ -110,11 +109,11 @@ def test_missing_required_input_raises(pipeline_env: dict[str, Path]):
         pipeline.run(
             DataTransformer,
             inputs={},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
-def test_input_type_mismatch_raises(pipeline_env: dict[str, Path]):
+def test_input_type_mismatch_raises(pipeline_env: dict[str, str]):
     """Type mismatch between upstream output and downstream input raises ValueError."""
     pipeline = PipelineManager.create(
         name="test_type_mismatch",
@@ -126,13 +125,13 @@ def test_input_type_mismatch_raises(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        backend=Backend.LOCAL,
+        step_runner=Runner.LOCAL,
     )
 
     # MetricCalculator outputs "metrics" (type=metric), but DataTransformer
@@ -142,11 +141,11 @@ def test_input_type_mismatch_raises(pipeline_env: dict[str, Path]):
         pipeline.run(
             DataTransformer,
             inputs={"dataset": step1.output("metrics")},
-            backend=Backend.LOCAL,
+            step_runner=Runner.LOCAL,
         )
 
 
-def test_valid_overrides_accepted(pipeline_env: dict[str, Path]):
+def test_valid_overrides_accepted(pipeline_env: dict[str, str]):
     """Valid overrides don't raise and pipeline succeeds."""
     pipeline = PipelineManager.create(
         name="test_valid_overrides",
@@ -158,12 +157,12 @@ def test_valid_overrides_accepted(pipeline_env: dict[str, Path]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        resources={"cpus": 2, "memory_gb": 8},
-        execution={"artifacts_per_unit": 1},
-        backend=Backend.LOCAL,
+        runner_resources={"cpus": 2, "memory_gb": 8},
+        batch_strategy={"artifacts_per_unit": 1},
+        step_runner=Runner.LOCAL,
     )
 
-    assert step0.success is True
+    assert step0.status is StepStatus.SUCCEEDED
 
     summary = pipeline.finalize()
     assert summary["overall_success"] is True

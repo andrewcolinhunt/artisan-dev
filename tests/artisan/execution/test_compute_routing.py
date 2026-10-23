@@ -1,0 +1,157 @@
+"""Tests for the create_execute_router factory."""
+
+from __future__ import annotations
+
+from enum import StrEnum, auto
+from typing import Any, ClassVar
+
+import pytest
+
+from artisan.errors import ArtisanError, ErrorCode
+from artisan.execution.compute.endpoint import EndpointExecuteRouter
+from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.compute.routing import create_execute_router, routes_to_endpoint
+from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.operation_config.compute import (
+    ComputeConfig,
+    ComputeProvider,
+    LocalComputeConfig,
+    ModalComputeConfig,
+)
+from artisan.schemas.operation_config.tool_spec import ToolSpec
+from artisan.schemas.specs.input_spec import InputSpec
+from artisan.schemas.specs.output_spec import OutputSpec
+
+
+class _RoutingFunctionOp(OperationDefinition):
+    """Function op — not routable to modal."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "routing_function_op_test"
+    description: ClassVar[str] = "Function op for router factory tests"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            derives_from={"inputs": []},
+        ),
+    }
+
+    def execute_function(self, inputs):
+        return None
+
+
+class _RoutingCommandOp(OperationDefinition):
+    """Command op — routable to modal."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "routing_command_op_test"
+    description: ClassVar[str] = "Command op for router factory tests"
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            derives_from={"inputs": []},
+        ),
+    }
+
+    tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [*self.tool.parts(), "-c", "true"]
+
+
+class _RoutingFlagOp(OperationDefinition):
+    """execute_as_tool op — a command op, routable to modal."""
+
+    class OutputRole(StrEnum):
+        result = auto()
+
+    name: ClassVar[str] = "routing_flag_op_test"
+    description: ClassVar[str] = "Flag-op for router factory tests"
+    execute_as_tool: ClassVar[bool] = True
+    inputs: ClassVar[dict[str, InputSpec]] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.result: OutputSpec(
+            artifact_type=ArtifactTypes.DATA,
+            derives_from={"inputs": []},
+        ),
+    }
+
+    def execute_function(self, inputs):
+        return None
+
+
+class TestCreateExecuteRouter:
+    def test_local_config_creates_local_router(self):
+        config = LocalComputeConfig()
+        router = create_execute_router(config, _RoutingFunctionOp())
+        assert isinstance(router, LocalExecuteRouter)
+
+    def test_modal_config_creates_endpoint_router(self):
+        """Modal + command op routes the execute phase to the endpoint."""
+        config = ModalComputeConfig(image="test-image", max_concurrent_calls=7)
+        router = create_execute_router(config, _RoutingCommandOp())
+        assert isinstance(router, EndpointExecuteRouter)
+        assert router._max_concurrent_calls == 7
+
+    def test_modal_threads_cancel_check_through(self):
+        def probe() -> bool:
+            return False
+
+        config = ModalComputeConfig(image="test-image")
+        router = create_execute_router(config, _RoutingCommandOp(), cancel_check=probe)
+        assert isinstance(router, EndpointExecuteRouter)
+        assert router._cancel_check is probe
+
+    def test_modal_flag_op_creates_endpoint_router(self):
+        """execute_as_tool makes a function body modal-routable."""
+        config = ModalComputeConfig(image="test-image")
+        router = create_execute_router(config, _RoutingFlagOp())
+        assert isinstance(router, EndpointExecuteRouter)
+
+    def test_modal_function_op_fails_fast(self):
+        """Modal requires a command op — function ops are misconfigured."""
+        config = ModalComputeConfig(image="test-image")
+        with pytest.raises(ArtisanError) as exc_info:
+            create_execute_router(config, _RoutingFunctionOp())
+        assert exc_info.value.code == ErrorCode.TOOL_ENDPOINT_MISCONFIGURED
+        assert "execute_as_tool" in str(exc_info.value)
+
+    def test_unknown_config_raises(self):
+        config = ComputeConfig()
+        with pytest.raises(ValueError, match="Unknown compute provider config"):
+            create_execute_router(config, _RoutingFunctionOp())
+
+
+class TestRoutesToEndpoint:
+    """The input-delivery read must agree with the router-construction branch."""
+
+    def test_true_for_modal(self):
+        op = _RoutingCommandOp()
+        op.compute_provider = ComputeProvider(
+            active="modal", modal=ModalComputeConfig(image="test-image")
+        )
+        assert routes_to_endpoint(op) is True
+
+    def test_false_for_local(self):
+        op = _RoutingFunctionOp()
+        op.compute_provider = ComputeProvider(active="local")
+        assert routes_to_endpoint(op) is False
+
+    def test_matches_router_construction_branch(self):
+        # active=="modal" is exactly the branch create_execute_router takes
+        # to build the endpoint router — predicate and factory read the
+        # same compute_provider signal, so they cannot disagree.
+        op = _RoutingCommandOp()
+        op.compute_provider = ComputeProvider(
+            active="modal", modal=ModalComputeConfig(image="test-image")
+        )
+        router = create_execute_router(op.compute_provider.current(), op)
+        assert isinstance(router, EndpointExecuteRouter)
+        assert routes_to_endpoint(op) is True

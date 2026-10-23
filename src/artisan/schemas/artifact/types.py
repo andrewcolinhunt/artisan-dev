@@ -1,12 +1,13 @@
 """Extensible artifact type namespace.
 
 Provides ``ArtifactTypes``, a facade that supports both built-in types
-(with IDE autocomplete) and dynamically registered types.  All values
-are plain ``str``: ``ArtifactTypes.DATA == "data"`` is True.
+(with IDE autocomplete) and dynamically registered types. Built-in values
+are string-compatible enum members: ``ArtifactTypes.DATA == "data"`` is True.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from enum import StrEnum
 from typing import ClassVar
 
@@ -29,7 +30,7 @@ class _ArtifactTypesMeta(type):
             return False
         return item in cls._registry  # type: ignore[attr-defined]
 
-    def __iter__(cls):  # type: ignore[override]
+    def __iter__(cls) -> Iterator[str]:
         """Iterate over all registered type keys."""
         return iter(cls._registry)  # type: ignore[attr-defined]
 
@@ -41,12 +42,10 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
     Dynamic types are added at registration time via ``register()``.
 
     Examples:
-        >>> ArtifactTypes.DATA
+        >>> str(ArtifactTypes.DATA)
         'data'
         >>> "data" in ArtifactTypes
         True
-        >>> ArtifactTypes.get("metric")
-        'metric'
     """
 
     METRIC: ClassVar[str] = _BuiltinArtifactType.METRIC
@@ -66,28 +65,8 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
     }
 
     @classmethod
-    def get(cls, key: str) -> str:
-        """Lookup by string key.
-
-        Args:
-            key: Artifact type key (e.g. "data").
-
-        Returns:
-            The registered type string.
-
-        Raises:
-            KeyError: If key is not registered.
-        """
-        if key not in cls._registry:
-            raise KeyError(
-                f"Unknown artifact type: {key!r}. "
-                f"Registered: {list(cls._registry.keys())}"
-            )
-        return cls._registry[key]
-
-    @classmethod
     def register(cls, key: str) -> str:
-        """Register a new artifact type.
+        """Register a type key, returning its existing value when already present.
 
         Called automatically by ``ArtifactTypeDef.__init_subclass__``.
         Also sets ``ArtifactTypes.<KEY>`` as a class attribute for
@@ -98,12 +77,8 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
 
         Returns:
             The registered type string.
-
-        Raises:
-            ValueError: If key is already registered.
         """
         if key in cls._registry:
-            # Allow re-registration of built-in types (idempotent)
             return cls._registry[key]
         cls._registry[key] = key
         setattr(cls, key.upper(), key)
@@ -117,18 +92,6 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
     @classmethod
     def is_registered(cls, key: str) -> bool:
         """Return True if the given type key is in the registry."""
-        return key in cls._registry
-
-    @classmethod
-    def is_concrete(cls, key: str) -> bool:
-        """Check if a type key refers to a concrete (registered) type.
-
-        Args:
-            key: Artifact type key.
-
-        Returns:
-            True if key is in the registry, False for ANY or unknown keys.
-        """
         return key in cls._registry
 
     @classmethod

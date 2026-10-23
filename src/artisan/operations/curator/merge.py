@@ -59,8 +59,8 @@ class Merge(OperationDefinition):
     def execute_curator(
         self,
         inputs: dict[str, pl.DataFrame],
-        step_number: int,  # noqa: ARG002
-        artifact_store: ArtifactStore,  # noqa: ARG002
+        step_number: int,
+        artifact_store: ArtifactStore,
     ) -> PassthroughResult:
         """Concatenate artifact IDs from all input streams into one output.
 

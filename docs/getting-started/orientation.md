@@ -1,96 +1,82 @@
 # Orientation
 
-This page explains the mental model behind Artisan — how the
-documentation is organized and the five key abstractions you will encounter
-throughout.
+Artisan connects reusable operations through typed artifacts. It records
+execution history and declared lineage so you can inspect results and use their
+relationships in later computations.
 
 ---
 
 ## How these docs are organized
 
-The documentation provides four kinds of content, each designed for a different
-situation:
-
 | Kind | When to use it | What you'll find |
 |------|---------------|------------------|
-| **Tutorials** | "I want to learn" | Interactive notebooks that walk you through complete examples step by step. Start here if you're new. |
-| **How-to Guides** | "I need to do X" | Focused recipes for specific tasks. Assumes you already know the basics. |
-| **Concepts** | "I want to understand why" | Design decisions, mental models, and architecture. No code to run — explanation only. |
-| **Reference** | "I need to look something up" | API signatures, schema tables, parameter lists. Structured for quick lookup, not reading. |
-
-These four kinds are kept separate on purpose. Tutorials don't stop to explain
-architecture. How-to guides don't teach theory. Reference pages don't include
-design rationale. When you need context that isn't on the page you're reading,
-you'll find a link to the right place.
-
-> **Rule of thumb:** Start with **Tutorials** to build intuition, reach for
-> **How-to Guides** when you have a concrete task, read **Concepts** when
-> something feels like magic, and consult **Reference** when you need exact
-> details.
+| **Tutorials** | Learn by running examples | Interactive notebooks; start here if you're new |
+| **How-to Guides** | Complete a specific task | Recipes that assume you know the basics |
+| **Concepts** | Understand behavior and tradeoffs | Explanations of the framework's design |
+| **Reference** | Look up a fact | Terminology, public APIs, and links to source and docstrings |
 
 ---
 
-## Five key abstractions
+## Core concepts
 
 ### Artifacts
 
-An **artifact** is a content-addressed data node. The framework computes a
-unique ID from the artifact's content (`xxh3_128` hash), so identical content
-always produces the same ID. This enables automatic deduplication and
-deterministic caching. Artifacts follow a draft/finalize pattern: drafts are
-mutable while being assembled, and once finalized the content hash makes any
-tampering detectable.
+An **artifact** is data identified by its content. Artisan computes its ID from
+its type, canonical payload, and metadata that defines its identity. Identical
+artifacts produce the same ID; equal bytes in different types remain distinct.
+You can edit a draft until finalization records its durable state, allowing later
+changes to be detected.
 
-Artisan provides four built-in artifact types:
+Artisan provides five built-in artifact types:
 
 | Type | Class | Purpose |
 |------|-------|---------|
-| `DATA` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
-| `METRIC` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
-| `CONFIG` | `ExecutionConfigArtifact` | Execution configuration snapshots (JSON) |
-| `FILE_REF` | `FileRefArtifact` | References to files at their original paths on disk |
+| `data` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
+| `metric` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
+| `config` | `ExecutionConfigArtifact` | JSON parameters, optionally containing artifact references |
+| `file_ref` | `FileRefArtifact` | Complete files of any size, including existing inputs and generated outputs, at verified local or object-store locations |
+| `appendable` | `AppendableArtifact` | Individual records stored in a shared JSONL file |
 
-Custom artifact types can be registered by domain layers through the
-`ArtifactTypeDef` registry.
+Custom artifact types use the `ArtifactTypeDef` registry. Configure their
+application modules so workers and readers can load the registrations; see
+[creating artifact types](../how-to-guides/creating-artifact-types.md).
 
-> **Deep dive:** [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md)
+See [Artifacts and Content Addressing](../concepts/artifacts-and-content-addressing.md)
+for identity and finalization rules.
 
 ### Operations
 
 An **operation** is a Python class that consumes artifacts and produces
 artifacts. Operations declare typed input and output specifications via
-`InputSpec` and `OutputSpec`, and know nothing about orchestration or
-infrastructure.
+`InputSpec` and `OutputSpec`. Runner settings control where creator workers run;
+compute settings control where their execute phase runs.
 
 There are two kinds:
 
 - **Creator operations** run computation (external tools, GPU work) in a
-  three-phase lifecycle — `preprocess`, `execute`, `postprocess` — each running
-  in its own filesystem-isolated working directory.
+  three-phase lifecycle: `preprocess`, an execute function or command, and
+  `postprocess`. Each execution uses a working directory for its files.
 - **Curator operations** perform metadata work (filtering, merging,
-  ingesting) in a single `execute_curator` method call, skipping sandboxing
-  entirely.
+  ingesting) through `execute_curator` in a local subprocess, without a creator
+  working directory.
 
 The framework ships with example creators (`DataGenerator`, `DataTransformer`,
 `MetricCalculator`) and built-in curators (`Filter`, `Merge`, `IngestFiles`,
 `IngestData`, `IngestPipelineStep`). There is also an `InteractiveFilter` tool
 for exploratory filtering in notebooks, though it is not a pipeline operation.
 
-When operations are tightly coupled — for example, always running transform
-immediately followed by scoring — you can bundle them into a **composite**.
-A `CompositeDefinition` declares its own inputs and outputs and wires
-internal operations together via a `compose()` method, creating a reusable
-building block that the pipeline can execute as a single step (collapsed)
-or as separate steps (expanded).
+Bundle operations you repeatedly run together, such as transform followed by
+scoring, into a **composite**. A `CompositeDefinition` declares inputs and outputs
+and connects its operations through `compose()`. Each internal operation runs
+as its own pipeline step.
 
-> **Deep dive:** [Operations Model](../concepts/operations-model.md) | [Composites and Composition](../concepts/composites-and-composition.md)
+See [Operations Model](../concepts/operations-model.md) and
+[Composites and Composition](../concepts/composites-and-composition.md).
 
 ### Pipelines
 
-A **pipeline** is a directed acyclic graph (DAG) of steps. You build one by
-calling `pipeline.run()` to execute steps and `pipeline.output(name, role)` to
-wire outputs from earlier steps into inputs of later ones. `PipelineManager`
-handles dispatch, caching, and atomic commits.
+A **pipeline** is a directed acyclic graph (DAG) of steps. `PipelineManager`
+handles dispatch, caching, and publishing completed results:
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -113,45 +99,64 @@ result = pipeline.finalize()
 ```
 
 Each `run()` call executes a step, and `output("step_name", "role")` creates a
-lazy reference that connects one step's outputs to another step's inputs. Steps
-can run on different backends — `"local"` for in-process execution or
-`"slurm"` for cluster dispatch — configured per-pipeline or per-step.
+lazy reference that connects one step's outputs to another step's inputs. Core
+uses the native `"local"` process runner; optional packages provide runner
+instances for cluster dispatch. Configure either per pipeline or per step.
 
-> **Deep dive:** [Execution Flow](../concepts/execution-flow.md)
+See [Execution Flow](../concepts/execution-flow.md) for how a step runs.
 
 ### Provenance
 
-The framework captures **dual provenance** automatically:
+The framework records **dual provenance**:
 
 - **Execution provenance** records what computation happened — which operation
   ran, when, with what parameters, and whether it succeeded.
 - **Artifact provenance** records which input artifacts produced which output
   artifacts, forming a derivation graph across the entire pipeline.
 
-You never need to wire provenance manually. Each operation declares lineage
-relationships through `infer_lineage_from` on its output specs, and the
-framework resolves them at runtime using filename stem matching to pair inputs
-with outputs.
+Operations declare required parent roles through `derives_from` and supply
+exact parents for every derived output in `ArtifactResult.lineage`. Artisan
+validates and records those declarations. Root outputs explicitly have no
+parents. Optional matching helpers are called by operations, never executors.
 
-> **Deep dive:** [Provenance System](../concepts/provenance-system.md)
+See [Provenance System](../concepts/provenance-system.md) for lineage declarations
+and queries.
 
 ### Storage
 
-All pipeline data lives in **Delta Lake** tables, giving you ACID transactions,
-time travel, and efficient queries via Polars. Artifact content is stored
-directly in Delta table columns — binary bytes for data artifacts, JSON content
-serialized as bytes for metrics and configs — while `FILE_REF` artifacts store path references to
-files on disk. Workers stage results as Parquet files during execution, and the
-orchestrator commits them atomically to the Delta tables.
+Artisan stores artifact records, execution history, and provenance in **Delta
+Lake** tables. Small payloads live in those tables; externally backed artifact
+types retain verified references to separate files.
+
+Workers stage results as Parquet files. The orchestrator writes the affected
+tables and records when the complete logical commit is accepted. Each table has
+its own Delta transaction; readers use the logical completion record to avoid
+exposing incomplete writes across tables.
+
+Use Artisan's inspection helpers and `ArtifactStore` to read accepted results.
+For example, after running the pipeline above:
 
 ```python
-import polars as pl
+from artisan.visualization import inspect_step
 
-# Read the artifact index — every artifact in the pipeline
-df = pl.read_delta(str(delta_root / "artifacts" / "index"))
+inspect_step(
+    "runs/delta",
+    step_number=1,
+    pipeline_run_id=pipeline.config.pipeline_run_id,
+)
 ```
 
-> **Deep dive:** [Storage and Delta Lake](../concepts/storage-and-delta-lake.md)
+Selecting a run includes the outputs it reused from earlier runs. See
+[Inspect Pipeline Results](../how-to-guides/inspecting-provenance.md) for run
+selection and provenance queries.
+
+For queries with validated inputs and size-limited responses, use
+[local evidence inspection](../how-to-guides/inspecting-evidence.md) from Python
+or the CLI. The installed operating guide helps an agent select runs, interpret
+missing evidence, and apply explicit assessment or comparison criteria.
+
+See [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for persistence
+and recovery guarantees.
 
 ---
 
@@ -159,7 +164,7 @@ df = pl.read_delta(str(delta_root / "artifacts" / "index"))
 
 | Goal | Page |
 |------|------|
-| AI-assisted development | [Using Claude Code](using-claude-code.md) |
+| Agent-assisted development | [Using Coding Agents](using-coding-agents.md) |
 | Build your first pipeline hands-on | [Tutorials](../tutorials/index.md) |
 | Learn the framework in depth | [Concepts](../concepts/index.md) |
 | Task-oriented recipes | [How-to Guides](../how-to-guides/index.md) |

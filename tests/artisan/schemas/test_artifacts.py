@@ -1,16 +1,55 @@
-"""Tests for artifacts.py"""
+"""Tests for artifact hydration, JSON content, and file references."""
 
 from __future__ import annotations
 
 import json
+import os
+from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from artisan.errors import ArtifactIntegrityError
+from artisan.schemas.artifact.appendable import AppendableArtifact
+from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+
+
+class TestArtifactHydration:
+    def test_embedded_content_without_origin_is_hydrated(self) -> None:
+        artifact = MetricArtifact(content=b'{"score":1}').finalize()
+
+        assert artifact.origin_step_number is None
+        assert artifact.is_hydrated
+
+    def test_origin_without_content_is_not_hydrated(self) -> None:
+        artifact = MetricArtifact(artifact_id="a" * 32, origin_step_number=1)
+
+        assert not artifact.is_hydrated
+
+    @pytest.mark.parametrize(
+        "artifact",
+        [
+            FileRefArtifact(content_hash="b" * 32, size_bytes=0),
+            AppendableArtifact(content_hash="b" * 32, size_bytes=0, record_id="record"),
+        ],
+        ids=lambda artifact: type(artifact).__name__,
+    )
+    def test_external_descriptors_are_hydrated_without_a_location(
+        self, artifact: Artifact
+    ) -> None:
+        assert artifact.is_hydrated
+
+    @pytest.mark.parametrize("artifact_type", [FileRefArtifact, AppendableArtifact])
+    def test_incomplete_external_descriptors_are_not_hydrated(
+        self, artifact_type: type[Artifact]
+    ) -> None:
+        artifact = artifact_type(content_hash="b" * 32, origin_step_number=1)
+
+        assert not artifact.is_hydrated
 
 
 class TestMetricArtifact:
@@ -147,19 +186,19 @@ class TestFileRefArtifactFinalize:
         assert finalized.artifact_id is not None
         assert len(finalized.artifact_id) == 32  # 32-char hex
 
-    def test_finalize_succeeds_when_artifact_id_present(self):
-        """FileRefArtifact.finalize() succeeds when artifact_id is set."""
-        artifact = FileRefArtifact(
-            artifact_id="e" * 32,
-            origin_step_number=0,
+    def test_finalize_succeeds_when_valid_artifact_id_present(self):
+        """FileRefArtifact.finalize() validates a matching stored ID."""
+        artifact = FileRefArtifact.draft(
             content_hash="k" * 32,
             path="/data/input.dat",
             size_bytes=1024,
-        )
+            step_number=0,
+        ).finalize()
+        restored = FileRefArtifact.model_validate(artifact.model_dump())
 
-        finalized = artifact.finalize()
-        assert finalized is artifact
-        assert finalized.artifact_id == "e" * 32
+        finalized = restored.finalize()
+        assert finalized is restored
+        assert finalized.artifact_id == artifact.artifact_id
 
     def test_draft_creates_with_none_artifact_id(self):
         """FileRefArtifact.draft() creates with artifact_id=None."""
@@ -204,8 +243,8 @@ class TestFileRefArtifactFinalize:
 
         assert draft1.artifact_id == draft2.artifact_id
 
-    def test_different_path_produces_different_artifact_id(self):
-        """Different path produces different artifact_id (path is part of identity)."""
+    def test_different_path_preserves_artifact_id(self):
+        """Locations are excluded from artifact identity."""
         draft1 = FileRefArtifact.draft(
             path="/data/input.dat",
             content_hash="k" * 32,
@@ -219,7 +258,7 @@ class TestFileRefArtifactFinalize:
             step_number=0,
         ).finalize()
 
-        assert draft1.artifact_id != draft2.artifact_id
+        assert draft1.artifact_id == draft2.artifact_id
 
 
 class TestMetricArtifactMaterializeFormat:
@@ -233,7 +272,7 @@ class TestMetricArtifactMaterializeFormat:
             step_number=0,
         )
         with pytest.raises(ValueError, match="does not support format conversion"):
-            artifact.materialize_to(tmp_path, format=".csv")
+            artifact.materialize_to(str(tmp_path), format=".csv")
 
 
 class TestExecutionConfigArtifactMaterializeFormat:
@@ -247,7 +286,7 @@ class TestExecutionConfigArtifactMaterializeFormat:
             step_number=1,
         )
         with pytest.raises(ValueError, match="does not support format conversion"):
-            artifact.materialize_to(tmp_path, format=".yaml")
+            artifact.materialize_to(str(tmp_path), format=".yaml")
 
 
 class TestMaterializedPath:
@@ -434,22 +473,37 @@ class TestExecutionConfigArtifactMaterialize:
     """Tests for ExecutionConfigArtifact materialization."""
 
     def test_materialize_to_writes_json(self, tmp_path):
-        """materialize_to() writes content to disk."""
+        """materialize_to() writes content to disk using artifact_id."""
         artifact = ExecutionConfigArtifact.draft(
             content={"contig": "40-150", "length": "175-275"},
             original_name="5w3x_motif_0_config.json",
             step_number=1,
         ).finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        directory = str(tmp_path)
+        path = artifact.materialize_to(directory)
 
-        assert path == tmp_path / "5w3x_motif_0_config.json"
-        assert path.exists()
+        expected = os.path.join(directory, f"{artifact.artifact_id}.json")
+        assert path == expected
+        assert os.path.exists(path)
         assert artifact.materialized_path == path
 
         # Verify content
-        content = json.loads(path.read_text())
+        with open(path) as f:
+            content = json.loads(f.read())
         assert content["contig"] == "40-150"
+
+    def test_materialize_rejects_nested_metadata_drift(self, tmp_path):
+        artifact = ExecutionConfigArtifact.draft(
+            content={"key": "value"},
+            original_name="config.json",
+            step_number=1,
+            metadata={"nested": {"version": 1}},
+        ).finalize()
+        artifact.metadata["nested"]["version"] = 2
+
+        with pytest.raises(ArtifactIntegrityError, match="was mutated"):
+            artifact.materialize_to(str(tmp_path))
 
     def test_materialize_raises_when_not_hydrated(self, tmp_path):
         """materialize_to() raises when content is None."""
@@ -458,22 +512,24 @@ class TestExecutionConfigArtifactMaterialize:
             artifact_type=ArtifactTypes.CONFIG,
         )
         with pytest.raises(ValueError, match="not hydrated"):
-            artifact.materialize_to(tmp_path)
+            artifact.materialize_to(str(tmp_path))
 
-    def test_materialize_uses_artifact_id_when_no_original_name(self, tmp_path):
-        """materialize_to() uses artifact_id.json when original_name is None."""
+    def test_materialize_uses_artifact_id(self, tmp_path):
+        """materialize_to() always uses artifact_id for the filename."""
         content = json.dumps({"contig": "40-150"}).encode("utf-8")
         artifact = ExecutionConfigArtifact(
             artifact_id="a" * 32,
             origin_step_number=1,
             content=content,
-            original_name=None,  # No original name
+            original_name=None,
         )
 
-        path = artifact.materialize_to(tmp_path)
+        directory = str(tmp_path)
+        path = artifact.materialize_to(directory)
 
-        assert path == tmp_path / f"{'a' * 32}.json"
-        assert path.exists()
+        expected = os.path.join(directory, f"{'a' * 32}.json")
+        assert path == expected
+        assert os.path.exists(path)
 
 
 # =============================================================================
@@ -644,17 +700,17 @@ class TestGetArtifactReferences:
         refs = artifact.get_artifact_references()
         assert refs == []
 
-    def test_caches_result(self):
-        """get_artifact_references() caches the result."""
+    def test_returned_references_are_independent(self) -> None:
         artifact = ExecutionConfigArtifact.draft(
             content={"input_pdb": {"$artifact": "abc123"}},
             original_name="config.json",
             step_number=1,
         ).finalize()
 
-        refs1 = artifact.get_artifact_references()
-        refs2 = artifact.get_artifact_references()
-        assert refs1 is refs2  # Same object (cached)
+        references = artifact.get_artifact_references()
+        references.clear()
+
+        assert artifact.get_artifact_references() == ["abc123"]
 
     def test_returns_empty_when_content_none(self):
         """get_artifact_references() returns empty when content is None."""
@@ -668,6 +724,30 @@ class TestGetArtifactReferences:
         refs = artifact.get_artifact_references()
         assert refs == []
 
+    def test_draft_content_replacement_refreshes_values_and_references(self) -> None:
+        artifact = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "first"}, "options": {"count": 1}},
+            original_name="config.json",
+            step_number=1,
+        )
+        assert artifact.values["options"] == {"count": 1}
+        assert artifact.get_artifact_references() == ["first"]
+
+        artifact.content = json.dumps(
+            {"input": {"$artifact": "second"}, "options": {"count": 2}}
+        ).encode()
+
+        assert artifact.values["options"] == {"count": 2}
+        assert artifact.get_artifact_references() == ["second"]
+
+    def test_metric_values_are_independent(self) -> None:
+        artifact = MetricArtifact.draft(
+            content={"scores": [1, 2]}, original_name="metric.json", step_number=1
+        ).finalize()
+        artifact.values["scores"].append(3)
+
+        assert artifact.values == {"scores": [1, 2]}
+
 
 class TestExecutionConfigArtifactMaterializeWithRefs:
     """Tests for ExecutionConfigArtifact.materialize_to() with artifact references."""
@@ -680,10 +760,11 @@ class TestExecutionConfigArtifactMaterializeWithRefs:
             step_number=1,
         ).finalize()
 
-        path = artifact.materialize_to(tmp_path)
+        path = artifact.materialize_to(str(tmp_path))
 
-        assert path.exists()
-        content = json.loads(path.read_text())
+        assert os.path.exists(path)
+        with open(path) as f:
+            content = json.loads(f.read())
         assert content == {"length": "100-150", "num_designs": 10}
 
     def test_materialize_with_refs_substitutes_paths(self, tmp_path):
@@ -698,11 +779,12 @@ class TestExecutionConfigArtifactMaterializeWithRefs:
         data_path = tmp_path / "data.dat"
         data_path.write_text("ATOM...")
 
-        resolved_paths = {"abc123": data_path}
-        path = artifact.materialize_to(tmp_path, resolved_paths=resolved_paths)
+        resolved_paths = {"abc123": str(data_path)}
+        path = artifact.materialize_to(str(tmp_path), resolved_paths=resolved_paths)
 
-        assert path.exists()
-        content = json.loads(path.read_text())
+        assert os.path.exists(path)
+        with open(path) as f:
+            content = json.loads(f.read())
         assert content["input_pdb"] == str(data_path)
         assert content["contig"] == "40-150"
 
@@ -714,10 +796,11 @@ class TestExecutionConfigArtifactMaterializeWithRefs:
             step_number=1,
         ).finalize()
 
-        path = artifact.materialize_to(tmp_path)  # No resolved_paths
+        path = artifact.materialize_to(str(tmp_path))  # No resolved_paths
 
-        assert path.exists()
-        content = json.loads(path.read_text())
+        assert os.path.exists(path)
+        with open(path) as f:
+            content = json.loads(f.read())
         assert content["input_pdb"] == {"$artifact": "abc123"}  # Unchanged
 
     def test_materialize_missing_ref_raises(self, tmp_path):
@@ -729,12 +812,48 @@ class TestExecutionConfigArtifactMaterializeWithRefs:
         ).finalize()
 
         with pytest.raises(ValueError, match="Missing paths for referenced artifacts"):
-            artifact.materialize_to(tmp_path, resolved_paths={})
+            artifact.materialize_to(str(tmp_path), resolved_paths={})
+
+    def test_values_mutation_cannot_change_finalized_materialization(
+        self, tmp_path: Path
+    ) -> None:
+        artifact = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "input-id"}, "options": {"count": 1}},
+            original_name="config.json",
+            step_number=1,
+        ).finalize()
+        stored_content = artifact.to_row()["content"]
+        artifact_id = artifact.artifact_id
+        artifact.values["options"]["count"] = 99
+
+        path = artifact.materialize_to(
+            str(tmp_path), resolved_paths={"input-id": "/path/to/input"}
+        )
+
+        with open(path) as source:
+            materialized = json.load(source)
+        assert materialized == {
+            "input": "/path/to/input",
+            "options": {"count": 1},
+        }
+        assert artifact.to_row()["content"] == stored_content
+        assert artifact.artifact_id == artifact_id
+
+    def test_reference_list_mutation_cannot_bypass_mapping_validation(
+        self, tmp_path: Path
+    ) -> None:
+        artifact = ExecutionConfigArtifact.draft(
+            content={"input": {"$artifact": "input-id"}},
+            original_name="config.json",
+            step_number=1,
+        ).finalize()
+        artifact.get_artifact_references().clear()
+
+        with pytest.raises(ValueError, match="Missing paths for referenced artifacts"):
+            artifact.materialize_to(str(tmp_path), resolved_paths={})
 
     def test_materialize_multiple_refs(self, tmp_path):
         """Multiple references are all substituted."""
-        from pathlib import Path
-
         artifact = ExecutionConfigArtifact.draft(
             content={
                 "input_pdb": {"$artifact": "id1"},
@@ -746,13 +865,14 @@ class TestExecutionConfigArtifactMaterializeWithRefs:
         ).finalize()
 
         resolved_paths = {
-            "id1": Path("/path/to/input.dat"),
-            "id2": Path("/path/to/reference.dat"),
-            "id3": Path("/path/to/ff.dat"),
+            "id1": "/path/to/input.dat",
+            "id2": "/path/to/reference.dat",
+            "id3": "/path/to/ff.dat",
         }
-        path = artifact.materialize_to(tmp_path, resolved_paths=resolved_paths)
+        path = artifact.materialize_to(str(tmp_path), resolved_paths=resolved_paths)
 
-        content = json.loads(path.read_text())
+        with open(path) as f:
+            content = json.loads(f.read())
         assert content["input_pdb"] == "/path/to/input.dat"
         assert content["reference_pdb"] == "/path/to/reference.dat"
         assert content["force_field"] == "/path/to/ff.dat"

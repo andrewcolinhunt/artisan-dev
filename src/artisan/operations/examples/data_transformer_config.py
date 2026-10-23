@@ -2,18 +2,21 @@
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum, auto
-from pathlib import Path
 from typing import Any, ClassVar
 
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
+from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -37,11 +40,11 @@ class DataTransformerConfig(OperationDefinition):
         config (config) -- Generated execution configs
     """
 
-    # ---------- Metadata ----------
     name: ClassVar[str] = "data_transformer_config"
-    description: ClassVar[str] = "Generate execution configs for data transformation script"
+    description: ClassVar[str] = (
+        "Generate execution configs for data transformation script"
+    )
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         DATASET = "dataset"
 
@@ -54,19 +57,17 @@ class DataTransformerConfig(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         config = auto()
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.config: OutputSpec(
             artifact_type=ArtifactTypes.CONFIG,
-            infer_lineage_from={"inputs": ["dataset"]},
+            derives_from={"inputs": ["dataset"]},
             description="Generated execution configs",
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataTransformerConfig."""
 
@@ -85,41 +86,49 @@ class DataTransformerConfig(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:10:00")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(job_name="data_transformer_config")
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_config")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Lifecycle ----------
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Extract dataset info for config generation."""
-        dataset = inputs.input_artifacts["dataset"][0]
+        """Extract per-dataset info as parallel lists (one entry per artifact)."""
+        datasets: list[DataArtifact] = [
+            d for d in inputs.input_artifacts["dataset"] if isinstance(d, DataArtifact)
+        ]
         return {
-            "dataset_artifact_id": dataset.artifact_id,
-            "dataset_stem": Path(dataset.original_name).stem,
+            "dataset_artifact_ids": PerArtifact([d.artifact_id for d in datasets]),
+            "dataset_stems": PerArtifact(
+                [os.path.splitext(d.original_name or "")[0] for d in datasets]
+            ),
         }
 
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Build config dicts for each scale_factor x noise_amplitude combo."""
-        dataset_artifact_id = inputs.inputs["dataset_artifact_id"]
-        dataset_stem = inputs.inputs["dataset_stem"]
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+        """Build configs for each (dataset, scale_factor, noise_amplitude) combo."""
+        artifact_ids = inputs.inputs["dataset_artifact_ids"]
+        stems = inputs.inputs["dataset_stems"]
 
-        configs = []
-        index = 0
-        for scale_factor in self.params.scale_factors:
-            for noise_amplitude in self.params.noise_amplitudes:
-                configs.append({
-                    "index": index,
-                    "original_name": f"{dataset_stem}_config_{index}.json",
-                    "content": {
-                        "input": {"$artifact": dataset_artifact_id},
-                        "scale_factor": scale_factor,
-                        "noise_amplitude": noise_amplitude,
-                        "seed": self.params.seed,
-                    },
-                })
-                index += 1
+        configs: list[dict[str, Any]] = []
+        for artifact_id, stem in zip(artifact_ids, stems, strict=True):
+            for scale_factor in self.params.scale_factors:
+                for noise_amplitude in self.params.noise_amplitudes:
+                    index = len(configs)
+                    configs.append(
+                        {
+                            "index": index,
+                            "source_artifact_id": artifact_id,
+                            "original_name": f"{stem}_config_{index}.json",
+                            "content": {
+                                "input": {"$artifact": artifact_id},
+                                "scale_factor": scale_factor,
+                                "noise_amplitude": noise_amplitude,
+                                "seed": self.params.seed,
+                            },
+                        }
+                    )
 
         return {"configs": configs}
 
@@ -127,13 +136,15 @@ class DataTransformerConfig(OperationDefinition):
         """Build ExecutionConfigArtifact drafts from generated configs."""
         configs = inputs.memory_outputs["configs"]
 
-        drafts = [
-            ExecutionConfigArtifact.draft(
-                content=cfg["content"],
-                original_name=cfg["original_name"],
-                step_number=inputs.step_number,
+        result = ArtifactResult(artifacts={"config": []}, lineage={"config": []})
+        for cfg in configs:
+            result.add_artifact(
+                "config",
+                ExecutionConfigArtifact.draft(
+                    content=cfg["content"],
+                    original_name=cfg["original_name"],
+                    step_number=inputs.step_number,
+                ),
+                sources={"dataset": [cfg["source_artifact_id"]]},
             )
-            for cfg in configs
-        ]
-
-        return ArtifactResult(success=True, artifacts={"config": drafts})
+        return result

@@ -9,22 +9,113 @@ Key exports: :func:`format_args`, :func:`run_command`.
 from __future__ import annotations
 
 import json
-import logging
 import os
-import shlex
-import signal
+import re
 import subprocess
-import time
+import sys
+from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass
-from pathlib import Path
-from typing import Any
+from typing import Any, Literal, Protocol
 
-_tool_logger = logging.getLogger("artisan.tools")
+from artisan.errors import ArtisanError, ErrorCode
+from artisan.utils.command_supervisor import (
+    ManagedCommand,
+    attachment_sensitive_values,
+    command_attachment,
+    scope_command_observer,
+)
+from artisan.utils.configuration_secrets import sensitive_environment
 
 
-# =============================================================================
-# COMMAND DATACLASS
-# =============================================================================
+def redact_values(text: str, sensitive_values: tuple[str, ...]) -> str:
+    """Replace known nonempty values in a diagnostic copy, longest first."""
+    values = sorted(set(sensitive_values) - {""}, key=len, reverse=True)
+    if not values:
+        return text
+    # Repeated persistence/transport boundaries must preserve prior markers.
+    values = sorted({*values, "<redacted>"}, key=len, reverse=True)
+    pattern = re.compile("|".join(re.escape(value) for value in values))
+    clean = pattern.sub("<redacted>", text)
+    # A replacement can compose another credential across a marker boundary.
+    # Drop that diagnostic instead of repeatedly rescanning adversarial text.
+    return "<redacted>" if pattern.sub("<redacted>", clean) != clean else clean
+
+
+@dataclass
+class CommandAttempt:
+    """One subprocess boundary shared by command evidence and launch timing."""
+
+    command: list[str]
+    sanitize: Callable[[str], str]
+    on_finish: Callable[[str, int | None, float | None], None] | None = None
+    launch_seconds: float | None = None
+
+    def finish(self, outcome: str, returncode: int | None) -> None:
+        """Publish a final outcome before any post-exit output I/O."""
+        if self.on_finish is not None:
+            self.on_finish(outcome, returncode, self.launch_seconds)
+            self.on_finish = None
+
+
+class CommandObserver(Protocol):
+    """Utility-owned interface; implementations may live in higher layers."""
+
+    def prepare(
+        self,
+        environment: Any,
+        requested: list[str],
+        sensitive_values: tuple[str, ...],
+    ) -> None:
+        """Register diagnostic redactions without claiming a launch attempt."""
+        ...
+
+    def begin(
+        self,
+        environment: Any,
+        requested: list[str],
+        argv: list[str],
+        cwd: str | None,
+        sensitive_values: tuple[str, ...],
+    ) -> CommandAttempt:
+        """Observe immediately before attempting process creation."""
+        ...
+
+
+command_observer: ContextVar[CommandObserver | None] = ContextVar(
+    "artisan_command_observer", default=None
+)
+
+
+@dataclass
+class _CommandObservation:
+    environment: Any
+    requested: list[str]
+    argv: list[str]
+    cwd: str | None
+    sensitive_values: tuple[str, ...]
+    attempt: CommandAttempt | None = None
+
+    def begin(self) -> CommandAttempt:
+        observer = command_observer.get() or scope_command_observer()
+        if observer is not None:
+            self.attempt = observer.begin(
+                self.environment,
+                self.requested,
+                self.argv,
+                self.cwd,
+                self.sensitive_values,
+            )
+        else:
+
+            def sanitize(text: str) -> str:
+                return redact_values(text, self.sensitive_values)
+
+            self.attempt = CommandAttempt(
+                command=[sanitize(arg) for arg in self.argv],
+                sanitize=sanitize,
+            )
+        return self.attempt
 
 
 @dataclass
@@ -43,33 +134,47 @@ class Command:
         return self.string
 
 
-# =============================================================================
-# EXCEPTION
-# =============================================================================
-
-
-@dataclass
-class ExternalToolError(Exception):
+class ExternalToolError(ArtisanError):
     """Structured error for external tool failures.
 
-    Raised when an external tool exits with non-zero status or times out.
-    Contains all context needed to diagnose the failure.
+    Raised when an external tool exits with non-zero status.
+    Contains all context needed to diagnose the failure. Reuses
+    ``OP_EXECUTE_FAILED`` (``error_type="compute"``) — a local tool crash
+    and a remote one read the same code — and keeps the full multi-line
+    composition in ``__str__`` while the envelope ``message`` stays a short
+    one-line summary.
 
     Attributes:
         message: Human-readable error description.
         command: The command that was executed (as list of parts).
-        return_code: Exit code (-1 for timeout).
+        return_code: Exit code from the subprocess.
         stdout: Captured standard output.
         stderr: Captured standard error.
         runtime: The EnvironmentSpec or context that was executed.
     """
 
-    message: str
-    command: list[str]
-    return_code: int
-    stdout: str
-    stderr: str
-    runtime: Any
+    def __init__(
+        self,
+        message: str,
+        *,
+        command: list[str],
+        return_code: int,
+        stdout: str,
+        stderr: str,
+        runtime: Any,
+    ) -> None:
+        super().__init__(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            error_type="compute",
+            message=message,
+            recovery_hint="RETRY_LATER" if return_code == -1 else "REPORT_TO_USER",
+        )
+        self.message = message
+        self.command = command
+        self.return_code = return_code
+        self.stdout = stdout
+        self.stderr = stderr
+        self.runtime = runtime
 
     def __str__(self) -> str:
         parts = [f"{self.message} (exit code {self.return_code})"]
@@ -81,11 +186,6 @@ class ExternalToolError(Exception):
             tail = "\n".join(self.stdout.splitlines()[-20:])
             parts.append(f"--- stdout (last 20 lines) ---\n{tail}")
         return "\n".join(parts)
-
-
-# =============================================================================
-# HELPER FUNCTIONS
-# =============================================================================
 
 
 def to_cli_value(value: Any) -> str:
@@ -105,8 +205,6 @@ def to_cli_value(value: Any) -> str:
         'true'
         >>> to_cli_value(False)
         'false'
-        >>> to_cli_value(Path("/tmp/out"))
-        '/tmp/out'
         >>> to_cli_value([1, 2, 3])
         '[1, 2, 3]'
         >>> to_cli_value({"key": "value"})
@@ -116,8 +214,6 @@ def to_cli_value(value: Any) -> str:
         return ""
     if isinstance(value, bool):
         return "true" if value else "false"
-    if isinstance(value, Path):
-        return str(value)
     if isinstance(value, list | tuple | dict):
         return json.dumps(value)
     return str(value)
@@ -151,45 +247,15 @@ def format_args(params: dict[str, Any]) -> list[str]:
     return result
 
 
-# =============================================================================
-# PROCESS CLEANUP
-# =============================================================================
-
-
-def _kill_process_group(process: subprocess.Popen, timeout: float = 3.0) -> None:
-    """Kill a subprocess and its entire process group.
-
-    Sends SIGTERM first for graceful shutdown, then escalates to SIGKILL
-    if the process doesn't exit within the timeout.
-
-    Args:
-        process: Subprocess to kill (must have been started with process_group=0).
-        timeout: Seconds to wait after SIGTERM before escalating to SIGKILL.
-    """
-    try:
-        pgid = os.getpgid(process.pid)
-        os.killpg(pgid, signal.SIGTERM)
-        try:
-            process.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            os.killpg(pgid, signal.SIGKILL)
-            process.wait()
-    except ProcessLookupError:
-        pass
-
-
-# =============================================================================
-# COMMAND EXECUTION
-# =============================================================================
-
-
 def run_command(
     environment: Any,
     cmd: list[str],
-    cwd: Path | None = None,
-    timeout: float | None = None,
+    cwd: str | None = None,
     stream_output: bool = False,
-    log_path: Path | None = None,
+    log_path: str | None = None,
+    log_mode: Literal["w", "a"] = "w",
+    *,
+    sensitive_values: tuple[str, ...] = (),
 ) -> subprocess.CompletedProcess[str]:
     """Execute a command in the given environment.
 
@@ -200,146 +266,125 @@ def run_command(
         environment: An EnvironmentSpec instance that wraps the command.
         cmd: Pre-built command list (e.g. from ToolSpec.parts() + args).
         cwd: Working directory for subprocess.
-        timeout: Timeout in seconds.
         stream_output: If True, print output lines in real-time.
         log_path: If provided, write output to this file.
+        log_mode: Open mode for ``log_path`` — ``"w"`` truncates (default),
+            ``"a"`` appends so sequential calls sharing one log accumulate.
+        sensitive_values: Opaque values to remove from diagnostic copies only.
 
     Returns:
         CompletedProcess with captured stdout/stderr.
 
     Raises:
-        ExternalToolError: On non-zero exit or timeout.
+        ExternalToolError: On non-zero exit.
     """
-    wrapped = environment.wrap_command(cmd, cwd)
-    full_cmd = Command(parts=wrapped, string=shlex.join(wrapped))
-    env = environment.prepare_env()
-
-    try:
-        if stream_output:
-            result = _run_with_streaming(full_cmd, cwd, timeout, log_path, env)
-        else:
-            result = _run_captured(full_cmd, cwd, timeout, env)
-    except subprocess.TimeoutExpired as e:
-        raise ExternalToolError(
-            message=f"Command timed out after {timeout}s",
-            command=full_cmd.parts,
-            return_code=-1,
-            stdout=e.stdout or "",
-            stderr=e.stderr or "",
-            runtime=environment,
-        ) from e
-
-    if result.returncode != 0:
-        raise ExternalToolError(
-            message=f"Command failed with exit code {result.returncode}",
-            command=full_cmd.parts,
-            return_code=result.returncode,
-            stdout=result.stdout,
-            stderr=result.stderr,
-            runtime=environment,
+    with command_attachment() as attachment:
+        sensitive_values = (
+            *sensitive_values,
+            *attachment_sensitive_values(),
+            attachment["secret"],
+            *sensitive_environment(
+                getattr(environment, "env", {}), getattr(environment, "public_env", ())
+            ).values(),
         )
-    return result
+        observer = command_observer.get() or scope_command_observer()
+        if observer is not None:
+            observer.prepare(environment, cmd, sensitive_values)
+        wrapped = environment.wrap_command(cmd, cwd)
+        from artisan.schemas.operation_config.environment_spec import (
+            DockerEnvironmentSpec,
+        )
+
+        docker_create = (
+            environment._managed_container_command(wrapped)
+            if type(environment) is DockerEnvironmentSpec
+            else None
+        )
+        env = environment.prepare_env()
+        observation = _CommandObservation(
+            environment, cmd, wrapped, cwd, sensitive_values
+        )
+        result = _run_managed(
+            attachment,
+            wrapped,
+            cwd,
+            log_path,
+            log_mode,
+            dict(os.environ if env is None else env),
+            observation,
+            streaming=stream_output,
+            external=getattr(environment, "cancellation_scope", "external")
+            != "process_group",
+            docker_create=docker_create,
+        )
+        if result.returncode != 0:
+            attempt = observation.attempt
+            assert attempt is not None
+            raise ExternalToolError(
+                message=f"Command failed with exit code {result.returncode}",
+                command=attempt.command,
+                return_code=result.returncode,
+                stdout=attempt.sanitize(result.stdout),
+                stderr=attempt.sanitize(result.stderr),
+                runtime=environment,
+            )
+        return result
 
 
-def _run_with_streaming(
-    cmd: Command,
-    cwd: Path | None,
-    timeout: float | None,
-    log_path: Path | None,
-    env: dict[str, str] | None = None,
+def _run_managed(
+    attachment: dict[str, str],
+    argv: list[str],
+    cwd: str | None,
+    log_path: str | None,
+    log_mode: Literal["w", "a"],
+    env: dict[str, str],
+    observation: _CommandObservation,
+    *,
+    streaming: bool,
+    external: bool,
+    docker_create: list[str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
-    """Run command with real-time output streaming.
-
-    Args:
-        cmd: Command to execute.
-        cwd: Working directory.
-        timeout: Approximate timeout (checked between lines, not during).
-        log_path: Optional file to write output.
-        env: Environment variables.
-
-    Returns:
-        CompletedProcess with accumulated stdout.
-    """
+    """Drain worker-owned pipes while the dedicated owner retains command identity."""
     from contextlib import nullcontext
 
-    log_context = log_path.open("w") if log_path else nullcontext()
-
+    log_context = open(log_path, log_mode) if streaming and log_path else nullcontext()  # noqa: SIM115
     with log_context as log_file:
-        process = subprocess.Popen(
-            cmd.parts,
-            cwd=cwd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1,
-            env=env,
-            process_group=0,
-        )
-
-        stdout_lines: list[str] = []
-        start_time = time.monotonic()
-
+        attempt = observation.begin()
         try:
-            for line in process.stdout:
-                if timeout and (time.monotonic() - start_time) > timeout:
-                    _kill_process_group(process)
-                    raise subprocess.TimeoutExpired(cmd.parts, timeout)
-
-                if log_file:
-                    log_file.write(line)
-                    log_file.flush()
-
-                _tool_logger.debug("%s", line.rstrip("\n"))
-
-                stdout_lines.append(line)
-
-            returncode = process.wait()
+            command = ManagedCommand(
+                attachment,
+                argv,
+                env,
+                cwd,
+                merged=streaming,
+                external=external,
+                docker_create=docker_create,
+            )
+            attempt.launch_seconds = command.launch_seconds
         except BaseException:
-            _kill_process_group(process)
+            attempt.finish("launch_failed", None)
             raise
 
-        return subprocess.CompletedProcess(
-            args=cmd.parts,
-            returncode=returncode,
-            stdout="".join(stdout_lines),
-            stderr="",
-        )
+        def emit(line: str) -> None:
+            if log_file is not None:
+                log_file.write(line)
+                log_file.flush()
+            sys.stdout.write(line)
+            sys.stdout.flush()
 
-
-def _run_captured(
-    cmd: Command,
-    cwd: Path | None,
-    timeout: float | None,
-    env: dict[str, str] | None = None,
-) -> subprocess.CompletedProcess[str]:
-    """Run command with captured output and process group cleanup.
-
-    Args:
-        cmd: Command to execute.
-        cwd: Working directory.
-        timeout: Timeout in seconds.
-        env: Environment variables.
-
-    Returns:
-        CompletedProcess with captured stdout and stderr.
-    """
-    process = subprocess.Popen(
-        cmd.parts,
-        cwd=cwd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        env=env,
-        process_group=0,
-    )
-    try:
-        stdout, stderr = process.communicate(timeout=timeout)
-    except BaseException:
-        _kill_process_group(process)
-        raise
-    return subprocess.CompletedProcess(
-        args=cmd.parts,
-        returncode=process.returncode,
-        stdout=stdout,
-        stderr=stderr,
-    )
+        try:
+            stdout, stderr = command.communicate(emit if streaming else None)
+            assert command.returncode is not None
+            attempt.finish(
+                "succeeded" if command.returncode == 0 else "failed", command.returncode
+            )
+        except BaseException as error:
+            command.interrupt(error)
+            attempt.finish("interrupted", command.returncode)
+            raise
+        finally:
+            command.dispose()
+    if log_path and not streaming:
+        with open(log_path, log_mode) as handle:
+            handle.write(stdout)
+    return subprocess.CompletedProcess(argv, command.returncode, stdout, stderr)

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
+import pytest
+
 from artisan.execution.inputs.instantiation import instantiate_inputs
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -43,7 +45,7 @@ class TestInstantiateInputs:
 
     def test_hydrated_role(self):
         """Hydrated role uses bulk get_artifacts_by_type."""
-        s_id = "s" * 32
+        s_id = "a" * 32
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
@@ -60,7 +62,7 @@ class TestInstantiateInputs:
 
     def test_non_hydrated_role(self):
         """Non-hydrated role creates ID-only artifacts via bulk cache (no get_artifact)."""
-        s_id = "s" * 32
+        s_id = "a" * 32
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
@@ -77,8 +79,8 @@ class TestInstantiateInputs:
 
     def test_mixed_roles(self):
         """Mix of hydrated and non-hydrated roles."""
-        s_id = "s" * 32
-        m_id = "m" * 32
+        s_id = "a" * 32
+        m_id = "b" * 32
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {
@@ -99,59 +101,57 @@ class TestInstantiateInputs:
         assert len(result["metrics"]) == 1
         store.get_artifact.assert_not_called()
 
-    def test_missing_ids_skipped(self):
-        """IDs not in type_map are skipped."""
+    def test_missing_ids_raise(self):
+        """IDs absent from the type map fail before partial instantiation."""
         store = MagicMock()
         store.provenance.load_type_map.return_value = {}
         store.get_artifacts_by_type.return_value = {}
 
-        result, _ = instantiate_inputs({"data": ["missing" + "0" * 25]}, store, {})
+        with pytest.raises(ValueError, match="not found in the artifact store"):
+            instantiate_inputs({"data": ["d" * 32]}, store, {})
 
-        assert result["data"] == []
-
-    def test_missing_artifact_in_type_map_warns(self, caplog):
-        """Artifact ID not in type_map logs a warning."""
-        import logging
-
+    def test_missing_artifact_in_type_map_raises(self):
+        """A valid but unknown artifact ID raises a clear error."""
         store = MagicMock()
         store.provenance.load_type_map.return_value = {}
         store.get_artifacts_by_type.return_value = {}
 
-        missing_id = "x" * 32
-        with caplog.at_level(logging.WARNING):
-            result, _ = instantiate_inputs(
+        missing_id = "d" * 32
+        with pytest.raises(ValueError, match=missing_id):
+            instantiate_inputs(
                 {"data": [missing_id]},
                 store,
                 {"data": InputSpec(hydrate=False)},
             )
 
-        assert result["data"] == []
-        assert "not found in type map" in caplog.text
-
-    def test_artifact_load_failure_warns(self, caplog):
-        """Hydrated artifact that misses bulk cache falls through to get_artifact."""
-        import logging
-
-        s_id = "s" * 32
+    def test_artifact_load_failure_raises(self):
+        """A hydrated artifact missing from bulk and fallback loads raises."""
+        s_id = "a" * 32
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         # Hydrated bulk load returns empty — s_id missed the batch
         store.get_artifacts_by_type.return_value = {}
         store.get_artifact.return_value = None  # fallback also fails
 
-        with caplog.at_level(logging.WARNING):
-            result, _ = instantiate_inputs(
+        with pytest.raises(ValueError, match="could not be loaded"):
+            instantiate_inputs(
                 {"data": [s_id]},
                 store,
                 {"data": InputSpec(hydrate=True)},
             )
 
-        assert result["data"] == []
-        assert "could not be loaded" in caplog.text
+    def test_malformed_id_raises_before_store_lookup(self):
+        """A 32-character non-hex ID is rejected before querying storage."""
+        store = MagicMock()
+
+        with pytest.raises(ValueError, match="32-character hexadecimal"):
+            instantiate_inputs({"data": ["g" * 32]}, store, {})
+
+        store.provenance.load_type_map.assert_not_called()
 
     def test_default_hydrate(self):
         """Roles without spec use default_hydrate."""
-        s_id = "s" * 32
+        s_id = "a" * 32
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
@@ -167,7 +167,7 @@ class TestInstantiateInputs:
 
     def test_default_hydrate_false(self):
         """default_hydrate=False creates ID-only artifacts via bulk cache."""
-        s_id = "s" * 32
+        s_id = "a" * 32
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
@@ -183,8 +183,8 @@ class TestInstantiateInputs:
 
     def test_bulk_type_resolution_single_call(self):
         """All IDs across roles are resolved in a single load_type_map call."""
-        s_id = "s" * 32
-        m_id = "m" * 32
+        s_id = "a" * 32
+        m_id = "b" * 32
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {
@@ -209,7 +209,7 @@ class TestInstantiateInputs:
         """Non-hydrated bulk cache handles multiple artifact types correctly."""
         from artisan.schemas.artifact.file_ref import FileRefArtifact
 
-        m_id = "m" * 32
+        m_id = "b" * 32
         f_id = "f" * 32
 
         store = MagicMock()
@@ -240,7 +240,7 @@ class TestInstantiateInputs:
         """with_associated triggers get_associated() for each type."""
         from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 
-        s_id = "s" * 32
+        s_id = "a" * 32
         assoc = ExecutionConfigArtifact.draft(
             content={"key": "value"},
             original_name="test_config",
@@ -267,7 +267,7 @@ class TestInstantiateInputs:
 
     def test_no_with_associated_skips_get_associated(self):
         """Specs without with_associated don't call get_associated()."""
-        s_id = "s" * 32
+        s_id = "a" * 32
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}

@@ -7,12 +7,13 @@ of the preprocess/execute/postprocess lifecycle.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass, field
-from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 
 
 class _InputArtifactsMixin:
@@ -20,6 +21,26 @@ class _InputArtifactsMixin:
 
     input_artifacts: dict[str, list[Artifact]]
     _associated: dict[tuple[str, str], list[Artifact]]
+    _references: dict[str, dict[str, Artifact]]
+
+    def referenced_artifacts(
+        self, config: ExecutionConfigArtifact
+    ) -> Mapping[str, Artifact]:
+        """Return the prepared direct dependencies of one declared config.
+
+        Args:
+            config: Declared config input whose spec enables reference resolution.
+
+        Returns:
+            Read-only artifact-ID mapping. No additional store lookup occurs.
+
+        Raises:
+            ValueError: If the config is not a resolved, finalized input.
+        """
+        if config.artifact_id is None or config.artifact_id not in self._references:
+            msg = "Config is not a declared input with resolved references"
+            raise ValueError(msg)
+        return MappingProxyType(self._references[config.artifact_id])
 
     def associated_artifacts(
         self, artifact: Artifact, assoc_type: str
@@ -34,6 +55,8 @@ class _InputArtifactsMixin:
         Returns:
             List of associated artifacts, or empty list if none.
         """
+        if artifact.artifact_id is None:
+            return []
         return self._associated.get((artifact.artifact_id, assoc_type), [])
 
     def grouped(self) -> Iterator[dict[str, Artifact]]:
@@ -43,7 +66,8 @@ class _InputArtifactsMixin:
         positionally aligned after framework pairing. This method yields
         one dict per index: {"data": artifact_i, "config": artifact_j}.
 
-        Single-input operations should not use this method.
+        A single role yields one-key dictionaries. All role lists must have
+        equal lengths; independent streams of unequal lengths cannot be grouped.
         """
         roles = list(self.input_artifacts.keys())
         if not roles:
@@ -68,10 +92,13 @@ class PreprocessInput(_InputArtifactsMixin):
         ...     process(artifact.materialized_path)
     """
 
-    preprocess_dir: Path
+    preprocess_dir: str
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     _associated: dict[tuple[str, str], list[Artifact]] = field(
+        default_factory=dict, repr=False
+    )
+    _references: dict[str, dict[str, Artifact]] = field(
         default_factory=dict, repr=False
     )
 
@@ -85,18 +112,29 @@ class ExecuteInput:
 
     Attributes:
         execute_dir: Directory for writing output files.
-            All files written here will be captured as artifacts.
+            Files are made available to postprocess, which returns artifact drafts.
         inputs: Prepared inputs from preprocess.
             Keys may differ from original roles after transformation.
         log_path: Path where external tool output should be written.
-            Provided by the framework for automatic capture.
+            Provided by the framework for automatic capture. The
+            filename ``tool_output.log`` is reserved by the framework
+            — do not write a file by that name to ``<sandbox_root>``.
         metadata: Escape hatch for additional data from the engine.
+        files_dir: Local sandbox directory for external file output.
+            Always a local filesystem path, never a cloud URI. Operations
+            write here using stdlib I/O; the framework uploads the
+            contents to ``files_root`` on postprocess and rewrites each
+            artifact's ``external_path`` to the destination (cloud URI
+            on cloud backends; sharded path under ``files_root`` on
+            local). Set when the pipeline has ``files_root`` configured;
+            None otherwise.
     """
 
-    execute_dir: Path
+    execute_dir: str
     inputs: dict[str, Any] = field(default_factory=dict)
-    log_path: Path | None = None
+    log_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+    files_dir: str | None = None
 
 
 @dataclass
@@ -117,16 +155,19 @@ class PostprocessInput(_InputArtifactsMixin):
             Could be a subprocess result, dict, library object, None, etc.
         input_artifacts: Full input context with metadata.
             Artifacts have materialized_path set for reference.
-            Use for output naming and lineage inference.
+            Use for output naming and explicit parent declarations.
         metadata: Escape hatch for additional data from the engine.
     """
 
     step_number: int
-    postprocess_dir: Path
-    file_outputs: list[Path] = field(default_factory=list)
+    postprocess_dir: str
+    file_outputs: list[str] = field(default_factory=list)
     memory_outputs: Any = None
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     _associated: dict[tuple[str, str], list[Artifact]] = field(
+        default_factory=dict, repr=False
+    )
+    _references: dict[str, dict[str, Artifact]] = field(
         default_factory=dict, repr=False
     )

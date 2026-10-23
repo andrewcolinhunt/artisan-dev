@@ -1,0 +1,974 @@
+"""HTTP client for deployed tool endpoints — the ``compute_provider='modal'`` path.
+
+``call_endpoint`` runs a command op's execute phase remotely: it submits the
+op's params + input files, polls ``/result``, downloads the output tar into
+``execute_dir`` (recreating the local layout), and appends the tool-log tail
+to ``log_path``. Stored outputs (``output_store`` configured) are fetched
+from the object store via the manifest's presigned URL instead of
+``/download``. The caller exposes pipeline cancellation to the poll loop
+via ``cancel_scope``.
+
+Replay checks endpoint capability and code identity before submission, then
+retrieves diagnostics into a separate artifact directory before raising any
+compute or output-delivery failure.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import ssl
+import threading
+import time
+from collections.abc import Iterator
+from contextlib import contextmanager, nullcontext
+from contextvars import ContextVar
+from dataclasses import dataclass
+from typing import Any, NoReturn
+
+import httpx
+from pydantic import ValidationError
+
+from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
+from artisan.execution.compute.invoke import tool_command_inputs
+from artisan.execution.recording.commands import (
+    capture_commands,
+    current_recorder,
+    invocation_scope,
+    sanitize_diagnostic,
+)
+from artisan.execution.recording.replay_snapshot import current_replay_builder
+from artisan.execution.tool_endpoint._optional import import_modal
+from artisan.execution.tool_endpoint.protocol import (
+    CancelResponse,
+    CommandContract,
+    InputRef,
+    ResultResponse,
+    SchemaResponse,
+    ToolManifest,
+)
+from artisan.execution.tool_endpoint.spec import (
+    command_contract,
+    validate_deployment_overrides,
+)
+from artisan.execution.tool_endpoint.transport import (
+    EndpointTransportError,
+    InlineTransport,
+)
+from artisan.schemas.execution.command_record import (
+    CommandRecording,
+    MissingReason,
+    check_recording_size,
+)
+from artisan.schemas.execution.replay import OperationIdentity, RemoteObservation
+from artisan.schemas.operation_config.compute import ModalComputeConfig
+from artisan.schemas.operation_config.endpoint_policy import _normalize_http_root
+from artisan.schemas.orchestration.step_lifecycle import (
+    CancellationAcknowledgement,
+    CancellationStatus,
+)
+from artisan.schemas.specs.input_models import ExecuteInput
+from artisan.utils.env_file import env_or_dotenv
+
+DEFAULT_AUTH_PREFIX = "MODAL_PROXY"
+"""Default env-var prefix for the proxy-auth token pair."""
+
+_ENV_HINT = (
+    "Create a proxy-auth token (Modal dashboard → Settings → Proxy Auth "
+    "Tokens) and put it in a .env file at the repo root:\n"
+    "  MODAL_PROXY_TOKEN_ID=wk-...\n"
+    "  MODAL_PROXY_TOKEN_SECRET=ws-...\n"
+    "(replace the placeholders with your tokens; env vars of the same names "
+    "also work)"
+)
+
+_HTTP_TIMEOUT = 120.0
+_RESULT_RECOVERY_SECONDS = 300.0
+_RESULT_BACKOFF_SECONDS = 1.0
+_RESULT_BACKOFF_MAX_SECONDS = 10.0
+_RESULT_RETRY_STATUSES = {500, 502, 503, 504}
+_RESULT_RETRY_ERRORS = (
+    httpx.ConnectTimeout,
+    httpx.ReadTimeout,
+    httpx.WriteTimeout,
+    httpx.PoolTimeout,
+    httpx.ConnectError,
+    httpx.ReadError,
+    httpx.WriteError,
+    httpx.RemoteProtocolError,
+)
+
+_cancel_event: ContextVar[threading.Event | None] = ContextVar(
+    "tool_endpoint_cancel", default=None
+)
+_dispatch_context: ContextVar[tuple[int, str] | None] = ContextVar(
+    "endpoint_dispatch",
+    default=None,
+)
+
+
+@contextmanager
+def endpoint_dispatch(index: int, sandbox_root: str) -> Iterator[None]:
+    """Bind stable ownership of one artifact's diagnostic files and evidence."""
+    token = _dispatch_context.set((index, sandbox_root))
+    try:
+        yield
+    finally:
+        _dispatch_context.reset(token)
+
+
+@dataclass
+class _RemoteCall:
+    """Transient state used to distinguish preflight failure from transport loss."""
+
+    index: int
+    sandbox_root: str
+    debug: bool
+    submitted: bool = False
+    identity: OperationIdentity | None = None
+    diagnostic_status: str | None = None
+    diagnostic_error: str | None = None
+
+    def record(self) -> None:
+        """Persist only code identity and sanitized diagnostic-delivery status."""
+        builder = current_replay_builder()
+        if builder is None:
+            return
+        status = (
+            "observed"
+            if self.identity
+            else "unavailable"
+            if self.submitted
+            else "not_started"
+        )
+        builder.record_remote(
+            RemoteObservation.model_validate(
+                {
+                    "dispatch_index": self.index,
+                    "status": status,
+                    "identity": self.identity,
+                    "diagnostic_status": self.diagnostic_status,
+                    "diagnostic_error": sanitize_diagnostic(self.diagnostic_error),
+                }
+            )
+        )
+
+
+class EndpointCancellationError(RuntimeError):
+    """Typed terminal cancellation evidence from one named endpoint call."""
+
+    def __init__(self, acknowledgement: CancellationAcknowledgement) -> None:
+        super().__init__(acknowledgement.message or acknowledgement.status.value)
+        self.acknowledgement = acknowledgement
+
+
+@contextmanager
+def cancel_scope(event: threading.Event) -> Iterator[None]:
+    """Expose a cancel event to ``call_endpoint`` poll loops in this context."""
+    token = _cancel_event.set(event)
+    try:
+        yield
+    finally:
+        _cancel_event.reset(token)
+
+
+def call_endpoint(
+    operation: Any, inputs: ExecuteInput
+) -> CancellationAcknowledgement | None:
+    """Run an operation's execute phase on its configured endpoint.
+
+    Submit parameters and prepared files, then restore ordinary outputs into
+    ``inputs.execute_dir`` and append the sanitized tool-log tail to
+    ``inputs.log_path`` when set. Merge remote command evidence into the
+    active recording. During replay, retrieve diagnostics separately before
+    surfacing a worker or output-delivery failure.
+
+    Args:
+        operation: Operation instance with parameters and Modal configuration.
+        inputs: Per-artifact file inputs, integrity metadata, and local paths.
+
+    Returns:
+        A rejected-cancellation acknowledgement after the natural result is
+        delivered, or None when no cancellation was requested.
+
+    Raises:
+        ArtisanError: Invalid configuration or remote evidence, a rejected
+            HTTP response, an expired result, or a reported worker failure.
+        EndpointCancellationError: Cancellation is confirmed or its outcome
+            cannot be established.
+        httpx.HTTPError: A direct endpoint HTTP request fails in transport.
+    """
+    scope = capture_commands(operation) if current_recorder() is None else nullcontext()
+    with scope:
+        builder = current_replay_builder()
+        debug = builder is not None and builder.snapshot.diagnostic is not None
+        index, root = _dispatch_context.get() or (
+            0,
+            os.path.dirname(inputs.execute_dir),
+        )
+        state = _RemoteCall(index, root, debug)
+        try:
+            return _call_endpoint(operation, inputs, state)
+        finally:
+            if debug and state.diagnostic_status is None:
+                state.diagnostic_status = "unavailable"
+                state.diagnostic_error = "remote diagnostics were not received"
+            state.record()
+
+
+class _RecordingError(ArtisanError):
+    """A fixed, input-free endpoint evidence protocol failure."""
+
+    def __init__(
+        self, op_name: str, reason: MissingReason, *, context: str = ""
+    ) -> None:
+        self.reason = reason
+        super().__init__(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message=(
+                f"{context}endpoint command recording is missing or invalid; "
+                "redeploy the endpoint"
+            ),
+            error_type="config",
+            operation_name=op_name,
+            field="manifest.command_recording",
+            recovery_hint="CHECK_INPUT",
+        )
+
+
+def _call_endpoint(
+    operation: Any,
+    inputs: ExecuteInput,
+    state: _RemoteCall,
+) -> CancellationAcknowledgement | None:
+    """Submit, poll, and receive one invocation while updating call evidence."""
+    validate_deployment_overrides(operation, endpoint_call=True)
+    cfg = operation.compute_provider.modal
+    if not isinstance(cfg, ModalComputeConfig):
+        raise ArtisanError(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message=f"{operation.name} has no compute_provider.modal config",
+            error_type="config",
+            operation_name=operation.name,
+            recovery_hint="CHECK_INPUT",
+        )
+    cfg = _validated_modal_config(cfg, operation.name)
+    base_url, headers = _resolve_target_and_auth(cfg, operation.name)
+    transport = InlineTransport()
+    output_store = None
+    if cfg.output_store is not None:
+        try:
+            output_store = cfg.data_policy.authorize_output(
+                cfg.output_store
+            ).transport_target
+        except ValueError as exc:
+            raise _config_error(
+                operation.name,
+                str(exc),
+            ) from exc
+
+    with httpx.Client(
+        base_url=base_url,
+        headers=headers,
+        timeout=_HTTP_TIMEOUT,
+        follow_redirects=False,
+    ) as client:
+        accepted_contract = _handshake(client, operation, state)
+        refs = _pack_request_inputs(operation.name, inputs, cfg, transport)
+        multipart = [
+            ("files", (ref.name, ref.data)) for ref in refs if ref.data is not None
+        ]
+        uris = {ref.name: ref.uri for ref in refs if ref.uri is not None}
+        filenames = {ref.name: ref.filename for ref in refs if ref.filename}
+        integrity = {
+            ref.name: {
+                "content_digest": ref.content_digest,
+                "size_bytes": ref.size_bytes,
+            }
+            for ref in refs
+            if ref.uri is not None
+        }
+        data = {
+            "expected_command_contract": accepted_contract.model_dump_json(),
+            "params": operation.params_json(),
+            "input_uris": json.dumps(uris),
+            "input_filenames": json.dumps(filenames),
+            "input_integrity": json.dumps(integrity),
+        }
+        if output_store is not None:
+            data["output_store"] = output_store
+        if state.debug:
+            data["debug_capture"] = "true"
+        with invocation_scope(operation) as invocation:
+            received = False
+            try:
+                state.submitted = True
+                response = client.post("/submit", data=data, files=multipart or None)
+                _check(response, operation.name)
+                call_id = str(response.json()["call_id"])
+
+                manifest, cancellation = _poll(
+                    client,
+                    call_id,
+                    cfg.poll_interval,
+                    operation.name,
+                )
+                state.identity = manifest.operation_identity
+                if state.debug:
+                    _receive_diagnostics(
+                        client, call_id, manifest, cfg, transport, state
+                    )
+                recorder = current_recorder()
+                assert recorder is not None
+                assert invocation is not None
+                try:
+                    recorder.merge(manifest.command_recording, invocation)
+                except (TypeError, ValueError):
+                    raise _RecordingError(operation.name, "invalid_recording") from None
+                received = True
+                if manifest.log_tail and inputs.log_path:
+                    _append_log(inputs.log_path, sanitize_diagnostic(manifest.log_tail))
+                if (
+                    manifest.error is None
+                    and manifest.command_contract != accepted_contract
+                ):
+                    raise _config_error(
+                        operation.name,
+                        "endpoint worker command contract changed after the handshake",
+                    )
+                if manifest.error is not None:
+                    _raise_from_envelope(
+                        ArtisanErrorEnvelope.model_validate(
+                            sanitize_diagnostic(manifest.error.model_dump())
+                        ),
+                        operation.name,
+                    )
+                if manifest.stored is not None:
+                    if manifest.stored.presigned_url is None:
+                        # capability-mode pointer — unreachable via this client
+                        # (the config validator rejects PUT URLs); fail with the
+                        # contract, not a TypeError inside httpx
+                        raise ArtisanError(
+                            code=ErrorCode.OP_EXECUTE_FAILED,
+                            message="stored outputs carry no presigned URL to fetch",
+                            error_type="compute",
+                            operation_name=operation.name,
+                        )
+                    try:
+                        cfg.data_policy.authorize_output(manifest.stored.uri)
+                        cfg.data_policy.authorize_output(manifest.stored.presigned_url)
+                    except ValueError as exc:
+                        raise _config_error(operation.name, str(exc)) from exc
+                    try:
+                        transport.download_outputs(
+                            manifest.stored.presigned_url,
+                            inputs.execute_dir,
+                            policy=cfg.data_policy,
+                        )
+                    except (EndpointTransportError, OSError, ValueError) as exc:
+                        raise ArtisanError(
+                            code=ErrorCode.OP_EXECUTE_FAILED,
+                            message=str(exc),
+                            error_type="compute",
+                            operation_name=operation.name,
+                        ) from exc
+                elif manifest.output_names:
+                    download = client.get("/download", params={"call_id": call_id})
+                    _check(download, operation.name)
+                    transport.unpack_outputs(download.content, inputs.execute_dir)
+                return cancellation
+            except BaseException as exc:
+                if not received:
+                    recorder = current_recorder()
+                    assert recorder is not None
+                    assert invocation is not None
+                    reason: MissingReason = (
+                        exc.reason
+                        if isinstance(exc, _RecordingError)
+                        else "cancelled"
+                        if isinstance(
+                            exc, (EndpointCancellationError, KeyboardInterrupt)
+                        )
+                        else "transport_failure"
+                    )
+                    recorder.missing(invocation, reason)
+                raise
+
+
+def _handshake(
+    client: httpx.Client,
+    operation: Any,
+    state: _RemoteCall,
+) -> CommandContract:
+    """Check every invocation; replay additionally verifies historical identity."""
+    op_name = operation.name
+    try:
+        expected = command_contract(operation)
+    except (TypeError, ValueError):
+        raise _config_error(
+            op_name, "command declaration is unavailable or sensitive"
+        ) from None
+    response = client.get("/schema")
+    _check(response, op_name)
+    try:
+        schema = SchemaResponse.model_validate(response.json())
+    except (TypeError, ValueError):
+        raise _config_error(
+            op_name,
+            "endpoint command protocol is incompatible; explicitly redeploy the endpoint",
+        ) from None
+    if schema.command_contract != expected:
+        raise _config_error(
+            op_name,
+            "command contract differs from deployment; explicitly redeploy or select a compatible endpoint",
+        )
+    if not state.debug:
+        return schema.command_contract
+    if not schema.debug_capture_supported:
+        raise _config_error(op_name, "endpoint does not support diagnostic capture")
+    builder = current_replay_builder()
+    assert builder is not None
+    assert builder.snapshot.diagnostic is not None
+    diagnostic = builder.snapshot.diagnostic
+    if schema.operation_identity != diagnostic.selected_identity:
+        raise _config_error(
+            op_name, "endpoint operation identity differs from selected replay code"
+        )
+    source = next(
+        (
+            entry
+            for entry in diagnostic.source_remote_identity
+            if entry.dispatch_index == state.index
+        ),
+        None,
+    )
+    if not diagnostic.allow_code_change:
+        if source is None or source.status == "unavailable":
+            raise _config_error(
+                op_name,
+                "source endpoint identity is unavailable; allow_code_change is required",
+            )
+        if source.status == "observed" and source.identity != schema.operation_identity:
+            raise _config_error(
+                op_name,
+                "endpoint operation identity changed since the source execution",
+            )
+    return schema.command_contract
+
+
+def _receive_diagnostics(
+    client: httpx.Client,
+    call_id: str,
+    manifest: ToolManifest,
+    cfg: ModalComputeConfig,
+    transport: InlineTransport,
+    state: _RemoteCall,
+) -> None:
+    """Retrieve the independent evidence plane without masking compute outcome."""
+    capture = manifest.debug_capture
+    if capture is None or capture.status != "complete":
+        state.diagnostic_status = (
+            "unavailable"
+            if capture is None or capture.status == "unavailable"
+            else "incomplete"
+        )
+        state.diagnostic_error = (
+            capture.error
+            if capture is not None
+            else "endpoint omitted requested diagnostics"
+        )
+        return
+    destination = os.path.join(
+        state.sandbox_root, "remote-debug", f"artifact_{state.index}"
+    )
+    try:
+        if capture.stored is not None:
+            cfg.data_policy.authorize_output(capture.stored.uri)
+            if capture.stored.presigned_url is None:
+                msg = "diagnostic archive has no retrievable capability"
+                raise ValueError(msg)
+            transport.download_outputs(
+                capture.stored.presigned_url,
+                destination,
+                policy=cfg.data_policy,
+                prefixes=("inputs/", "outputs/"),
+            )
+        else:
+            response = client.get(
+                "/download", params={"call_id": call_id, "plane": "diagnostics"}
+            )
+            _check(response, manifest.operation_identity.name)
+            transport.unpack_outputs(
+                response.content, destination, prefixes=("inputs/", "outputs/")
+            )
+        received = sorted(
+            os.path.relpath(os.path.join(root, name), destination)
+            for root, _dirs, files in os.walk(destination)
+            for name in files
+        )
+        if received != sorted(capture.entries):
+            msg = "diagnostic archive does not match its entry manifest"
+            raise ValueError(msg)
+        state.diagnostic_status = "complete"
+    except Exception as exc:
+        state.diagnostic_status = "incomplete"
+        state.diagnostic_error = f"diagnostic delivery failed: {type(exc).__name__}"
+
+
+def _poll(
+    client: httpx.Client, call_id: str, interval: float, op_name: str
+) -> tuple[ToolManifest, CancellationAcknowledgement | None]:
+    """Poll one call, allowing five minutes to recover each transport outage.
+
+    Recovery includes failed request time and capped backoff. A validated
+    pending response resets the window; healthy computation has no deadline.
+    HTTPX timeouts bound I/O waits, not the total duration of an active GET.
+    """
+    cancel = _cancel_event.get()
+    cancellation: CancellationAcknowledgement | None = None
+    deadline: float | None = None
+    delay = _RESULT_BACKOFF_SECONDS
+    failure = ""
+    last_status: int | None = None
+    response: httpx.Response | None
+    while True:
+        if cancel is not None and cancel.is_set() and cancellation is None:
+            try:
+                response = client.post("/cancel", params={"call_id": call_id})
+                _check(response, op_name)
+                cancelled = CancelResponse.model_validate(response.json())
+            except ArtisanError:
+                raise
+            except Exception as exc:
+                acknowledgement = CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    sanitize_diagnostic(
+                        f"Could not validate cancellation outcome for call "
+                        f"{call_id}: {type(exc).__name__}"
+                    ),
+                )
+                raise EndpointCancellationError(acknowledgement) from exc
+            if cancelled.call_id != call_id:
+                acknowledgement = CancellationAcknowledgement(
+                    CancellationStatus.UNKNOWN,
+                    sanitize_diagnostic(
+                        f"Cancellation response named {cancelled.call_id!r}; "
+                        f"expected {call_id!r}"
+                    ),
+                )
+                raise EndpointCancellationError(acknowledgement)
+            acknowledgement = CancellationAcknowledgement(
+                cancelled.status,
+                sanitize_diagnostic(cancelled.message),
+            )
+            if acknowledgement.status in {
+                CancellationStatus.CONFIRMED,
+                CancellationStatus.UNKNOWN,
+            }:
+                raise EndpointCancellationError(acknowledgement)
+            if acknowledgement.status == CancellationStatus.REJECTED:
+                cancellation = acknowledgement
+            else:
+                time.sleep(interval)
+                continue
+        started = time.monotonic()
+        if deadline is not None and started >= deadline:
+            raise _result_error(op_name, call_id, failure, last_status)
+        timeout = (
+            _HTTP_TIMEOUT
+            if deadline is None
+            else min(_HTTP_TIMEOUT, deadline - started)
+        )
+        response, transport_error = _request_result(client, call_id, op_name, timeout)
+        if response is None or response.status_code in _RESULT_RETRY_STATUSES:
+            if response is not None:
+                last_status = response.status_code
+            failure = transport_error or f"HTTP {last_status}"
+            if deadline is None:
+                deadline = started + _RESULT_RECOVERY_SECONDS
+            remaining = deadline - time.monotonic()
+            if remaining > 0:
+                _poll_wait(
+                    min(delay, remaining), cancel if cancellation is None else None
+                )
+                delay = min(delay * 2, _RESULT_BACKOFF_MAX_SECONDS)
+            continue
+        _check(response, op_name, call_id=call_id)
+        context = sanitize_diagnostic(
+            f"GET /result for call {sanitize_diagnostic(call_id)!r} "
+            f"(HTTP {response.status_code}): "
+        )
+        try:
+            payload = response.json()
+        except ValueError:
+            raise _config_error(
+                op_name,
+                f"{context}endpoint returned invalid JSON",
+            ) from None
+        result = _decode_result(payload, op_name, context)
+        if result.status == "pending":
+            deadline = None
+            delay = _RESULT_BACKOFF_SECONDS
+            last_status = None
+            _poll_wait(interval, cancel if cancellation is None else None)
+            continue
+        if result.status == "expired":
+            raise ArtisanError(
+                code=ErrorCode.OP_EXECUTE_FAILED,
+                message=f"{context}result expired — Modal retains results 7 days",
+                error_type="compute",
+                operation_name=op_name,
+                recovery_hint="RETRY_LATER",
+            )
+        if result.manifest is None:
+            raise ArtisanError(
+                code=ErrorCode.OP_EXECUTE_FAILED,
+                message=f"{context}returned {result.status} without a manifest",
+                error_type="compute",
+                operation_name=op_name,
+            )
+        return result.manifest, cancellation
+
+
+def _request_result(
+    client: httpx.Client, call_id: str, op_name: str, timeout: float
+) -> tuple[httpx.Response | None, str]:
+    """Return a response or a retryable failure class without untrusted text."""
+    try:
+        return client.get("/result", params={"call_id": call_id}, timeout=timeout), ""
+    except httpx.HTTPError as exc:
+        if isinstance(exc, _RESULT_RETRY_ERRORS) and not _has_tls_error(exc):
+            return None, type(exc).__name__
+        raise _result_error(
+            op_name, call_id, type(exc).__name__, exhausted=False
+        ) from None
+
+
+def _has_tls_error(error: BaseException) -> bool:
+    """Keep TLS configuration and certificate failures out of network retries."""
+    pending = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        if isinstance(current, ssl.SSLError):
+            return True
+        pending.extend(
+            item
+            for item in (current.__cause__, current.__context__)
+            if item is not None
+        )
+    return False
+
+
+def _poll_wait(delay: float, cancel: threading.Event | None) -> None:
+    """Wake recovery and pending waits when cancellation becomes actionable."""
+    if cancel is None:
+        time.sleep(delay)
+    else:
+        cancel.wait(delay)
+
+
+def _result_error(
+    op_name: str,
+    call_id: str,
+    failure: str,
+    status: int | None = None,
+    *,
+    exhausted: bool = True,
+) -> ArtisanError:
+    """Describe result retrieval without response bodies or exception chains."""
+    reason = "recovery budget exhausted" if exhausted else "request failed"
+    http_status = f"; last HTTP status {status}" if status is not None else ""
+    return ArtisanError(
+        code=ErrorCode.OP_EXECUTE_FAILED,
+        message=sanitize_diagnostic(
+            f"GET /result for call {sanitize_diagnostic(call_id)!r}: "
+            f"{reason} ({failure}{http_status})"
+        ),
+        error_type="compute",
+        operation_name=op_name,
+    )
+
+
+def _decode_result(payload: Any, op_name: str, context: str) -> ResultResponse:
+    """Size-check untrusted evidence before nested validation; never echo input."""
+    manifest = payload.get("manifest") if isinstance(payload, dict) else None
+    if (
+        isinstance(payload, dict)
+        and payload.get("status") in {"done", "failed"}
+        and manifest is None
+    ):
+        raise _RecordingError(op_name, "missing_recording", context=context)
+    if isinstance(manifest, dict):
+        if "command_recording" not in manifest:
+            raise _RecordingError(op_name, "missing_recording", context=context)
+        try:
+            raw = manifest["command_recording"]
+            check_recording_size(raw)
+            CommandRecording.model_validate(raw)
+        except (TypeError, ValueError, RecursionError):
+            raise _RecordingError(
+                op_name, "invalid_recording", context=context
+            ) from None
+    try:
+        return ResultResponse.model_validate(payload)
+    except (TypeError, ValueError):
+        raise _config_error(
+            op_name,
+            f"{context}endpoint execution evidence protocol is incompatible; "
+            "redeploy the endpoint",
+        ) from None
+
+
+def _file_inputs(op_name: str, prepared: dict[str, Any]) -> dict[str, str]:
+    """Require prepared tool inputs to be file paths or remote URIs."""
+    files: dict[str, str] = {}
+    for name, value in tool_command_inputs(prepared).items():
+        if not isinstance(value, str):
+            raise ArtisanError(
+                code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+                message=(
+                    f"prepared input {name!r} is {type(value).__name__}, not a "
+                    "file path — tool ops under modal ship Params + input "
+                    "files only; derive scalars in Params or execute_command"
+                ),
+                error_type="config",
+                operation_name=op_name,
+                field=f"inputs.{name}",
+                recovery_hint="CHECK_INPUT",
+            )
+        files[name] = value
+    return files
+
+
+def _resolve_url(op_name: str) -> str:
+    """Web URL of the Artisan-deployed endpoint for this op."""
+    modal = import_modal()
+
+    function = modal.Function.from_name(f"artisan-tool-{op_name}", "endpoint")
+    url = function.get_web_url()
+    if not url:
+        raise ArtisanError(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message=f"artisan-tool-{op_name} has no web URL — is it deployed?",
+            error_type="config",
+            operation_name=op_name,
+            hint=f"Run: artisan modal deploy {op_name}",
+        )
+    return str(url)
+
+
+def _resolve_target_and_auth(
+    cfg: ModalComputeConfig,
+    op_name: str,
+) -> tuple[str, dict[str, str]]:
+    """Resolve one endpoint target together with credentials scoped to it."""
+    if cfg.endpoint_url is None:
+        target = _validated_target(_resolve_url(op_name), op_name, authenticated=True)
+        prefix = DEFAULT_AUTH_PREFIX if cfg.auth_secret is None else cfg.auth_secret
+        if not prefix.strip():
+            raise _config_error(
+                op_name,
+                "auth_secret must be a nonempty variable prefix",
+            )
+        return target, _auth_headers(prefix, op_name)
+    authenticated = cfg.auth_secret is not None
+    target = _validated_target(cfg.endpoint_url, op_name, authenticated=authenticated)
+    if cfg.auth_secret is None:
+        return target, {}
+    if not cfg.auth_secret.strip():
+        raise _config_error(op_name, "auth_secret must be a nonempty variable prefix")
+    return target, _auth_headers(cfg.auth_secret, op_name)
+
+
+def _validated_modal_config(
+    cfg: ModalComputeConfig,
+    op_name: str,
+) -> ModalComputeConfig:
+    """Revalidate configuration copied through Pydantic's unchecked update path."""
+    try:
+        return ModalComputeConfig.model_validate(
+            cfg.model_dump(mode="python", warnings=False)
+        )
+    except ValidationError as exc:
+        detail = "tool endpoint configuration is invalid"
+        issues = exc.errors(
+            include_url=False,
+            include_context=False,
+            include_input=False,
+        )
+        if issues:
+            issue = issues[0]
+            reason = str(issue["msg"]).removeprefix("Value error, ")
+            detail = f"{detail}: {reason}"
+        raise _config_error(op_name, detail) from exc
+    except (TypeError, ValueError) as exc:
+        raise _config_error(op_name, "tool endpoint configuration is invalid") from exc
+
+
+def _validated_target(url: str, op_name: str, *, authenticated: bool) -> str:
+    """Normalize the final endpoint URL, including unvalidated config copies."""
+    try:
+        target = _normalize_http_root(url)
+    except ValueError as exc:
+        raise _config_error(op_name, "tool endpoint URL must be an HTTP root") from exc
+    if authenticated and not target.startswith("https://"):
+        raise _config_error(op_name, "authenticated tool endpoint must use HTTPS")
+    return target
+
+
+def _auth_headers(prefix: str, op_name: str) -> dict[str, str]:
+    """Proxy-auth headers from ``<prefix>_TOKEN_ID`` / ``<prefix>_TOKEN_SECRET``.
+
+    Tokens are discovered from the process environment first, then the
+    nearest ``.env`` file — so Jupyter kernels and cron jobs work without
+    shell-inherited exports.
+    """
+    token_id = env_or_dotenv(f"{prefix}_TOKEN_ID")
+    token_secret = env_or_dotenv(f"{prefix}_TOKEN_SECRET")
+    if (
+        not token_id
+        or not token_id.strip()
+        or not token_secret
+        or not token_secret.strip()
+    ):
+        raise _config_error(
+            op_name,
+            f"proxy-auth token pair for prefix {prefix!r} is missing or incomplete",
+            hint=_ENV_HINT if prefix == DEFAULT_AUTH_PREFIX else None,
+        )
+    return {"Modal-Key": token_id, "Modal-Secret": token_secret}
+
+
+def _pack_request_inputs(
+    op_name: str,
+    inputs: ExecuteInput,
+    cfg: ModalComputeConfig,
+    transport: InlineTransport,
+) -> list[InputRef]:
+    """Authorize prepared URIs and bind their expected digest and byte count."""
+    files = _file_inputs(op_name, inputs.inputs)
+    raw_contracts = inputs.metadata.get("external_integrity", {})
+    if not isinstance(raw_contracts, dict):
+        raise _config_error(op_name, "external input integrity metadata is invalid")
+    expected: dict[str, tuple[str, int]] = {}
+    authorized_files: dict[str, str] = {}
+    for name, source in files.items():
+        if "://" not in source:
+            authorized_files[name] = source
+            continue
+        try:
+            target = cfg.data_policy.authorize_input(source)
+            contract = raw_contracts[source]
+            digest = contract["content_digest"]
+            size = contract["size_bytes"]
+            if (
+                not isinstance(digest, str)
+                or len(digest) != 32
+                or any(char not in "0123456789abcdef" for char in digest)
+                or not isinstance(size, int)
+                or isinstance(size, bool)
+                or size < 0
+            ):
+                msg = "descriptor is malformed"
+                raise ValueError(msg)
+        except (KeyError, TypeError, ValueError) as exc:
+            raise _config_error(
+                op_name,
+                f"prepared external input {name!r} is unauthorized or lacks its "
+                "verified digest and size",
+            ) from exc
+        authorized_files[name] = target.transport_target
+        descriptor = (digest, size)
+        previous = expected.setdefault(target.transport_target, descriptor)
+        if previous != descriptor:
+            raise _config_error(
+                op_name,
+                "canonical-equivalent external inputs carry conflicting "
+                "digest or size descriptors",
+            )
+    try:
+        return transport.pack_inputs(authorized_files, expected)
+    except (OSError, ValueError) as exc:
+        raise _config_error(op_name, str(exc)) from exc
+
+
+def _config_error(
+    op_name: str,
+    message: str,
+    *,
+    hint: str | None = None,
+) -> ArtisanError:
+    """Build one structured endpoint configuration error."""
+    return ArtisanError(
+        code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+        message=message,
+        error_type="config",
+        operation_name=op_name,
+        hint=hint,
+        recovery_hint="CHECK_INPUT",
+    )
+
+
+def _append_log(log_path: str, tail: str) -> None:
+    """Append the worker's log tail to the unit log read by recording."""
+    os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
+    with open(log_path, "a") as f:
+        f.write(tail)
+
+
+def _check(
+    response: httpx.Response, op_name: str, *, call_id: str | None = None
+) -> None:
+    """Classify refused auth/redirects as config errors, other failures as compute."""
+    context = (
+        sanitize_diagnostic(f"GET /result for call {sanitize_diagnostic(call_id)!r}: ")
+        if call_id is not None
+        else ""
+    )
+    # Modal's proxy answers missing/invalid tokens with a fast 401 response
+    # (not a connection error); 407 handled defensively.
+    if response.status_code in (401, 407):
+        raise ArtisanError(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message=(
+                f"{context}tool endpoint rejected authentication ({response.status_code})"
+            ),
+            error_type="config",
+            operation_name=op_name,
+            hint=_ENV_HINT,
+            recovery_hint="CHECK_INPUT",
+        )
+    if 300 <= response.status_code < 400:
+        raise ArtisanError(
+            code=ErrorCode.TOOL_ENDPOINT_MISCONFIGURED,
+            message=f"{context}tool endpoint redirect refused ({response.status_code})",
+            error_type="config",
+            operation_name=op_name,
+            recovery_hint="CHECK_INPUT",
+        )
+    if not 200 <= response.status_code < 300:
+        raise ArtisanError(
+            code=ErrorCode.OP_EXECUTE_FAILED,
+            message=f"{context}tool endpoint request failed ({response.status_code})",
+            error_type="compute",
+            operation_name=op_name,
+        )
+
+
+def _raise_from_envelope(envelope: ArtisanErrorEnvelope, op_name: str) -> NoReturn:
+    """Re-raise the worker's error envelope as a client-side ArtisanError."""
+    raise ArtisanError(
+        code=envelope.code,
+        message=envelope.message,
+        error_type=envelope.error_type,
+        operation_name=envelope.operation_name or op_name,
+        field=envelope.field,
+        hint=envelope.hint,
+        suggestions=envelope.suggestions,
+        recovery_hint=envelope.recovery_hint,
+        doc_uri=envelope.doc_uri,
+    )

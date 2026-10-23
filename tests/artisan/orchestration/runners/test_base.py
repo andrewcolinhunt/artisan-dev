@@ -1,0 +1,95 @@
+"""Tests for step_runner base classes and traits."""
+
+from __future__ import annotations
+
+import pytest
+
+from artisan.orchestration.runners.base import (
+    OrchestratorTraits,
+    RunnerBase,
+    WorkerTraits,
+)
+
+
+class TestWorkerTraits:
+    def test_default_traits(self) -> None:
+        traits = WorkerTraits()
+        assert traits.worker_id_env_var is None
+        assert traits.shared_filesystem is False
+
+    def test_frozen(self) -> None:
+        traits = WorkerTraits()
+        with pytest.raises(AttributeError):
+            traits.shared_filesystem = True  # type: ignore[misc]
+
+
+class TestOrchestratorTraits:
+    def test_default_traits(self) -> None:
+        traits = OrchestratorTraits()
+        assert traits.shared_filesystem is False
+        assert traits.staging_verification_timeout == 60.0
+        assert traits.needs_staging_verification is False
+
+    def test_shared_filesystem_enables_verification(self) -> None:
+        traits = OrchestratorTraits(shared_filesystem=True)
+        assert traits.needs_staging_verification is True
+
+    def test_custom_timeout(self) -> None:
+        traits = OrchestratorTraits(
+            shared_filesystem=True, staging_verification_timeout=120.0
+        )
+        assert traits.staging_verification_timeout == 120.0
+
+    def test_frozen(self) -> None:
+        traits = OrchestratorTraits()
+        with pytest.raises(AttributeError):
+            traits.shared_filesystem = True  # type: ignore[misc]
+
+
+class TestInitSubclassValidation:
+    def test_missing_name_raises(self) -> None:
+        with pytest.raises(TypeError, match="must define 'name'"):
+
+            class BadRunner(RunnerBase):
+                worker_traits = WorkerTraits()
+                orchestrator_traits = OrchestratorTraits()
+
+                def create_lifecycle_router(self, *a, **kw):
+                    pass
+
+    def test_missing_worker_traits_raises(self) -> None:
+        with pytest.raises(TypeError, match="must define 'worker_traits'"):
+
+            class BadRunner(RunnerBase):
+                name = "bad"
+                orchestrator_traits = OrchestratorTraits()
+
+                def create_lifecycle_router(self, *a, **kw):
+                    pass
+
+    def test_missing_orchestrator_traits_raises(self) -> None:
+        with pytest.raises(TypeError, match="must define 'orchestrator_traits'"):
+
+            class BadRunner(RunnerBase):
+                name = "bad"
+                worker_traits = WorkerTraits()
+
+                def create_lifecycle_router(self, *a, **kw):
+                    pass
+
+    def test_valid_subclass_succeeds(self) -> None:
+        from unittest.mock import MagicMock
+
+        class GoodRunner(RunnerBase):
+            name = "good"
+            worker_traits = WorkerTraits()
+            orchestrator_traits = OrchestratorTraits()
+
+            def create_lifecycle_router(self, *a, **kw):
+                return MagicMock()
+
+        step_runner = GoodRunner()
+        assert step_runner.name == "good"
+
+    def test_capture_logs_is_not_part_of_runner_contract(self) -> None:
+        assert not hasattr(RunnerBase, "capture_logs")

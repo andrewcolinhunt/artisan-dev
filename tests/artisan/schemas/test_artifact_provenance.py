@@ -134,7 +134,7 @@ class TestArtifactProvenanceEdge:
         assert "extra" in str(exc_info.value).lower()
 
     def test_hashable(self):
-        """Test that ArtifactProvenanceEdge is hashable (8 fields)."""
+        """Test that ArtifactProvenanceEdge is hashable (9 fields)."""
         edge1 = ArtifactProvenanceEdge(
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
@@ -355,19 +355,3 @@ class TestArtifactTypeValues:
             )
             assert edge.source_artifact_type == artifact_type
             assert edge.target_artifact_type == artifact_type
-
-
-class TestImportFromSchemas:
-    """Tests for importing ArtifactProvenanceEdge from schemas module."""
-
-    def test_import_from_schemas(self):
-        """Test that ArtifactProvenanceEdge can be imported from schemas."""
-        from artisan.schemas import ArtifactProvenanceEdge as ImportedClass
-
-        assert ImportedClass is ArtifactProvenanceEdge
-
-    def test_in_schemas_all(self):
-        """Test that ArtifactProvenanceEdge is in __all__."""
-        from artisan.schemas import __all__
-
-        assert "ArtifactProvenanceEdge" in __all__

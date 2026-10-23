@@ -1,0 +1,44 @@
+"""Agent-facing operation registry: discovery, schemas, summaries.
+
+Public surface for the MCP server (``artisan_list_operations``,
+``artisan_describe_operation``, ``artisan_examples``) and for Python-side
+callers introspecting available operations.
+"""
+
+from __future__ import annotations
+
+from artisan.registry.api import describe, examples, list_operations
+from artisan.registry.capabilities import CapabilitiesPayload, capabilities
+from artisan.registry.discovery import bootstrap_applications, discover
+from artisan.registry.models import (
+    DiscoveryError,
+    DiscoveryReport,
+    DiscoverySource,
+    InputSpecMetadata,
+    NameCollision,
+    OperationExample,
+    OperationMetadata,
+    OperationSummary,
+    OutputSpecMetadata,
+)
+from artisan.registry.schemas import params_schema_for
+
+__all__ = [
+    "CapabilitiesPayload",
+    "DiscoveryError",
+    "DiscoveryReport",
+    "DiscoverySource",
+    "InputSpecMetadata",
+    "NameCollision",
+    "OperationExample",
+    "OperationMetadata",
+    "OperationSummary",
+    "OutputSpecMetadata",
+    "bootstrap_applications",
+    "capabilities",
+    "describe",
+    "discover",
+    "examples",
+    "list_operations",
+    "params_schema_for",
+]

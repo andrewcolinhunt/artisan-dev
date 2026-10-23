@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import os
 import random
 from enum import StrEnum, auto
 from typing import Any, ClassVar
@@ -10,10 +11,12 @@ from typing import Any, ClassVar
 from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.artifact.data import DataArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.execution.execution_config import ExecutionConfig
-from artisan.schemas.operation_config.resource_config import ResourceConfig
+from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -28,14 +31,11 @@ class DataGenerator(OperationDefinition):
         datasets (data) -- Generated CSV dataset files
     """
 
-    # ---------- Metadata ----------
     name = "data_generator"
     description = "Generate CSV datasets with random numeric data"
 
-    # ---------- Inputs ----------
-    inputs: ClassVar[dict] = {}
+    inputs: ClassVar[dict[str, Any]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         datasets = auto()
 
@@ -43,11 +43,10 @@ class DataGenerator(OperationDefinition):
         OutputRole.datasets: OutputSpec(
             artifact_type="data",
             description="Generated CSV dataset files",
-            infer_lineage_from={"inputs": []},
+            derives_from={"inputs": []},
         ),
     }
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Algorithm parameters for DataGenerator."""
 
@@ -68,40 +67,43 @@ class DataGenerator(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Resources ----------
-    resources: ResourceConfig = ResourceConfig(time_limit="00:30:00")
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
 
-    # ---------- Execution ----------
-    execution: ExecutionConfig = ExecutionConfig(
+    batch_strategy: BatchStrategy = BatchStrategy(  # type: ignore[call-arg]  # pydantic defaults
         units_per_worker=100, job_name="data_generator"
     )
 
-    # ---------- Lifecycle ----------
-    def execute(self, inputs: ExecuteInput) -> dict[str, Any]:
+    compute_provider: ComputeProvider = ComputeProvider(
+        modal=ModalComputeConfig(),
+    )
+
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV files with columns id, x, y, z, score to execute_dir."""
         output_dir = inputs.execute_dir
-        output_dir.mkdir(parents=True, exist_ok=True)
+        os.makedirs(output_dir, exist_ok=True)
 
         rng = random.Random(self.params.seed)
         created_files = []
 
         for i in range(self.params.count):
             filename = f"dataset_{i:05d}.csv"
-            filepath = output_dir / filename
+            filepath = os.path.join(output_dir, filename)
 
-            with filepath.open("w", newline="") as f:
+            with open(filepath, "w", newline="") as f:
                 writer = csv.writer(f)
                 writer.writerow(["id", "x", "y", "z", "score"])
                 for row_idx in range(self.params.rows_per_file):
-                    writer.writerow([
-                        row_idx,
-                        round(rng.uniform(0.0, 10.0), 4),
-                        round(rng.uniform(0.0, 10.0), 4),
-                        round(rng.uniform(0.0, 10.0), 4),
-                        round(rng.uniform(0.0, 1.0), 4),
-                    ])
+                    writer.writerow(
+                        [
+                            row_idx,
+                            round(rng.uniform(0.0, 10.0), 4),
+                            round(rng.uniform(0.0, 10.0), 4),
+                            round(rng.uniform(0.0, 10.0), 4),
+                            round(rng.uniform(0.0, 1.0), 4),
+                        ]
+                    )
 
-            created_files.append(str(filepath))
+            created_files.append(filepath)
 
         return {"created_files": created_files}
 
@@ -110,13 +112,15 @@ class DataGenerator(OperationDefinition):
         raw = inputs.memory_outputs
         created_files = raw.get("created_files", [])
 
-        drafts: list[DataArtifact] = []
+        drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
-            if file_path.suffix == ".csv":
+            if file_path.endswith(".csv"):
+                with open(file_path, "rb") as f:
+                    content = f.read()
                 drafts.append(
                     DataArtifact.draft(
-                        content=file_path.read_bytes(),
-                        original_name=file_path.name,
+                        content=content,
+                        original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
                     )
                 )
@@ -124,6 +128,7 @@ class DataGenerator(OperationDefinition):
         return ArtifactResult(
             success=True,
             artifacts={"datasets": drafts},
+            lineage={"datasets": []},
             metadata={
                 "operation": "data_generator",
                 "count": self.params.count,

@@ -11,13 +11,15 @@ For the finer-grained artifact-level view, see ``artisan.visualization.graph.mic
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Literal
 
 import graphviz
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.store_format import assert_store_format
+from artisan.utils.path import uri_join
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
     PASSTHROUGH_STYLE,
@@ -26,50 +28,53 @@ from artisan.visualization.graph._styles import (
     render_graph,
 )
 
-# =============================================================================
-# Data Loading
-# =============================================================================
 
+def _load_usable_steps(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
+) -> pl.DataFrame:
+    """Return current succeeded/partial steps for one pipeline run."""
+    if fs is None:
+        from fsspec.implementations.local import LocalFileSystem
 
-def _load_completed_steps(delta_root: Path) -> pl.DataFrame:
-    """Return completed steps, deduplicated by step_number (keeps last)."""
-    table_path = delta_root / TablePath.STEPS
-    if not table_path.exists():
-        return pl.DataFrame(
-            schema={
-                "step_number": pl.Int32,
-                "step_name": pl.String,
-                "output_roles_json": pl.String,
-                "output_types_json": pl.String,
-                "input_refs_json": pl.String,
-            }
-        )
-
-    df = (
-        pl.scan_delta(str(table_path))
-        .filter(pl.col("status") == "completed")
-        .select(
-            [
-                "step_number",
-                "step_name",
-                "output_roles_json",
-                "output_types_json",
-                "input_refs_json",
-            ]
-        )
-        .collect()
+        fs = LocalFileSystem()
+    assert_store_format(delta_root, fs, storage_options)
+    empty = pl.DataFrame(
+        schema={
+            "step_number": pl.Int32,
+            "step_name": pl.String,
+            "output_roles_json": pl.String,
+            "output_types_json": pl.String,
+            "input_refs_json": pl.String,
+        }
     )
+    table_path = uri_join(delta_root, TablePath.STEPS)
+    if not fs.exists(table_path):
+        return empty
 
-    # Deduplicate by step_number (keep last row per step)
-    if not df.is_empty():
-        df = df.unique(subset=["step_number"], keep="last").sort("step_number")
+    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
-    return df
-
-
-# =============================================================================
-# Input Refs Parsing
-# =============================================================================
+    states = StepTracker(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+    ).load_current_states(pipeline_run_id)
+    rows = [
+        {
+            "step_number": state.step_number,
+            "step_name": state.step_name,
+            "output_roles_json": json.dumps(sorted(state.output_roles)),
+            "output_types_json": json.dumps(state.output_types),
+            "input_refs_json": state.input_refs_json,
+        }
+        for state in states
+        if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
+    ]
+    return pl.DataFrame(rows) if rows else empty
 
 
 def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
@@ -91,42 +96,47 @@ def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
     if parsed is None:
         return []
 
-    refs: list[tuple[int, str]] = []
-
     if isinstance(parsed, dict):
-        for value in parsed.values():
-            if isinstance(value, dict) and value.get("type") == "output_ref":
-                refs.append((value["source_step"], value["role"]))
-    elif isinstance(parsed, list):
-        for item in parsed:
-            if isinstance(item, dict) and item.get("type") == "output_ref":
-                refs.append((item["source_step"], item["role"]))
-
-    return refs
-
-
-# =============================================================================
-# Graph Building
-# =============================================================================
+        parsed = list(parsed.values())
+    if not isinstance(parsed, list):
+        return []
+    return [
+        (value["source_step"], value["role"])
+        for value in parsed
+        if isinstance(value, dict) and value.get("type") == "output_ref"
+    ]
 
 
-def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
+def build_macro_graph(
+    delta_root: str,
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+    *,
+    pipeline_run_id: str | None = None,
+) -> graphviz.Digraph:
     """Create a step-level pipeline graph from the steps table.
 
     Creates a bipartite graph with:
 
-    - **Execution nodes** — one per completed step, labelled ``(N) step_name``.
+    - **Execution nodes** — one per usable step, labelled ``(N) step_name``.
     - **Data nodes** — one per (step, output_role), coloured by artifact type.
     - **Edges** — output_ref connections from ``input_refs_json``.
 
     Args:
         delta_root: Path to Delta Lake root directory.
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
+        pipeline_run_id: Pipeline run to render. None selects the latest run.
 
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    delta_root = Path(delta_root)
-    steps_df = _load_completed_steps(delta_root)
+    steps_df = _load_usable_steps(
+        delta_root,
+        storage_options=storage_options,
+        fs=fs,
+        pipeline_run_id=pipeline_run_id,
+    )
 
     graph = graphviz.Digraph("pipeline", format="svg")
     apply_default_layout(graph)
@@ -134,7 +144,6 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
     if steps_df.is_empty():
         return graph
 
-    # Build output_types lookup per step for data-node colouring
     step_output_types: dict[int, dict[str, str | None]] = {}
     for row in steps_df.iter_rows(named=True):
         step_num = row["step_number"]
@@ -144,7 +153,6 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
         else:
             step_output_types[step_num] = {}
 
-    # Collect node IDs by step for column ranking
     exec_by_step: dict[int, str] = {}
     data_by_step: dict[int, list[str]] = {}
     all_steps: list[int] = []
@@ -154,7 +162,6 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
         step_name = row["step_name"]
         all_steps.append(step_num)
 
-        # --- Execution node ---
         exec_node_id = f"exec_{step_num}"
         shape, color = EXECUTION_STYLE
         graph.node(
@@ -165,7 +172,6 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
         )
         exec_by_step[step_num] = exec_node_id
 
-        # --- Data nodes (one per output role) ---
         roles_json = row["output_roles_json"]
         if not roles_json:
             continue
@@ -185,12 +191,10 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
             graph.node(data_node_id, label=role, shape=shape, fillcolor=color)
             step_data_nodes.append(data_node_id)
 
-            # Output edge: exec → data
             graph.edge(exec_node_id, data_node_id)
 
         data_by_step[step_num] = step_data_nodes
 
-    # --- Input edges (data → exec) from input_refs_json ---
     for row in steps_df.iter_rows(named=True):
         step_num = row["step_number"]
         refs_json = row["input_refs_json"]
@@ -204,10 +208,8 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
             data_node_id = f"data_{source_step}_{source_role}"
             graph.edge(data_node_id, exec_node_id)
 
-    # ==========================================================================
     # Strict column ordering using anchor nodes (same pattern as micro)
     # Column order: exec_0 → data_0 → exec_1 → data_1 → ...
-    # ==========================================================================
     anchor_nodes: list[str] = []
     for step_num in all_steps:
         anchor_nodes.append(f"_anchor_exec_{step_num}")
@@ -238,19 +240,23 @@ def build_macro_graph(delta_root: Path) -> graphviz.Digraph:
 
 
 def render_macro_graph(
-    delta_root: Path,
-    output_path: Path,
+    delta_root: str,
+    output_path: str,
     format: Literal["svg", "png"] = "svg",
-) -> Path:
+    storage_options: dict[str, str] | None = None,
+    fs: AbstractFileSystem | None = None,
+) -> str:
     """Build and render the macro (step-level) pipeline graph to a file.
 
     Args:
         delta_root: Path to Delta Lake root directory.
         output_path: Output file path (without extension).
         format: Output format ("svg" or "png").
+        storage_options: Delta-rs storage options for cloud backends.
+        fs: Filesystem for existence checks.
 
     Returns:
         Path to the rendered file.
     """
-    graph = build_macro_graph(delta_root)
+    graph = build_macro_graph(delta_root, storage_options=storage_options, fs=fs)
     return render_graph(graph, output_path, format)

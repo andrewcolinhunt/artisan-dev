@@ -6,24 +6,28 @@ from pydantic import BaseModel
 
 
 class StepStartRecord(BaseModel):
-    """Metadata for a step's initial 'running' row in the steps table.
+    """Metadata for a step's initial pending snapshot in the steps table.
 
     Attributes:
         step_run_id: Unique ID for this step execution attempt.
-        step_spec_id: Deterministic ID for cache lookup.
+        replay_of_execution_run_id: Source execution for a diagnostic replay, if any.
+        step_spec_id: Deterministic ID for cache lookup, once inputs resolve.
         step_number: Sequential pipeline step index.
         step_name: Human-readable step label.
         operation_class: Fully qualified operation class name.
         params_json: JSON-encoded operation parameters.
         input_refs_json: JSON-encoded input references.
-        compute_backend: Backend name (e.g. "local", "slurm").
-        compute_options_json: JSON-encoded backend options.
+        compute_backend: Resolved step-runner name.
+        compute_options_json: JSON-encoded execution options and pipeline runner
+            metadata. The framework-owned Boolean ``dynamic_output_roles`` permits
+            empty-declaration curators to publish their actual terminal roles.
         output_roles_json: JSON-encoded output role names.
         output_types_json: JSON-encoded output role-to-type mapping.
     """
 
     step_run_id: str
-    step_spec_id: str
+    replay_of_execution_run_id: str | None = None
+    step_spec_id: str | None = None
     step_number: int
     step_name: str
     operation_class: str

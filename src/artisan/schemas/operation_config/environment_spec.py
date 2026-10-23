@@ -10,16 +10,22 @@ from __future__ import annotations
 import os
 import shutil
 import socket
-from pathlib import Path
+from typing import Any, ClassVar, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+
+from artisan.utils.configuration_secrets import (
+    strip_command_attachment,
+    validate_public_env,
+)
 
 
 def _find_free_port() -> int:
     """Find a free ephemeral port by binding to port 0."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.bind(("", 0))
-        return s.getsockname()[1]
+        port: int = s.getsockname()[1]
+        return port
 
 
 class EnvironmentSpec(BaseModel):
@@ -27,11 +33,28 @@ class EnvironmentSpec(BaseModel):
 
     Attributes:
         env: Extra environment variables merged into the subprocess env.
+        public_env: Names whose nonsecret values may be recorded in diagnostics.
     """
 
-    env: dict[str, str] = Field(default_factory=dict)
+    cancellation_scope: ClassVar[Literal["process_group", "external"]] = "external"
 
-    def wrap_command(self, cmd: list[str], _cwd: Path | None = None) -> list[str]:
+    model_config = ConfigDict(extra="forbid", hide_input_in_errors=True)
+
+    env: dict[str, str] = Field(default_factory=dict)
+    public_env: tuple[str, ...] = ()
+
+    @field_validator("env", mode="before")
+    @classmethod
+    def _exclude_command_attachment(cls, value: Any) -> Any:
+        return strip_command_attachment(value)
+
+    @model_validator(mode="after")
+    def _validate_public_env(self) -> EnvironmentSpec:
+        """Reject ambiguous or recognized-sensitive public env declarations."""
+        validate_public_env(self.env, self.public_env)
+        return self
+
+    def wrap_command(self, cmd: list[str], _cwd: str | None = None) -> list[str]:
         """Wrap a command for this environment. Base returns unchanged."""
         return cmd
 
@@ -55,13 +78,15 @@ class LocalEnvironmentSpec(EnvironmentSpec):
             directory is prepended to PATH.
     """
 
-    venv_path: Path | None = None
+    cancellation_scope: ClassVar[Literal["process_group", "external"]] = "process_group"
+
+    venv_path: str | None = None
 
     def prepare_env(self) -> dict[str, str] | None:
         if self.venv_path:
             env = os.environ.copy()
-            env["PATH"] = f"{self.venv_path / 'bin'}:{env.get('PATH', '')}"
-            env["VIRTUAL_ENV"] = str(self.venv_path)
+            env["PATH"] = f"{os.path.join(self.venv_path, 'bin')}:{env.get('PATH', '')}"
+            env["VIRTUAL_ENV"] = self.venv_path
             env.update(self.env)
             return env
         return super().prepare_env()
@@ -71,11 +96,11 @@ def _container_wrap(
     prefix: list[str],
     gpu_args: list[str],
     bind_flag: str,
-    binds: list[tuple[Path, Path]],
+    binds: list[tuple[str, str] | tuple[str, str, str]],
     env: dict[str, str],
     image: str,
     cmd: list[str],
-    cwd: Path | None,
+    cwd: str | None,
     *,
     gpu: bool,
 ) -> list[str]:
@@ -84,9 +109,15 @@ def _container_wrap(
     if gpu:
         parts.extend(gpu_args)
     if cwd is not None:
-        parts.extend([bind_flag, f"{cwd.parent}:{cwd.parent}"])
-    for host, container in binds:
-        parts.extend([bind_flag, f"{host}:{container}"])
+        parent = os.path.dirname(cwd)
+        parts.extend([bind_flag, f"{parent}:{parent}"])
+    for bind in binds:
+        if len(bind) == 2:
+            host, container = bind
+            parts.extend([bind_flag, f"{host}:{container}"])
+        else:
+            host, container, mode = bind
+            parts.extend([bind_flag, f"{host}:{container}:{mode}"])
     for k, v in env.items():
         parts.extend(["--env", f"{k}={v}"])
     if gpu and "MASTER_PORT" not in env:
@@ -104,16 +135,24 @@ class DockerEnvironmentSpec(EnvironmentSpec):
     Attributes:
         image: Docker image reference (e.g. "biocontainers/samtools:1.17").
         gpu: Whether to pass --gpus all.
-        binds: List of (host_path, container_path) volume mounts.
+        binds: Volume mounts. Each entry is either a ``(host_path,
+            container_path)`` tuple (default mode, typically ``rw``) or a
+            ``(host_path, container_path, mode)`` tuple where ``mode`` is
+            ``"ro"``, ``"rw"``, or another Docker-supported mode string
+            (e.g. ``"rprivate"``).
     """
 
     image: str
     gpu: bool = False
-    binds: list[tuple[Path, Path]] = Field(default_factory=list)
+    binds: list[tuple[str, str] | tuple[str, str, str]] = Field(default_factory=list)
 
-    def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
+    def _managed_container_command(self, wrapped: list[str]) -> list[str]:
+        """Build the stopped-container admission used only by the private owner."""
+        return ["docker", "create", *wrapped[3:]]
+
+    def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
-            prefix=["docker", "run", "--rm"],
+            prefix=["docker", "run", "--rm", *(["--workdir", cwd] if cwd else [])],
             gpu_args=["--gpus", "all"],
             bind_flag="--volume",
             binds=self.binds,
@@ -136,21 +175,24 @@ class ApptainerEnvironmentSpec(EnvironmentSpec):
     Attributes:
         image: Filesystem path to .sif container image.
         gpu: Whether to pass --nv for GPU access.
-        binds: List of (host_path, container_path) bind mounts.
+        binds: Bind mounts. Each entry is either a ``(host_path,
+            container_path)`` tuple or a ``(host_path, container_path,
+            mode)`` tuple where ``mode`` is one of Apptainer's supported
+            options (e.g. ``"ro"``).
     """
 
-    image: Path
+    image: str
     gpu: bool = False
-    binds: list[tuple[Path, Path]] = Field(default_factory=list)
+    binds: list[tuple[str, str] | tuple[str, str, str]] = Field(default_factory=list)
 
-    def wrap_command(self, cmd: list[str], cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], cwd: str | None = None) -> list[str]:
         return _container_wrap(
             prefix=["apptainer", "exec"],
             gpu_args=["--nv"],
             bind_flag="--bind",
             binds=self.binds,
             env=self.env,
-            image=str(self.image),
+            image=self.image,
             cmd=cmd,
             cwd=cwd,
             gpu=self.gpu,
@@ -160,7 +202,7 @@ class ApptainerEnvironmentSpec(EnvironmentSpec):
         if not shutil.which("apptainer"):
             msg = "Apptainer is not installed or not on PATH"
             raise FileNotFoundError(msg)
-        if not self.image.exists():
+        if not os.path.exists(self.image):
             msg = f"Container image not found: {self.image}"
             raise FileNotFoundError(msg)
 
@@ -174,12 +216,12 @@ class PixiEnvironmentSpec(EnvironmentSpec):
     """
 
     pixi_environment: str = "default"
-    manifest_path: Path | None = None
+    manifest_path: str | None = None
 
-    def wrap_command(self, cmd: list[str], _cwd: Path | None = None) -> list[str]:
+    def wrap_command(self, cmd: list[str], _cwd: str | None = None) -> list[str]:
         parts = ["pixi", "run", "-e", self.pixi_environment]
         if self.manifest_path:
-            parts.extend(["--manifest-path", str(self.manifest_path)])
+            parts.extend(["--manifest-path", self.manifest_path])
         parts.extend(cmd)
         return parts
 

@@ -14,13 +14,16 @@ concurrency:
 jobs:
   lint:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "true"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
 
       - name: Lint
         run: pixi run -e dev fmt
@@ -28,31 +31,483 @@ jobs:
       - name: Check for lint changes
         run: git diff --exit-code
 
-  test:
+  pre-commit:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "true"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
+
+      - name: Run pre-commit
+        run: pixi run -e dev pre-commit run --all-files --show-diff-on-failure
+
+  test:
+    runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "true"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.66.0
+          environments: dev
+          locked: true
+
+      - name: Verify required S3 test service is pullable
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python - <<'PY'
+          import runpy
+          import subprocess
+          import sys
+
+          sys.path.insert(0, "tests")
+          image = runpy.run_path("tests/conftest.py")["_MINIO_IMAGE"]
+          subprocess.run(["docker", "pull", image], check=True)
+          subprocess.run(["docker", "run", "--rm", image, "--version"], check=True)
+          PY
 
       - name: Run tests
-        run: pixi run -e dev test
+        run: ~/.pixi/bin/pixi run --locked -e dev test
+
+  test-notebooks:
+    runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "true"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.66.0
+          environments: dev
+          locked: true
+
+      - name: Execute every CI-runnable tutorial notebook end-to-end
+        run: pixi run -e dev test-notebook
+
+  command-supervisor-proof:
+    name: Command ownership proof (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-64
+            runner: ubuntu-24.04
+            system: Linux
+            machine: x86_64
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+            system: Linux
+            machine: aarch64
+          - platform: osx-arm64
+            runner: macos-15
+            system: Darwin
+            machine: arm64
+    defaults:
+      run:
+        shell: bash
+    env:
+      PIXI_LOCKED: "true"
+      PROOF_RESULTS: command-supervisor-proof-results
+      PROOF_RUNNER: ${{ matrix.runner }}
+      PROOF_SYSTEM: ${{ matrix.system }}
+      PROOF_MACHINE: ${{ matrix.machine }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Record native host
+        run: |
+          mkdir -p "$PROOF_RESULTS"
+          {
+            git rev-parse HEAD
+            uname -a
+            if [[ "$RUNNER_OS" == "macOS" ]]; then
+              sw_vers
+            else
+              cat /etc/os-release
+            fi
+          } | tee "$PROOF_RESULTS/host.txt"
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.66.0
+          environments: dev
+          locked: true
+
+      - name: Record and verify native environment
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python - <<'PY' | tee "$PROOF_RESULTS/environment.json"
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import platform
+          import subprocess
+          import sys
+
+          metadata = {
+              "runner": os.environ["PROOF_RUNNER"],
+              "runner_image": os.environ.get("ImageVersion"),
+              "system": platform.system(),
+              "release": platform.release(),
+              "version": platform.version(),
+              "machine": platform.machine(),
+              "macos": platform.mac_ver()[0],
+              "python": sys.version,
+              "pixi": subprocess.check_output(
+                  [str(Path.home() / ".pixi/bin/pixi"), "--version"], text=True
+              ).strip(),
+              "lock_sha256": hashlib.sha256(Path("pixi.lock").read_bytes()).hexdigest(),
+          }
+          print(json.dumps(metadata, indent=2), flush=True)
+          assert metadata["system"] == os.environ["PROOF_SYSTEM"], metadata
+          assert metadata["machine"] == os.environ["PROOF_MACHINE"], metadata
+          PY
+
+      - name: Prove native command ownership
+        timeout-minutes: 5
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
+            tests/artisan/utils/test_command_supervisor.py -q -ra \
+            --junitxml="$PROOF_RESULTS/junit.xml" \
+            --basetemp="$PROOF_RESULTS/traces" 2>&1 | tee "$PROOF_RESULTS/pytest.log"
+
+      - name: Verify production command ownership and cancellation
+        timeout-minutes: 10
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
+            tests/artisan/utils/test_managed_command_runtime.py \
+            tests/artisan/utils/test_command_owner_failures.py \
+            tests/artisan/utils/test_command_diagnostics.py \
+            tests/artisan/utils/test_docker_command_ownership.py \
+            tests/artisan/utils/test_external_tools.py \
+            tests/artisan/execution/test_command_ownership.py \
+            tests/artisan/execution/tool_endpoint/test_request_ownership.py \
+            tests/artisan/execution/recording/test_commands.py \
+            tests/artisan/orchestration/runners/test_local.py \
+            tests/artisan/orchestration/runners/test_local_process_exit.py \
+            tests/artisan/orchestration/runners/test_lifecycle_router_cancel.py \
+            tests/artisan/orchestration/engine/test_lifecycle_router.py \
+            tests/artisan/orchestration/engine/test_curator_cancellation.py \
+            tests/artisan/orchestration/test_cancellation_persistence.py \
+            tests/integration/test_cancellation.py \
+            tests/integration/test_managed_command_cancellation.py \
+            -q -ra --junitxml="$PROOF_RESULTS/production-junit.xml" \
+            --basetemp="$PROOF_RESULTS/production-traces" \
+            2>&1 | tee "$PROOF_RESULTS/production-pytest.log"
+
+      - name: Preserve native proof evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: command-supervisor-proof-${{ matrix.platform }}
+          path: ${{ env.PROOF_RESULTS }}
+          if-no-files-found: error
+
+  docker-cancellation:
+    name: Docker cancellation (${{ matrix.runner }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    defaults:
+      run:
+        shell: bash
+    env:
+      PIXI_LOCKED: "true"
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.66.0
+          environments: dev
+          locked: true
+
+      - name: Prepare isolated container test image
+        run: |
+          mkdir -p docker-cancellation-results
+          git rev-parse HEAD > docker-cancellation-results/commit.txt
+          docker version > docker-cancellation-results/docker-version.txt
+          ~/.pixi/bin/pixi run --locked -e dev prepare-docker-tests \
+            --image-id-file docker-cancellation-results/image-id.txt
+          echo "ARTISAN_DOCKER_CWD_TEST_IMAGE=$(cat docker-cancellation-results/image-id.txt)" >> "$GITHUB_ENV"
+
+      - name: Verify owned container cancellation and working directory
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev test-docker \
+            -q -ra --junitxml=docker-cancellation-results/junit.xml \
+            2>&1 | tee docker-cancellation-results/pytest.log
+          ~/.pixi/bin/pixi run --locked -e dev python - <<'PY'
+          from xml.etree import ElementTree
+
+          suites = ElementTree.parse("docker-cancellation-results/junit.xml").getroot()
+          assert suites.findall(".//testcase"), "No Docker qualification tests executed"
+          assert not suites.findall(".//skipped"), "Docker qualification must not skip"
+          PY
+
+      - name: Preserve container qualification evidence
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: docker-cancellation-${{ matrix.runner }}
+          path: docker-cancellation-results
+          if-no-files-found: error
 
   build:
     runs-on: ubuntu-latest
+    env:
+      PIXI_LOCKED: "true"
     steps:
       - uses: actions/checkout@v6
 
-      - uses: prefix-dev/setup-pixi@v0.9.4
+      - uses: prefix-dev/setup-pixi@v0.10.0
         with:
-          pixi-version: v0.54.0
+          pixi-version: v0.66.0
           environments: dev
+          locked: true
 
       - name: Build distribution
-        run: pixi run -e dev build-dist
+        run: pixi run --locked -e dev build-dist
 
       - name: Check distribution
         run: pixi run -e dev check-dist
+
+      - name: Verify typed-package markers
+        run: |
+          python -m zipfile --list dist/*.whl | grep -q 'artisan/py.typed'
+          python -m zipfile --list dist/*.whl | grep -q 'artisan_mcp/py.typed'
+
+      - name: Verify base-only guidance from wheel, sdist and editable installs
+        run: |
+          pixi run --locked -e dev python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import tarfile
+          import tempfile
+          import venv
+
+          checkout = Path.cwd().resolve()
+          wheel, = (checkout / "dist").glob("*.whl")
+          sdist, = (checkout / "dist").glob("*.tar.gz")
+          resources = {
+              "assessment-and-comparison": "references/assessment-and-comparison.md",
+              "evidence-exports": "references/evidence-exports.md",
+              "workflow": "references/operating-guide.md",
+          }
+          expected = {
+              topic: (checkout / "skills/pipeline-operate" / resource).read_bytes().hex()
+              for topic, resource in resources.items()
+          }
+          check = r'''
+          import importlib.metadata
+          import importlib.util
+          import json
+          from pathlib import Path
+          import subprocess
+          import sys
+          import tempfile
+
+          from artisan import __version__
+          from artisan.inspection import inspect_evidence, list_operating_guides, read_operating_guide
+          from artisan.operations.examples import DataGenerator
+          from artisan.orchestration import PipelineManager
+          from artisan.utils.hashing import compute_content_digest
+
+          origin, expected_path, source = sys.argv[1:]
+          expected = json.loads(Path(expected_path).read_text())
+          assert all(importlib.util.find_spec(name) is None for name in
+                     ("mcp", "fastmcp", "typer", "pydantic_settings"))
+          catalog = list_operating_guides()
+          assert catalog.origin == origin
+          assert catalog.artisan_version == __version__
+          assert __version__ == importlib.metadata.version("dexterity-artisan")
+          assert [entry.topic for entry in catalog.topics] == sorted(expected)
+          for entry in catalog.topics:
+              result = read_operating_guide(entry.topic)
+              raw = bytes.fromhex(expected[entry.topic])
+              assert result.markdown.encode("utf-8") == raw
+              assert result.origin == origin and result.artisan_version == __version__
+              assert result.content_digest == entry.content_digest == compute_content_digest(raw)
+              assert result.content_bytes == entry.content_bytes == len(raw)
+              assert result.digest_algorithm == entry.digest_algorithm == "xxh3_128"
+          console = Path(sys.executable).parent / "artisan"
+          output = subprocess.check_output([str(console), "guide", "list", "--json"], text=True)
+          assert json.loads(output) == catalog.model_dump(mode="json")
+          output = subprocess.check_output(
+              [str(console), "guide", "show", "pipeline-operate", "--json"], text=True,
+          )
+          assert json.loads(output) == read_operating_guide().model_dump(mode="json")
+          subprocess.run([str(console), "inspect", "list", "--json"], check=True, capture_output=True)
+          subprocess.run(
+              [str(console), "inspect", "describe", "assess_outcomes", "--json"],
+              check=True, capture_output=True,
+          )
+          subprocess.run(
+              [str(console), "inspect", "describe", "compare_runs", "--json"],
+              check=True, capture_output=True,
+          )
+          fixture = Path(tempfile.mkdtemp(prefix="inspection-store-", dir=Path(expected_path).parent))
+          store = fixture / "delta"
+          pipeline = PipelineManager.create(
+              name="base-install-check", delta_root=str(store),
+              staging_root=str(fixture / "staging"), working_root=str(fixture / "working"),
+          )
+          try:
+              step = pipeline.run(
+                  DataGenerator, name="generate", params={"count": 1, "rows_per_file": 1, "seed": 42},
+              )
+              assert step.status == "succeeded"
+          finally:
+              pipeline.finalize()
+          page = inspect_evidence("list_runs", {}, delta_root=str(store))
+          assert page.total_items == 1
+          assert page.items[0].pipeline_run_id == pipeline.config.pipeline_run_id
+          output = subprocess.check_output(
+              [str(console), "inspect", "run", "list_runs", "--delta-root", str(store), "--json"],
+              text=True,
+          )
+          assert type(page).model_validate_json(output) == page
+          assert not any(name == "artisan_mcp" or name.startswith("artisan_mcp.")
+                         for name in sys.modules)
+          if origin == "source_checkout":
+              reference = Path(source) / "skills/pipeline-operate/references/operating-guide.md"
+              before = read_operating_guide()
+              changed = reference.read_bytes() + "\r\nEditable café.\r\n".encode()
+              reference.write_bytes(changed)
+              after = read_operating_guide()
+              assert after.markdown.encode() == changed
+              assert after.content_digest != before.content_digest
+              assert after.artisan_version == before.artisan_version
+          print("Verified base-only guidance:", origin, __version__)
+          '''
+          with tempfile.TemporaryDirectory(prefix="artisan-guidance-dist-") as temporary:
+              root = Path(temporary).resolve()
+              assert not root.is_relative_to(checkout)
+              expected_path = root / "expected.json"
+              expected_path.write_text(json.dumps(expected))
+              source = root / "source"
+              with tarfile.open(sdist) as archive:
+                  archive.extractall(source, filter="data")
+              source, = source.iterdir()
+              assert not (source / ".git").exists()
+              editable = root / "editable"
+              shutil.copytree(source, editable, symlinks=True)
+              env = dict(os.environ)
+              for key in ("PYTHONPATH", "PYTHONHOME", "ARTISAN_LOAD_MODULES", "ARTISAN_DELTA_ROOT"):
+                  env.pop(key, None)
+              environments = {}
+              for mode in ("wheel", "sdist", "editable"):
+                  environment = root / f"{mode}-venv"
+                  venv.EnvBuilder(with_pip=True).create(environment)
+                  python = str(environment / "bin/python")
+                  environments[mode] = python
+                  if mode == "sdist":
+                      subprocess.run(
+                          [python, "-I", "-m", "pip", "wheel", "--no-deps",
+                           "--wheel-dir", str(root / "rebuilt"), str(source)],
+                          cwd=root, env=env, check=True,
+                      )
+                      rebuilt, = (root / "rebuilt").glob("*.whl")
+                      target = [str(rebuilt)]
+                  else:
+                      target = ["--editable", str(editable)] if mode == "editable" else [str(wheel)]
+                  subprocess.run(
+                      [python, "-I", "-m", "pip", "install", *target],
+                      cwd=root, env=env, check=True,
+                  )
+                  origin = "source_checkout" if mode == "editable" else "package"
+                  subprocess.run(
+                      [python, "-I", "-c", check, origin, str(expected_path), str(editable)],
+                      cwd=root, env=env, check=True,
+                  )
+              # The current directory must never replace a wheel's bundled resources.
+              subprocess.run(
+                  [environments["wheel"], "-I", "-c", check, "package",
+                   str(expected_path), str(editable)],
+                  cwd=editable, env=env, check=True,
+              )
+          PY
+
+      - name: Verify MCP from the installed wheel
+        run: |
+          pixi run --locked -e dev python - <<'PY'
+          import hashlib
+          import os
+          from pathlib import Path
+          import shutil
+          import subprocess
+          import tempfile
+          import venv
+
+          checkout = Path.cwd().resolve()
+          wheels = list((checkout / "dist").glob("*.whl"))
+          if len(wheels) != 1:
+              raise RuntimeError(f"Expected exactly one built wheel, found {len(wheels)}")
+          wheel = wheels[0]
+          print(f"Wheel: {wheel.name}; sha256={hashlib.sha256(wheel.read_bytes()).hexdigest()}", flush=True)
+          with tempfile.TemporaryDirectory(prefix="artisan-wheel-mcp-") as temporary:
+              root = Path(temporary).resolve()
+              assert not root.is_relative_to(checkout)
+              environment = root / "venv"
+              venv.EnvBuilder(with_pip=True).create(environment)
+              scripts = environment / "bin"
+              python = str(scripts / "python")
+              env = dict(os.environ)
+              env.pop("PYTHONPATH", None)
+              env.pop("PYTHONHOME", None)
+              env["PATH"] = str(scripts) + os.pathsep + env.get("PATH", "")
+              subprocess.run(
+                  [python, "-I", "-m", "pip", "install", f"{wheel}[mcp]", "pytest"],
+                  cwd=root, env=env, check=True,
+              )
+              preflight = """
+          import importlib
+          import importlib.metadata
+          from pathlib import Path
+          import sys
+          import sysconfig
+          root = Path(sys.prefix).resolve()
+          assert root == Path(sys.argv[1]).resolve()
+          for name in ("artisan", "artisan_mcp", "mcp", "fastmcp", "pytest"):
+              module = importlib.import_module(name)
+              path = Path(module.__file__).resolve()
+              assert path.is_relative_to(root), (name, path)
+          console = Path(sysconfig.get_path("scripts")) / "artisan-mcp"
+          assert console.is_file() and console.resolve().is_relative_to(root)
+          print("Python:", sys.version)
+          print("MCP:", importlib.metadata.version("mcp"))
+          print("FastMCP:", importlib.metadata.version("fastmcp"))
+          print("Console:", console)
+          """
+              subprocess.run(
+                  [python, "-I", "-c", preflight, str(environment)],
+                  cwd=root, env=env, check=True,
+              )
+              tests = root / "tests"
+              tests.mkdir()
+              shutil.copy2(
+                  checkout / "tests/artisan_mcp/integration/test_stdio_client.py",
+                  tests / "test_stdio_client.py",
+              )
+              subprocess.run(
+                  [python, "-I", "-m", "pytest", "--strict-markers",
+                   "-o", "markers=integration: real subprocess integration",
+                   "-q", "test_stdio_client.py"],
+                  cwd=tests, env=env, check=True,
+              )
+          PY
