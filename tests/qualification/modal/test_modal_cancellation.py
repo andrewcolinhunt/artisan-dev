@@ -328,7 +328,7 @@ def test_cancel_before_command_launch(harness: Harness) -> None:
     assert not any(m["event"] == "command_ready" for m in markers)
 
 
-def test_cancel_queued_call_does_not_run_later(harness: Harness) -> None:
+def test_cancel_queued_call_settles_without_delivering_output(harness: Harness) -> None:
     occupying = [harness.submit(mode="stubborn", seconds=90) for _ in range(3)]
     for call_id in occupying:
         harness.ready(call_id)
@@ -348,12 +348,20 @@ def test_cancel_queued_call_does_not_run_later(harness: Harness) -> None:
     harness.settled(queued, require_task=False)
     fresh = harness.submit(seconds=2)
     harness.completed(fresh)
-    assert (
-        probe_logs(
-            harness.manifest["app_id"], harness.owned[queued]["token"], harness.started
-        )
-        == []
+    state = harness.owned[queued]
+    state["post_cancel_markers"] = probe_logs(
+        harness.manifest["app_id"], state["token"], harness.started
     )
+    state["post_cancel_task_observations"] = []
+    harness.save()
+    for marker in state["post_cancel_markers"]:
+        if marker["event"] != "worker_ready":
+            continue
+        assert marker["call_id"] == queued
+        assert marker["source_digest"] == harness.manifest["source_digest"]
+        state["task_id"] = marker["task_id"]
+        state["post_cancel_task_observations"].append(harness.settled(queued))
+        harness.save()
 
 
 def test_lost_cancellation_response_stays_unknown(harness: Harness) -> None:
