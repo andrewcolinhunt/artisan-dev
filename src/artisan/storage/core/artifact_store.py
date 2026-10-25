@@ -8,6 +8,7 @@ preparation for the artifact_index.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import cast
 
 import polars as pl
@@ -221,7 +222,7 @@ class ArtifactStore:
 
     def validate_staged_artifacts(
         self,
-        frames: dict[str, pl.DataFrame],
+        frames: Mapping[str, pl.DataFrame],
         references: dict[str, set[str]],
         *,
         per_execution_artifact_ids: dict[str, set[str]],
@@ -312,7 +313,7 @@ class ArtifactStore:
     def _candidate_rows(
         self,
         table: str,
-        frames: dict[str, pl.DataFrame],
+        frames: Mapping[str, pl.DataFrame],
         *,
         committed: pl.DataFrame | None = None,
     ) -> pl.DataFrame:

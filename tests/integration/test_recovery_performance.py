@@ -36,9 +36,9 @@ def test_recovery_writes_one_batch_and_repeated_pass_does_no_data_work(
     original_scan = pl.scan_delta
     original_complete = DeltaCommitter._complete
 
-    def append(self, frame, table):
+    def append(self, frame, table, **kwargs):
         writes[table] += 1
-        return original_append(self, frame, table)
+        return original_append(self, frame, table, **kwargs)
 
     def scan(source, *args, **kwargs):
         table = str(source).removeprefix(pipeline_env["delta_root"] + "/")

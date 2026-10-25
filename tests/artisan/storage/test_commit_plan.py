@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import weakref
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier
 
@@ -393,6 +394,27 @@ def test_recovery_plan_identity_and_effects_cover_sorted_exact_batch(tmp_path):
     )
     assert first.frames[TablePath.EXECUTIONS.value].height == 2
     assert first.per_execution_artifact_ids == {"c" * 32: set(), "d" * 32: set()}
+
+
+def test_planning_releases_each_worker_payload_before_reading_the_campaign(
+    tmp_path, monkeypatch
+):
+    from artisan.storage.io import commit_plan
+
+    original = commit_plan.read_worker_files
+    captured = []
+
+    def read(directory, fs):
+        assert sum(reference() is not None for reference in captured) <= 1
+        files = original(directory, fs)
+        captured.extend(weakref.ref(frame) for _, frame in files.values())
+        return files
+
+    monkeypatch.setattr(commit_plan, "read_worker_files", read)
+    evidence = _recovery_evidence(tmp_path, [f"{number:032x}" for number in range(25)])
+    assert len(captured) == 25
+    assert all(reference() is None for reference in captured)
+    assert evidence.frames[TablePath.EXECUTIONS.value].height == 25
 
 
 @pytest.mark.parametrize("ids", [[], ["c" * 32, "c" * 32], ["invalid"]])

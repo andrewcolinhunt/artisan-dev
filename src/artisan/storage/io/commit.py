@@ -2,13 +2,17 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
+from urllib.parse import quote
+from uuid import uuid4
 
 import arro3.core as ac
 import polars as pl
 from deltalake import DeltaTable, WriterProperties, write_deltalake
+from deltalake.transaction import AddAction
 from fsspec import AbstractFileSystem
 
 from artisan.errors import CommitError, StoreIntegrityError
@@ -21,7 +25,6 @@ from artisan.schemas.orchestration.step_lifecycle import (
 from artisan.storage.core.committed_scan import (
     read_committed,
     read_logical_commits,
-    verify_plan_effect,
 )
 from artisan.storage.core.store_format import (
     assert_store_format,
@@ -41,13 +44,14 @@ from artisan.storage.io.commit_plan import (
     CommitPlan,
     PlannedTable,
     StagedPlanEvidence,
-    canonical_table_plan_key,
     comparable_effect_rows,
     read_commit_plan,
     read_plan_evidence,
 )
+from artisan.storage.io.staged_frames import COMMIT_BATCH_ROWS, StagedTable
 from artisan.storage.io.staging import StagingManager
-from artisan.utils.path import uri_join
+from artisan.utils.hashing import canonical_json_bytes
+from artisan.utils.path import uri_join, uri_parent
 
 DEFAULT_WRITER_PROPERTIES = WriterProperties(compression="ZSTD")
 
@@ -216,7 +220,7 @@ class DeltaCommitter:
         for table in plan.tables:
             try:
                 written = self._commit_table_effect(
-                    plan, table, frames[table.table_path], controls
+                    plan, table, frames.tables[table.table_path], controls
                 )
                 verified.append(table.table_path)
                 if written:
@@ -398,19 +402,144 @@ class DeltaCommitter:
         self,
         plan: CommitPlan,
         table: PlannedTable,
-        expected: pl.DataFrame,
+        expected: StagedTable,
         controls: pl.DataFrame,
     ) -> int:
-        physical = self._read_physical(table.table_path)
-        missing = self._missing_rows(plan, table, expected, physical, controls)
-        if not missing.is_empty():
-            self._append(
-                self._inject_owner(missing, table.table_path, plan.logical_commit_id),
-                table.table_path,
+        self._validate_owned_rows(plan, table)
+        missing_keys: set[tuple[Any, ...]] = set()
+        for batch in expected.batches():
+            physical = self._matching_rows(table, batch.select(table.natural_key))
+            missing = self._missing_rows(plan, table, batch, physical, controls)
+            missing_keys.update(missing.select(table.natural_key).iter_rows())
+        if missing_keys:
+            self._append_snapshot(plan, table, expected, missing_keys)
+        self._verify_table_effect(plan, table, controls, expected=expected)
+        return len(missing_keys)
+
+    def _matching_rows(self, table: PlannedTable, keys: pl.DataFrame) -> pl.DataFrame:
+        """Push down the current batch's keys before collecting any payloads."""
+        scan = (
+            self._scan_physical(table.table_path)
+            .filter(
+                pl.all_horizontal(
+                    pl.col(name).is_in(keys[name].implode(), nulls_equal=True)
+                    for name in table.natural_key
+                )
             )
-            physical = self._read_physical(table.table_path)
-        verify_plan_effect(plan, table.table_path, physical, controls)
-        return missing.height
+            .join(keys.lazy(), on=list(table.natural_key), how="semi", nulls_equal=True)
+        )
+        return self._collect_physical(table.table_path, scan)
+
+    def _validate_owned_rows(self, plan: CommitPlan, table: PlannedTable) -> None:
+        """Check the entire effect using only keys and ownership metadata."""
+        scan = self._scan_physical(table.table_path)
+        owner = (
+            pl.col("current_step_run_id") == plan.step_run_id
+            if table.table_path == TablePath.CACHE_REUSE.value
+            else pl.col("logical_commit_id") == plan.logical_commit_id
+        )
+        schema = scan.collect_schema()
+        columns = list(table.natural_key)
+        if "origin_step_number" in schema:
+            columns.append("origin_step_number")
+        owned = self._collect_physical(
+            table.table_path, scan.filter(owner).select(columns)
+        )
+        keys = self._plan_keys(table, schema)
+        if not owned.join(
+            keys, on=list(table.natural_key), how="anti", nulls_equal=True
+        ).is_empty():
+            msg = f"Commit {plan.logical_commit_id} owns unplanned {table.table_path} rows"
+            raise StoreIntegrityError(msg)
+        if (
+            "origin_step_number" in owned
+            and not owned.filter(
+                pl.col("origin_step_number").is_null()
+                | (pl.col("origin_step_number") != plan.step_number)
+            ).is_empty()
+        ):
+            msg = (
+                f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
+            )
+            raise StoreIntegrityError(msg)
+        if (
+            not is_global_artifact_table(table.table_path)
+            and 0 < owned.height < table.row_count
+        ):
+            self._raise_partial(table.table_path)
+
+    @staticmethod
+    def _plan_keys(table: PlannedTable, schema: pl.Schema) -> pl.DataFrame:
+        return pl.DataFrame(
+            list(table.row_keys),
+            schema={name: schema[name] for name in table.natural_key},
+            orient="row",
+        )
+
+    def _append_snapshot(
+        self,
+        plan: CommitPlan,
+        table: PlannedTable,
+        expected: StagedTable,
+        missing: set[tuple[Any, ...]],
+    ) -> None:
+        """Stream all missing batches through one atomic Delta append."""
+        schema = get_physical_schema_for_path(table.table_path)
+
+        def batches() -> Iterator[pl.DataFrame]:
+            for frame in expected.batches(missing):
+                owned = self._inject_owner(
+                    frame, table.table_path, plan.logical_commit_id
+                )
+                yield owned.cast(pl.Schema(schema))
+
+        self._append(
+            batches(), table.table_path, row_group_size=expected.row_group_size
+        )
+
+    def _verify_table_effect(
+        self,
+        plan: CommitPlan,
+        table: PlannedTable,
+        controls: pl.DataFrame,
+        *,
+        expected: StagedTable | None = None,
+    ) -> None:
+        """Prove the complete table effect without retaining its payloads."""
+        self._validate_owned_rows(plan, table)
+        schema = self._scan_physical(table.table_path).collect_schema()
+        keys = (
+            (batch.select(table.natural_key) for batch in expected.batches())
+            if expected is not None
+            else self._plan_keys(table, schema).iter_slices(COMMIT_BATCH_ROWS)
+        )
+        ownerless = {
+            name: dtype for name, dtype in schema.items() if name != "logical_commit_id"
+        }
+        actual = StagedTable(table.table_path, pl.Schema(ownerless))
+        complete = controls.filter(pl.col("state") == "complete")[
+            "logical_commit_id"
+        ].to_list()
+        for batch_keys in keys:
+            rows = self._matching_rows(table, batch_keys)
+            if "logical_commit_id" in rows:
+                visible = pl.col("logical_commit_id") == plan.logical_commit_id
+                if is_global_artifact_table(table.table_path):
+                    visible |= pl.col("logical_commit_id").is_in(complete)
+                rows = rows.filter(visible).drop("logical_commit_id")
+            if (
+                rows.height != batch_keys.height
+                or rows.select(table.natural_key).n_unique() != rows.height
+            ):
+                msg = f"Commit {plan.logical_commit_id} has missing or duplicate {table.table_path} rows"
+                raise StoreIntegrityError(msg)
+            actual.add(rows)
+        if (
+            actual.height != table.row_count
+            or actual.plan_key(plan.logical_commit_id) != table.table_plan_key
+        ):
+            msg = f"Complete commit {plan.logical_commit_id} has conflicting {table.table_path} rows"
+            raise StoreIntegrityError(msg)
 
     def _missing_rows(
         self,
@@ -485,15 +614,12 @@ class DeltaCommitter:
         if not satisfied.group_by(keys).len().filter(pl.col("len") != 1).is_empty():
             msg = f"Duplicate natural key in table {table.table_path!r}"
             raise StoreIntegrityError(msg)
-        missing = expected.join(
+        return expected.join(
             satisfied.select(keys).unique(),
             on=keys,
             how="anti",
             nulls_equal=True,
         )
-        if missing.is_empty():
-            self._verify_table_plan_key(plan, table, expected)
-        return missing
 
     @staticmethod
     def _reject_conflicting_values(
@@ -515,23 +641,6 @@ class DeltaCommitter:
         )
         if not _frames_equal(ownerless, intended, sort_by=list(natural_key)):
             msg = f"Natural key has conflicting values in {table_path}"
-            raise StoreIntegrityError(msg)
-
-    @staticmethod
-    def _verify_table_plan_key(
-        plan: CommitPlan,
-        table: PlannedTable,
-        expected: pl.DataFrame,
-    ) -> None:
-        if (
-            canonical_table_plan_key(
-                plan.logical_commit_id,
-                table.table_path,
-                expected,
-            )
-            != table.table_plan_key
-        ):
-            msg = f"Table plan key disagrees for {table.table_path}"
             raise StoreIntegrityError(msg)
 
     @staticmethod
@@ -587,9 +696,7 @@ class DeltaCommitter:
             )
             raise StoreIntegrityError(msg)
         for table in plan.tables:
-            verify_plan_effect(
-                plan, table.table_path, self._read_physical(table.table_path), controls
-            )
+            self._verify_table_effect(plan, table, controls)
 
     def _cleanup_plan(self, plan: CommitPlan) -> None:
         """Reverify a completed batch before cleaning it in a later operation."""
@@ -607,20 +714,41 @@ class DeltaCommitter:
         return [file.relative_path for table in plan.tables for file in table.files]
 
     def _read_physical(self, table_path: str) -> pl.DataFrame:
+        return self._collect_physical(table_path, self._scan_physical(table_path))
+
+    @staticmethod
+    def _collect_physical(table_path: str, scan: pl.LazyFrame) -> pl.DataFrame:
+        try:
+            return scan.collect(engine="streaming")
+        except Exception as exc:
+            msg = f"Unreadable Delta table {table_path!r}"
+            raise StoreIntegrityError(msg) from exc
+
+    def _scan_physical(self, table_path: str) -> pl.LazyFrame:
         try:
             frame = pl.scan_delta(
                 self._table_path(table_path),
                 storage_options=self._storage_options,
-            ).collect()
+            )
+            schema = dict(frame.collect_schema())
         except Exception as exc:
             msg = f"Unreadable Delta table {table_path!r}"
             raise StoreIntegrityError(msg) from exc
-        if dict(frame.schema) != get_physical_schema_for_path(table_path):
+        if schema != get_physical_schema_for_path(table_path):
             msg = f"Delta table {table_path!r} has an unexpected schema"
             raise StoreIntegrityError(msg)
         return frame
 
-    def _append(self, frame: pl.DataFrame, table_path: str) -> None:
+    def _append(
+        self,
+        frame: pl.DataFrame | Iterator[pl.DataFrame],
+        table_path: str,
+        *,
+        row_group_size: int = COMMIT_BATCH_ROWS,
+    ) -> None:
+        if not isinstance(frame, pl.DataFrame):
+            self._append_batches(frame, table_path, row_group_size)
+            return
         expected = get_physical_schema_for_path(table_path)
         frame = frame.cast(pl.Schema(expected))
         if dict(frame.schema) != expected:
@@ -632,6 +760,73 @@ class DeltaCommitter:
             mode="append",
             storage_options=self._storage_options,
             writer_properties=DEFAULT_WRITER_PROPERTIES,
+        )
+
+    def _append_batches(
+        self, batches: Iterator[pl.DataFrame], table_path: str, row_group_size: int
+    ) -> None:
+        """Publish bounded Parquet files in one atomic Delta transaction.
+
+        Delta's DataFusion writer coalesces input batches by row count, which
+        can buffer an entire campaign of large binary artifacts.
+        """
+        delta = DeltaTable(
+            self._table_path(table_path), storage_options=self._storage_options
+        )
+        partitions = delta.metadata().partition_columns
+        actions: list[AddAction] = []
+        for frame in batches:
+            if dict(frame.schema) != get_physical_schema_for_path(table_path):
+                msg = f"Refusing a schema-changing write to {table_path!r}"
+                raise StoreIntegrityError(msg)
+            groups = (
+                frame.partition_by(partitions, as_dict=True)
+                if partitions
+                else {(): frame}
+            )
+            for values, group in groups.items():
+                partition_values = {
+                    name: str(value) if value is not None else None
+                    for name, value in zip(partitions, values, strict=True)
+                }
+                actions.append(
+                    self._write_batch_file(
+                        group, table_path, partition_values, row_group_size
+                    )
+                )
+        delta.create_write_transaction(
+            actions, mode="append", schema=delta.schema(), partition_by=partitions
+        )
+
+    def _write_batch_file(
+        self,
+        frame: pl.DataFrame,
+        table_path: str,
+        partitions: dict[str, str | None],
+        row_group_size: int,
+    ) -> AddAction:
+        # Polars also derives partition columns from the physical Hive paths.
+        directories = [
+            f"{quote(name, safe='')}={quote(value, safe='') if value is not None else '__HIVE_DEFAULT_PARTITION__'}"
+            for name, value in partitions.items()
+        ]
+        relative_path = "/".join([*directories, f"part-{uuid4().hex}.parquet"])
+        path = uri_join(self._table_path(table_path), relative_path)
+        self._fs.makedirs(uri_parent(path), exist_ok=True)
+        payload = frame.drop(list(partitions)) if partitions else frame
+        with self._fs.open(path, "wb") as stream:
+            payload.write_parquet(
+                stream,
+                compression="zstd",
+                row_group_size=row_group_size,
+            )
+        return AddAction(
+            path=relative_path,
+            size=self._fs.size(path),
+            partition_values=partitions,
+            modification_time=int(datetime.now(UTC).timestamp() * 1000),
+            data_change=True,
+            stats=canonical_json_bytes({"numRecords": frame.height}).decode(),
         )
 
     @staticmethod
