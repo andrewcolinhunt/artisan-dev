@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from typing import Any
 
 import polars as pl
@@ -349,7 +349,7 @@ def validate_cached_executions(
 
 def validate_staged_executions(
     delta_root: str,
-    frames: dict[str, pl.DataFrame],
+    frames: Mapping[str, pl.DataFrame],
     *,
     step_run_id: str,
     step_number: int,

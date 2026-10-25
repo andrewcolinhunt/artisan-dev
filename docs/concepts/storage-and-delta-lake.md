@@ -140,6 +140,19 @@ results as Parquet files to an isolated staging directory. After all workers
 complete, the orchestrator verifies the staged files and includes them in an
 immutable logical commit plan. It also stages the terminal step snapshot.
 
+Commit preparation snapshots payloads to temporary disk one worker shard at a
+time. Table writes read that snapshot in batches of at most 250 rows or 32 MiB
+of serialized rows (a single larger row is processed on its own). Each table
+publishes its bounded Parquet files in one atomic Delta append, and the logical
+completion marker controls visibility of the whole step. No setting is needed
+to enable this behavior.
+
+Keys, digests and commit-plan metadata remain in memory. Allow temporary disk
+space for the snapshot plus the table currently being verified; set `TMPDIR`
+to a suitable local scratch directory for large campaigns. A single worker
+shard must still fit in memory. Explicit repair audits and artifact validation
+can still materialize whole tables.
+
 ```
                               staging_root/
                               ├── 1_tool_b/

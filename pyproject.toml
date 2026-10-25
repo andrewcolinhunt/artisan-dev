@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "cloudpickle>=3,<4",
-    "deltalake>=0.14.0",
+    "deltalake>=1.0.0",
     "fsspec",
     "graphviz",
     "griffe",
@@ -119,7 +119,7 @@ fastapi = "*"
 xxhash = "*"           # Fast hashing for file tracking
 
 # Delta Lake storage layer
-deltalake = ">=0.14.0"  # Delta Lake Python bindings (delta-rs, no JVM required)
+deltalake = ">=1.0.0"   # Public atomic file-action transactions
 polars = ">=1.30.0"     # DataFrame operations with native Delta Lake support
 
 # Visualization

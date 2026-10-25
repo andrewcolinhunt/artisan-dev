@@ -6,8 +6,6 @@ import io
 import json
 import posixpath
 from dataclasses import dataclass
-from datetime import datetime
-from enum import Enum
 from typing import Any, Literal
 
 import polars as pl
@@ -26,6 +24,12 @@ from artisan.storage.core.table_schemas import (
 from artisan.storage.io.publication import (
     is_publication_temporary,
     publish_immutable_bytes,
+)
+from artisan.storage.io.staged_frames import (
+    StagedFrames,
+    StagedTable,
+    json_value,
+    table_rows_digest,
 )
 from artisan.storage.io.worker_seal import read_worker_files
 from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
@@ -234,7 +238,7 @@ class StagedPlanEvidence:
 
     plan: CommitPlan
     staging_root: str
-    frames: dict[str, pl.DataFrame]
+    frames: StagedFrames
     per_execution_artifact_ids: dict[str, set[str]]
 
 
@@ -282,7 +286,7 @@ def prepare_commit_evidence(
     logical_commit_id = logical_commit_identity(
         commit_kind, step_run_id, recovery_batch_id
     )
-    table_files = _inspect_staging(
+    table_files, frames, membership = _inspect_staging(
         staging_root=staging_root,
         fs=fs,
         step_run_id=step_run_id,
@@ -292,7 +296,7 @@ def prepare_commit_evidence(
         commit_kind=commit_kind,
     )
     tables = tuple(
-        _build_table(logical_commit_id, table_path, files)
+        _build_table(logical_commit_id, table_path, files, frames.tables[table_path])
         for table_path, files in _ordered_table_files(table_files)
     )
     if not tables:
@@ -308,7 +312,7 @@ def prepare_commit_evidence(
         "tables": [table.model_dump(mode="json") for table in tables],
     }
     plan = CommitPlan(**payload, plan_digest=_plan_digest(payload))
-    return _staged_evidence(plan, staging_root, table_files)
+    return StagedPlanEvidence(plan, staging_root, frames, membership)
 
 
 def prepare_commit_plan(
@@ -411,9 +415,9 @@ def read_plan_evidence(
     fs: AbstractFileSystem,
 ) -> StagedPlanEvidence:
     """Reread exact planned files, preserving each shard's artifact membership."""
-    table_files: dict[str, list[tuple[PlannedFile, pl.DataFrame]]] = {}
+    frames = StagedFrames()
+    membership: dict[str, set[str]] = {}
     for table in plan.tables:
-        files = []
         for planned_file in table.files:
             path = _resolve_relative(staging_root, planned_file.relative_path)
             data, frame = _read_parquet_bytes(path, fs)
@@ -425,43 +429,40 @@ def read_plan_evidence(
             ):
                 msg = f"Staged object changed after planning: {_safe(path)}"
                 raise StoreIntegrityError(msg)
-            files.append((planned_file, frame))
-        table_files[table.table_path] = files
-    return _staged_evidence(plan, staging_root, table_files)
+            frames.add(table.table_path, frame)
+            _record_membership(membership, table.table_path, planned_file, frame)
+        snapshot = frames.tables[table.table_path]
+        if (
+            snapshot.height != table.row_count
+            or snapshot.plan_key(plan.logical_commit_id) != table.table_plan_key
+        ):
+            msg = f"Table plan key changed for {plan.logical_commit_id} table {table.table_path}"
+            raise StoreIntegrityError(msg)
+    return StagedPlanEvidence(plan, staging_root, frames, membership)
 
 
 def verify_plan_files(
     plan: CommitPlan, staging_root: str, fs: AbstractFileSystem
-) -> dict[str, pl.DataFrame]:
+) -> StagedFrames:
     """Read and verify one persisted plan's exact staged table effects."""
     return read_plan_evidence(plan, staging_root, fs).frames
 
 
-def _staged_evidence(
-    plan: CommitPlan,
-    staging_root: str,
-    table_files: dict[str, list[tuple[PlannedFile, pl.DataFrame]]],
-) -> StagedPlanEvidence:
-    frames = {}
-    membership: dict[str, set[str]] = {}
-    for table in plan.tables:
-        files = table_files[table.table_path]
-        combined = pl.concat(
-            [frame for _, frame in files], how="vertical_relaxed", rechunk=True
-        )
-        frames[table.table_path] = _validate_table_rows(plan, table, combined)
-        if table.table_path == TablePath.ARTIFACT_INDEX.value:
-            for file, frame in files:
-                execution_id = posixpath.basename(posixpath.dirname(file.relative_path))
-                if _is_content_digest(execution_id):
-                    membership.setdefault(execution_id, set()).update(
-                        frame["artifact_id"].to_list()
-                    )
-    executions = plan.table(TablePath.EXECUTIONS.value)
-    if executions is not None:
-        for (execution_id,) in executions.row_keys:
+def _record_membership(
+    membership: dict[str, set[str]],
+    table_path: str,
+    file: PlannedFile,
+    frame: pl.DataFrame,
+) -> None:
+    if table_path == TablePath.ARTIFACT_INDEX.value:
+        execution_id = posixpath.basename(posixpath.dirname(file.relative_path))
+        if _is_content_digest(execution_id):
+            membership.setdefault(execution_id, set()).update(
+                frame["artifact_id"].to_list()
+            )
+    elif table_path == TablePath.EXECUTIONS.value:
+        for execution_id in frame["execution_run_id"]:
             membership.setdefault(execution_id, set())
-    return StagedPlanEvidence(plan, staging_root, frames, membership)
 
 
 def commit_plan_path(
@@ -506,15 +507,7 @@ def canonical_table_plan_key(
     natural_key = get_natural_key(table_path)
     effect = _planned_effect_rows(table_path, frame, natural_key)
     rows = _canonical_rows(comparable_effect_rows(table_path, effect), natural_key)
-    return compute_content_digest(
-        canonical_json_bytes(
-            {
-                "logical_commit_id": logical_commit_id,
-                "table_path": table_path,
-                "rows": rows,
-            }
-        )
-    )
+    return table_rows_digest(logical_commit_id, table_path, rows)
 
 
 def _inspect_staging(
@@ -526,7 +519,7 @@ def _inspect_staging(
     operation_name: str,
     execution_run_ids: list[str] | tuple[str, ...],
     commit_kind: CommitKind,
-) -> dict[str, list[tuple[PlannedFile, pl.DataFrame]]]:
+) -> tuple[dict[str, list[PlannedFile]], StagedFrames, dict[str, set[str]]]:
     """Inspect only the named worker and orchestrator directories."""
     allowed = _staging_table_paths()
     directories: list[tuple[str, str | None]] = [
@@ -551,7 +544,9 @@ def _inspect_staging(
     if commit_kind != "execution_recovery" and fs.exists(orchestrator):
         directories.append((orchestrator, None))
 
-    found: dict[str, list[tuple[PlannedFile, pl.DataFrame]]] = {}
+    found: dict[str, list[PlannedFile]] = {}
+    frames = StagedFrames()
+    membership: dict[str, set[str]] = {}
     for directory, execution_id in directories:
         if not fs.exists(directory):
             msg = f"Missing staging directory {_safe(directory)}"
@@ -589,53 +584,30 @@ def _inspect_staging(
                 row_count=frame.height,
                 schema_signature=_schema_signature(frame),
             )
-            found.setdefault(table_path, []).append((planned_file, frame))
-    return found
+            found.setdefault(table_path, []).append(planned_file)
+            frames.add(table_path, frame)
+            _record_membership(membership, table_path, planned_file, frame)
+    return found, frames, membership
 
 
 def _build_table(
     logical_commit_id: str,
     table_path: str,
-    files: list[tuple[PlannedFile, pl.DataFrame]],
+    files: list[PlannedFile],
+    snapshot: StagedTable,
 ) -> PlannedTable:
-    frames = [frame for _, frame in files]
-    combined = pl.concat(frames, how="vertical_relaxed", rechunk=True)
     natural_key = get_natural_key(table_path)
-    effect = _planned_effect_rows(table_path, combined, natural_key)
-    canonical_rows = _canonical_rows(effect, natural_key)
     row_keys = tuple(
-        tuple(row[column] for column in natural_key) for row in canonical_rows
+        tuple(json_value(value) for value in row) for row in snapshot.keys().iter_rows()
     )
     return PlannedTable(
         table_path=table_path,
         natural_key=natural_key,
         row_keys=row_keys,
-        row_count=effect.height,
-        table_plan_key=canonical_table_plan_key(
-            logical_commit_id,
-            table_path,
-            combined,
-        ),
-        files=tuple(planned for planned, _ in files),
+        row_count=snapshot.height,
+        table_plan_key=snapshot.plan_key(logical_commit_id),
+        files=tuple(files),
     )
-
-
-def _validate_table_rows(
-    plan: CommitPlan,
-    table: PlannedTable,
-    frame: pl.DataFrame,
-) -> pl.DataFrame:
-    effect = _planned_effect_rows(table.table_path, frame, table.natural_key)
-    if effect.height != table.row_count:
-        msg = f"Row count changed for {plan.logical_commit_id} table {table.table_path}"
-        raise StoreIntegrityError(msg)
-    if (
-        canonical_table_plan_key(plan.logical_commit_id, table.table_path, effect)
-        != table.table_plan_key
-    ):
-        msg = f"Table plan key changed for {plan.logical_commit_id} table {table.table_path}"
-        raise StoreIntegrityError(msg)
-    return effect
 
 
 def _validate_staged_schema(table_path: str, frame: pl.DataFrame) -> None:
@@ -739,8 +711,8 @@ def _staging_table_paths() -> dict[str, str]:
 
 
 def _ordered_table_files(
-    files: dict[str, list[tuple[PlannedFile, pl.DataFrame]]],
-) -> list[tuple[str, list[tuple[PlannedFile, pl.DataFrame]]]]:
+    files: dict[str, list[PlannedFile]],
+) -> list[tuple[str, list[PlannedFile]]]:
     artifact_paths = sorted(
         definition.table_path for definition in ArtifactTypeDef.get_all().values()
     )
@@ -804,19 +776,9 @@ def _canonical_rows(
 ) -> list[dict[str, Any]]:
     ordered = frame.sort(list(natural_key)) if frame.height > 1 else frame
     return [
-        {column: _json_value(row[column]) for column in frame.columns}
+        {column: json_value(row[column]) for column in frame.columns}
         for row in ordered.iter_rows(named=True)
     ]
-
-
-def _json_value(value: Any) -> Any:
-    if isinstance(value, bytes):
-        return {"$binary": value.hex()}
-    if isinstance(value, datetime):
-        return value.isoformat()
-    if isinstance(value, Enum):
-        return value.value
-    return value
 
 
 def _schema_signature(frame: pl.DataFrame) -> tuple[tuple[str, str], ...]:
