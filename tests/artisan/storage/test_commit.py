@@ -743,13 +743,14 @@ def test_streamed_commit_filters_reads_and_appends_once_per_table(
     monkeypatch.setattr(staged_frames, "COMMIT_BATCH_ROWS", 3)
     committer, fs, options, delta_root, _ = commit_env
     plan = _stage_registration(committer, artifact_count=11)
-    original = committer._matching_rows
+    original = committer._iter_matching_rows
     reads = []
 
     def matching(table, keys):
-        reads.append(keys.height)
-        assert keys.height <= 3
-        return original(table, keys)
+        for row in original(table, keys):
+            reads.append(row.height)
+            assert row.height == 1
+            yield row
 
     versions = {
         table.table_path: DeltaTable(
@@ -757,7 +758,7 @@ def test_streamed_commit_filters_reads_and_appends_once_per_table(
         ).version()
         for table in plan.tables
     }
-    monkeypatch.setattr(committer, "_matching_rows", matching)
+    monkeypatch.setattr(committer, "_iter_matching_rows", matching)
     monkeypatch.setattr(
         StagedTable, "collect", lambda *_: pytest.fail("eager snapshot read")
     )
