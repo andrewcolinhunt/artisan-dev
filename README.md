@@ -2,41 +2,54 @@
 
 A Python framework for composable, observable computational workflows.
 
-Build workflows from reusable operations that wrap Python code and external
-tools. Once an integration has been tested, researchers and AI agents can compose
-it into new analyses. Add or improve operations when needed, with each
-integration's tests and fixes maintained in one place.
+Artisan grew out of computational protein design, where analyses combine many
+tools and use the history of individual results to guide further computation.
+It handles the tracking and matching that previously required custom code around
+existing workflow tools. Other fields can use the same framework with their own
+tools and data types.
 
-Artisan stores each operation's inputs, parameters, and outputs, along with the
-relationships it declares between individual results. These form a provenance
-graph you can inspect to understand how a result was produced. Later computations
-can use those relationships to match outputs with their sources or select inputs
-using measurements made several steps downstream.
+Artisan helps researchers and AI agents build new analyses from reusable tools
+and previous computational work. Wrap Python code and external tools in
+operations, combine them into workflows, and reuse useful combinations in other
+analyses. Tests and fixes stay with each integration, so improvements are
+available wherever it is used.
 
-Artisan grew out of computational protein design, where we needed to combine
-tools and follow individual results through branching workflows. We built a
-domain-agnostic core so applications in other fields can use the same framework
-with their own tools and data types.
-
-> **Status:** This project is in early development. APIs may change between
-> releases.
+Operations declare the sources of each new result. Artisan records these
+relationships alongside the inputs, parameters, and execution history, forming
+a provenance graph of individual results across the analysis. The full graph is
+available both to inspect the work and to use its history in further computation.
 
 ---
 
 ## Why Artisan?
 
-- Define pipelines from reusable operations and composites in Python.
-- Inspect artifacts, metrics, execution evidence, and provenance as dataframes.
-- Use recorded lineage to match inputs and select results.
-- Keep operation logic separate from runner and compute configuration.
-- Reuse eligible results through content-addressed caching.
+- **Compose tools into new analyses.** Bundle a transformation and its
+  evaluations into a reusable workflow, called a composite. Use it in different
+  pipelines or combine it with other operations. Each internal step remains
+  visible and can be inspected individually.
+- **Understand how each result was produced.** Trace an output back to its
+  inputs and the operations and parameters involved, even when those operations
+  processed many results in a batch. Query results, measurements, execution
+  records, and their relationships as dataframes.
+- **Automate decisions you can't make in advance.** Transform a collection of
+  inputs, evaluate the outputs several steps later, then select the original
+  inputs for further work using those evaluations. Artisan follows the recorded
+  relationships to find the relevant measurements and match results with their
+  sources.
+- **Build on work you've already done.** Each tested integration and reusable
+  workflow becomes available to future analyses. Stored results remain
+  queryable, so you can revisit intermediate work as your questions change.
+  Artisan can reuse cached results when an operation's inputs and configuration
+  match a previous computation.
 
-Core includes local process execution. Optional runner providers and tool
-endpoints support other compute environments while retaining the operation
-contract.
+Artisan runs locally with worker processes. Optional runner providers and tool
+endpoints let you run the same operations in other compute environments.
 
 See the [orientation](docs/getting-started/orientation.md) for the execution and
 storage model, including its limits.
+
+> **Status:** This project is in early development. APIs may change between
+> releases.
 
 ---
 
