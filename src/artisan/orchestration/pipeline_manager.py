@@ -440,6 +440,7 @@ def _promote_file_paths_to_store(
     staged = prepare_commit_evidence(
         staging_root=config.staging_root,
         fs=fs,
+        delta_root=config.delta_root,
         commit_kind="input_registration",
         step_run_id=step_run_id,
         step_number=step_number,

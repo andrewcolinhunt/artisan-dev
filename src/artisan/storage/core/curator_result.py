@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Mapping
 from typing import Any
 
 import polars as pl
@@ -35,7 +36,7 @@ def read_result_evidence(
     *,
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
-    staged: dict[str, pl.DataFrame] | None = None,
+    staged: Mapping[str, pl.DataFrame] | None = None,
 ) -> dict[str, pl.DataFrame]:
     """Combine visible evidence with the exact verified frames being committed."""
     frames = {}

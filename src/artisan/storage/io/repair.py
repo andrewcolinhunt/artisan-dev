@@ -785,6 +785,7 @@ def _prepare_batches(
             staged = prepare_commit_evidence(
                 staging_root=committer.staging_manager.staging_dir,
                 fs=committer._fs,
+                delta_root=committer.delta_base_path,
                 commit_kind="execution_recovery",
                 step_run_id=step_id,
                 step_number=first["origin_step_number"],
