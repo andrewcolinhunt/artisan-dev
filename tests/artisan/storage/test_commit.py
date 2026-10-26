@@ -721,14 +721,20 @@ def test_fresh_commit_does_not_materialize_whole_tables(commit_env, monkeypatch)
     committer.commit_logical(plan)
 
 
-def test_prepared_snapshot_commits_but_changed_staging_is_retained(commit_env):
-    committer, fs, _options, _delta_root, staging_root = commit_env
+def test_prepared_commit_rejects_changed_staging_and_retains_evidence(commit_env):
+    committer, fs, options, delta_root, staging_root = commit_env
     plan = _stage_registration(committer)
     prepared = committer.prepare_logical(plan)
     path = f"{staging_root}/{plan.tables[0].files[0].relative_path}"
     with fs.open(path, "wb") as stream:
         stream.write(b"changed after preparation")
-    committer.commit_logical(plan, prepared=prepared)
+    with pytest.raises(CommitError, match="failed at") as failure:
+        committer.commit_logical(plan, prepared=prepared)
+    assert isinstance(failure.value.__cause__, StoreIntegrityError)
+    assert "changed" in str(failure.value.__cause__).lower()
+    assert pl.read_delta(
+        f"{delta_root}/{plan.tables[0].table_path}", storage_options=options
+    ).is_empty()
     assert fs.exists(path)
     with fs.open(path, "rb") as stream:
         assert stream.read() == b"changed after preparation"

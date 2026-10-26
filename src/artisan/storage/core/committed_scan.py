@@ -250,7 +250,12 @@ def verify_plan_effect(
         raise StoreIntegrityError(msg)
     ownerless = rows.drop("logical_commit_id") if "logical_commit_id" in rows else rows
     if (
-        canonical_table_plan_key(plan.logical_commit_id, table_path, ownerless)
+        canonical_table_plan_key(
+            plan.logical_commit_id,
+            table_path,
+            ownerless,
+            digest_version=table.digest_version,
+        )
         != table.table_plan_key
     ):
         msg = f"Complete commit {plan.logical_commit_id} has conflicting {table_path} rows"

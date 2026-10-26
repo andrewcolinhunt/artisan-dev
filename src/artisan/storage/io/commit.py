@@ -48,7 +48,13 @@ from artisan.storage.io.commit_plan import (
     read_commit_plan,
     read_plan_evidence,
 )
-from artisan.storage.io.staged_frames import COMMIT_BATCH_ROWS, StagedTable
+from artisan.storage.io.legacy_digest import legacy_table_plan_key
+from artisan.storage.io.staged_frames import (
+    COMMIT_BATCH_ROWS,
+    StagedTable,
+    TableRowDigests,
+    effect_row_digest,
+)
 from artisan.storage.io.staging import StagingManager
 from artisan.utils.hashing import canonical_json_bytes
 from artisan.utils.path import uri_join, uri_parent
@@ -66,7 +72,7 @@ def _table_name(table_path: str) -> str:
 
 @dataclass(frozen=True)
 class PreparedCommitEvidence:
-    """Validated staged snapshot, usable once by the writer that prepared it."""
+    """Validated staging index, usable once by the writer that prepared it."""
 
     staged: StagedPlanEvidence
     delta_root: str
@@ -412,14 +418,14 @@ class DeltaCommitter:
         for physical in self._iter_matching_rows(table, keys):
             key = physical.select(table.natural_key).row(0)
             if self._row_satisfies(
-                table.table_path, expected.row(key), physical, visible_owners
+                table.table_path, expected.row_digest(key), physical, visible_owners
             ):
                 if key not in missing_keys:
                     msg = f"Duplicate natural key in table {table.table_path!r}"
                     raise StoreIntegrityError(msg)
                 missing_keys.remove(key)
         if missing_keys:
-            self._append_snapshot(plan, table, expected, missing_keys)
+            self._append_staged(plan, table, expected, missing_keys)
         self._verify_table_effect(plan, table, controls)
         return len(missing_keys)
 
@@ -437,13 +443,14 @@ class DeltaCommitter:
     @staticmethod
     def _row_satisfies(
         table_path: str,
-        expected: pl.DataFrame,
+        expected_digest: str,
         physical: pl.DataFrame,
         visible_owners: set[str],
     ) -> bool:
         """Check a single matching row after validating the whole owner's keys."""
-        comparable = comparable_effect_rows(table_path, expected)
-        if not physical.select(comparable.columns).equals(comparable):
+        row = physical.row(0, named=True)
+        row.pop("logical_commit_id", None)
+        if effect_row_digest(table_path, row) != expected_digest:
             msg = f"Natural key has conflicting values in {table_path}"
             raise StoreIntegrityError(msg)
         if table_path == TablePath.CACHE_REUSE.value:
@@ -527,14 +534,14 @@ class DeltaCommitter:
             orient="row",
         )
 
-    def _append_snapshot(
+    def _append_staged(
         self,
         plan: CommitPlan,
         table: PlannedTable,
         expected: StagedTable,
         missing: set[tuple[Any, ...]],
     ) -> None:
-        """Stream all missing batches through one atomic Delta append."""
+        """Read original staged files through one atomic Delta append."""
         schema = get_physical_schema_for_path(table.table_path)
 
         def batches() -> Iterator[pl.DataFrame]:
@@ -561,7 +568,7 @@ class DeltaCommitter:
         ownerless = {
             name: dtype for name, dtype in schema.items() if name != "logical_commit_id"
         }
-        actual = StagedTable(table.table_path, pl.Schema(ownerless))
+        actual = TableRowDigests(table.table_path, pl.Schema(ownerless))
         visible_owners = self._visible_owners(plan, table, controls)
         seen: set[tuple[Any, ...]] = set()
         for physical in self._iter_matching_rows(table, keys):
@@ -575,11 +582,19 @@ class DeltaCommitter:
                 msg = f"Commit {plan.logical_commit_id} has missing or duplicate {table.table_path} rows"
                 raise StoreIntegrityError(msg)
             seen.add(key)
-            actual.add(rows.select(actual.schema.names()))
-        if (
-            actual.height != table.row_count
-            or actual.plan_key(plan.logical_commit_id) != table.table_plan_key
-        ):
+            actual.update(rows.select(actual.schema.names()))
+        actual_key = actual.plan_key(plan.logical_commit_id)
+        if table.digest_version == 1 and actual.height == table.row_count:
+            actual_key = legacy_table_plan_key(
+                self.delta_base_path,
+                table.table_path,
+                table.natural_key,
+                keys,
+                plan.logical_commit_id,
+                visible_owners,
+                self._storage_options,
+            )
+        if actual.height != table.row_count or actual_key != table.table_plan_key:
             msg = f"Complete commit {plan.logical_commit_id} has conflicting {table.table_path} rows"
             raise StoreIntegrityError(msg)
 
