@@ -140,21 +140,29 @@ results as Parquet files to an isolated staging directory. After all workers
 complete, the orchestrator verifies the staged files and includes them in an
 immutable logical commit plan. It also stages the terminal step snapshot.
 
-Commit preparation snapshots payloads to temporary disk one worker shard at a
-time. Table writes read that snapshot in batches of at most 250 rows or 32 MiB
-of serialized rows (a single larger row is processed on its own). Each table
-publishes its bounded Parquet files in one atomic Delta append, and the logical
-completion marker controls visibility of the whole step. No setting is needed
-to enable this behavior.
+Commit preparation reads worker shards in sequence and retains their keys,
+row fingerprints, and original file locations. Table writes reread and verify
+the original staging files in bounded chunks; they do not create a second
+payload snapshot. Output batches contain at most 250 rows or 32 MiB of estimated
+row data (a single larger row is processed on its own). Each table publishes its
+bounded Parquet files in one atomic Delta append, and the logical completion
+marker controls visibility of the whole step. No setting is needed to enable
+this behavior. A staged file changed after preparation is rejected when reread.
 
 Conflict checks and verification traverse matching table rows once per phase.
 Completed-commit cleanup uses the same streaming verification, even if staged
 payload files are missing or changed. Physical rows are consumed individually
 so cleanup does not group unknown-size payloads into an unbounded batch.
 
-Keys, digests and commit-plan metadata remain in memory. Allow temporary disk
-space for the snapshot plus the table currently being verified; set `TMPDIR`
-to a suitable local scratch directory for large campaigns. A single worker
+New commit plans use table digest version 2: fingerprints are sorted by natural
+key and hashed together, so verification retains metadata rather than payloads.
+Existing plans without a digest version retain their original full-row digest
+and exact serialized identity. Their verification can reread Parquet files in
+key order. The store manifest remains format 7; existing roots do not need a
+migration. Older Artisan versions cannot interpret newly written version 2
+plans, so keep readers and writers on this release after writing new commits.
+
+Keys, digests and commit-plan metadata remain in memory. A single worker
 shard must still fit in memory. Polars also buffers decoded Parquet row groups;
 reader memory depends on their size and the Polars thread count. Older or
 compacted files can have larger row groups than the bounded writer creates.

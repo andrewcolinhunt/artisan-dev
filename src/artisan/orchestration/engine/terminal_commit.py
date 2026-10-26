@@ -62,6 +62,7 @@ def commit_terminal_result(
     staged = prepare_commit_evidence(
         staging_root=staging_root,
         fs=fs,
+        delta_root=delta_root,
         commit_kind="step_result",
         step_run_id=step_run_id,
         step_number=result.step_number,

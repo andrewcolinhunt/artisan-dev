@@ -10,7 +10,13 @@ from typing import Any, Literal
 
 import polars as pl
 from fsspec import AbstractFileSystem
-from pydantic import BaseModel, ConfigDict, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    SerializerFunctionWrapHandler,
+    model_serializer,
+    model_validator,
+)
 
 from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
@@ -26,8 +32,10 @@ from artisan.storage.io.publication import (
     publish_immutable_bytes,
 )
 from artisan.storage.io.staged_frames import (
+    StagedFile,
     StagedFrames,
     StagedTable,
+    TableRowDigests,
     json_value,
     table_rows_digest,
 )
@@ -95,8 +103,17 @@ class PlannedTable(BaseModel):
     row_count: int
     table_plan_key: str
     files: tuple[PlannedFile, ...]
+    digest_version: Literal[1, 2] = 1
 
     model_config = ConfigDict(frozen=True)
+
+    @model_serializer(mode="wrap")
+    def _serialize(self, handler: SerializerFunctionWrapHandler) -> dict[str, Any]:
+        payload: dict[str, Any] = handler(self)
+        # Existing plans omit this field; retain their exact durable identity.
+        if self.digest_version == 1:
+            payload.pop("digest_version", None)
+        return payload
 
     @model_validator(mode="after")
     def _validate_effect(self) -> PlannedTable:
@@ -268,13 +285,14 @@ def prepare_commit_evidence(
     *,
     staging_root: str,
     fs: AbstractFileSystem,
+    delta_root: str | None = None,
     commit_kind: CommitKind,
     step_run_id: str,
     step_number: int,
     operation_name: str,
     execution_run_ids: list[str] | tuple[str, ...] = (),
 ) -> StagedPlanEvidence:
-    """Read exact staging evidence once for planning and immediate application."""
+    """Index exact staging evidence for planning and bounded direct reads."""
     if len(set(execution_run_ids)) != len(execution_run_ids):
         msg = f"Duplicate execution IDs in commit {commit_kind}:{step_run_id}"
         raise StoreIntegrityError(msg)
@@ -286,6 +304,14 @@ def prepare_commit_evidence(
     logical_commit_id = logical_commit_identity(
         commit_kind, step_run_id, recovery_batch_id
     )
+    persisted = _existing_plan(
+        delta_root, fs, step_run_id, commit_kind, recovery_batch_id
+    )
+    versions = (
+        {table.table_path: table.digest_version for table in persisted.tables}
+        if persisted is not None
+        else {}
+    )
     table_files, frames, membership = _inspect_staging(
         staging_root=staging_root,
         fs=fs,
@@ -296,7 +322,13 @@ def prepare_commit_evidence(
         commit_kind=commit_kind,
     )
     tables = tuple(
-        _build_table(logical_commit_id, table_path, files, frames.tables[table_path])
+        _build_table(
+            logical_commit_id,
+            table_path,
+            files,
+            frames.tables[table_path],
+            versions.get(table_path, 2),
+        )
         for table_path, files in _ordered_table_files(table_files)
     )
     if not tables:
@@ -312,6 +344,9 @@ def prepare_commit_evidence(
         "tables": [table.model_dump(mode="json") for table in tables],
     }
     plan = CommitPlan(**payload, plan_digest=_plan_digest(payload))
+    if persisted is not None and plan != persisted:
+        msg = f"Staged evidence conflicts with persisted plan {logical_commit_id}"
+        raise StoreIntegrityError(msg)
     return StagedPlanEvidence(plan, staging_root, frames, membership)
 
 
@@ -319,6 +354,7 @@ def prepare_commit_plan(
     *,
     staging_root: str,
     fs: AbstractFileSystem,
+    delta_root: str | None = None,
     commit_kind: CommitKind,
     step_run_id: str,
     step_number: int,
@@ -329,6 +365,7 @@ def prepare_commit_plan(
     return prepare_commit_evidence(
         staging_root=staging_root,
         fs=fs,
+        delta_root=delta_root,
         commit_kind=commit_kind,
         step_run_id=step_run_id,
         step_number=step_number,
@@ -352,6 +389,7 @@ def build_commit_plan(
     plan = prepare_commit_plan(
         staging_root=staging_root,
         fs=fs,
+        delta_root=delta_root,
         commit_kind=commit_kind,
         step_run_id=step_run_id,
         step_number=step_number,
@@ -359,6 +397,21 @@ def build_commit_plan(
         execution_run_ids=execution_run_ids,
     )
     return publish_commit_plan(delta_root, fs, plan)
+
+
+def _existing_plan(
+    delta_root: str | None,
+    fs: AbstractFileSystem,
+    step_run_id: str,
+    commit_kind: CommitKind,
+    recovery_batch_id: str | None,
+) -> CommitPlan | None:
+    """Retain the identity and digest format of an already published batch."""
+    if delta_root is None or not fs.exists(
+        commit_plan_path(delta_root, step_run_id, commit_kind, recovery_batch_id)
+    ):
+        return None
+    return read_commit_plan(delta_root, fs, step_run_id, commit_kind, recovery_batch_id)
 
 
 def publish_commit_plan(
@@ -429,12 +482,20 @@ def read_plan_evidence(
             ):
                 msg = f"Staged object changed after planning: {_safe(path)}"
                 raise StoreIntegrityError(msg)
-            frames.add(table.table_path, frame)
+            frames.add(
+                table.table_path,
+                frame,
+                StagedFile(fs, path, planned_file.size_bytes, planned_file.digest),
+            )
             _record_membership(membership, table.table_path, planned_file, frame)
+            del data, frame
         snapshot = frames.tables[table.table_path]
         if (
             snapshot.height != table.row_count
-            or snapshot.plan_key(plan.logical_commit_id) != table.table_plan_key
+            or snapshot.plan_key(
+                plan.logical_commit_id, digest_version=table.digest_version
+            )
+            != table.table_plan_key
         ):
             msg = f"Table plan key changed for {plan.logical_commit_id} table {table.table_path}"
             raise StoreIntegrityError(msg)
@@ -502,10 +563,16 @@ def canonical_table_plan_key(
     logical_commit_id: str,
     table_path: str,
     frame: pl.DataFrame,
+    *,
+    digest_version: Literal[1, 2] = 1,
 ) -> str:
     """Hash a table's canonical ownerless planned rows."""
     natural_key = get_natural_key(table_path)
     effect = _planned_effect_rows(table_path, frame, natural_key)
+    if digest_version == 2:
+        digests = TableRowDigests(table_path, effect.schema)
+        digests.update(effect)
+        return digests.plan_key(logical_commit_id)
     rows = _canonical_rows(comparable_effect_rows(table_path, effect), natural_key)
     return table_rows_digest(logical_commit_id, table_path, rows)
 
@@ -585,8 +652,14 @@ def _inspect_staging(
                 schema_signature=_schema_signature(frame),
             )
             found.setdefault(table_path, []).append(planned_file)
-            frames.add(table_path, frame)
+            frames.add(
+                table_path,
+                frame,
+                StagedFile(fs, path, planned_file.size_bytes, planned_file.digest),
+            )
             _record_membership(membership, table_path, planned_file, frame)
+            del data, frame
+        del captured
     return found, frames, membership
 
 
@@ -595,6 +668,7 @@ def _build_table(
     table_path: str,
     files: list[PlannedFile],
     snapshot: StagedTable,
+    digest_version: Literal[1, 2],
 ) -> PlannedTable:
     natural_key = get_natural_key(table_path)
     row_keys = tuple(
@@ -605,8 +679,11 @@ def _build_table(
         natural_key=natural_key,
         row_keys=row_keys,
         row_count=snapshot.height,
-        table_plan_key=snapshot.plan_key(logical_commit_id),
+        table_plan_key=snapshot.plan_key(
+            logical_commit_id, digest_version=digest_version
+        ),
         files=tuple(files),
+        digest_version=digest_version,
     )
 
 
