@@ -406,18 +406,65 @@ class DeltaCommitter:
         controls: pl.DataFrame,
     ) -> int:
         self._validate_owned_rows(plan, table)
-        missing_keys: set[tuple[Any, ...]] = set()
-        for batch in expected.batches():
-            physical = self._matching_rows(table, batch.select(table.natural_key))
-            missing = self._missing_rows(plan, table, batch, physical, controls)
-            missing_keys.update(missing.select(table.natural_key).iter_rows())
+        keys = expected.keys()
+        missing_keys = set(keys.iter_rows())
+        visible_owners = self._visible_owners(plan, table, controls)
+        for physical in self._iter_matching_rows(table, keys):
+            key = physical.select(table.natural_key).row(0)
+            if self._row_satisfies(
+                table.table_path, expected.row(key), physical, visible_owners
+            ):
+                if key not in missing_keys:
+                    msg = f"Duplicate natural key in table {table.table_path!r}"
+                    raise StoreIntegrityError(msg)
+                missing_keys.remove(key)
         if missing_keys:
             self._append_snapshot(plan, table, expected, missing_keys)
-        self._verify_table_effect(plan, table, controls, expected=expected)
+        self._verify_table_effect(plan, table, controls)
         return len(missing_keys)
 
-    def _matching_rows(self, table: PlannedTable, keys: pl.DataFrame) -> pl.DataFrame:
-        """Push down the current batch's keys before collecting any payloads."""
+    @staticmethod
+    def _visible_owners(
+        plan: CommitPlan, table: PlannedTable, controls: pl.DataFrame
+    ) -> set[str]:
+        owners = {plan.logical_commit_id}
+        if is_global_artifact_table(table.table_path):
+            owners.update(
+                controls.filter(pl.col("state") == "complete")["logical_commit_id"]
+            )
+        return owners
+
+    @staticmethod
+    def _row_satisfies(
+        table_path: str,
+        expected: pl.DataFrame,
+        physical: pl.DataFrame,
+        visible_owners: set[str],
+    ) -> bool:
+        """Check a single matching row after validating the whole owner's keys."""
+        comparable = comparable_effect_rows(table_path, expected)
+        if not physical.select(comparable.columns).equals(comparable):
+            msg = f"Natural key has conflicting values in {table_path}"
+            raise StoreIntegrityError(msg)
+        if table_path == TablePath.CACHE_REUSE.value:
+            return True
+        owner = physical["logical_commit_id"][0]
+        if owner is None:
+            msg = f"Table {table_path!r} contains unowned rows"
+            raise StoreIntegrityError(msg)
+        if owner not in visible_owners and not is_global_artifact_table(table_path):
+            msg = f"Natural key already belongs to another commit in {table_path}"
+            raise StoreIntegrityError(msg)
+        return owner in visible_owners
+
+    def _iter_matching_rows(
+        self, table: PlannedTable, keys: pl.DataFrame
+    ) -> Iterator[pl.DataFrame]:
+        """Traverse matching physical rows once, including every duplicate.
+
+        Physical row sizes are unknown during cleanup. Yielding one row also
+        avoids grouping arbitrarily many conflicting copies of the same key.
+        """
         scan = (
             self._scan_physical(table.table_path)
             .filter(
@@ -428,7 +475,11 @@ class DeltaCommitter:
             )
             .join(keys.lazy(), on=list(table.natural_key), how="semi", nulls_equal=True)
         )
-        return self._collect_physical(table.table_path, scan)
+        try:
+            yield from scan.collect_batches(chunk_size=1, engine="streaming", lazy=True)
+        except Exception as exc:
+            msg = f"Unreadable Delta table {table.table_path!r}"
+            raise StoreIntegrityError(msg) from exc
 
     def _validate_owned_rows(self, plan: CommitPlan, table: PlannedTable) -> None:
         """Check the entire effect using only keys and ownership metadata."""
@@ -502,38 +553,29 @@ class DeltaCommitter:
         plan: CommitPlan,
         table: PlannedTable,
         controls: pl.DataFrame,
-        *,
-        expected: StagedTable | None = None,
     ) -> None:
         """Prove the complete table effect without retaining its payloads."""
         self._validate_owned_rows(plan, table)
-        schema = self._scan_physical(table.table_path).collect_schema()
-        keys = (
-            (batch.select(table.natural_key) for batch in expected.batches())
-            if expected is not None
-            else self._plan_keys(table, schema).iter_slices(COMMIT_BATCH_ROWS)
-        )
+        schema = pl.Schema(get_physical_schema_for_path(table.table_path))
+        keys = self._plan_keys(table, schema)
         ownerless = {
             name: dtype for name, dtype in schema.items() if name != "logical_commit_id"
         }
         actual = StagedTable(table.table_path, pl.Schema(ownerless))
-        complete = controls.filter(pl.col("state") == "complete")[
-            "logical_commit_id"
-        ].to_list()
-        for batch_keys in keys:
-            rows = self._matching_rows(table, batch_keys)
+        visible_owners = self._visible_owners(plan, table, controls)
+        seen: set[tuple[Any, ...]] = set()
+        for physical in self._iter_matching_rows(table, keys):
+            rows = physical
             if "logical_commit_id" in rows:
-                visible = pl.col("logical_commit_id") == plan.logical_commit_id
-                if is_global_artifact_table(table.table_path):
-                    visible |= pl.col("logical_commit_id").is_in(complete)
-                rows = rows.filter(visible).drop("logical_commit_id")
-            if (
-                rows.height != batch_keys.height
-                or rows.select(table.natural_key).n_unique() != rows.height
-            ):
+                if rows["logical_commit_id"][0] not in visible_owners:
+                    continue
+                rows = rows.drop("logical_commit_id")
+            key = rows.select(table.natural_key).row(0)
+            if key in seen:
                 msg = f"Commit {plan.logical_commit_id} has missing or duplicate {table.table_path} rows"
                 raise StoreIntegrityError(msg)
-            actual.add(rows)
+            seen.add(key)
+            actual.add(rows.select(actual.schema.names()))
         if (
             actual.height != table.row_count
             or actual.plan_key(plan.logical_commit_id) != table.table_plan_key

@@ -108,6 +108,10 @@ class StagedTable:
         self._stream.seek(offset)
         return pl.DataFrame.deserialize(io.BytesIO(self._stream.read(length)))
 
+    def row(self, key: tuple[Any, ...]) -> pl.DataFrame:
+        """Read one planned row without materializing other payloads."""
+        return self._read_row(self._rows[key])
+
     def batches(
         self, selected: set[tuple[Any, ...]] | None = None
     ) -> Iterator[pl.DataFrame]:

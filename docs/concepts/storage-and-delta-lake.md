@@ -147,11 +147,19 @@ publishes its bounded Parquet files in one atomic Delta append, and the logical
 completion marker controls visibility of the whole step. No setting is needed
 to enable this behavior.
 
+Conflict checks and verification traverse matching table rows once per phase.
+Completed-commit cleanup uses the same streaming verification, even if staged
+payload files are missing or changed. Physical rows are consumed individually
+so cleanup does not group unknown-size payloads into an unbounded batch.
+
 Keys, digests and commit-plan metadata remain in memory. Allow temporary disk
 space for the snapshot plus the table currently being verified; set `TMPDIR`
 to a suitable local scratch directory for large campaigns. A single worker
-shard must still fit in memory. Explicit repair audits and artifact validation
-can still materialize whole tables.
+shard must still fit in memory. Polars also buffers decoded Parquet row groups;
+reader memory depends on their size and the Polars thread count. Older or
+compacted files can have larger row groups than the bounded writer creates.
+Explicit repair audits and artifact validation can still materialize whole
+tables.
 
 ```
                               staging_root/
