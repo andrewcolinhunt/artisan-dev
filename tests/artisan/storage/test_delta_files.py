@@ -14,6 +14,7 @@ import polars as pl
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from arro3.core import Table
 from deltalake import DeltaTable
 from fsspec.implementations.local import LocalFileSystem
 
@@ -46,6 +47,21 @@ def _frames(count=5):
             },
             schema=SCHEMA,
         )
+
+
+def test_snapshot_reads_arrow_table_actions(tmp_path, monkeypatch):
+    snapshot = _table(str(tmp_path), LocalFileSystem())
+    append_table_files(snapshot, _frames(2), step_number=7, statistics_columns=["id"])
+    get_add_actions = DeltaTable.get_add_actions
+
+    def table_actions(self, flatten=False):
+        return Table.from_arrow(pa.table(get_add_actions(self, flatten=flatten)))
+
+    monkeypatch.setattr(DeltaTable, "get_add_actions", table_actions)
+    current = DeltaSnapshot(snapshot.path, SCHEMA, fs=LocalFileSystem())
+
+    assert len(current.files) == 1
+    assert pl.concat(current.iter_frames()).equals(pl.concat(_frames(2)))
 
 
 @pytest.mark.parametrize("partitioned", [False, True])

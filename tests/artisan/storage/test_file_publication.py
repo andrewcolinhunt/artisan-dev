@@ -18,7 +18,7 @@ from artisan.utils.hashing import STREAM_CHUNK_BYTES
 class _Source(MemoryFileSystem):
     """Observe source reads and optionally fail after the verification pass."""
 
-    cachable = False
+    cachable = False  # codespell:ignore cachable
 
     def __init__(self, data, *, fail_copy=False):
         super().__init__()
