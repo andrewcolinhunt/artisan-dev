@@ -37,7 +37,7 @@ of an older run. A run-scoped query at step 2 shows those three datasets. Their
 `origin_step_number` remains 0.
 
 `inspect_pipeline` defaults to the latest run. In contrast, omitting
-`pipeline_run_id` from `inspect_step`, `inspect_metrics`, or `inspect_data`
+`pipeline_run_id` from `inspect_step`, `inspect_metrics`, or `inspect_csv`
 queries artifacts across runs, and a step filter means their first origin step.
 Pass the run ID explicitly when comparing a step's status with its outputs.
 
@@ -47,7 +47,7 @@ used as a fallback. Partial results include only accepted successful outputs.
 An older execution contributes only when the selected attempt explicitly reuses it.
 
 To inspect a particular attempt, retain its `StepResult.step_run_id` and pass it
-as `step_run_id` to `inspect_step`, `inspect_metrics`, or `inspect_data`. For example,
+as `step_run_id` to `inspect_step`, `inspect_metrics`, or `inspect_csv`. For example,
 given a saved `previous_result` from step 0:
 
 ```python
@@ -78,13 +78,13 @@ metrics_at_step = inspect_metrics(
 )
 ```
 
-Read stored CSV content with `inspect_data`. A step query concatenates matching
+Read stored CSV content with `inspect_csv`. A step query concatenates matching
 datasets and adds `_source` to identify each artifact's name:
 
 ```python
-from artisan.visualization import inspect_data
+from artisan.visualization import inspect_csv
 
-data = inspect_data(delta_root, step_number=0, pipeline_run_id=run_id)
+data = inspect_csv(delta_root, step_number=0, pipeline_run_id=run_id)
 ```
 
 Use `name="dataset_00000"` to narrow the query by original name. Use

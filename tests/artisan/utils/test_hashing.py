@@ -32,22 +32,22 @@ class TestComputeArtifactId:
 
     def test_deterministic(self) -> None:
         data = b"same input"
-        assert compute_artifact_id("data", data, {}) == compute_artifact_id(
-            "data", data, {}
+        assert compute_artifact_id("csv", data, {}) == compute_artifact_id(
+            "csv", data, {}
         )
 
     def test_different_content_different_hash(self) -> None:
-        assert compute_artifact_id("data", b"a", {}) != compute_artifact_id(
-            "data", b"b", {}
+        assert compute_artifact_id("csv", b"a", {}) != compute_artifact_id(
+            "csv", b"b", {}
         )
 
     def test_returns_32_char_hex(self) -> None:
-        result = compute_artifact_id("data", b"anything", {})
+        result = compute_artifact_id("csv", b"anything", {})
         assert len(result) == 32
         int(result, 16)  # validates hex
 
     def test_type_domain_separates_identical_content(self) -> None:
-        assert compute_artifact_id("data", b"same", {}) != compute_artifact_id(
+        assert compute_artifact_id("csv", b"same", {}) != compute_artifact_id(
             "metric", b"same", {}
         )
 
@@ -94,7 +94,7 @@ def _cache_input(
     artifact_id: str,
     *,
     position: int = 0,
-    artifact_type: str = "data",
+    artifact_type: str = "csv",
     group_id: str | None = None,
 ) -> CacheInputIdentity:
     return CacheInputIdentity(
@@ -541,13 +541,13 @@ class TestComputeStepSpecId:
             operation_name="ToolC",
             step_number=1,
             params={"model": "v2"},
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
         )
         spec2 = _step_spec_from_ids(
             operation_name="ToolC",
             step_number=1,
             params={"model": "v2"},
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
         )
         assert spec1 == spec2
         assert len(spec1) == 32
@@ -558,13 +558,13 @@ class TestComputeStepSpecId:
             operation_name="ToolB",
             step_number=2,
             params=None,
-            inputs={"data": ("upstream_v1", "data")},
+            inputs={"data": ("upstream_v1", "csv")},
         )
         spec2 = _step_spec_from_ids(
             operation_name="ToolB",
             step_number=2,
             params=None,
-            inputs={"data": ("upstream_v2", "data")},
+            inputs={"data": ("upstream_v2", "csv")},
         )
         assert spec1 != spec2
 
@@ -574,13 +574,13 @@ class TestComputeStepSpecId:
             operation_name="ToolC",
             step_number=1,
             params={"model": "v1"},
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
         )
         spec2 = _step_spec_from_ids(
             operation_name="ToolC",
             step_number=1,
             params={"model": "v2"},
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
         )
         assert spec1 != spec2
 
@@ -590,13 +590,13 @@ class TestComputeStepSpecId:
             operation_name="Score",
             step_number=2,
             params=None,
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
         )
         spec2 = _step_spec_from_ids(
             operation_name="Score",
             step_number=2,
             params=None,
-            inputs={"scored": ("abc123", "data")},
+            inputs={"scored": ("abc123", "csv")},
         )
         assert spec1 != spec2
 
@@ -606,13 +606,13 @@ class TestComputeStepSpecId:
             operation_name="Score",
             step_number=1,
             params=None,
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
         )
         spec2 = _step_spec_from_ids(
             operation_name="Score",
             step_number=3,
             params=None,
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
         )
         assert spec1 != spec2
 
@@ -666,14 +666,14 @@ class TestComputeStepSpecId:
             operation_name="ToolC",
             step_number=1,
             params=None,
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
             config_overrides=None,
         )
         spec2 = _step_spec_from_ids(
             operation_name="ToolC",
             step_number=1,
             params=None,
-            inputs={"data": ("abc123", "data")},
+            inputs={"data": ("abc123", "csv")},
             config_overrides={"image": "/path/to/image.sif"},
         )
         assert spec1 != spec2
@@ -684,7 +684,7 @@ class TestComputeStepSpecId:
             "operation_name": "ToolC",
             "step_number": 1,
             "params": None,
-            "inputs": {"data": ("abc123", "data")},
+            "inputs": {"data": ("abc123", "csv")},
             "config_overrides": {"image": "/path/to/image.sif", "gpu": True},
         }
         assert _step_spec_from_ids(**kwargs) == _step_spec_from_ids(**kwargs)

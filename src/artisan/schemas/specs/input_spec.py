@@ -16,7 +16,7 @@ class InputSpec(BaseModel):
     """Specification for a single named input of an operation.
 
     Attributes:
-        artifact_type: Expected artifact type (data, metric, file_ref,
+        artifact_type: Expected artifact type (csv, metric, file_ref,
             config). Use ArtifactTypes.ANY (default) for "any type accepted",
             or a concrete type string.
         required: Whether this input is required. Default True.
@@ -27,11 +27,11 @@ class InputSpec(BaseModel):
 
     Examples:
         # Required data input (default: materialized to disk)
-        InputSpec(artifact_type="data", required=True)
+        InputSpec(artifact_type="csv", required=True)
 
         # Optional reference data
         InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=False,
             description="Optional reference for comparison",
         )
@@ -83,7 +83,7 @@ class InputSpec(BaseModel):
     access them via ``inputs.associated_artifacts(artifact, type_str)``.
 
     Example:
-        InputSpec(artifact_type="data", with_associated=("data_annotation",))
+        InputSpec(artifact_type="csv", with_associated=("data_annotation",))
     """
 
     @field_validator("artifact_type")

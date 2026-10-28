@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas import (
     ArtifactResult,
-    DataArtifact,
+    CSVArtifact,
     ExecuteInput,
     InputSpec,
     OutputSpec,
@@ -45,11 +45,11 @@ class ScaleData(OperationDefinition):
         DATASET = "dataset"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATASET: InputSpec(artifact_type="data", required=True),
+        InputRole.DATASET: InputSpec(artifact_type="csv", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["dataset"]},
         ),
     }
@@ -98,7 +98,7 @@ class ScaleData(OperationDefinition):
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         result = ArtifactResult()
         for item in inputs.memory_outputs["outputs"]:
-            draft = DataArtifact.draft(
+            draft = CSVArtifact.draft(
                 content=Path(item["path"]).read_bytes(),
                 original_name=item["name"],
                 step_number=inputs.step_number,
@@ -167,7 +167,7 @@ Each entry maps a role name to an `InputSpec`:
 
 ```python
 inputs: ClassVar[dict[str, InputSpec]] = {
-    InputRole.DATA: InputSpec(artifact_type="data", required=True),
+    InputRole.DATA: InputSpec(artifact_type="csv", required=True),
 }
 ```
 
@@ -186,7 +186,7 @@ required and allowed parent roles; select exact parents in postprocess:
 ```python
 outputs: ClassVar[dict[str, OutputSpec]] = {
     OutputRole.PROCESSED: OutputSpec(
-        artifact_type="data",
+        artifact_type="csv",
         derives_from={"inputs": ["data"]},
     ),
     OutputRole.SCORES: OutputSpec(
@@ -392,7 +392,7 @@ class OutputRole(StrEnum):
 
 outputs: ClassVar[dict[str, OutputSpec]] = {
     OutputRole.DATASETS: OutputSpec(
-        artifact_type="data",
+        artifact_type="csv",
         derives_from={"inputs": []},
     ),
     OutputRole.METRICS: OutputSpec(
@@ -582,7 +582,7 @@ from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas import (
     ArtifactResult,
-    DataArtifact,
+    CSVArtifact,
     InputSpec,
     OutputSpec,
     PostprocessInput,
@@ -601,11 +601,11 @@ class CopyCsv(OperationDefinition):
         DATASET = "dataset"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "dataset": InputSpec(artifact_type="data"),
+        "dataset": InputSpec(artifact_type="csv"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "dataset": OutputSpec(
-            artifact_type="data", derives_from={"inputs": ["dataset"]}
+            artifact_type="csv", derives_from={"inputs": ["dataset"]}
         ),
     }
     tool: ToolSpec = ToolSpec(executable="cp")
@@ -632,7 +632,7 @@ class CopyCsv(OperationDefinition):
         result = ArtifactResult()
         for path, parent_id in zip(paths, parent_ids, strict=True):
             source = source_by_id[parent_id]
-            draft = DataArtifact.draft(
+            draft = CSVArtifact.draft(
                 content=path.read_bytes(),
                 original_name=f"{source.original_name}.csv",
                 step_number=inputs.step_number,
@@ -838,7 +838,7 @@ with TemporaryDirectory() as tmp:
     test_csv = Path(tmp) / "test.csv"
     test_csv.write_text("id,value\n1,10\n2,20\n")
 
-    source = DataArtifact.draft(
+    source = CSVArtifact.draft(
         content=test_csv.read_bytes(), original_name="test.csv", step_number=0
     ).finalize()
     source.materialized_path = str(test_csv)

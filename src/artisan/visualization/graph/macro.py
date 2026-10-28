@@ -84,7 +84,7 @@ def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
 
     - **dict** (most operations):
       ``{"role": {"type": "output_ref", "source_step": 0, "role": "data"}}``
-    - **list** (Merge list-style, IngestData):
+    - **list** (Merge list-style, IngestCSV):
       ``[{"type": "output_ref", "source_step": 0, "role": "data"}]``
 
     Literal entries and nulls are silently skipped.

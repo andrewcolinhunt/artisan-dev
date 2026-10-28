@@ -18,7 +18,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
@@ -513,7 +513,7 @@ def declared_file_result(
         path = Path(record["path"])
         result.add_artifact(
             role,
-            DataArtifact.draft(
+            CSVArtifact.draft(
                 content=path.read_bytes(),
                 original_name=record.get("name", path.name),
                 step_number=inputs.step_number,
@@ -537,7 +537,7 @@ class FailingTransformer(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Input CSV dataset",
         ),
@@ -548,7 +548,7 @@ class FailingTransformer(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Transformed CSV dataset",
             derives_from={"inputs": ["dataset"]},
         ),
@@ -639,5 +639,5 @@ class FailingTransformer(OperationDefinition):
         return {"records": records}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build DataArtifact drafts from output CSV files."""
+        """Build CSVArtifact drafts from output CSV files."""
         return declared_file_result(inputs, "dataset")

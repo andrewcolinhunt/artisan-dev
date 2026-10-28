@@ -28,7 +28,7 @@ from artisan.visualization.graph import (
 )
 from artisan.visualization.inspect import (
     inspect_commands,
-    inspect_data,
+    inspect_csv,
     inspect_failures,
     inspect_metrics,
     inspect_pipeline,
@@ -90,7 +90,7 @@ __all__ = [
     "display_provenance_stepper",
     "get_max_step_number",
     "inspect_commands",
-    "inspect_data",
+    "inspect_csv",
     "inspect_failures",
     "inspect_metrics",
     "inspect_pipeline",

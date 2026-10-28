@@ -21,7 +21,7 @@ class ArtifactValidationError(ArtisanError):
     This includes:
     - Missing required output roles
     - Empty artifact lists for required roles
-    - Artifact type mismatches (e.g., DataArtifact for METRIC spec)
+    - Artifact type mismatches (e.g., CSVArtifact for METRIC spec)
     - Unexpected output roles not declared in specs
     """
 

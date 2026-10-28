@@ -387,7 +387,7 @@ class TestResolveOutputReferenceNewSchema:
                 compute_backend="local",
                 compute_options_json="{}",
                 output_roles_json='["data"]',
-                output_types_json='{"data":"data"}',
+                output_types_json='{"data":"csv"}',
             )
         )
         tracker.transition(
@@ -406,7 +406,7 @@ class TestResolveOutputReferenceNewSchema:
             succeeded_count=2,
             failed_count=1,
             output_roles=frozenset({"data"}),
-            output_types={"data": "data"},
+            output_types={"data": "csv"},
             duration_seconds=1.0,
         )
         candidate = tracker.prepare_terminal_candidate(
@@ -446,7 +446,7 @@ class TestResolveOutputReferenceNewSchema:
             [
                 {
                     "artifact_id": artifact_id,
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 99,
                     "metadata": "{}",
                 }

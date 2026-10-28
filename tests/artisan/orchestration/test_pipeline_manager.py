@@ -33,7 +33,7 @@ from artisan.orchestration.pipeline_manager import (
 )
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.orchestration.step_future import StepFuture
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
@@ -59,7 +59,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.store_format import STORE_MANIFEST
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
 
-_INPUT_ARTIFACT = DataArtifact.draft(
+_INPUT_ARTIFACT = CSVArtifact.draft(
     b"value\n1\n",
     "pipeline-input.csv",
     step_number=0,
@@ -160,15 +160,15 @@ def _seed_input_artifact(delta_root: Path) -> None:
         delta_root,
         delta_root.parent / "fixture-staging",
         {
-            ArtifactTypeDef.get_table_path(ArtifactTypes.DATA): pl.DataFrame(
+            ArtifactTypeDef.get_table_path(ArtifactTypes.CSV): pl.DataFrame(
                 [_INPUT_ARTIFACT.to_row()],
-                schema=DataArtifact.POLARS_SCHEMA,
+                schema=CSVArtifact.POLARS_SCHEMA,
             ),
             TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
                 [
                     {
                         "artifact_id": _INPUT_ID,
-                        "artifact_type": ArtifactTypes.DATA,
+                        "artifact_type": ArtifactTypes.CSV,
                         "origin_step_number": 0,
                         "metadata": "{}",
                     }
@@ -196,11 +196,11 @@ class _MockOp(OperationDefinition):
 
     name: ClassVar[str] = "mock_op"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
     }
@@ -670,7 +670,7 @@ def test_cache_policy_audited_from_pending_through_terminal(
             disposition=StepDisposition.EXECUTED,
             step_run_id=kwargs["step_run_id"],
             output_roles=frozenset({"output"}),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         return kwargs["persist_result"](result, ())
 
@@ -759,7 +759,7 @@ class TestEmptyInputsHandling:
             succeeded_count=0,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         mock_execute.return_value = zero_result
 
@@ -822,7 +822,7 @@ class TestStepNameOverride:
             succeeded_count=3,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -849,7 +849,7 @@ class TestStepNameOverride:
             succeeded_count=3,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -876,7 +876,7 @@ class TestStepNameOverride:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -927,7 +927,7 @@ class TestPipelineOutputByName:
             succeeded_count=3,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -967,7 +967,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -998,7 +998,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline = _make_pipeline(tmp_path)
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
@@ -1013,7 +1013,7 @@ class TestPipelineOutputByName:
             succeeded_count=2,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
 
@@ -1037,7 +1037,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -1064,7 +1064,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -1093,7 +1093,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline = _make_pipeline(tmp_path)
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
@@ -1108,7 +1108,7 @@ class TestPipelineOutputByName:
             succeeded_count=2,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="dup")
 
@@ -1137,7 +1137,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline = _make_pipeline(tmp_path)
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="foo")
@@ -1167,7 +1167,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline = _make_pipeline(tmp_path)
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="alpha")
@@ -1182,7 +1182,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="beta")
 
@@ -1209,7 +1209,7 @@ class TestPipelineOutputByName:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
         pipeline = _make_pipeline(tmp_path)
         pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="solo")
@@ -1239,7 +1239,7 @@ class TestPipelineOutputByName:
                 succeeded_count=1,
                 failed_count=0,
                 output_roles=frozenset(["output"]),
-                output_types={"output": "data"},
+                output_types={"output": "csv"},
             )
             pipeline.run(_MockOp, inputs={"data": [_INPUT_ID]}, name="repeat")
 
@@ -1358,7 +1358,7 @@ class TestCancellation:
                 succeeded_count=1,
                 failed_count=0,
                 output_roles=frozenset(["output"]),
-                output_types={"output": "data"},
+                output_types={"output": "csv"},
             )
 
         mock_execute.side_effect = slow_execute
@@ -1416,7 +1416,7 @@ class TestCancellation:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -1470,7 +1470,7 @@ class TestCancellation:
                 succeeded_count=1,
                 failed_count=0,
                 output_roles=frozenset(["output"]),
-                output_types={"output": "data"},
+                output_types={"output": "csv"},
             )
 
         mock_execute.side_effect = _execute
@@ -1650,7 +1650,7 @@ class TestStepRegistry:
                 succeeded_count=1,
                 failed_count=0,
                 output_roles=frozenset(["output"]),
-                output_types={"output": "data"},
+                output_types={"output": "csv"},
             )
 
         mock_execute.side_effect = slow_execute
@@ -1663,7 +1663,7 @@ class TestStepRegistry:
         assert isinstance(ref, OutputReference)
         assert ref.source_step == 0
         assert ref.role == "output"
-        assert ref.artifact_type == "data"
+        assert ref.artifact_type == "csv"
 
         # Release the step and clean up
         barrier.set()
@@ -1714,7 +1714,7 @@ class TestStepRegistry:
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset(["output"]),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
         )
 
         pipeline = _make_pipeline(tmp_path)
@@ -1769,11 +1769,11 @@ class _ParamsOp(OperationDefinition):
 
     name: ClassVar[str] = "params_op"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "data": InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        "data": InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "output": OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
     }
@@ -1837,11 +1837,11 @@ class TestBuildOutputTypes:
 
     def test_extracts_types(self):
         outputs = {
-            "data": MagicMock(artifact_type="data"),
+            "data": MagicMock(artifact_type="csv"),
             "metric": MagicMock(artifact_type="metric"),
         }
         result = PipelineManager._build_output_types(outputs)
-        assert result == {"data": "data", "metric": "metric"}
+        assert result == {"data": "csv", "metric": "metric"}
 
     def test_none_artifact_type(self):
         outputs = {"out": MagicMock(artifact_type=None)}
@@ -1859,7 +1859,7 @@ class TestRegisterStep:
     def test_registers_entry(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        outputs = {"data": MagicMock(artifact_type="data")}
+        outputs = {"data": MagicMock(artifact_type="csv")}
         pipeline._register_step("my_step", 0, outputs)
         assert "my_step" in pipeline._step_registry
         assert pipeline._step_registry["my_step"][0].step_number == 0
@@ -1869,7 +1869,7 @@ class TestRegisterStep:
     def test_appends_for_duplicate_names(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        outputs = {"out": MagicMock(artifact_type="data")}
+        outputs = {"out": MagicMock(artifact_type="csv")}
         pipeline._register_step("dup", 0, outputs)
         pipeline._register_step("dup", 1, outputs)
         assert len(pipeline._step_registry["dup"]) == 2
@@ -1882,7 +1882,7 @@ class TestSkipStep:
     def test_returns_resolved_future(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        outputs = {"output": MagicMock(artifact_type="data")}
+        outputs = {"output": MagicMock(artifact_type="csv")}
         step_run_id = "a" * 32
         _prime_attempt(pipeline, step_run_id, step_name="skipped")
         future = pipeline._skip_step("skipped", outputs, "test_reason", step_run_id)
@@ -1902,7 +1902,7 @@ class TestSkipStep:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         assert pipeline._current_step == 0
-        outputs = {"output": MagicMock(artifact_type="data")}
+        outputs = {"output": MagicMock(artifact_type="csv")}
         _prime_attempt(pipeline, "a" * 32, step_name="s")
         pipeline._skip_step("s", outputs, "reason", "a" * 32)
         assert pipeline._current_step == 1
@@ -1911,7 +1911,7 @@ class TestSkipStep:
     def test_populates_bookkeeping(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        outputs = {"output": MagicMock(artifact_type="data")}
+        outputs = {"output": MagicMock(artifact_type="csv")}
         _prime_attempt(pipeline, "a" * 32, step_name="my_step")
         pipeline._skip_step("my_step", outputs, "reason", "a" * 32)
         assert len(pipeline._step_results) == 1
@@ -1940,7 +1940,7 @@ class TestWholeStepCacheReuse:
                 disposition=StepDisposition.EXECUTED,
                 duration_seconds=99.0,
                 output_roles=frozenset({"output"}),
-                output_types={"output": ArtifactTypes.DATA},
+                output_types={"output": ArtifactTypes.CSV},
                 metadata={"timings": {"total": 99.0}, "diagnostic": "kept"},
                 step_run_id=source,
             ),
@@ -2004,7 +2004,7 @@ class TestWholeStepCacheReuse:
                 status=StepStatus.SUCCEEDED,
                 disposition=StepDisposition.EXECUTED,
                 output_roles=frozenset({"output"}),
-                output_types={"output": ArtifactTypes.DATA},
+                output_types={"output": ArtifactTypes.CSV},
                 step_run_id="a" * 32,
             ),
             source_step_run_id="a" * 32,
@@ -2066,7 +2066,7 @@ class TestWholeStepCacheReuse:
                 status=StepStatus.SUCCEEDED,
                 disposition=StepDisposition.EXECUTED,
                 output_roles=frozenset({"output"}),
-                output_types={"output": ArtifactTypes.DATA},
+                output_types={"output": ArtifactTypes.CSV},
                 step_run_id="a" * 32,
             ),
             source_step_run_id="a" * 32,
@@ -2155,7 +2155,7 @@ class TestWholeStepCacheReuse:
                 status=StepStatus.SUCCEEDED,
                 disposition=StepDisposition.EXECUTED,
                 output_roles=frozenset({"output"}),
-                output_types={"output": ArtifactTypes.DATA},
+                output_types={"output": ArtifactTypes.CSV},
                 step_run_id="a" * 32,
             ),
             source_step_run_id="a" * 32,
@@ -2319,7 +2319,7 @@ class TestCheckEarlyExit:
     def test_returns_none_when_no_exit_conditions(self, mock_tracker_cls, tmp_path):
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
-        outputs = {"output": MagicMock(artifact_type="data")}
+        outputs = {"output": MagicMock(artifact_type="csv")}
         result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is None
 
@@ -2328,7 +2328,7 @@ class TestCheckEarlyExit:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._stopped = True
-        outputs = {"output": MagicMock(artifact_type="data")}
+        outputs = {"output": MagicMock(artifact_type="csv")}
         _prime_attempt(pipeline, "a" * 32)
         result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is not None
@@ -2340,7 +2340,7 @@ class TestCheckEarlyExit:
         mock_tracker_cls.return_value = MagicMock()
         pipeline = _make_pipeline(tmp_path)
         pipeline._cancel_event.set()
-        outputs = {"output": MagicMock(artifact_type="data")}
+        outputs = {"output": MagicMock(artifact_type="csv")}
         _prime_attempt(pipeline, "a" * 32)
         result = pipeline._check_early_exit("step", outputs, None, "a" * 32)
         assert result is not None
@@ -2687,7 +2687,7 @@ class _IngestForCompositeTests(OperationDefinition):
     name: ClassVar[str] = "ingest_for_composite_blocking_tests"
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     def execute_curator(self, *args, **kwargs):
@@ -2706,7 +2706,7 @@ class _TwoStepComposite(CompositeDefinition):
         file = auto()
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     def compose(self, ctx):
@@ -2888,11 +2888,11 @@ class _ImageOpV1(OperationDefinition):
         active="docker", docker=DockerEnvironmentSpec(image="lab/tool:v1")
     )
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
     }
@@ -2918,11 +2918,11 @@ class _ImageOpV2(OperationDefinition):
         active="docker", docker=DockerEnvironmentSpec(image="lab/tool:v2")
     )
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
     }

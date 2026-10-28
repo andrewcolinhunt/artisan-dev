@@ -123,7 +123,7 @@ def failed_store(tmp_path: Path) -> Path:
     artifact_index = pl.DataFrame(
         {
             "artifact_id": [B],
-            "artifact_type": ["data"],
+            "artifact_type": ["csv"],
             "origin_step_number": [2],
             "metadata": ["{}"],
         },
@@ -135,8 +135,8 @@ def failed_store(tmp_path: Path) -> Path:
             "execution_run_id": ["exec-2"],
             "source_artifact_id": [A],
             "target_artifact_id": [B],
-            "source_artifact_type": ["data"],
-            "target_artifact_type": ["data"],
+            "source_artifact_type": ["csv"],
+            "target_artifact_type": ["csv"],
             "source_role": ["input"],
             "target_role": ["output"],
             "group_id": [None],

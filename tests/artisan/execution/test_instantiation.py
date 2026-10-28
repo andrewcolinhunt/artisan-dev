@@ -273,7 +273,7 @@ class TestInstantiateInputs:
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {s_id: _make_metric_alt(s_id)}
 
-        spec = InputSpec(artifact_type="data")
+        spec = InputSpec(artifact_type="csv")
         result, associated = instantiate_inputs({"data": [s_id]}, store, {"data": spec})
 
         assert len(result["data"]) == 1

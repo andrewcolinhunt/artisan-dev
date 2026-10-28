@@ -5,7 +5,7 @@ from __future__ import annotations
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.common import JsonContentMixin, get_compound_extension
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -52,11 +52,11 @@ __all__ = [
     "ArtifactTypeDef",
     "ArtifactTypes",
     "BatchStrategy",
+    "CSVArtifact",
     "CachePolicy",
     "ComputeProvider",
     "ComputeResources",
     "CuratorResult",
-    "DataArtifact",
     "DockerEnvironmentSpec",
     "EnvironmentSpec",
     "Environments",

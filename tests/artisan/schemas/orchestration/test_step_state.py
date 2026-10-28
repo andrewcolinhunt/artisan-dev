@@ -33,7 +33,7 @@ def _state() -> StepState:
         timestamp=datetime.now(UTC),
         duration_seconds=1.0,
         output_roles=frozenset({"data"}),
-        output_types={"data": "data"},
+        output_types={"data": "csv"},
     )
 
 

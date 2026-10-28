@@ -15,7 +15,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -44,6 +44,7 @@ class CsvHead(OperationDefinition):
     """
 
     name = "csv_head"
+    version: ClassVar[str] = "2"
     description = "Truncate CSV datasets to their first N rows"
     execute_as_tool: ClassVar[bool] = True
 
@@ -52,7 +53,7 @@ class CsvHead(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.dataset: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Input CSV dataset to truncate",
         ),
@@ -63,7 +64,7 @@ class CsvHead(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.dataset: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Truncated CSV dataset, one per input",
             derives_from={"inputs": ["dataset"]},
         ),
@@ -114,8 +115,8 @@ class CsvHead(OperationDefinition):
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Match output basenames and explicitly declare each dataset parent."""
         outputs = [path for path in inputs.file_outputs if path.endswith("_head.csv")]
-        # The input spec supplies finalized, materialized DataArtifacts.
-        sources = cast(list[DataArtifact], inputs.input_artifacts["dataset"])
+        # The input spec supplies finalized, materialized CSVArtifacts.
+        sources = cast(list[CSVArtifact], inputs.input_artifacts["dataset"])
         parent_ids = match_outputs_to_inputs_by_stem(
             outputs,
             [
@@ -127,7 +128,7 @@ class CsvHead(OperationDefinition):
         result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
         for file_path, parent_id in zip(outputs, parent_ids, strict=True):
             with open(file_path, "rb") as f:
-                draft = DataArtifact.draft(
+                draft = CSVArtifact.draft(
                     content=f.read(),
                     original_name=f"{source_by_id[parent_id].original_name}_head.csv",
                     step_number=inputs.step_number,

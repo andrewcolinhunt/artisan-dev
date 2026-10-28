@@ -32,7 +32,7 @@ packages:
 
 ```python
 from artisan.operations.base import OperationDefinition, PerArtifact
-from artisan.schemas import DataArtifact, InputSpec, OutputSpec
+from artisan.schemas import CSVArtifact, InputSpec, OutputSpec
 ```
 
 Use the [Python API index](../reference/python-api.md) to find the package that

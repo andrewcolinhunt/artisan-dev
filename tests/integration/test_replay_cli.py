@@ -11,7 +11,7 @@ import polars as pl
 import pytest
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.operations.curator import IngestData
+from artisan.operations.curator import IngestCSV
 from artisan.operations.examples import CsvHead, DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager, ReplayResult, StepStatus
 from artisan.schemas.enums import TablePath
@@ -46,10 +46,10 @@ def test_replay_cli_json_retains_committed_outcome(
         else:
             source_file = tmp_path / "invalid.csv"
             source_file.write_text("id,x\n0,replay-invalid-number\n")
-            ingested = manager.run(IngestData, inputs=[str(source_file)], compact=False)
+            ingested = manager.run(IngestCSV, inputs=[str(source_file)], compact=False)
             step = manager.run(
                 DataTransformer,
-                inputs={"dataset": ingested.output("data")},
+                inputs={"dataset": ingested.output("csv")},
                 compact=False,
             )
     expected = StepStatus.SUCCEEDED if successful else StepStatus.FAILED

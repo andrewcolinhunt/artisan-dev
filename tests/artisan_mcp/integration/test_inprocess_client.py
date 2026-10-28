@@ -52,7 +52,7 @@ class TestEndToEnd:
 
     def test_artifacts_and_provenance(self, make_app, invoke, seeded_run) -> None:
         app = make_app(delta_root=seeded_run.delta_root)
-        page = invoke(app, "artisan_query_artifacts", {"artifact_type": "data"})
+        page = invoke(app, "artisan_query_artifacts", {"artifact_type": "csv"})
         artifact_id = page["items"][0]["artifact_id"]
         graph = invoke(
             app, "artisan_get_provenance_graph", {"artifact_id": artifact_id}

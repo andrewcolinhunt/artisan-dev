@@ -101,7 +101,7 @@ data.
 | `list_runs` from `artisan.orchestration` | Run IDs and rollups | A rollup's `last_status` is not pipeline success. |
 | `inspect_pipeline`, `inspect_failures` from `artisan.visualization` | Step lifecycle and scoped failures | Failed-execution rows can be absent for a failed step. |
 | `inspect_step` from `artisan.visualization` | Accepted-artifact display | Shortened IDs/names are not exact artifact references or role mapping. |
-| `inspect_metrics`, `inspect_data` from `artisan.visualization` | Scoped metric display or CSV data | Metric floats round to three decimals by default; display rows do not establish exact thresholds, correspondence or complete criterion coverage. |
+| `inspect_metrics`, `inspect_csv` from `artisan.visualization` | Scoped metric display or CSV data | Metric floats round to three decimals by default; display rows do not establish exact thresholds, correspondence or complete criterion coverage. |
 | `read_metric_observations`, `assess_outcomes` from `artisan.visualization`, when installed | Exact selected metric values, artifact references and declared criteria | Requires an explicit `OutcomeSelection`; available evidence covers the accepted role, not missing upstream subjects. |
 | `compare_runs` from `artisan.visualization`, when installed | Paired changes and population coverage | Requires `ComparisonSpec` and explicit correspondence; caller declarations do not prove scientific comparability. |
 

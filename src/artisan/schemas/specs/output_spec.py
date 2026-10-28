@@ -41,7 +41,7 @@ class OutputSpec(BaseModel):
     Examples:
         # Data derived from specific input
         OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Processed data files",
             derives_from={"inputs": ["data"]},
         )
@@ -55,7 +55,7 @@ class OutputSpec(BaseModel):
 
         # Generative operation (no input lineage - e.g., random data generator)
         OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Randomly generated data",
             derives_from={"inputs": []},  # Explicit: no parents
         )

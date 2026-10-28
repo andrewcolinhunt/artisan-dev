@@ -52,7 +52,7 @@ def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
 
     artifact_data = {
         "artifact_id": ["art_0", "art_1", "art_2"],
-        "artifact_type": ["file_ref", "data", "metric"],
+        "artifact_type": ["file_ref", "csv", "metric"],
         "origin_step_number": [0, 1, 2],
         "metadata": ["{}", "{}", "{}"],
     }

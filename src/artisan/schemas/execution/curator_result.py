@@ -28,7 +28,7 @@ class ArtifactResult(BaseModel):
         success: Whether execution completed successfully.
         error: Error message if success is False.
         artifacts: Output role -> draft artifact list.
-            e.g. {"data": [DataArtifact(...), ...]}
+            e.g. {"data": [CSVArtifact(...), ...]}
         lineage: Explicit parent declarations keyed by output role. Every emitted
             role must be present; root roles explicitly contain an empty list.
         metadata: Extensibility escape hatch for additional data.

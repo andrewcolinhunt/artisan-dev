@@ -42,7 +42,7 @@ class DocstringOnlyOp(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.dataset: InputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             required=True,
             description="Input dataset for the fixture.",
         ),
@@ -50,7 +50,7 @@ class DocstringOnlyOp(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.dataset: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             description="Pass-through output for the fixture.",
             derives_from={"inputs": ["dataset"]},
         ),

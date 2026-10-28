@@ -904,15 +904,15 @@ class PipelineManager:
             staging_root="/data/staging",
         )
 
-        step0 = pipeline.run(IngestData, inputs=files)
-        step1 = pipeline.run(ScoreOp, inputs={"data": step0.output("data")})
+        step0 = pipeline.run(IngestCSV, inputs=files)
+        step1 = pipeline.run(ScoreOp, inputs={"data": step0.output("csv")})
 
         result = pipeline.finalize()
 
     Or as a context manager (finalize called automatically)::
 
         with PipelineManager.create(...) as pipeline:
-            pipeline.run(IngestData, inputs=files)
+            pipeline.run(IngestCSV, inputs=files)
         # finalize() called on exit
     """
 
@@ -2787,7 +2787,7 @@ class PipelineManager:
         returned inputs map the ``"file"`` role to artifact IDs in caller order;
         the verified-ID set avoids rereading content during preparation.
 
-        Only curator operations (IngestData, IngestFiles, etc.) accept
+        Only curator operations (IngestCSV, IngestFiles, etc.) accept
         raw paths. Creator operations must receive artifact references
         from a prior ingest step.
 
@@ -3249,8 +3249,8 @@ class PipelineManager:
 
         Example:
             pipeline = PipelineManager.create(...)
-            step0 = pipeline.run(IngestData, inputs=files)
-            step1 = pipeline.run(ScoreOp, inputs={"data": step0.output("data")})
+            step0 = pipeline.run(IngestCSV, inputs=files)
+            step1 = pipeline.run(ScoreOp, inputs={"data": step0.output("csv")})
             result = pipeline.finalize()
         """
         try:

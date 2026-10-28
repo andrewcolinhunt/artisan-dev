@@ -27,7 +27,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 _RUNNER_OUTPUTS: dict[str, OutputSpec] = {
     "result": OutputSpec(
-        artifact_type=ArtifactTypes.DATA,
+        artifact_type=ArtifactTypes.CSV,
         derives_from={"inputs": []},
     ),
 }

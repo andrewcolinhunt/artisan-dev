@@ -14,7 +14,7 @@ import pytest
 from pydantic import Field, SecretStr
 
 from artisan.errors import ArtifactIntegrityError, CommitError
-from artisan.operations.curator.ingest_data import IngestData
+from artisan.operations.curator.ingest_csv import IngestCSV
 from artisan.operations.curator.merge import Merge
 from artisan.operations.examples import CsvHead
 from artisan.operations.examples.data_generator import DataGenerator
@@ -284,7 +284,7 @@ def test_replay_multicommand_failed_attempt_then_success(tmp_path):
     assert list(Path(result.diagnostic_roots["working_root"]).rglob("tool_output.log"))
 
 
-@pytest.mark.parametrize("operation", [CsvHead, IngestData, Merge])
+@pytest.mark.parametrize("operation", [CsvHead, IngestCSV, Merge])
 def test_replay_command_and_both_curator_result_types(tmp_path, operation):
     manager = PipelineManager.create(
         "source",
@@ -292,7 +292,7 @@ def test_replay_command_and_both_curator_result_types(tmp_path, operation):
         str(tmp_path / "staging"),
         working_root=str(tmp_path / "work"),
     )
-    if operation is IngestData:
+    if operation is IngestCSV:
         source_file = tmp_path / "input.csv"
         source_file.write_text("x,y\n1,2\n")
         step = manager.run(operation, inputs=[str(source_file)], compact=False)
@@ -311,7 +311,7 @@ def test_replay_command_and_both_curator_result_types(tmp_path, operation):
     result = replay_execution(source, runtime=runtime)
     assert result.step_result.status == StepStatus.SUCCEEDED
     assert "current committed store" in result.reproducibility_notes[0]
-    if operation is IngestData:
+    if operation is IngestCSV:
         before = _read(runtime, TablePath.STEPS)
         source_file.write_text("x,y\nchanged,content\n")
         with pytest.raises(ArtifactIntegrityError):

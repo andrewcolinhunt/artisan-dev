@@ -39,7 +39,7 @@ def _record(
         compute_backend="local",
         compute_options_json="{}",
         output_roles_json='["data"]',
-        output_types_json='{"data":"data"}',
+        output_types_json='{"data":"csv"}',
     )
 
 
@@ -57,7 +57,7 @@ def _result(
             succeeded_count=1,
             failed_count=0,
             output_roles=frozenset({"data"}),
-            output_types={"data": "data"},
+            output_types={"data": "csv"},
             step_run_id=step_run_id,
         )
     if status == StepStatus.CANCELLED:
@@ -287,7 +287,7 @@ def _terminal(
         succeeded_count=succeeded,
         failed_count=failed,
         output_roles=frozenset({"data"}),
-        output_types={"data": "data"},
+        output_types={"data": "csv"},
         step_run_id=step_run_id,
     )
 
@@ -394,7 +394,7 @@ def test_current_reader_exposes_every_authoritative_status(
                 status=status,
                 disposition=StepDisposition.EXECUTED,
                 output_roles=frozenset({"data"}),
-                output_types={"data": "data"},
+                output_types={"data": "csv"},
                 step_run_id=step_run_id,
             )
         elif status == StepStatus.PARTIAL:
@@ -407,7 +407,7 @@ def test_current_reader_exposes_every_authoritative_status(
                 succeeded_count=1,
                 failed_count=1,
                 output_roles=frozenset({"data"}),
-                output_types={"data": "data"},
+                output_types={"data": "csv"},
                 step_run_id=step_run_id,
             )
         else:

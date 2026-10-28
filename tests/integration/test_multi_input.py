@@ -60,12 +60,12 @@ class DualInputLineage(OperationDefinition):
         result = "result"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.primary: InputSpec(artifact_type="data"),
+        InputRole.primary: InputSpec(artifact_type="csv"),
         InputRole.secondary: InputSpec(artifact_type="metric"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
@@ -115,7 +115,7 @@ class AssociatedMetricConsumer(OperationDefinition):
     """Single-input operation that reads associated metrics."""
 
     name = "associated_metric_consumer"
-    description = "Read associated metrics for input data artifacts"
+    description = "Read associated metrics for input CSV artifacts"
 
     class InputRole(StrEnum):
         primary = "primary"
@@ -125,13 +125,13 @@ class AssociatedMetricConsumer(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.primary: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             with_associated=("metric",),
         ),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["primary"]},
         ),
     }
@@ -283,7 +283,7 @@ class DualInputDataLineage(OperationDefinition):
     """Dual-input op accepting two data roles; pairing driven by per-step group_by.
 
     Used by the sibling-collision regression test, where both primary and
-    secondary are data artifacts from chained ``DataTransformer`` steps.
+    secondary are CSV artifacts from chained ``DataTransformer`` steps.
     Output bytes concatenate both inputs so each (primary, secondary) pair
     produces a distinct ``artifact_id``.
     """
@@ -299,12 +299,12 @@ class DualInputDataLineage(OperationDefinition):
         result = "result"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.primary: InputSpec(artifact_type="data"),
-        InputRole.secondary: InputSpec(artifact_type="data"),
+        InputRole.primary: InputSpec(artifact_type="csv"),
+        InputRole.secondary: InputSpec(artifact_type="csv"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
@@ -491,12 +491,12 @@ class DualInputCrossProduct(OperationDefinition):
         result = "result"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.primary: InputSpec(artifact_type="data"),
+        InputRole.primary: InputSpec(artifact_type="csv"),
         InputRole.secondary: InputSpec(artifact_type="metric"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
@@ -722,12 +722,12 @@ class DualInputName(OperationDefinition):
         result = "result"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.from_a: InputSpec(artifact_type="data"),
-        InputRole.from_b: InputSpec(artifact_type="data"),
+        InputRole.from_a: InputSpec(artifact_type="csv"),
+        InputRole.from_b: InputSpec(artifact_type="csv"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["from_a", "from_b"]},
         ),
     }

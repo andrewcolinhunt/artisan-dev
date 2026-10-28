@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -41,6 +41,7 @@ class DataTransformer(OperationDefinition):
     """
 
     name = "data_transformer"
+    version: ClassVar[str] = "2"
     description = "Transform CSV datasets by scaling and adding noise"
 
     class InputRole(StrEnum):
@@ -48,7 +49,7 @@ class DataTransformer(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Input CSV dataset to transform",
         ),
@@ -59,7 +60,7 @@ class DataTransformer(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Transformed CSV dataset file(s)",
             derives_from={"inputs": ["dataset"]},
         ),
@@ -113,7 +114,7 @@ class DataTransformer(OperationDefinition):
                         "original_name": artifact.original_name,
                     }
                     for artifact in cast(
-                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                        list[CSVArtifact], inputs.input_artifacts["dataset"]
                     )
                 ]
             )
@@ -183,7 +184,7 @@ class DataTransformer(OperationDefinition):
         return {"created_files": created_files, "outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build DataArtifact drafts from transformed CSV files."""
+        """Build CSVArtifact drafts from transformed CSV files."""
         raw = inputs.memory_outputs
 
         result = ArtifactResult(
@@ -200,7 +201,7 @@ class DataTransformer(OperationDefinition):
         )
         for output in raw["outputs"]:
             with open(output["path"], "rb") as f:
-                draft = DataArtifact.draft(
+                draft = CSVArtifact.draft(
                     content=f.read(),
                     original_name=output["original_name"],
                     step_number=inputs.step_number,

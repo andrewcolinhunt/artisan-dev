@@ -21,7 +21,7 @@ import pytest
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-from artisan.operations.curator import IngestData
+from artisan.operations.curator import IngestCSV
 from artisan.operations.examples import DataTransformer
 from artisan.orchestration import PipelineManager, StepStatus
 from artisan.storage import ArtifactStore
@@ -58,10 +58,10 @@ def _create_run(work_root: Path) -> tuple[str, str, str, str]:
         staging_root=str(work_root / "runs" / "staging"),
         working_root=str(work_root / "working"),
     ) as pipeline:
-        ingest = pipeline.run(IngestData, inputs=[str(csv_path)], name="ingest")
+        ingest = pipeline.run(IngestCSV, inputs=[str(csv_path)], name="ingest")
         transform = pipeline.run(
             DataTransformer,
-            inputs={"dataset": ingest.output("data")},
+            inputs={"dataset": ingest.output("csv")},
             name="transform",
         )
         run_id = pipeline.config.pipeline_run_id
@@ -69,7 +69,7 @@ def _create_run(work_root: Path) -> tuple[str, str, str, str]:
     assert transform.status is StepStatus.FAILED
     assert inspect_step(delta_root, 0, pipeline_run_id=run_id).height == 1
     artifact_ids = ArtifactStore(delta_root).provenance.load_artifact_ids_by_type(
-        "data", step_numbers=[0]
+        "csv", step_numbers=[0]
     )
     assert len(artifact_ids) == 1
     failures = inspect_failures(delta_root, pipeline_run_id=run_id)

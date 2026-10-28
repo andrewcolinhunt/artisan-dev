@@ -1,7 +1,7 @@
 """Integration tests for InteractiveFilter end-to-end workflow.
 
 Tests the full load-explore-filter-commit cycle against a real pipeline
-that produces data artifacts and metrics in a Delta store.
+that produces CSV artifacts and metrics in a Delta store.
 """
 
 from __future__ import annotations
@@ -59,7 +59,7 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, str]):
     filt = InteractiveFilter(delta_root)
     filt.load()
 
-    # wide_df should have 4 rows (one per data artifact)
+    # wide_df should have 4 rows (one per CSV artifact)
     assert filt.wide_df.height == 4
     assert "artifact_id" in filt.wide_df.columns
 
@@ -189,7 +189,7 @@ def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, str])
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Load with explicit step_numbers=[0] — only data artifacts from step 0
+    # Load with explicit step_numbers=[0] — only CSV artifacts from step 0
     filt = InteractiveFilter(delta_root)
     filt.load(step_numbers=[0])
 

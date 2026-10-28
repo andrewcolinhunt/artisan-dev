@@ -198,7 +198,7 @@ custom serialization.
 Override `_row_encoders()` / `_row_decoders()` only for columns whose stored
 form differs from the raw field value, such as a `list` field stored as a JSON
 string. Call `super()` so the base `metadata` handling stays in place.
-`DataArtifact` does this for its `columns` field:
+`CSVArtifact` does this for its `columns` field:
 
 ```python
 def _row_encoders(self) -> dict[str, Callable[[], Any]]:
@@ -257,7 +257,7 @@ Importing the class:
   framework-reserved table paths
 - For external types, validates one real relation-backed locator plus explicit
   verification and materialization hooks
-- Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.DATA_RECORD` works at runtime)
+- Registers `"data_record"` in `ArtifactTypes` (so `ArtifactTypes.CSV_RECORD` works at runtime)
 
 Invalid definitions raise `TypeError` or `ValueError` during import.
 
@@ -492,7 +492,7 @@ registration module in workers and inspection processes through
 
 Keep application definitions in the application package. Two layouts work:
 
-- **In the model file** (like `DataArtifact` does): keeps model and
+- **In the model file** (like `CSVArtifact` does): keeps model and
   registration together. Preferred for domain-layer types.
 - **In a registration module:** imports and registers the package's types in
   one place.

@@ -23,7 +23,7 @@ def _make_result(step_number: int = 0) -> StepResult:
         succeeded_count=5,
         failed_count=0,
         output_roles=frozenset(["data", "metrics"]),
-        output_types={"data": "data", "metrics": "metric"},
+        output_types={"data": "csv", "metrics": "metric"},
         duration_seconds=2.0,
     )
 
@@ -38,7 +38,7 @@ def _make_future(
     if output_roles is None:
         output_roles = frozenset(["data", "metrics"])
     if output_types is None:
-        output_types = {"data": "data", "metrics": "metric"}
+        output_types = {"data": "csv", "metrics": "metric"}
     if cf_future is None:
         cf_future = Future()
     return StepFuture(
@@ -71,7 +71,7 @@ class TestOutputRoles:
         output_types = future.output_types
         output_types["data"] = "changed"
 
-        assert future.output_types["data"] == "data"
+        assert future.output_types["data"] == "csv"
 
 
 class TestOutput:
@@ -84,7 +84,7 @@ class TestOutput:
         assert isinstance(ref, OutputReference)
         assert ref.source_step == 3
         assert ref.role == "data"
-        assert ref.artifact_type == "data"
+        assert ref.artifact_type == "csv"
 
     def test_output_invalid_role(self):
         """ValueError with available roles."""

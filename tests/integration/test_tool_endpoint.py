@@ -65,7 +65,7 @@ def test_pipeline_commits_artifacts_via_endpoint(tmp_path):
         )
     assert pipeline.finalize()["overall_success"]
     delta_root = pipeline.config.delta_root
-    data = read_table(delta_root, "artifacts/data")
+    data = read_table(delta_root, "artifacts/csvs")
     source_ids = get_execution_outputs(delta_root, 0, "datasets")
     sources = data.filter(pl.col("artifact_id").is_in(source_ids))
     expected = {
@@ -74,8 +74,8 @@ def test_pipeline_commits_artifacts_via_endpoint(tmp_path):
             row["artifact_id"],
             "dataset",
             "output",
-            "data",
-            "data",
+            "csv",
+            "csv",
             None,
         )
         for row in sources.iter_rows(named=True)

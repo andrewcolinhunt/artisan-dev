@@ -371,11 +371,9 @@ class _PolicyLeaf(CompositeDefinition):
     class OutputRole(StrEnum):
         DATASET = "dataset"
 
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        "dataset": InputSpec(artifact_type="data")
-    }
+    inputs: ClassVar[dict[str, InputSpec]] = {"dataset": InputSpec(artifact_type="csv")}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "dataset": OutputSpec(artifact_type="data")
+        "dataset": OutputSpec(artifact_type="csv")
     }
 
     class Params(BaseModel):

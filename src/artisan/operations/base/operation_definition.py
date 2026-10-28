@@ -129,7 +129,7 @@ class OperationDefinition(BaseModel):
     Example:
         outputs: ClassVar[dict[str, OutputSpec]] = {
             "processed_data": OutputSpec(
-                artifact_type=ArtifactTypes.DATA,
+                artifact_type=ArtifactTypes.CSV,
                 derives_from={"inputs": ["data"]},
             ),
             "scores": OutputSpec(

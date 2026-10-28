@@ -11,7 +11,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
     ModalComputeConfig,
@@ -39,6 +39,7 @@ class WaitTool(OperationDefinition):
     """
 
     name = "wait_tool"
+    version: ClassVar[str] = "2"
     description = "Count up once per second (live in Modal logs), then emit a marker"
 
     class InputRole(StrEnum):
@@ -46,7 +47,7 @@ class WaitTool(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.dataset: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Artifacts to fan out over — one tool run per artifact",
         ),
@@ -57,7 +58,7 @@ class WaitTool(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Marker recording the wait, the container hostname, and the source",
             derives_from={"inputs": ["dataset"]},
         ),
@@ -118,8 +119,8 @@ class WaitTool(OperationDefinition):
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Match marker basenames and explicitly declare each dataset parent."""
         outputs = [path for path in inputs.file_outputs if path.endswith(".csv")]
-        # The input spec supplies finalized, materialized DataArtifacts.
-        sources = cast(list[DataArtifact], inputs.input_artifacts["dataset"])
+        # The input spec supplies finalized, materialized CSVArtifacts.
+        sources = cast(list[CSVArtifact], inputs.input_artifacts["dataset"])
         parent_ids = match_outputs_to_inputs_by_stem(
             outputs,
             [
@@ -131,7 +132,7 @@ class WaitTool(OperationDefinition):
         result = ArtifactResult(artifacts={"output": []}, lineage={"output": []})
         for file_path, parent_id in zip(outputs, parent_ids, strict=True):
             with open(file_path, "rb") as f:
-                draft = DataArtifact.draft(
+                draft = CSVArtifact.draft(
                     content=f.read(),
                     original_name=f"{source_by_id[parent_id].original_name}_waited.csv",
                     step_number=inputs.step_number,

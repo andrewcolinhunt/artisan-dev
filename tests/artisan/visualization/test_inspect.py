@@ -17,7 +17,7 @@ from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtisanError, ErrorCode
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import (
@@ -28,7 +28,7 @@ from artisan.storage.core.table_schemas import (
 from artisan.utils.log_paths import failure_log_relative_path
 from artisan.visualization.inspect import (
     _build_details,
-    inspect_data,
+    inspect_csv,
     inspect_failures,
     inspect_metrics,
     inspect_pipeline,
@@ -79,10 +79,10 @@ def _format_root(tmp_path: Path) -> None:
 )
 def test_inspection_distinguishes_current_history_and_origin(tmp_path, status):
     root = str(tmp_path / "delta")
-    data = DataArtifact.draft(b"value\n1\n", "old.csv", 0).finalize()
+    data = CSVArtifact.draft(b"value\n1\n", "old.csv", 0).finalize()
     metric = MetricArtifact.draft({"value": 1}, "old.json", 0).finalize()
     previous, _ = commit_outputs(root, artifacts=[data, metric])
-    new_data = DataArtifact.draft(b"value\n2\n", "new.csv", 0).finalize()
+    new_data = CSVArtifact.draft(b"value\n2\n", "new.csv", 0).finalize()
     new_metric = MetricArtifact.draft({"value": 2}, "new.json", 0).finalize()
     usable = status in {"succeeded", "partial"}
     current, _ = commit_outputs(
@@ -94,7 +94,7 @@ def test_inspection_distinguishes_current_history_and_origin(tmp_path, status):
     )
     assert inspect_step(root, 0, step_run_id=previous).height == 2
     assert inspect_metrics(root, step_run_id=previous)["value"].to_list() == [1]
-    assert inspect_data(root, step_run_id=previous)["value"].to_list() == [1]
+    assert inspect_csv(root, step_run_id=previous)["value"].to_list() == [1]
     current_step = inspect_step(root, 0, pipeline_run_id="source-run")
     current_metrics = inspect_metrics(root, pipeline_run_id="source-run")
     assert current_step.height == (2 if usable else 0)
@@ -106,20 +106,18 @@ def test_inspection_distinguishes_current_history_and_origin(tmp_path, status):
     )
     if usable:
         assert current_metrics["value"].to_list() == [2]
-        assert inspect_data(root, pipeline_run_id="source-run")["value"].to_list() == [
-            2
-        ]
+        assert inspect_csv(root, pipeline_run_id="source-run")["value"].to_list() == [2]
     else:
         with pytest.raises(ValueError, match="No matching"):
-            inspect_data(root, pipeline_run_id="source-run")
+            inspect_csv(root, pipeline_run_id="source-run")
         with pytest.raises(ValueError, match="No matching"):
-            inspect_data(root, step_run_id=current)
+            inspect_csv(root, step_run_id=current)
     assert inspect_step(root, 0).height == (4 if usable else 2)
     assert inspect_metrics(root)["value"].to_list() == ([2, 1] if usable else [1])
-    assert sorted(inspect_data(root)["value"].to_list()) == ([1, 2] if usable else [1])
+    assert sorted(inspect_csv(root)["value"].to_list()) == ([1, 2] if usable else [1])
 
 
-@pytest.mark.parametrize("reader", [inspect_step, inspect_metrics, inspect_data])
+@pytest.mark.parametrize("reader", [inspect_step, inspect_metrics, inspect_csv])
 @pytest.mark.parametrize("selection", ["unknown", "wrong_run", "wrong_step"])
 def test_inspection_rejects_inconsistent_explicit_attempt(tmp_path, reader, selection):
     root = str(tmp_path / "delta")
@@ -203,7 +201,7 @@ def _write_index(delta_root: Path, rows: list[dict]) -> None:
 
 
 def _write_data(delta_root: Path, rows: list[dict]) -> None:
-    _write_delta(delta_root, "artifacts/data", rows, DATA_SCHEMA)
+    _write_delta(delta_root, "artifacts/csvs", rows, DATA_SCHEMA)
 
 
 def _write_metrics(delta_root: Path, rows: list[dict]) -> None:
@@ -325,19 +323,19 @@ def test_inspect_pipeline_basic(tmp_path: Path) -> None:
         [
             {
                 "artifact_id": "a1",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
             {
                 "artifact_id": "a2",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
             {
                 "artifact_id": "a3",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
@@ -365,7 +363,7 @@ def test_inspect_pipeline_basic(tmp_path: Path) -> None:
     result = inspect_pipeline(delta_root)
     assert result.shape[0] == 2
     assert result.columns == ["step", "operation", "status", "produced", "duration"]
-    assert result["produced"][0] == "3 data"
+    assert result["produced"][0] == "3 csv"
     assert result["produced"][1] == "3 metric"
 
 
@@ -406,7 +404,7 @@ def test_inspect_pipeline_skipped_steps(tmp_path: Path) -> None:
         [
             {
                 "artifact_id": "a1",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
@@ -443,7 +441,7 @@ def test_inspect_pipeline_cancelled_steps(tmp_path: Path) -> None:
         [
             {
                 "artifact_id": "a1",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
@@ -485,7 +483,7 @@ def test_inspect_pipeline_failed_steps(tmp_path: Path) -> None:
         [
             {
                 "artifact_id": "a1",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
@@ -727,13 +725,13 @@ def test_inspect_step_data_artifacts(tmp_path: Path) -> None:
         [
             {
                 "artifact_id": "a1",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
             {
                 "artifact_id": "a2",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
@@ -817,7 +815,7 @@ def test_inspect_step_empty(tmp_path: Path) -> None:
         [
             {
                 "artifact_id": "a1",
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             },
@@ -945,11 +943,11 @@ def test_inspect_metrics_empty_store_is_empty(tmp_path: Path) -> None:
 
 
 # ======================================================================
-# inspect_data tests
+# inspect_csv tests
 # ======================================================================
 
 
-def test_inspect_data_by_name(tmp_path: Path) -> None:
+def test_inspect_csv_by_name(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
     csv = _csv_bytes("x,y,z", ["1,2,3", "4,5,6"])
     _write_data(
@@ -970,12 +968,12 @@ def test_inspect_data_by_name(tmp_path: Path) -> None:
         ],
     )
 
-    result = inspect_data(delta_root, name="my_data")
+    result = inspect_csv(delta_root, name="my_data")
     assert result.shape == (2, 3)
     assert result.columns == ["x", "y", "z"]
 
 
-def test_inspect_data_by_step(tmp_path: Path) -> None:
+def test_inspect_csv_by_step(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
     csv0 = _csv_bytes("a,b", ["1,2"])
     csv1 = _csv_bytes("a,b", ["3,4"])
@@ -1009,12 +1007,12 @@ def test_inspect_data_by_step(tmp_path: Path) -> None:
         ],
     )
 
-    result = inspect_data(delta_root, step_number=0)
+    result = inspect_csv(delta_root, step_number=0)
     assert result.shape[0] == 1
     assert "_source" in result.columns
 
 
-def test_inspect_data_not_found(tmp_path: Path) -> None:
+def test_inspect_csv_not_found(tmp_path: Path) -> None:
     delta_root = tmp_path / "delta"
     _write_data(
         delta_root,
@@ -1035,7 +1033,7 @@ def test_inspect_data_not_found(tmp_path: Path) -> None:
     )
 
     with pytest.raises(ValueError, match="No matching"):
-        inspect_data(delta_root, name="nonexistent")
+        inspect_csv(delta_root, name="nonexistent")
 
 
 # ======================================================================
@@ -1045,17 +1043,17 @@ def test_inspect_data_not_found(tmp_path: Path) -> None:
 
 def test_build_details_data_rows_and_cols() -> None:
     row = {"row_count": 10, "columns": json.dumps(["x", "y", "z"])}
-    assert _build_details("data", row) == "10 rows, 3 cols"
+    assert _build_details("csv", row) == "10 rows, 3 cols"
 
 
 def test_build_details_data_size_fallback() -> None:
     row = {"row_count": None, "columns": None, "size_bytes": 1_500_000}
-    assert _build_details("data", row) == "1.5 MB"
+    assert _build_details("csv", row) == "1.5 MB"
 
 
 def test_build_details_data_no_info() -> None:
     row = {"row_count": None, "columns": None, "size_bytes": None}
-    assert _build_details("data", row) == "-"
+    assert _build_details("csv", row) == "-"
 
 
 def test_build_details_file_ref_size() -> None:
@@ -1122,7 +1120,7 @@ def test_run_scoped_inspection_projects_cached_outputs_without_cross_run_leaks(
         5,
         pipeline_run_id=store.current_run,
     )
-    data = inspect_data(
+    data = inspect_csv(
         store.root,
         name="shared",
         step_number=0,
@@ -1130,7 +1128,7 @@ def test_run_scoped_inspection_projects_cached_outputs_without_cross_run_leaks(
     )
 
     assert pipeline["step"].to_list() == [0, 5]
-    assert pipeline["produced"].to_list() == ["1 data", "1 metric"]
+    assert pipeline["produced"].to_list() == ["1 csv", "1 metric"]
     assert cached_step["name"].to_list() == ["source_metric"]
     assert metrics.select("step", "score").row(0) == (5, 0.9)
     assert data["value"].to_list() == [1]
@@ -1170,7 +1168,7 @@ def test_inspect_pipeline_counts_distinct_artifacts_across_roles(
 
     pipeline = inspect_pipeline(store.root, pipeline_run_id=store.current_run)
 
-    assert pipeline.filter(pl.col("step") == 0)["produced"].item() == "1 data"
+    assert pipeline.filter(pl.col("step") == 0)["produced"].item() == "1 csv"
 
 
 def test_inspect_metrics_preserves_reuse_at_multiple_current_steps(

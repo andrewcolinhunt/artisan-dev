@@ -1,4 +1,4 @@
-"""Data artifact schema for generic CSV-based example operations.
+"""CSV artifact schema for generic CSV-based example operations.
 
 Provides a domain-agnostic artifact type that stores tabular CSV data
 with parsed column names and row counts.
@@ -22,8 +22,8 @@ from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.utils.filename import strip_extensions
 
 
-class DataArtifact(Artifact):
-    """Generic data artifact for CSV content.
+class CSVArtifact(Artifact):
+    """Artifact for CSV content.
 
     Stores raw CSV bytes along with parsed column names and row count.
     Designed as a domain-agnostic artifact type for example operations.
@@ -41,7 +41,7 @@ class DataArtifact(Artifact):
         "metadata": pl.String,
     }
 
-    artifact_type: str = Field(default="data", frozen=True)
+    artifact_type: str = Field(default="csv", frozen=True)
     content: bytes | None = Field(
         default=None,
         description="Raw CSV bytes. None for ID-only artifacts.",
@@ -105,7 +105,7 @@ class DataArtifact(Artifact):
         actual = (self.size_bytes, self.columns, self.row_count)
         if actual != expected:
             msg = (
-                "DataArtifact descriptors do not match content: "
+                "CSVArtifact descriptors do not match content: "
                 f"expected size/columns/rows {expected!r}, got {actual!r}"
             )
             raise ValueError(msg)
@@ -118,8 +118,8 @@ class DataArtifact(Artifact):
         step_number: int,
         metadata: dict[str, Any] | None = None,
         external_path: str | None = None,
-    ) -> DataArtifact:
-        """Create a draft DataArtifact, parsing CSV headers and row count.
+    ) -> CSVArtifact:
+        """Create a draft CSVArtifact, parsing CSV headers and row count.
 
         Args:
             content: Raw CSV bytes.
@@ -129,7 +129,7 @@ class DataArtifact(Artifact):
             external_path: Optional path to the original external file.
 
         Returns:
-            Draft DataArtifact with columns and row_count populated.
+            Draft CSVArtifact with columns and row_count populated.
         """
         columns, row_count = _parse_csv_metadata(content)
         return cls(
@@ -184,9 +184,9 @@ def _parse_csv_metadata(content: bytes) -> tuple[list[str], int]:
     return headers, row_count
 
 
-class DataTypeDef(ArtifactTypeDef):
-    """Type definition for DataArtifact."""
+class CSVTypeDef(ArtifactTypeDef):
+    """Type definition for CSVArtifact."""
 
-    key = "data"
-    table_path = "artifacts/data"
-    model = DataArtifact
+    key = "csv"
+    table_path = "artifacts/csvs"
+    model = CSVArtifact

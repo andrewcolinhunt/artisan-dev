@@ -22,17 +22,17 @@ from artisan.operations.examples.slow_transformer import (
 from artisan.operations.examples.wait_tool import WaitTool
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas import (
-    DataArtifact,
+    CSVArtifact,
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
 )
 
 
-def _datasets(directory: Path) -> list[DataArtifact]:
+def _datasets(directory: Path) -> list[CSVArtifact]:
     directory.mkdir()
     artifacts = [
-        DataArtifact.draft(
+        CSVArtifact.draft(
             content=make_csv(rows=3, seed=seed),
             original_name="shared.csv",
             step_number=0,

@@ -185,7 +185,7 @@ is rejected. `skip_cache=True` at the pipeline or step and an operation's
 | Single upstream | `{"role": step.output("role")}` | Wire from a StepResult |
 | Named lookup | `{"role": output("step_name", "role")}` | Wire by step name (preferred) |
 | Multiple streams | `{"a": output("x", "r"), "b": output("y", "r")}` | Merge or multi-input |
-| Raw file paths | `["/path/a.csv", "/path/b.csv"]` | Curator ingest only (IngestData) |
+| Raw file paths | `["/path/a.csv", "/path/b.csv"]` | Curator ingest only (IngestCSV) |
 | List of OutputReferences | `[output("a", "r"), output("b", "r")]` | Merge with auto-flattened streams |
 
 **Prefer `output("step_name", "role")` over `step.output("role")`** in complex
@@ -225,7 +225,7 @@ pipeline.run(DataGenerator, name="generate", params={"count": 4, "seed": 42})
 ### File Ingest
 
 ```python
-pipeline.run(IngestData, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
+pipeline.run(IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
 ```
 
 ### Linear Pipeline
@@ -370,7 +370,7 @@ class TransformAndScore(CompositeDefinition):
         DATA = "data"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "data": InputSpec(artifact_type="data", required=True),
+        "data": InputSpec(artifact_type="csv", required=True),
     }
 
     class OutputRole(StrEnum):
@@ -512,7 +512,7 @@ pipeline = PipelineManager.resume(
 
 - **Always call `finalize()`** after using `submit()` — otherwise the pipeline
   hangs on exit
-- **Use `IngestData` for file paths** — raw paths are only accepted by curator
+- **Use `IngestCSV` for file paths** — raw paths are only accepted by curator
   operations, not creators
 - **Role names must match** the operation's `InputRole`/`OutputRole` enum values
   exactly

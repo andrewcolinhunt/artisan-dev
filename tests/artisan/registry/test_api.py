@@ -64,6 +64,17 @@ class TestListOperations:
 
 
 class TestDescribe:
+    def test_csv_ingester_has_one_current_registry_contract(self) -> None:
+        names = [summary.name for summary in list_operations()]
+        assert names.count("ingest_csv") == 1
+        assert "ingest_data" not in names
+        metadata = describe("ingest_csv")
+        assert metadata.output_roles == ["csv"]
+        assert metadata.outputs["csv"].artifact_type == "csv"
+        with pytest.raises(ArtisanError) as error:
+            describe("ingest_data")
+        assert error.value.code == "unknown_operation"
+
     def test_returns_full_metadata_for_known_op(self) -> None:
         meta = describe("data_transformer")
         assert meta.name == "data_transformer"
@@ -88,14 +99,14 @@ class TestDescribe:
     def test_input_spec_metadata_populated(self) -> None:
         meta = describe("data_transformer")
         spec = meta.inputs["dataset"]
-        assert spec.artifact_type == "data"
+        assert spec.artifact_type == "csv"
         assert spec.required is True
         assert spec.materialize is True
 
     def test_output_spec_metadata_populated(self) -> None:
         meta = describe("data_transformer")
         spec = meta.outputs["dataset"]
-        assert spec.artifact_type == "data"
+        assert spec.artifact_type == "csv"
 
 
 class TestExamples:

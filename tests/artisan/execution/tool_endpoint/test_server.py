@@ -34,7 +34,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.operations.examples import WaitTool
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.operation_config.compute import (
     ComputeProvider,
@@ -79,7 +79,7 @@ class FailTool(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": []},
         ),
     }
@@ -102,11 +102,11 @@ class CatTool(OperationDefinition):
     name: ClassVar[str] = "cat_tool_test"
     description: ClassVar[str] = "Copies its input to copied.txt"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.source: InputSpec(artifact_type="data", required=True),
+        InputRole.source: InputSpec(artifact_type="csv", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["source"]},
         ),
     }
@@ -131,7 +131,7 @@ class NoopTool(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": []},
         ),
     }
@@ -163,7 +163,7 @@ class _CloudInputTool(OperationDefinition):
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["source"]},
         ),
     }
@@ -198,7 +198,7 @@ class _CloudInputTool(OperationDefinition):
                 with open(file_path, "rb") as f:
                     content = f.read()
                 drafts.append(
-                    DataArtifact.draft(
+                    CSVArtifact.draft(
                         content=content,
                         original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,

@@ -81,7 +81,7 @@ def test_recovery_writes_one_batch_and_repeated_pass_does_no_data_work(
     [
         "published",
         "planned",
-        "table:artifacts/data",
+        "table:artifacts/csvs",
         "table:artifacts/index",
         "table:orchestration/executions",
         "table:provenance/execution_edges",
