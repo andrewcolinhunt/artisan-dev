@@ -111,7 +111,8 @@ class DeltaSnapshot:
         self.partitions = self.delta.metadata().partition_columns
         self._validate_contract()
         actions = cast(
-            pl.DataFrame, pl.from_arrow(self.delta.get_add_actions(flatten=True))
+            pl.DataFrame,
+            pl.from_arrow(pa.table(self.delta.get_add_actions(flatten=True))),
         )
         self.files = tuple(
             _ActiveFile(
@@ -446,7 +447,7 @@ def append_table_files(
                 writer.close()
         if actions:
             snapshot.delta.create_write_transaction(
-                actions,
+                list(actions),
                 mode="append",
                 schema=snapshot.delta.schema(),
                 partition_by=snapshot.partitions,
