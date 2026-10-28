@@ -248,7 +248,7 @@ to save an assessment or comparison beyond the response-size limit.
 For a pipeline that generates and transforms three datasets:
 
 ```text
-DataGenerator → three data artifacts → DataTransformer → three transformed artifacts
+DataGenerator → three CSV artifacts → DataTransformer → three transformed artifacts
 ```
 
 1. The orchestrator dispatches `DataGenerator` as step 0. Its worker produces

@@ -20,7 +20,7 @@ from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -60,7 +60,7 @@ class ConcreteIngest(IngestFiles):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.data: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             description="Test output",
             derives_from={"inputs": ["file"]},
         ),
@@ -71,7 +71,7 @@ class ConcreteIngest(IngestFiles):
     ) -> Artifact:
         content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
-        return DataArtifact.draft(
+        return CSVArtifact.draft(
             content=content,
             original_name=filename,
             step_number=step_number,

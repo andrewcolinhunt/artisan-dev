@@ -149,7 +149,7 @@ Curators can define abstract base classes by leaving `name` empty. The abstract
 base implements `execute_curator` with shared logic, and concrete subclasses
 set `name`, `outputs`, `OutputRole`, and a conversion method. The IngestFiles
 base class uses this pattern: it handles hydration and iteration over file
-references, while subclasses like IngestData implement only the
+references, while subclasses like IngestCSV implement only the
 `convert_file()` method that produces the target artifact type.
 
 ---

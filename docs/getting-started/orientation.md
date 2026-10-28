@@ -31,7 +31,7 @@ Artisan provides five built-in artifact types:
 
 | Type | Class | Purpose |
 |------|-------|---------|
-| `data` | `DataArtifact` | Tabular data (CSV content stored as bytes) |
+| `csv` | `CSVArtifact` | CSV content stored as bytes, with columns and row count |
 | `metric` | `MetricArtifact` | Computed measurements (JSON-serializable key-value pairs) |
 | `config` | `ExecutionConfigArtifact` | JSON parameters, optionally containing artifact references |
 | `file_ref` | `FileRefArtifact` | Complete files of any size, including existing inputs and generated outputs, at verified local or object-store locations |
@@ -62,7 +62,7 @@ There are two kinds:
 
 The framework ships with example creators (`DataGenerator`, `DataTransformer`,
 `MetricCalculator`) and built-in curators (`Filter`, `Merge`, `IngestFiles`,
-`IngestData`, `IngestPipelineStep`). There is also an `InteractiveFilter` tool
+`IngestCSV`, `IngestPipelineStep`). There is also an `InteractiveFilter` tool
 for exploratory filtering in notebooks, though it is not a pipeline operation.
 
 Bundle operations you repeatedly run together, such as transform followed by

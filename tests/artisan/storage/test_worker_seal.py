@@ -65,7 +65,8 @@ def test_seal_retains_recognized_crash_temporary(backend_fs):
 
 
 @pytest.mark.parametrize(
-    "filename", ["../data.parquet", "executions.parquet", "unknown.parquet"]
+    "filename",
+    ["../csvs.parquet", "data.parquet", "executions.parquet", "unknown.parquet"],
 )
 def test_seal_rejects_unsafe_or_unregistered_inventory_filename(tmp_path, filename):
     from fsspec.implementations.local import LocalFileSystem

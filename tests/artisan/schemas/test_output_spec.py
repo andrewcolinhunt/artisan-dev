@@ -15,10 +15,10 @@ class TestOutputSpec:
     def test_create_data_output(self):
         """Create a data output without an explicit lineage declaration."""
         spec = OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             description="Processed data files",
         )
-        assert spec.artifact_type == ArtifactTypes.DATA
+        assert spec.artifact_type == ArtifactTypes.CSV
         assert spec.derives_from is None
 
     def test_default_values(self):
@@ -47,7 +47,7 @@ class TestOutputSpec:
 
     def test_frozen(self):
         """OutputSpec is immutable."""
-        spec = OutputSpec(artifact_type=ArtifactTypes.DATA)
+        spec = OutputSpec(artifact_type=ArtifactTypes.CSV)
         with pytest.raises(Exception):  # Pydantic raises ValidationError for frozen
             spec.artifact_type = ArtifactTypes.METRIC
 
@@ -58,7 +58,7 @@ class TestDerivesFrom:
     def test_derives_from_none(self):
         """Allow an absent lineage declaration at the schema level."""
         spec = OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
         )
         assert spec.derives_from is None
 
@@ -90,7 +90,7 @@ class TestDerivesFrom:
     def test_derives_from_generative(self):
         """Test OutputSpec with generative operation (no parents)."""
         spec = OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},  # Explicit: no parents
         )
         assert spec.derives_from == {"inputs": []}
@@ -197,7 +197,7 @@ class TestArtifactTypeValidator:
             ArtifactTypes.METRIC,
             ArtifactTypes.FILE_REF,
             ArtifactTypes.CONFIG,
-            ArtifactTypes.DATA,
+            ArtifactTypes.CSV,
         ],
     )
     def test_registered_key_accepted(self, artifact_type: str):

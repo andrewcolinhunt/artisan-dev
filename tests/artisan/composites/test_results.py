@@ -27,7 +27,7 @@ class TestCompositeStepHandle:
 
         handle = CompositeStepHandle(
             step_future=mock_future,
-            operation_outputs={"result": OutputSpec(artifact_type="data")},
+            operation_outputs={"result": OutputSpec(artifact_type="csv")},
         )
         ref = handle.output("result")
         assert ref.output_reference is out_ref
@@ -36,7 +36,7 @@ class TestCompositeStepHandle:
     def test_output_unknown_role_raises(self):
         handle = CompositeStepHandle(
             step_future=MagicMock(),
-            operation_outputs={"result": OutputSpec(artifact_type="data")},
+            operation_outputs={"result": OutputSpec(artifact_type="csv")},
         )
         with pytest.raises(ValueError, match="Unknown output role"):
             handle.output("nonexistent")

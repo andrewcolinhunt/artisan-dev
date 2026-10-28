@@ -19,7 +19,7 @@ from artisan.errors import (
     OutcomeSelectionError,
 )
 from artisan.orchestration.engine.step_tracker import StepTracker
-from artisan.schemas import DataArtifact, MetricArtifact, TablePath
+from artisan.schemas import CSVArtifact, MetricArtifact, TablePath
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
@@ -301,11 +301,11 @@ def test_diagnostic_attempt_is_excluded(tmp_path) -> None:
         assess_outcomes(str(root), selection, _spec())
 
 
-@pytest.mark.parametrize("declared_type", ["data", "any"])
+@pytest.mark.parametrize("declared_type", ["csv", "any"])
 def test_non_metric_declared_or_actual_role_is_rejected(
     tmp_path, declared_type
 ) -> None:
-    artifact = DataArtifact.draft(b"value\n1\n", "data.csv", 0).finalize()
+    artifact = CSVArtifact.draft(b"value\n1\n", "data.csv", 0).finalize()
     selection = append_metric_attempt(
         tmp_path / "store", [artifact], declared_type=declared_type
     )

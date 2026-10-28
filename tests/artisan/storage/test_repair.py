@@ -331,7 +331,7 @@ def test_control_plan_disagreement_is_conflict(repair_env, monkeypatch):
 
 def test_unplanned_staging_without_plan_is_reported(repair_env):
     _, fs, _, _, staging_root = repair_env
-    path = f"{staging_root}/unknown/data.parquet"
+    path = f"{staging_root}/unknown/csvs.parquet"
     fs.makedirs(f"{staging_root}/unknown", exist_ok=True)
     with fs.open(path, "wb") as stream:
         pl.DataFrame({"value": [1]}).write_parquet(stream)
@@ -339,7 +339,7 @@ def test_unplanned_staging_without_plan_is_reported(repair_env):
     report = _repair(repair_env)
 
     assert [(item.evidence_id, item.classification) for item in report.items] == [
-        ("staging:unknown/data.parquet", "unplanned")
+        ("staging:unknown/csvs.parquet", "unplanned")
     ]
 
 
@@ -448,7 +448,7 @@ def test_conflicting_rows_can_be_abandoned_when_plan_identity_matches(
     pl.DataFrame(
         {
             "artifact_id": [plan.step_run_id],
-            "artifact_type": ["data"],
+            "artifact_type": ["csv"],
             "origin_step_number": [0],
             "metadata": ["{}"],
             "logical_commit_id": ["input_registration:" + "f" * 32],
@@ -615,7 +615,7 @@ def _worker_candidate(
 
     from artisan.execution.recording.parquet_writer import _stage_artifacts
     from artisan.execution.recording.recorder import build_execution_edges
-    from artisan.schemas.artifact.data import DataArtifact
+    from artisan.schemas.artifact.csv import CSVArtifact
     from artisan.schemas.execution.command_record import CommandRecording
     from artisan.schemas.execution.replay import ReplaySnapshot
     from artisan.schemas.orchestration.step_lifecycle import (
@@ -648,7 +648,7 @@ def _worker_candidate(
                     {
                         "output": artifact.artifact_type
                         if artifact is not None
-                        else "data"
+                        else "csv"
                     }
                 ),
             )
@@ -691,7 +691,7 @@ def _worker_candidate(
     fs.makedirs(directory, exist_ok=True)
     artifact = (
         artifact
-        or DataArtifact.draft(
+        or CSVArtifact.draft(
             content=b"value\n1\n", original_name="result.csv", step_number=0
         ).finalize()
     )
@@ -746,7 +746,7 @@ def test_recover_worker_keeps_source_history_and_is_idempotent(
         source = read_committed(
             delta_root, TablePath.STEPS, fs=fs, storage_options=options
         ).sort("state_sequence")
-        assert json.loads(source["output_types_json"][0]) == {"output": "data"}
+        assert json.loads(source["output_types_json"][0]) == {"output": "csv"}
     before = _root_bytes(fs, directory)
     report = _repair(repair_env, recover_staging=True)
     assert [item.classification for item in report.items] == ["recoverable"]
@@ -943,7 +943,7 @@ def test_recovery_rejects_invalid_semantics_even_with_valid_inventory(
     _, fs, _, delta_root, staging_root = repair_env
     _, directory, _ = _worker_candidate(repair_env)
     filename = {
-        "content_identity": "data.parquet",
+        "content_identity": "csvs.parquet",
         "missing_reference": "execution_edges.parquet",
         "diagnostics": "executions.parquet",
     }[mutation]
@@ -1030,11 +1030,11 @@ def test_recovery_batches_workers_and_hydrates_shared_artifact_once(
 
 
 def test_recovery_batch_rejects_reference_declared_only_by_another_worker(repair_env):
-    from artisan.schemas.artifact.data import DataArtifact
+    from artisan.schemas.artifact.csv import CSVArtifact
 
     _, fs, options, delta_root, staging_root = repair_env
     _, first, _ = _worker_candidate(repair_env, execution_id="e" * 32)
-    other = DataArtifact.draft(
+    other = CSVArtifact.draft(
         content=b"different\n2\n", original_name="other.csv", step_number=0
     ).finalize()
     _worker_candidate(repair_env, execution_id="f" * 32, artifact=other)
@@ -1130,7 +1130,7 @@ def test_audit_checks_owners_without_any_completed_plans(repair_env):
     pl.DataFrame(
         {
             "artifact_id": ["a" * 32],
-            "artifact_type": ["data"],
+            "artifact_type": ["csv"],
             "origin_step_number": [0],
             "metadata": ["{}"],
             "logical_commit_id": ["input_registration:" + "b" * 32],
@@ -1279,7 +1279,7 @@ def test_recovery_allows_visible_gap_backed_by_abandoned_physical_snapshot(repai
         total_count=1,
         succeeded_count=1,
         output_roles=frozenset({"output"}),
-        output_types={"output": "data"},
+        output_types={"output": "csv"},
     )
     candidate = tracker.prepare_terminal_candidate(
         step_id,

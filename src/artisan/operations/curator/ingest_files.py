@@ -1,7 +1,7 @@
 """Abstract base for file ingestion curator operations.
 
 Subclasses implement ``convert_file()`` to turn FileRefArtifacts into
-domain-specific artifacts (e.g. DataArtifact).
+domain-specific artifacts (e.g. CSVArtifact).
 """
 
 from __future__ import annotations

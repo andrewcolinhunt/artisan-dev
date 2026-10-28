@@ -262,7 +262,7 @@ def test_commit_plan_rejects_conflicting_global_artifact_rows(tmp_path):
     conflicting_index = pl.DataFrame(
         {
             "artifact_id": ["a" * 32, "a" * 32],
-            "artifact_type": ["metric", "data"],
+            "artifact_type": ["metric", "csv"],
             "origin_step_number": [0, 0],
             "metadata": ["{}", "{}"],
         },

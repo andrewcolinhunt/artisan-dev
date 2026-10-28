@@ -122,10 +122,10 @@ input read into `file_bytes`; the output spec declares
 `derives_from={"inputs": ["file"]}`.
 
 ```python
-from artisan.schemas import ArtifactResult, DataArtifact, LineageMapping
+from artisan.schemas import ArtifactResult, CSVArtifact, LineageMapping
 
 drafts = [
-    DataArtifact.draft(
+    CSVArtifact.draft(
         content=file_bytes,
         original_name="dataset.csv",
         step_number=step_number,
@@ -240,7 +240,7 @@ class NameFilter(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.passthrough: InputSpec(
-            artifact_type=ArtifactTypes.DATA, hydrate=False, materialize=False
+            artifact_type=ArtifactTypes.CSV, hydrate=False, materialize=False
         ),
     }
 
@@ -268,7 +268,7 @@ class NameFilter(OperationDefinition):
         ids = pt_df["artifact_id"].to_list()
 
         # Load artifacts from the store and filter by name
-        artifacts = artifact_store.get_artifacts_by_type(ids, ArtifactTypes.DATA)
+        artifacts = artifact_store.get_artifacts_by_type(ids, ArtifactTypes.CSV)
         passed = [
             aid for aid, art in artifacts.items()
             if art.original_name and self.params.contains in art.original_name
@@ -329,28 +329,28 @@ external files. The base class iterates over inputs:
 
 ```python
 from artisan.operations.curator import IngestFiles
-from artisan.schemas import DataArtifact, FileRefArtifact
+from artisan.schemas import CSVArtifact, FileRefArtifact
 
 
-class IngestCSV(IngestFiles):
-    name = "ingest_csv"
+class IngestProjectCSV(IngestFiles):
+    name = "ingest_project_csv"
 
     class OutputRole(StrEnum):
-        data = auto()
+        csv = auto()
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.data: OutputSpec(
-            artifact_type="data",
+        OutputRole.csv: OutputSpec(
+            artifact_type="csv",
             derives_from={"inputs": ["file"]},
         ),
     }
 
     def convert_file(
         self, file_ref: FileRefArtifact, step_number: int, *, fs=None
-    ) -> DataArtifact:
+    ) -> CSVArtifact:
         content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
-        return DataArtifact.draft(
+        return CSVArtifact.draft(
             content=content,
             original_name=filename,
             step_number=step_number,
@@ -360,7 +360,9 @@ class IngestCSV(IngestFiles):
 Usage:
 
 ```python
-pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
+pipeline.run(
+    operation=IngestProjectCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"]
+)
 # Raw file paths are auto-promoted to FileRefArtifact before dispatch
 ```
 
@@ -459,15 +461,15 @@ pipeline.run(
 # Output role is always "merged": output("merge", "merged")
 ```
 
-### IngestData
+### IngestCSV
 
-Import files from disk as `DataArtifact` objects:
+Import CSV files from disk as `CSVArtifact` objects:
 
 ```python
-from artisan.operations.curator import IngestData
+from artisan.operations.curator import IngestCSV
 
-pipeline.run(operation=IngestData, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
-# Output role: "data" → output("ingest", "data")
+pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
+# Output role: "csv" → output("ingest", "csv")
 ```
 
 ### IngestPipelineStep
@@ -486,7 +488,7 @@ pipeline.run(
         "source_run_id": "other_pipeline_20260919_120000_a1b2c3d4",
         "source_step": 3,
         "include_prior_steps": True,  # optional: include existing steps 0 through 3
-        "artifact_type": "data",  # optional: filter by type
+        "artifact_type": "csv",  # optional: filter by type
     },
 )
 ```
@@ -524,7 +526,7 @@ filtered result as a pipeline step:
 from artisan.operations.curator import InteractiveFilter
 
 filt = InteractiveFilter(delta_root="/runs/my_pipeline/delta")
-filt.load(step_numbers=[1], artifact_type="data")
+filt.load(step_numbers=[1], artifact_type="csv")
 
 # Explore metrics
 filt.wide_df   # one row per artifact, metrics as columns

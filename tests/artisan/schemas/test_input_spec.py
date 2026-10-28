@@ -14,8 +14,8 @@ class TestInputSpec:
 
     def test_create_with_artifact_type(self):
         """Create InputSpec with explicit artifact type."""
-        spec = InputSpec(artifact_type=ArtifactTypes.DATA, required=True)
-        assert spec.artifact_type == ArtifactTypes.DATA
+        spec = InputSpec(artifact_type=ArtifactTypes.CSV, required=True)
+        assert spec.artifact_type == ArtifactTypes.CSV
         assert spec.required is True
 
     def test_default_values(self):
@@ -27,20 +27,20 @@ class TestInputSpec:
 
     def test_accepts_type_exact_match(self):
         """accepts_type returns True for exact match."""
-        spec = InputSpec(artifact_type=ArtifactTypes.DATA)
-        assert spec.accepts_type(ArtifactTypes.DATA) is True
+        spec = InputSpec(artifact_type=ArtifactTypes.CSV)
+        assert spec.accepts_type(ArtifactTypes.CSV) is True
         assert spec.accepts_type(ArtifactTypes.METRIC) is False
 
     def test_accepts_type_any(self):
         """accepts_type returns True for any type when artifact_type is ANY."""
         spec = InputSpec(artifact_type=ArtifactTypes.ANY)
-        assert spec.accepts_type(ArtifactTypes.DATA) is True
+        assert spec.accepts_type(ArtifactTypes.CSV) is True
         assert spec.accepts_type(ArtifactTypes.METRIC) is True
         assert spec.accepts_type(ArtifactTypes.FILE_REF) is True
 
     def test_frozen(self):
         """InputSpec is immutable."""
-        spec = InputSpec(artifact_type=ArtifactTypes.DATA)
+        spec = InputSpec(artifact_type=ArtifactTypes.CSV)
         with pytest.raises(Exception):  # Pydantic raises ValidationError for frozen
             spec.artifact_type = ArtifactTypes.METRIC
 
@@ -56,9 +56,9 @@ class TestInputSpec:
 
     def test_hash_includes_with_associated(self):
         """Hash function includes with_associated field."""
-        spec1 = InputSpec(artifact_type=ArtifactTypes.DATA)
+        spec1 = InputSpec(artifact_type=ArtifactTypes.CSV)
         spec2 = InputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             with_associated=("data_annotation",),
         )
         assert hash(spec1) != hash(spec2)
@@ -86,9 +86,9 @@ class TestMaterializeAs:
 
     def test_hash_includes_materialize_as(self):
         """Hash function includes materialize_as field."""
-        spec1 = InputSpec(artifact_type=ArtifactTypes.DATA)
+        spec1 = InputSpec(artifact_type=ArtifactTypes.CSV)
         spec2 = InputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             materialize_as=".dat",
         )
         assert hash(spec1) != hash(spec2)
@@ -108,7 +108,7 @@ class TestArtifactTypeValidator:
             ArtifactTypes.METRIC,
             ArtifactTypes.FILE_REF,
             ArtifactTypes.CONFIG,
-            ArtifactTypes.DATA,
+            ArtifactTypes.CSV,
         ],
     )
     def test_registered_key_accepted(self, artifact_type: str):
@@ -128,7 +128,7 @@ class TestArtifactTypeValidator:
 
 @pytest.mark.parametrize(
     "overrides",
-    [{"artifact_type": "data"}, {"hydrate": False}, {"materialize": True}],
+    [{"artifact_type": "csv"}, {"hydrate": False}, {"materialize": True}],
 )
 def test_resolve_references_rejects_invalid_delivery_mode(overrides: dict) -> None:
     values = {"artifact_type": "config", "materialize": False, **overrides}

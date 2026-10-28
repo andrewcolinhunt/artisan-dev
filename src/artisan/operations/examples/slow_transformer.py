@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -39,6 +39,7 @@ class SlowTransformer(OperationDefinition):
     """
 
     name: ClassVar[str] = "slow_transformer"
+    version: ClassVar[str] = "2"
     description: ClassVar[str] = "Sleep per artifact to demonstrate dispatch timing"
 
     class InputRole(StrEnum):
@@ -46,7 +47,7 @@ class SlowTransformer(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Input dataset (content is ignored — only the count matters)",
         ),
@@ -57,7 +58,7 @@ class SlowTransformer(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Timing marker CSV recording sleep duration",
             derives_from={"inputs": ["dataset"]},
         ),
@@ -89,7 +90,7 @@ class SlowTransformer(OperationDefinition):
                         "original_name": artifact.original_name,
                     }
                     for artifact in cast(
-                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                        list[CSVArtifact], inputs.input_artifacts["dataset"]
                     )
                 ]
             )
@@ -132,11 +133,11 @@ class SlowTransformer(OperationDefinition):
         return {"created_files": created_files, "outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build DataArtifact drafts from timing marker CSVs."""
+        """Build CSVArtifact drafts from timing marker CSVs."""
         result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
         for output in inputs.memory_outputs["outputs"]:
             with open(output["path"], "rb") as f:
-                draft = DataArtifact.draft(
+                draft = CSVArtifact.draft(
                     content=f.read(),
                     original_name=output["original_name"],
                     step_number=inputs.step_number,

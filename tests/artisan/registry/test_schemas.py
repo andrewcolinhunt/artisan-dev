@@ -83,14 +83,14 @@ class TestFieldPrecedence:
 
             inputs: ClassVar[dict[str, InputSpec]] = {
                 InputRole.dataset: InputSpec(
-                    artifact_type=ArtifactTypes.DATA,
+                    artifact_type=ArtifactTypes.CSV,
                     required=True,
                     description="x",
                 ),
             }
             outputs: ClassVar[dict[str, OutputSpec]] = {
                 OutputRole.dataset: OutputSpec(
-                    artifact_type=ArtifactTypes.DATA,
+                    artifact_type=ArtifactTypes.CSV,
                     description="x",
                     derives_from={"inputs": ["dataset"]},
                 ),

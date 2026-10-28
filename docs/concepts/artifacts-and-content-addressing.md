@@ -78,7 +78,7 @@ The framework defines five built-in artifact types:
 |------|---------------|----------------|---------------------|
 | **Metric** | Computed properties (scores, statistics, counts) | JSON-encoded bytes | Queryable structured data, often aggregated across runs |
 | **Config** | Execution parameters and tool configurations | JSON-encoded bytes | Can reference other artifacts via `$artifact` patterns |
-| **Data** | Generic tabular data (CSV) | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
+| **CSV** | CSV tabular data | Raw CSV bytes | Captures schema metadata (columns, row count) at creation |
 | **File ref** | Complete external files, including existing inputs and generated outputs | Digest and size descriptor (bytes stay at a verified location) | Keeps files of any size outside content tables |
 | **Appendable** | Individual records in a shared JSONL file | Metadata only (each record lives in the JSONL file) | Many records share one file; each is addressed by `record_id` |
 

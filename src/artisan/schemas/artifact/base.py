@@ -332,7 +332,7 @@ class Artifact(BaseModel):
 
     def _row_encoders(self) -> dict[str, Callable[[], Any]]:
         """``to_row`` encoders for columns whose stored form differs from the
-        raw field value. Subclasses extend via ``super()`` (e.g. DataArtifact
+        raw field value. Subclasses extend via ``super()`` (e.g. CSVArtifact
         adds its ``columns`` JSON encoding)."""
         return {"metadata": lambda: metadata_to_json(self.metadata)}
 

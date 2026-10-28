@@ -36,7 +36,7 @@ class SimpleOperation(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }
@@ -63,7 +63,7 @@ class PositionalOperation(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }
@@ -90,7 +90,7 @@ class ShellTool(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }
@@ -122,7 +122,7 @@ class FlagOp(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }
@@ -180,15 +180,15 @@ def _define_operation_with_lineage(
             result = auto()
 
         inputs: ClassVar[dict[str, InputSpec]] = {
-            InputRole.source: InputSpec(artifact_type=ArtifactTypes.DATA),
+            InputRole.source: InputSpec(artifact_type=ArtifactTypes.CSV),
         }
         outputs: ClassVar[dict[str, OutputSpec]] = {
             OutputRole.intermediate: OutputSpec(
-                artifact_type=ArtifactTypes.DATA,
+                artifact_type=ArtifactTypes.CSV,
                 derives_from={"inputs": ["source"]},
             ),
             OutputRole.result: OutputSpec(
-                artifact_type=ArtifactTypes.DATA,
+                artifact_type=ArtifactTypes.CSV,
                 derives_from=lineage,
             ),
         }
@@ -695,7 +695,7 @@ class TestRoleEnumValidation:
                 inputs: ClassVar[dict[str, InputSpec]] = {}
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
-                        artifact_type=ArtifactTypes.DATA,
+                        artifact_type=ArtifactTypes.CSV,
                         derives_from={"inputs": []},
                     ),
                 }
@@ -713,11 +713,11 @@ class TestRoleEnumValidation:
 
                 name: ClassVar[str] = "no_input_role"
                 inputs: ClassVar[dict[str, InputSpec]] = {
-                    "data": InputSpec(artifact_type=ArtifactTypes.DATA),
+                    "data": InputSpec(artifact_type=ArtifactTypes.CSV),
                 }
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
-                        artifact_type=ArtifactTypes.DATA,
+                        artifact_type=ArtifactTypes.CSV,
                         derives_from={"inputs": ["data"]},
                     ),
                 }
@@ -740,7 +740,7 @@ class TestRoleEnumValidation:
                 inputs: ClassVar[dict[str, InputSpec]] = {}
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
-                        artifact_type=ArtifactTypes.DATA,
+                        artifact_type=ArtifactTypes.CSV,
                         derives_from={"inputs": []},
                     ),
                 }
@@ -761,11 +761,11 @@ class TestRoleEnumValidation:
 
                 name: ClassVar[str] = "mismatched_input"
                 inputs: ClassVar[dict[str, InputSpec]] = {
-                    "data": InputSpec(artifact_type=ArtifactTypes.DATA),
+                    "data": InputSpec(artifact_type=ArtifactTypes.CSV),
                 }
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     "result": OutputSpec(
-                        artifact_type=ArtifactTypes.DATA,
+                        artifact_type=ArtifactTypes.CSV,
                         derives_from={"inputs": ["data"]},
                     ),
                 }
@@ -1053,9 +1053,9 @@ class TestIntrospectionPayloads:
         meta = DataTransformer.to_metadata()
         assert meta.source_module.startswith("artisan.operations.examples")
         assert "scale_factor" in meta.params_schema["properties"]
-        assert meta.inputs["dataset"].artifact_type == "data"
+        assert meta.inputs["dataset"].artifact_type == "csv"
         assert meta.inputs["dataset"].materialize is True
-        assert meta.outputs["dataset"].artifact_type == "data"
+        assert meta.outputs["dataset"].artifact_type == "csv"
 
     def test_to_metadata_parameter_less_op_yields_empty_params_schema(self) -> None:
         from artisan.operations.curator.merge import Merge
@@ -1176,7 +1176,7 @@ class TestExecuteAsTool:
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {
                 OutputRole.result: OutputSpec(
-                    artifact_type=ArtifactTypes.DATA,
+                    artifact_type=ArtifactTypes.CSV,
                     derives_from={"inputs": []},
                 ),
             }

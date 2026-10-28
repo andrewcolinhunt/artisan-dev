@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from artisan.execution.recording.parquet_writer import StagingResult
-from artisan.operations.curator.ingest_data import IngestData
+from artisan.operations.curator.ingest_csv import IngestCSV
 from artisan.orchestration import PipelineManager, replay_execution
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.enums import TablePath
@@ -39,7 +39,7 @@ def test_curator_replay_cancellation_commits_no_worker_outputs(
     with PipelineManager.create(
         "source", str(tmp_path / "delta"), str(tmp_path / "staging")
     ) as source:
-        original = source.run(IngestData, inputs=[str(source_file)], compact=False)
+        original = source.run(IngestCSV, inputs=[str(source_file)], compact=False)
         assert original.status is StepStatus.SUCCEEDED
     runtime = RuntimeEnvironment(
         delta_root=str(tmp_path / "delta"),
@@ -113,7 +113,7 @@ def test_unknown_cancellation_preserves_terminal_winner_during_persistence(
         "staging_root": str(tmp_path / "staging"),
     }
     with PipelineManager.create("source", **roots) as source:
-        source.run(IngestData, inputs=[str(source_file)], compact=False)
+        source.run(IngestCSV, inputs=[str(source_file)], compact=False)
     runtime = RuntimeEnvironment(
         delta_root=roots["delta_root"],
         staging_root=str(tmp_path / "debug" / "staging"),
@@ -191,7 +191,7 @@ def test_unknown_cancellation_preserves_terminal_winner_during_persistence(
         result = replay.step_result
     else:
         with PipelineManager.create("ordinary", **roots) as pipeline:
-            future = pipeline.submit(IngestData, name="custom", compact=False)
+            future = pipeline.submit(IngestCSV, name="custom", compact=False)
             result = future.result(timeout=10)
             assert future.status is result.status
             assert len(pipeline) == 1

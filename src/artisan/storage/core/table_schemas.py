@@ -92,7 +92,7 @@ ARTIFACT_EDGES_SCHEMA = {
 
 ARTIFACT_INDEX_SCHEMA = {
     "artifact_id": pl.String,  # PK
-    "artifact_type": pl.String,  # data, metric, file_ref, config
+    "artifact_type": pl.String,  # csv, metric, file_ref, config
     "origin_step_number": pl.Int32,  # Step of the first committed artifact row
     "metadata": pl.String,  # JSON - additional data
 }

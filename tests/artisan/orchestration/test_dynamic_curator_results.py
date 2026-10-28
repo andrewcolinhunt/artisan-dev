@@ -19,7 +19,7 @@ from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
 from artisan.operations.curator.merge import Merge
 from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.orchestration.pipeline_manager import PipelineManager
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
@@ -51,7 +51,7 @@ class DynamicCurator(OperationDefinition):
             []
             if self.params.empty
             else [
-                DataArtifact.draft(b"value\n1\n", "result.csv", step_number=step_number)
+                CSVArtifact.draft(b"value\n1\n", "result.csv", step_number=step_number)
             ]
         )
         if self.params.heterogeneous:
@@ -79,7 +79,7 @@ class StaticCurator(DynamicCurator):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         role: OutputSpec(
-            artifact_type="data", required=False, derives_from={"inputs": []}
+            artifact_type="csv", required=False, derives_from={"inputs": []}
         )
         for role in ("found", "empty")
     }
@@ -108,7 +108,7 @@ def _config(root: Path, run: str = "dynamic-run") -> PipelineConfig:
 @pytest.mark.parametrize(
     ("empty", "heterogeneous", "expected"),
     [
-        (False, False, {"found": "data"}),
+        (False, False, {"found": "csv"}),
         (False, True, {"found": ArtifactTypes.ANY}),
         (True, False, {}),
     ],
@@ -194,7 +194,7 @@ def test_static_curator_retains_empty_roles_and_metadata(tmp_path):
     with PipelineManager(_config(tmp_path)) as pipeline:
         result = pipeline.run(StaticCurator, params={"empty": True}, compact=False)
         assert result.status == StepStatus.SUCCEEDED, result.error
-        assert result.output_types == {"found": "data", "empty": "data"}
+        assert result.output_types == {"found": "csv", "empty": "csv"}
         assert result.metadata["authored"] == {"selection": ["exact-source"]}
         state = pipeline._step_tracker.current_state(result.step_run_id)
         assert json.loads(state.compute_options_json)["dynamic_output_roles"] is False
@@ -223,7 +223,7 @@ def test_ingest_public_result_preserves_exact_source_metadata(tmp_path):
     source_step, _ = commit_outputs(
         str(source),
         artifacts=[
-            DataArtifact.draft(b"source", "source.csv", step_number=0).finalize()
+            CSVArtifact.draft(b"source", "source.csv", step_number=0).finalize()
         ],
     )
     with PipelineManager(_config(tmp_path)) as pipeline:
@@ -237,7 +237,7 @@ def test_ingest_public_result_preserves_exact_source_metadata(tmp_path):
             compact=False,
         )
         assert result.status == StepStatus.SUCCEEDED, result.error
-        assert result.output_types == {"data": "data"}
+        assert result.output_types == {"data": "csv"}
         assert result.metadata["ingest_source"] == {
             "pipeline_run_id": "source-run",
             "source_step": 0,
@@ -312,7 +312,7 @@ def test_dynamic_summary_must_match_plan_before_publication(
     def forged(*args, **kwargs):
         types, metadata = original(*args, **kwargs)
         if change == "role":
-            types = {"invented": "data"}
+            types = {"invented": "csv"}
         elif change == "type":
             types = {"found": "metric"}
         else:

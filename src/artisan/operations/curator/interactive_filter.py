@@ -146,7 +146,7 @@ class InteractiveFilter:
             step_numbers: Only load primary artifacts from these steps.
                 None means all matching artifacts.
             artifact_type: Only load primary artifacts of this type
-                (e.g. "data"). None means all non-metric artifacts.
+                (e.g. "csv"). None means all non-metric artifacts.
             pipeline_run_id: Run whose accepted artifacts and metrics to load.
                 None selects the newest run from the steps table.
 

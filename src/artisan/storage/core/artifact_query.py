@@ -25,7 +25,7 @@ class ArtifactRef(BaseModel):
 
     Attributes:
         artifact_id: The artifact's identifier.
-        artifact_type: Registered artifact type (data, metric, file_ref, …).
+        artifact_type: Registered artifact type (csv, metric, file_ref, …).
         origin_step_number: The step number that produced the artifact.
         current_step_number: The artifact's logical step in a run-scoped
             projection. None for an unscoped global query.

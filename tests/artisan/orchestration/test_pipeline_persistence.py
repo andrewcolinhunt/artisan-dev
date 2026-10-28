@@ -32,11 +32,11 @@ class MockOp(OperationDefinition):
 
     name: ClassVar[str] = "MockOp"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.data: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
         OutputRole.metrics: OutputSpec(
@@ -61,7 +61,7 @@ class IngestMockOp(OperationDefinition):
     name: ClassVar[str] = "Ingest"
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     class Params(BaseModel):

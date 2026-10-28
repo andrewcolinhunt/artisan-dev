@@ -17,7 +17,7 @@ from artisan.schemas import (
     PreprocessInput,
 )
 from artisan.schemas.artifact import ExecutionConfigArtifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 
 
 def _setup_grouped_inputs(
@@ -36,7 +36,7 @@ def _setup_grouped_inputs(
     with open(data_path, "wb") as fh:
         fh.write(csv_content)
 
-    data_artifact = DataArtifact.draft(
+    data_artifact = CSVArtifact.draft(
         content=csv_content,
         original_name="dataset_00000.csv",
         step_number=0,

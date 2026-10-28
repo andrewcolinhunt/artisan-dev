@@ -25,11 +25,11 @@ def _make_valid_composite(
     """Dynamically create a valid CompositeDefinition subclass."""
     if inputs is None:
         inputs = {
-            "data": InputSpec(artifact_type="data", required=True),
+            "data": InputSpec(artifact_type="csv", required=True),
         }
     if outputs is None:
         outputs = {
-            "result": OutputSpec(artifact_type="data"),
+            "result": OutputSpec(artifact_type="csv"),
         }
 
     # Build class body as a string and exec it to get proper class syntax
@@ -119,7 +119,7 @@ class TestValidation:
                     OUT = "out"
 
                 outputs: ClassVar[dict[str, OutputSpec]] = {
-                    "out": OutputSpec(artifact_type="data"),
+                    "out": OutputSpec(artifact_type="csv"),
                 }
 
     def test_missing_output_role_enum_raises(self):
@@ -129,7 +129,7 @@ class TestValidation:
                 name = "bad_no_output_role"
 
                 outputs: ClassVar[dict[str, OutputSpec]] = {
-                    "out": OutputSpec(artifact_type="data"),
+                    "out": OutputSpec(artifact_type="csv"),
                 }
 
                 def compose(self, ctx):
@@ -145,7 +145,7 @@ class TestValidation:
                     WRONG = "wrong"
 
                 outputs: ClassVar[dict[str, OutputSpec]] = {
-                    "out": OutputSpec(artifact_type="data"),
+                    "out": OutputSpec(artifact_type="csv"),
                 }
 
                 def compose(self, ctx):
@@ -161,10 +161,10 @@ class TestValidation:
                     OUT = "out"
 
                 inputs: ClassVar[dict[str, InputSpec]] = {
-                    "data": InputSpec(artifact_type="data"),
+                    "data": InputSpec(artifact_type="csv"),
                 }
                 outputs: ClassVar[dict[str, OutputSpec]] = {
-                    "out": OutputSpec(artifact_type="data"),
+                    "out": OutputSpec(artifact_type="csv"),
                 }
 
                 def compose(self, ctx):
@@ -183,10 +183,10 @@ class TestValidation:
                     OUT = "out"
 
                 inputs: ClassVar[dict[str, InputSpec]] = {
-                    "data": InputSpec(artifact_type="data"),
+                    "data": InputSpec(artifact_type="csv"),
                 }
                 outputs: ClassVar[dict[str, OutputSpec]] = {
-                    "out": OutputSpec(artifact_type="data"),
+                    "out": OutputSpec(artifact_type="csv"),
                 }
 
                 def compose(self, ctx):
@@ -212,7 +212,7 @@ class TestValidation:
 
             inputs: ClassVar[dict[str, InputSpec]] = {}
             outputs: ClassVar[dict[str, OutputSpec]] = {
-                "out": OutputSpec(artifact_type="data"),
+                "out": OutputSpec(artifact_type="csv"),
             }
 
             def compose(self, ctx):
@@ -239,10 +239,10 @@ class TestParams:
                 OUT = "out"
 
             inputs: ClassVar[dict[str, InputSpec]] = {
-                "data": InputSpec(artifact_type="data"),
+                "data": InputSpec(artifact_type="csv"),
             }
             outputs: ClassVar[dict[str, OutputSpec]] = {
-                "out": OutputSpec(artifact_type="data"),
+                "out": OutputSpec(artifact_type="csv"),
             }
 
             class Params(BaseModel):
@@ -265,7 +265,7 @@ class TestParams:
                 OUT = "out"
 
             outputs: ClassVar[dict[str, OutputSpec]] = {
-                "out": OutputSpec(artifact_type="data"),
+                "out": OutputSpec(artifact_type="csv"),
             }
 
             class Params(BaseModel):

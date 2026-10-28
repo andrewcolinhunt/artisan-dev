@@ -44,7 +44,7 @@ class ArtifactStore:
 
         Args:
             base_path: Root URI/path containing artifact and framework
-                Delta tables (e.g. ``file_refs/``, ``data/``,
+                Delta tables (e.g. ``file_refs/``, ``csvs/``,
                 ``artifact_index/``).
             fs: Filesystem implementation (LocalFileSystem, S3FileSystem,
                 etc.). Defaults to ``LocalFileSystem()`` when None.
@@ -614,7 +614,7 @@ class ArtifactStore:
 
         Args:
             artifact_id: Content-addressed artifact identifier.
-            artifact_type: Artifact type string (e.g. ``"data"``).
+            artifact_type: Artifact type string (e.g. ``"csv"``).
             step_number: Pipeline step that produced this artifact.
 
         Returns:

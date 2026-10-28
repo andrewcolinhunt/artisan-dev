@@ -5,6 +5,17 @@ User-facing changes are recorded here using
 
 ## [Unreleased]
 
+### Changed
+
+- **Breaking: explicit CSV artifact contract and store format 8.** Replace
+  `DataArtifact`, `IngestData`, and `inspect_data` with `CSVArtifact`, `IngestCSV`,
+  and `inspect_csv`. The registered type and built-in ingestion output role are
+  now `csv`; CSV content lives in `artifacts/csvs`. The old names have no aliases.
+  Start fresh Delta and staging roots; older stores and staging cannot be reused
+  with format 8. Keep them with their matching Artisan version to inspect or
+  export their contents before re-ingesting into a new store. CSV parsing
+  behavior is unchanged.
+
 ## [0.2.0] - 2026-10-23
 
 This release changes the operation, runner, and storage contracts. Before

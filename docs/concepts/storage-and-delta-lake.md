@@ -12,21 +12,23 @@ Every supported Delta root contains `_artisan/store.json` with the exact format
 contract:
 
 ```json
-{"store_format":7,"artifact_identity":1,"cache_identity":2}
+{"store_format":8,"artifact_identity":1,"cache_identity":2}
 ```
 
-Format 7 uses `file_ref` for complete external files and requires
-operation-declared lineage. Earlier stores, including format 6, and their sealed
-staging are rejected before cache reuse or recovery. Deploy updated workers
-and tool endpoints with the release. Cache reuse and replay preserve explicit
-edges; authors must still bump operation versions when changing lineage
-semantics.
+Format 8 names the built-in CSV type `csv` and stores its content in
+`artifacts/csvs`. Complete external files use `file_ref`, and operations declare
+output lineage. Earlier stores, including format 7, and their sealed staging
+are rejected before cache reuse or recovery. Deploy updated workers and tool
+endpoints with the release. Cache reuse and replay preserve explicit edges;
+authors must still bump operation versions when changing lineage semantics.
 
 Writers publish this manifest only after initializing an empty root. Readers
 validate it before opening framework state. A missing, malformed, older, newer,
-or partially matching manifest fails closed. Start a new root for this release;
-there is no migration, fallback reader, or manifest-edit upgrade. Keep an older
-root with its matching Artisan version. Opening it does not migrate or clean it.
+or partially matching manifest fails closed. Start fresh Delta and staging roots
+for this release; there is no migration, fallback reader, or manifest-edit
+upgrade. Keep older roots with their matching Artisan version to inspect or
+export their contents before re-ingesting into a new store. Never attach older
+staging to a format-8 Delta root. Opening an older root does not migrate or clean it.
 
 ---
 
@@ -63,7 +65,7 @@ delta_root/
 │   ├── locations/          Verified artifact identity → URI mappings
 │   ├── metrics/            Metric values (built-in)
 │   ├── configs/            Execution configuration snapshots (built-in)
-│   ├── data/               Generic tabular data (built-in)
+│   ├── csvs/               CSV content (built-in)
 │   ├── file_refs/          Complete external files (built-in)
 │   ├── appendables/        Appendable JSONL records (built-in)
 │   └── [custom_type]/      Domain types registered at runtime
@@ -144,7 +146,7 @@ immutable logical commit plan. It also stages the terminal step snapshot.
                               staging_root/
                               ├── 1_tool_b/
 Worker A ──writes──>          │   ├── ab/cd/{run_id_abcd...}/
-Worker B ──writes──>          │   │   ├── data.parquet
+Worker B ──writes──>          │   │   ├── csvs.parquet
 Worker C ──writes──>          │   │   ├── metrics.parquet
                               │   │   ├── index.parquet
                               │   │   ├── artifact_edges.parquet

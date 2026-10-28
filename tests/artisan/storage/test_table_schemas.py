@@ -5,7 +5,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -26,7 +26,7 @@ from artisan.storage.core.table_schemas import (
     get_schema,
 )
 
-DATA_SCHEMA = DataArtifact.POLARS_SCHEMA
+DATA_SCHEMA = CSVArtifact.POLARS_SCHEMA
 METRICS_SCHEMA = MetricArtifact.POLARS_SCHEMA
 FILE_REFS_SCHEMA = FileRefArtifact.POLARS_SCHEMA
 CONFIGS_SCHEMA = ExecutionConfigArtifact.POLARS_SCHEMA
@@ -187,8 +187,8 @@ class TestArtifactTypeDefTablePaths:
     """Tests for artifact type -> table path mapping via registry."""
 
     def test_data_table_path(self):
-        """ArtifactTypeDef maps data -> artifacts/data."""
-        assert ArtifactTypeDef.get_table_path("data") == "artifacts/data"
+        """ArtifactTypeDef maps data -> artifacts/csvs."""
+        assert ArtifactTypeDef.get_table_path("csv") == "artifacts/csvs"
 
     def test_file_ref_table_path(self):
         """ArtifactTypeDef maps file_ref -> artifacts/file_refs."""
@@ -416,7 +416,7 @@ class TestArtifactEdgesSchema:
             "execution_run_id": ["e" * 32],
             "source_artifact_id": ["s" * 32],
             "target_artifact_id": ["t" * 32],
-            "source_artifact_type": ["data"],
+            "source_artifact_type": ["csv"],
             "target_artifact_type": ["metric"],
             "source_role": ["data"],
             "target_role": ["energy"],
@@ -425,7 +425,7 @@ class TestArtifactEdgesSchema:
         }
         df = pl.DataFrame(data, schema=ARTIFACT_EDGES_SCHEMA)
         assert df.shape == (1, 9)
-        assert df["source_artifact_type"][0] == "data"
+        assert df["source_artifact_type"][0] == "csv"
         assert df["target_artifact_type"][0] == "metric"
         assert df["group_id"][0] is None
         assert df["step_boundary"][0] is True
@@ -436,7 +436,7 @@ class TestArtifactEdgesSchema:
             "execution_run_id": ["e" * 32],
             "source_artifact_id": ["m" * 32],
             "target_artifact_id": ["g" * 32],
-            "source_artifact_type": ["data"],
+            "source_artifact_type": ["csv"],
             "target_artifact_type": ["group"],
             "source_role": ["input_data"],
             "target_role": ["comparison_group"],
@@ -471,7 +471,7 @@ class TestArtifactEdgesSchema:
             "execution_run_id": ["e" * 32, "e" * 32],
             "source_artifact_id": ["s" * 32, "t" * 32],
             "target_artifact_id": ["u" * 32, "u" * 32],
-            "source_artifact_type": ["data", "data"],
+            "source_artifact_type": ["csv", "csv"],
             "target_artifact_type": ["metric", "metric"],
             "source_role": ["data", "data"],
             "target_role": ["energy", "energy"],

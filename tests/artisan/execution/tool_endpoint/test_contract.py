@@ -559,7 +559,7 @@ def test_checked_whole_step_cache_retains_source_without_endpoint(
             status=StepStatus.SUCCEEDED,
             disposition=StepDisposition.EXECUTED,
             output_roles=frozenset({"output"}),
-            output_types={"output": "data"},
+            output_types={"output": "csv"},
             step_run_id="a" * 32,
         ),
         source_step_run_id="a" * 32,

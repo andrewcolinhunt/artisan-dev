@@ -25,7 +25,7 @@ from artisan.utils.hashing import canonical_json_bytes
 class FileRefArtifact(Artifact):
     """Artifact referencing a complete external file of any size.
 
-    Unlike content-embedding artifacts (DataArtifact, MetricArtifact),
+    Unlike content-embedding artifacts (CSVArtifact, MetricArtifact),
     this stores a pointer to the file rather than its bytes. The
     ``content_hash`` verifies the raw file bytes. It differs from the artifact
     ID, which also includes the artifact type and semantic metadata. Both

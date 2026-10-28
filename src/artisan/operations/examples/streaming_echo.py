@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
@@ -34,6 +34,7 @@ class StreamingEcho(OperationDefinition):
     """
 
     name = "streaming_echo"
+    version: ClassVar[str] = "2"
     description = "Echo numbered lines via run_command for streaming demos"
 
     inputs: ClassVar[dict[str, Any]] = {}
@@ -43,7 +44,7 @@ class StreamingEcho(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Marker recording how many lines were emitted",
             derives_from={"inputs": []},
         ),
@@ -91,14 +92,14 @@ class StreamingEcho(OperationDefinition):
         return {"lines": self.params.seconds}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build a DataArtifact from the marker file."""
+        """Build a CSVArtifact from the marker file."""
         drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".csv"):
                 with open(file_path, "rb") as f:
                     content = f.read()
                 drafts.append(
-                    DataArtifact.draft(
+                    CSVArtifact.draft(
                         content=content,
                         original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,
