@@ -34,7 +34,7 @@ def validate_persistable_uri(uri: str) -> None:
 
 
 def open_external(uri: str, fs: Any = None) -> BinaryIO:
-    """Open an external URI as a binary stream."""
+    """Open an external URI without a backend payload read-ahead cache."""
     scheme = urlsplit(uri).scheme
     protocols = getattr(fs, "protocol", ()) if fs is not None else ()
     if isinstance(protocols, str):
@@ -47,7 +47,7 @@ def open_external(uri: str, fs: Any = None) -> BinaryIO:
         resolved_fs, path = resolve_fs(uri, storage=None)
     else:
         resolved_fs, path = fs, uri
-    return cast(BinaryIO, resolved_fs.open(path, "rb"))
+    return cast(BinaryIO, resolved_fs.open(path, "rb", cache_type="none"))
 
 
 def verify_complete_file(

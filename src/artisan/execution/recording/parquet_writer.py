@@ -10,8 +10,10 @@ from __future__ import annotations
 import io
 import json
 import os
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass, field
 from datetime import datetime
+from itertools import chain
 from typing import Any
 
 import polars as pl
@@ -27,6 +29,7 @@ from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
+from artisan.storage.io.bounded_io import write_parquet_rows
 from artisan.storage.io.publication import publish_immutable_bytes
 from artisan.storage.io.worker_seal import (
     STAGING_INVENTORY_KEY,
@@ -181,17 +184,49 @@ def _stage_artifacts_by_type(
     artifacts: dict[str, list[Artifact]], staging_path: str, fs: AbstractFileSystem
 ) -> None:
     """Stage artifacts grouped by type using model-owned serialization."""
-    by_type: dict[str, list[Artifact]] = {}
-    for artifact_list in artifacts.values():
-        for artifact in artifact_list:
-            by_type.setdefault(artifact.artifact_type, []).append(artifact)
-
-    for type_key, typed_artifacts in by_type.items():
+    types = dict.fromkeys(a.artifact_type for a in _artifact_occurrences(artifacts))
+    for type_key in types:
         type_def = ArtifactTypeDef.get(type_key)
-        rows = [a.to_row() for a in typed_artifacts]
-        df = pl.DataFrame(rows, schema=type_def.polars_schema())
-        with fs.open(f"{staging_path}/{type_def.parquet_filename()}", "wb") as f:
-            df.write_parquet(f, compression="zstd")
+        write_parquet_rows(
+            f"{staging_path}/{type_def.parquet_filename()}",
+            (
+                a.to_row()
+                for a in _artifact_occurrences(artifacts)
+                if a.artifact_type == type_key
+            ),
+            type_def.polars_schema(),
+            fs=fs,
+        )
+
+
+def _artifact_occurrences(artifacts: dict[str, list[Artifact]]) -> Iterator[Artifact]:
+    for artifact_list in artifacts.values():
+        yield from artifact_list
+
+
+def _artifact_index_row(artifact: Artifact, step_number: int) -> dict[str, Any]:
+    """Preserve model metadata in the index without retaining all encoded JSON."""
+    return {
+        "artifact_id": artifact.artifact_id,
+        "artifact_type": artifact.artifact_type,
+        "origin_step_number": step_number,
+        "metadata": json.dumps(artifact.metadata, default=artisan_json_default),
+    }
+
+
+def _write_rows_if_any(
+    path: str,
+    rows: Iterable[dict[str, Any]],
+    schema: dict[str, Any],
+    fs: AbstractFileSystem,
+) -> None:
+    iterator = iter(rows)
+    first = next(iterator, None)
+    if first is None:
+        return
+    nonempty = chain([first], iterator)
+    del first
+    write_parquet_rows(path, nonempty, schema, fs=fs)
 
 
 def _stage_artifact_index(
@@ -201,21 +236,12 @@ def _stage_artifact_index(
     fs: AbstractFileSystem,
 ) -> None:
     """Write an index Parquet listing every artifact with its type and metadata."""
-    rows = [
-        {
-            "artifact_id": artifact.artifact_id,
-            "artifact_type": artifact.artifact_type,
-            "origin_step_number": step_number,
-            "metadata": json.dumps(artifact.metadata, default=artisan_json_default),
-        }
-        for artifact_list in artifacts.values()
-        for artifact in artifact_list
-    ]
-    if rows:
-        with fs.open(f"{staging_path}/index.parquet", "wb") as f:
-            pl.DataFrame(
-                rows, schema=get_schema(TablePath.ARTIFACT_INDEX)
-            ).write_parquet(f, compression="zstd")
+    _write_rows_if_any(
+        f"{staging_path}/index.parquet",
+        (_artifact_index_row(a, step_number) for a in _artifact_occurrences(artifacts)),
+        get_schema(TablePath.ARTIFACT_INDEX),
+        fs,
+    )
 
 
 def _stage_artifact_locations(
@@ -224,9 +250,10 @@ def _stage_artifact_locations(
     fs: AbstractFileSystem,
 ) -> None:
     """Write global location rows for externally backed artifacts."""
-    rows: list[dict[str, str]] = []
-    for artifact_list in artifacts.values():
-        for artifact in artifact_list:
+
+    def rows() -> Iterator[dict[str, Any]]:
+        seen: set[tuple[str, str]] = set()
+        for artifact in _artifact_occurrences(artifacts):
             if not artifact.EXTERNALLY_BACKED or artifact.artifact_id is None:
                 continue
             locator = next(iter(artifact.LOCATOR_FIELDS))
@@ -234,14 +261,17 @@ def _stage_artifact_locations(
             if uri is None:
                 continue
             validate_persistable_uri(uri)
-            rows.append({"artifact_id": artifact.artifact_id, "uri": uri})
-    if rows:
-        df = pl.DataFrame(
-            rows,
-            schema=get_schema(TablePath.ARTIFACT_LOCATIONS),
-        ).unique(maintain_order=True)
-        with fs.open(f"{staging_path}/locations.parquet", "wb") as stream:
-            df.write_parquet(stream, compression="zstd")
+            key = (artifact.artifact_id, uri)
+            if key not in seen:
+                seen.add(key)
+                yield {"artifact_id": artifact.artifact_id, "uri": uri}
+
+    _write_rows_if_any(
+        f"{staging_path}/locations.parquet",
+        rows(),
+        get_schema(TablePath.ARTIFACT_LOCATIONS),
+        fs,
+    )
 
 
 def _stage_artifact_edges(
@@ -250,27 +280,12 @@ def _stage_artifact_edges(
     fs: AbstractFileSystem,
 ) -> None:
     """Write artifact provenance edges to Parquet. No-op when empty."""
-    if not artifact_edges:
-        return
-    df = pl.DataFrame(
-        [
-            {
-                "execution_run_id": edge.execution_run_id,
-                "source_artifact_id": edge.source_artifact_id,
-                "target_artifact_id": edge.target_artifact_id,
-                "source_artifact_type": edge.source_artifact_type,
-                "target_artifact_type": edge.target_artifact_type,
-                "source_role": edge.source_role,
-                "target_role": edge.target_role,
-                "group_id": edge.group_id,
-                "step_boundary": edge.step_boundary,
-            }
-            for edge in artifact_edges
-        ],
-        schema=ARTIFACT_EDGES_SCHEMA,
-    ).unique(maintain_order=True)
-    with fs.open(f"{staging_path}/artifact_edges.parquet", "wb") as f:
-        df.write_parquet(f, compression="zstd")
+    _write_rows_if_any(
+        f"{staging_path}/artifact_edges.parquet",
+        (edge.model_dump() for edge in dict.fromkeys(artifact_edges)),
+        ARTIFACT_EDGES_SCHEMA,
+        fs,
+    )
 
 
 def _stage_execution_edges(
@@ -281,10 +296,12 @@ def _stage_execution_edges(
     """Write execution input/output edges to Parquet. No-op when empty."""
     if execution_edges.is_empty():
         return
-    with fs.open(f"{staging_path}/execution_edges.parquet", "wb") as f:
-        execution_edges.cast(
-            pl.Schema(get_schema(TablePath.EXECUTION_EDGES))
-        ).write_parquet(f, compression="zstd")
+    write_parquet_rows(
+        f"{staging_path}/execution_edges.parquet",
+        execution_edges.iter_rows(named=True),
+        get_schema(TablePath.EXECUTION_EDGES),
+        fs=fs,
+    )
 
 
 def _write_execution_record(

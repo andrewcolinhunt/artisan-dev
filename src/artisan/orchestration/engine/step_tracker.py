@@ -414,16 +414,8 @@ class StepTracker:
         """Validate all attempts and return one current state per attempt."""
         if rows.is_empty():
             return []
-        evidence = None
-        if any(
-            dynamic_output_roles(value)
-            for value in rows["compute_options_json"].unique()
-        ):
-            evidence = read_result_evidence(
-                self._delta_root, fs=self._fs, storage_options=self._storage_options
-            )
         return [
-            self._validate_attempt_rows(group, result_evidence=evidence)
+            self._validate_attempt_rows(group)
             for group in rows.partition_by("step_run_id", maintain_order=True)
         ]
 
@@ -482,6 +474,7 @@ class StepTracker:
                         self._delta_root,
                         fs=self._fs,
                         storage_options=self._storage_options,
+                        step_run_id=row["step_run_id"],
                     )
                 validate_dynamic_result(row, result_evidence)
         states = [self._validated_snapshot(row) for row in snapshots]

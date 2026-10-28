@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import os
 import posixpath
 import re
@@ -12,6 +13,7 @@ from fsspec import AbstractFileSystem, get_filesystem_class
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import StoreIntegrityError
+from artisan.utils.hashing import compute_stream_digest
 
 
 def is_publication_temporary(filename: str) -> bool:
@@ -58,6 +60,130 @@ def publish_immutable_bytes(fs: AbstractFileSystem, path: str, data: bytes) -> N
             msg = f"Could not publish immutable object {posixpath.basename(path)!r}"
             raise StoreIntegrityError(msg) from exc
     _require_identical(fs, path, data)
+
+
+def publish_immutable_file(
+    fs: AbstractFileSystem,
+    path: str,
+    source_path: str,
+    *,
+    source_fs: AbstractFileSystem | None = None,
+) -> None:
+    """Publish a completed file with bounded transfer and identical-only retries.
+
+    The source remains available on every path. Local publication links a
+    flushed file; S3 completes an exclusive multipart write with one bounded
+    upload buffer. An uncertain publication never removes the destination.
+    """
+    source_fs = source_fs or fs
+    if not isinstance(fs, LocalFileSystem) and not _is_s3_filesystem(fs):
+        msg = f"Immutable publication is unsupported for {type(fs).__name__}"
+        raise StoreIntegrityError(msg)
+    expected = _file_digest(source_fs, source_path)
+    if fs.exists(path):
+        _require_file_digest(fs, path, expected)
+        if isinstance(fs, LocalFileSystem):
+            _sync_existing_local(fs, path)
+        return
+    fs.makedirs(posixpath.dirname(path), exist_ok=True)
+    if isinstance(fs, LocalFileSystem):
+        try:
+            _publish_local_file(fs, path, source_fs, source_path, expected)
+        except FileExistsError:
+            _require_file_digest(fs, path, expected)
+            _sync_existing_local(fs, path)
+    else:
+        try:
+            if expected[1] == 0:
+                # s3fs' zero-length commit uses touch(), which is not exclusive.
+                bucket, key, _ = fs.split_path(path)
+                fs.call_s3(
+                    "put_object", Bucket=bucket, Key=key, Body=b"", IfNoneMatch="*"
+                )
+            else:
+                _copy_file(source_fs, source_path, fs, path, expected)
+        except Exception as exc:
+            fs.invalidate_cache(path)
+            if fs.exists(path):
+                _require_file_digest(fs, path, expected)
+                return
+            msg = f"Could not publish immutable object {posixpath.basename(path)!r}"
+            raise StoreIntegrityError(msg) from exc
+    _require_file_digest(fs, path, expected)
+
+
+def _file_digest(fs: AbstractFileSystem, path: str) -> tuple[str, int]:
+    with fs.open(path, "rb", cache_type="none") as stream:
+        return compute_stream_digest(stream)
+
+
+def _require_file_digest(
+    fs: AbstractFileSystem, path: str, expected: tuple[str, int]
+) -> None:
+    if _file_digest(fs, path) != expected:
+        msg = f"Conflicting immutable object {posixpath.basename(path)!r}"
+        raise StoreIntegrityError(msg)
+
+
+def _copy_file(
+    source_fs: AbstractFileSystem,
+    source_path: str,
+    fs: AbstractFileSystem,
+    path: str,
+    expected: tuple[str, int],
+) -> None:
+    multipart = _is_s3_filesystem(fs)
+    with source_fs.open(source_path, "rb", cache_type="none") as source:
+        destination = fs.open(path, "xb", block_size=5 * 1024 * 1024)
+        if multipart:
+            # Set this after open to avoid fsspec retaining the file in its
+            # filesystem-wide transaction queue. Completion belongs here.
+            destination.autocommit = False
+        try:
+            if compute_stream_digest(source, destination=destination) != expected:
+                msg = "Immutable publication source changed while being copied"
+                raise StoreIntegrityError(msg)
+            destination.close()
+            if multipart:
+                destination.commit()
+        except BaseException:
+            if multipart:
+                with suppress(Exception):
+                    destination.discard()
+            raise
+        finally:
+            with suppress(Exception):
+                destination.close()
+
+
+def _publish_local_file(
+    fs: LocalFileSystem,
+    path: str,
+    source_fs: AbstractFileSystem,
+    source_path: str,
+    expected: tuple[str, int],
+) -> None:
+    final = str(fs._strip_protocol(path))
+    if isinstance(source_fs, LocalFileSystem):
+        source = str(source_fs._strip_protocol(source_path))
+        with open(source, "rb") as stream:
+            os.fsync(stream.fileno())
+        try:
+            os.link(source, final)
+        except OSError as exc:
+            if exc.errno != errno.EXDEV:
+                raise
+        else:
+            _sync_directory_chain(os.path.dirname(final))
+            return
+    temporary = f"{final}.tmp-{uuid.uuid4().hex}"
+    _copy_file(source_fs, source_path, fs, temporary, expected)
+    with open(temporary, "rb") as stream:
+        os.fsync(stream.fileno())
+    os.link(temporary, final)
+    _sync_directory_chain(os.path.dirname(final))
+    with suppress(OSError):
+        os.unlink(temporary)
 
 
 def _is_s3_filesystem(fs: AbstractFileSystem) -> bool:

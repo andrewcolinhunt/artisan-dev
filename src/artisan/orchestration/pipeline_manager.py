@@ -437,19 +437,22 @@ def _promote_file_paths_to_store(
         step_number=step_number,
         operation_name=operation_name,
     )
-    staged = prepare_commit_evidence(
+    with prepare_commit_evidence(
         staging_root=config.staging_root,
         fs=fs,
         commit_kind="input_registration",
         step_run_id=step_run_id,
         step_number=step_number,
         operation_name=operation_name,
-    )
-    prepared = committer.prepare_logical(staged.plan, staged=staged)
-    publish_commit_plan(config.delta_root, fs, staged.plan)
-    committer.commit_logical(
-        staged.plan, prepared=prepared, preserve_staging=config.preserve_staging
-    )
+    ) as staged:
+        prepared = committer.prepare_logical(staged.plan, staged=staged)
+        try:
+            publish_commit_plan(config.delta_root, fs, staged.plan)
+            committer.commit_logical(
+                staged.plan, prepared=prepared, preserve_staging=config.preserve_staging
+            )
+        finally:
+            committer.discard_prepared(prepared)
 
     artifact_ids: list[str] = [
         a.artifact_id for a in file_ref_artifacts if a.artifact_id is not None

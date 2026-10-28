@@ -35,14 +35,15 @@ class _FakeFs:
     protocol = "s3"
 
     def __init__(self) -> None:
-        self.calls: list[tuple[str, str]] = []
+        self.calls: list[tuple[str, str, str]] = []
         self.puts: list[tuple[str, str]] = []
         self.signed: list[tuple[str, int]] = []
         self.put_bytes = b""
 
-    def open(self, remote: str, mode: str):
+    def open(self, remote: str, mode: str, *, cache_type: str):
         assert mode == "rb"
-        self.calls.append((remote, "open"))
+        assert cache_type == "none"
+        self.calls.append((remote, mode, cache_type))
         return BytesIO(b"remote-bytes")
 
     def put(self, local: str, remote: str) -> None:
@@ -183,7 +184,7 @@ class TestUnpackInputs:
             str(tmp_path),
             policy=_policy(inputs=("s3://bucket",)),
         )
-        assert fs.calls == [("bucket/key.pdb", "open")]
+        assert fs.calls == [("bucket/key.pdb", "rb", "none")]
         assert Path(paths["pdb"]).read_bytes() == b"remote-bytes"
 
     def test_changed_uri_bytes_are_rejected(self, tmp_path: Path, monkeypatch):
@@ -271,7 +272,7 @@ class TestUnpackInputs:
         )
 
         assert resolved_roots == ["s3://bucket"]
-        assert fs.calls == [(remote, "open")]
+        assert fs.calls == [(remote, "rb", "none")]
 
     def test_encoded_question_mark_is_rejected_before_s3_resolution(
         self, tmp_path, monkeypatch

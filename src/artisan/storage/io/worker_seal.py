@@ -2,10 +2,17 @@
 
 from __future__ import annotations
 
-import io
 import posixpath
+from collections.abc import Iterator
+from dataclasses import dataclass
+from pathlib import Path
+from tempfile import TemporaryDirectory
+from types import TracebackType
+from uuid import uuid4
+from weakref import finalize
 
 import polars as pl
+import pyarrow.parquet as pq
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
@@ -13,10 +20,14 @@ from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import get_schema
+from artisan.storage.io.bounded_io import (
+    CapturedParquet,
+    capture_parquet,
+    iter_parquet_frames,
+)
 from artisan.storage.io.publication import is_publication_temporary
 from artisan.utils.hashing import (
     canonical_json_bytes,
-    compute_content_digest,
     compute_stream_digest,
 )
 from artisan.utils.path import uri_join
@@ -108,7 +119,7 @@ def build_staging_inventory(staging_path: str, fs: AbstractFileSystem) -> bytes:
     """Describe every finalized sibling payload for execution-seal metadata."""
     files = []
     for name, path in sorted(_payload_paths(staging_path, fs).items()):
-        with fs.open(path, "rb") as stream:
+        with fs.open(path, "rb", cache_type="none") as stream:
             digest, size_bytes = compute_stream_digest(stream)
         files.append(
             _InventoryFile(
@@ -121,58 +132,127 @@ def build_staging_inventory(staging_path: str, fs: AbstractFileSystem) -> bytes:
     return canonical_json_bytes(inventory.model_dump())
 
 
+@dataclass
+class CapturedWorkerFiles:
+    """Verified local worker files with explicit ownership of temporary storage."""
+
+    files: dict[str, CapturedParquet]
+    _scratch: TemporaryDirectory[str] | None = None
+
+    def __post_init__(self) -> None:
+        if self._scratch is not None:
+            finalize(self, self._scratch.cleanup)
+
+    def close(self) -> None:
+        """Release this capture's private storage when it owns the directory."""
+        if self._scratch is not None:
+            self._scratch.cleanup()
+
+    def __enter__(self) -> CapturedWorkerFiles:
+        return self
+
+    def __exit__(
+        self,
+        _exc_type: type[BaseException] | None,
+        _exc: BaseException | None,
+        _traceback: TracebackType | None,
+    ) -> None:
+        self.close()
+
+    def iter_frames(
+        self, filename: str, columns: list[str] | None = None
+    ) -> Iterator[pl.DataFrame]:
+        """Read a verified payload with an optional metadata-only projection."""
+        yield from iter_parquet_frames(self.files[filename].path, columns=columns)
+
+    def read_frame(
+        self, filename: str, columns: list[str] | None = None
+    ) -> pl.DataFrame:
+        """Collect an explicit metadata projection or the single execution row."""
+        captured = self.files[filename]
+        schema = captured.schema
+        if columns is not None:
+            schema = {name: schema[name] for name in columns}
+        frames = list(self.iter_frames(filename, columns))
+        return pl.concat(frames) if frames else pl.DataFrame(schema=schema)
+
+
 def verify_worker_seal(staging_path: str, fs: AbstractFileSystem) -> pl.DataFrame:
     """Verify the closed inventory and return its single execution row."""
-    return read_worker_files(staging_path, fs)[EXECUTION_SEAL_FILENAME][1]
+    with capture_worker_files(staging_path, fs) as captured:
+        return captured.read_frame(EXECUTION_SEAL_FILENAME)
 
 
-def read_worker_files(
-    staging_path: str, fs: AbstractFileSystem
-) -> dict[str, tuple[bytes, pl.DataFrame]]:
-    """Capture and verify each sealed worker object once for batch planning."""
+def capture_worker_files(
+    staging_path: str,
+    fs: AbstractFileSystem,
+    *,
+    destination: str | None = None,
+) -> CapturedWorkerFiles:
+    """Capture every sealed object without retaining compressed or decoded payload."""
+    scratch = (
+        TemporaryDirectory(prefix="artisan-worker-") if destination is None else None
+    )
+    directory_name = scratch.name if scratch is not None else destination
+    assert directory_name is not None
+    directory = Path(directory_name) / uuid4().hex
     try:
-        with fs.open(uri_join(staging_path, EXECUTION_SEAL_FILENAME), "rb") as stream:
-            data = stream.read()
-        metadata = pl.read_parquet_metadata(io.BytesIO(data))
-        inventory = _StagingInventory.model_validate_json(
-            metadata[STAGING_INVENTORY_KEY]
+        directory.mkdir()
+        files = _capture_worker_files(staging_path, fs, directory)
+        return CapturedWorkerFiles(files, scratch)
+    except BaseException:
+        if scratch is not None:
+            scratch.cleanup()
+        raise
+
+
+def _capture_worker_files(
+    staging_path: str, fs: AbstractFileSystem, destination: Path
+) -> dict[str, CapturedParquet]:
+    seal, inventory = _capture_seal(staging_path, fs, destination)
+    paths = _payload_paths(staging_path, fs)
+    expected = {item.filename: item for item in inventory.files}
+    if paths.keys() != expected.keys():
+        raise _inventory_changed(staging_path)
+    files = {EXECUTION_SEAL_FILENAME: seal}
+    for name, path in sorted(paths.items()):
+        try:
+            captured = capture_parquet(path, fs, str(destination / name))
+        except StoreIntegrityError as exc:
+            raise _inventory_changed(staging_path) from exc
+        item = expected[name]
+        if captured.size_bytes != item.size_bytes or captured.digest != item.digest:
+            raise _inventory_changed(staging_path)
+        files[name] = captured
+    return files
+
+
+def _capture_seal(
+    staging_path: str, fs: AbstractFileSystem, destination: Path
+) -> tuple[CapturedParquet, _StagingInventory]:
+    try:
+        seal = capture_parquet(
+            uri_join(staging_path, EXECUTION_SEAL_FILENAME),
+            fs,
+            str(destination / EXECUTION_SEAL_FILENAME),
         )
-        frame = pl.read_parquet(io.BytesIO(data))
-    except (
-        OSError,
-        KeyError,
-        ValueError,
-        ValidationError,
-        pl.exceptions.PolarsError,
-    ) as exc:
+        metadata = pq.read_metadata(seal.path).metadata or {}
+        inventory = _StagingInventory.model_validate_json(
+            metadata[STAGING_INVENTORY_KEY.encode()]
+        )
+    except (OSError, KeyError, ValueError, ValidationError, StoreIntegrityError) as exc:
         msg = (
             f"Unreadable worker seal or inventory in {posixpath.basename(staging_path)}"
         )
         raise StoreIntegrityError(msg) from exc
-    if frame.height != 1 or dict(frame.schema) != get_schema(TablePath.EXECUTIONS):
+    if seal.row_count != 1 or seal.schema != get_schema(TablePath.EXECUTIONS):
         msg = (
             "Worker seal must contain exactly one execution with the registered schema"
         )
         raise StoreIntegrityError(msg)
-    paths = _payload_paths(staging_path, fs)
-    expected = {item.filename: item for item in inventory.files}
-    if paths.keys() != expected.keys():
-        msg = f"Missing or changed worker inventory payloads in {posixpath.basename(staging_path)}"
-        raise StoreIntegrityError(msg)
-    files = {EXECUTION_SEAL_FILENAME: (data, frame)}
-    for name, path in sorted(paths.items()):
-        with fs.open(path, "rb") as stream:
-            payload = stream.read()
-        item = expected[name]
-        if (
-            len(payload) != item.size_bytes
-            or compute_content_digest(payload) != item.digest
-        ):
-            msg = f"Missing or changed worker inventory payloads in {posixpath.basename(staging_path)}"
-            raise StoreIntegrityError(msg)
-        try:
-            files[name] = (payload, pl.read_parquet(io.BytesIO(payload)))
-        except pl.exceptions.PolarsError as exc:
-            msg = f"Unreadable worker payload {name!r}"
-            raise StoreIntegrityError(msg) from exc
-    return files
+    return seal, inventory
+
+
+def _inventory_changed(staging_path: str) -> StoreIntegrityError:
+    msg = f"Missing or changed worker inventory payloads in {posixpath.basename(staging_path)}"
+    return StoreIntegrityError(msg)

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from threading import Barrier
 
 import polars as pl
@@ -24,6 +25,7 @@ from artisan.storage.io.commit_plan import (
     commit_plan_path,
     publish_commit_plan,
     read_commit_plan,
+    read_plan_evidence,
     verify_plan_files,
 )
 from artisan.storage.io.staging import StagingManager
@@ -254,8 +256,8 @@ def test_commit_plan_collapses_identical_global_artifact_rows(tmp_path):
     assert table is not None
     assert table.row_count == 1
     assert table.files[0].row_count == 2
-    verified = verify_plan_files(plan, staging_root, fs)
-    assert verified[TablePath.ARTIFACT_INDEX.value].height == 1
+    with verify_plan_files(plan, staging_root, fs) as verified:
+        assert verified.tables[TablePath.ARTIFACT_INDEX.value].row_count == 1
 
 
 def test_commit_plan_rejects_conflicting_global_artifact_rows(tmp_path):
@@ -271,6 +273,71 @@ def test_commit_plan_rejects_conflicting_global_artifact_rows(tmp_path):
 
     with pytest.raises(StoreIntegrityError, match="Conflicting natural keys"):
         _build_input_plan(tmp_path, index=conflicting_index)
+
+
+def test_plan_evidence_keeps_private_snapshot_and_closes_scratch(tmp_path):
+    fs, _delta_root, staging_root, staged_path, plan = _build_input_plan(tmp_path)
+    with read_plan_evidence(plan, staging_root, fs) as evidence:
+        table = evidence.tables[TablePath.ARTIFACT_INDEX.value]
+        private_paths = [Path(path) for path in table.paths]
+        assert all(path.exists() for path in private_paths)
+        changed = pl.read_parquet(staged_path).with_columns(
+            pl.lit("changed").alias("metadata")
+        )
+        changed.write_parquet(staged_path)
+
+        assert table.get_row(("a" * 32,))["metadata"] == "{}"
+        assert (
+            table.canonical_key(plan.logical_commit_id) == plan.tables[0].table_plan_key
+        )
+        with pytest.raises(StoreIntegrityError, match="changed after planning"):
+            read_plan_evidence(plan, staging_root, fs)
+
+    assert all(not path.exists() for path in private_paths)
+    assert Path(staged_path).exists()
+
+
+def test_plan_evidence_finalizer_releases_discarded_capture(tmp_path):
+    import gc
+
+    fs, _delta_root, staging_root, _path, plan = _build_input_plan(tmp_path)
+    evidence = read_plan_evidence(plan, staging_root, fs)
+    paths = [Path(path) for table in evidence.tables.values() for path in table.paths]
+    del evidence
+    gc.collect()
+
+    assert all(not path.exists() for path in paths)
+
+
+def test_plan_preparation_failure_releases_private_capture(tmp_path, monkeypatch):
+    import artisan.storage.io.commit_plan as module
+
+    fs, _delta_root, staging_root, staged_path, plan = _build_input_plan(tmp_path)
+    changed = pl.read_parquet(staged_path).with_columns(
+        pl.lit(7, dtype=pl.Int32).alias("origin_step_number")
+    )
+    changed.write_parquet(staged_path)
+    directories = []
+    temporary_directory = module.TemporaryDirectory
+
+    def track_directory(*args, **kwargs):
+        directory = temporary_directory(*args, **kwargs)
+        directories.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(module, "TemporaryDirectory", track_directory)
+    with pytest.raises(StoreIntegrityError, match="step number mismatch"):
+        module.prepare_commit_evidence(
+            staging_root=staging_root,
+            fs=fs,
+            commit_kind=plan.commit_kind,
+            step_run_id=plan.step_run_id,
+            step_number=plan.step_number,
+            operation_name=plan.operation_name,
+        )
+
+    assert directories
+    assert all(not path.exists() for path in directories)
 
 
 def test_local_plan_publish_is_no_replace_and_cleans_temporary_files(tmp_path):
@@ -391,7 +458,7 @@ def test_recovery_plan_identity_and_effects_cover_sorted_exact_batch(tmp_path):
         ("c" * 32,),
         ("d" * 32,),
     )
-    assert first.frames[TablePath.EXECUTIONS.value].height == 2
+    assert first.tables[TablePath.EXECUTIONS.value].row_count == 2
     assert first.per_execution_artifact_ids == {"c" * 32: set(), "d" * 32: set()}
 
 
