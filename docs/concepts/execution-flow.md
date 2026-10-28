@@ -194,6 +194,21 @@ and store access in a local spawned subprocess. They do not use the creator's
 sandbox, materialization, or three-phase lifecycle. Process isolation lets the
 operating system reclaim their memory after execution.
 
+File ingestion can return an `ArtifactStreamResult`. The worker converts,
+validates, finalizes, and stages one draft before requesting the next. It retains
+serialized rows within one shared byte budget, writes unpublished temporary
+chunks, and combines each table's chunks into one file before sealing the
+complete execution. This extra sequential pass limits memory across tables and
+object-store uploads.
+
+Streaming keeps the whole input list as one execution and cache unit. A failure
+before completion accepts none of its converted outputs. Temporary files remain
+diagnostic evidence; replay restarts the import from the first file. Earlier raw
+FileRef registration is separate and can remain after a failed conversion.
+An individual CSV is still read and parsed in full. The memory limit therefore
+depends on the largest conversion, bounded staging buffers, and retained input
+and provenance metadata. See [streamed curator results](../how-to-guides/writing-curator-operations.md#artifactstreamresult-emit-one-draft-at-a-time).
+
 A killed curator process produces a failed step with available diagnostics.
 Artisan attempts to persist a synthetic execution failure, and any managed
 commands still require cleanup before their files are safe to collect.

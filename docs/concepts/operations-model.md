@@ -23,7 +23,7 @@ queries. They use different lifecycles and input delivery:
 | Sandboxing | Isolated directories per phase | Isolated process without creator phase directories |
 | Input delivery | Artifact models, optionally hydrated and materialized | DataFrames of artifact metadata |
 | Worker dispatch | Built-in local runner or external provider instance | Local spawned subprocess only |
-| Return type | `ArtifactResult` (from postprocess) | `ArtifactResult` or `PassthroughResult` |
+| Return type | `ArtifactResult` (from postprocess) | `ArtifactResult`, `ArtifactStreamResult`, or `PassthroughResult` |
 
 The framework detects the type from its methods. If your class overrides
 `execute_curator()`, it is a curator. A concrete class must override exactly one
@@ -118,19 +118,25 @@ deployment mechanics.
 
 Curators implement a single `execute_curator` method that receives DataFrames
 of artifact metadata (each with at least an
-`artifact_id` column, keyed by role name) and returns either new artifacts
-(`ArtifactResult`) or routed artifact IDs (`PassthroughResult`).
+`artifact_id` column, keyed by role name). They return new artifacts as a
+collection (`ArtifactResult`) or stream (`ArtifactStreamResult`), or route
+existing artifact IDs (`PassthroughResult`).
 
 They run in an isolated local subprocess without creator sandbox phases,
 input materialization, or configurable creator-runner dispatch.
 
-### Two result shapes
+### Three result shapes
 
 **`ArtifactResult`** creates new draft artifacts. The curator hydrates input
 data from storage, constructs new artifacts, and returns them keyed by output
-role. Ingestion curators use this pattern — they read file references from
-storage, convert them to domain artifacts, and return the drafts for the
-framework to finalize.
+role. Use this when constructing outputs requires the complete collection or
+when one output's lineage references a sibling output.
+
+**`ArtifactStreamResult`** emits one draft at a time. File ingestion uses this
+pattern: the framework stages each converted file before requesting the next.
+All emissions belong to one execution, and none are accepted if production or
+staging fails. Streams support static roles and explicit input parents; see
+[streamed curator results](../how-to-guides/writing-curator-operations.md#artifactstreamresult-emit-one-draft-at-a-time).
 
 **`PassthroughResult`** forwards existing artifact IDs without creating artifacts.
 Filter and Merge use this pattern to select which artifacts continue.

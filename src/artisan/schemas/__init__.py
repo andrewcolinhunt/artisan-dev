@@ -14,7 +14,9 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import (
+    ArtifactEmission,
     ArtifactResult,
+    ArtifactStreamResult,
     CuratorResult,
     PassthroughResult,
 )
@@ -48,7 +50,9 @@ __all__ = [
     "AppendableArtifact",
     "ApptainerEnvironmentSpec",
     "Artifact",
+    "ArtifactEmission",
     "ArtifactResult",
+    "ArtifactStreamResult",
     "ArtifactTypeDef",
     "ArtifactTypes",
     "BatchStrategy",

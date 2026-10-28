@@ -246,6 +246,22 @@ class MyCurator(OperationDefinition):
 
 ## Lineage Patterns
 
+For file ingestion, prefer subclassing `IngestFiles` and implementing
+`convert_file(file_ref, step_number, *, fs=...)`. It resolves every requested
+descriptor, preserves ordered repeated inputs, and returns `ArtifactStreamResult`
+with one `ArtifactEmission(role, artifact, sources)` per conversion. The framework
+validates, finalizes, and stages each draft before requesting the next; custom
+converters must not retain previous drafts or source content.
+
+A custom stream requires static output roles and explicit input-parent or root
+lineage. Parent IDs must be strings; sibling-output indices and dynamic roles
+require `ArtifactResult`. Release each draft after yielding. Metadata is deeply
+snapshotted before iteration, and iterator closure must succeed before success.
+One failure rejects the complete execution's converted outputs; replay starts
+from the beginning. CSV conversion still holds one complete file and its parsing
+workspace. Advance a custom ingester's version when adopting this contract.
+See [streamed curator results](../../docs/how-to-guides/writing-curator-operations.md#artifactstreamresult-emit-one-draft-at-a-time).
+
 Every creator output **must** set `derives_from`. It declares required and
 allowed parent roles, never actual parents. Curator passthrough outputs may use
 `None`; artifact-producing curators follow the same explicit contract.

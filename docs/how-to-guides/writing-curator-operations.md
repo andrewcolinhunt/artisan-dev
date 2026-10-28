@@ -92,13 +92,14 @@ pipeline.run(
 | **Execution** | Three phases (`preprocess` / `execute_function` / `postprocess`) | Single `execute_curator` method |
 | **Sandboxing** | Full sandbox with file materialization | No working sandbox; memory-isolated subprocess |
 | **Dispatch** | Built-in local runner or an external provider instance | Local spawned subprocess; step-runner overrides do not relocate it |
-| **Returns** | `ArtifactResult` containing any new artifacts | `ArtifactResult` or `PassthroughResult` |
+| **Returns** | `ArtifactResult` containing any new artifacts | `ArtifactResult`, `ArtifactStreamResult`, or `PassthroughResult` |
 
 ---
 
 ## Choose a return type
 
-Return existing IDs with `PassthroughResult` or new drafts with `ArtifactResult`.
+Return existing IDs with `PassthroughResult`. Return new drafts as a complete
+`ArtifactResult` collection or incrementally with `ArtifactStreamResult`.
 
 ### `PassthroughResult` — route existing artifacts
 
@@ -117,7 +118,7 @@ The `passthrough` dict maps output role names to lists of artifact ID strings.
 
 ### `ArtifactResult` — create new artifacts
 
-Ingest operations return new drafts. In this fragment, `file_ref` is the
+Artifact-producing operations return new drafts. In this fragment, `file_ref` is the
 input read into `file_bytes`; the output spec declares
 `derives_from={"inputs": ["file"]}`.
 
@@ -143,9 +144,61 @@ The `artifacts` dict maps output role names to lists of draft `Artifact`
 objects. Drafts are finalized automatically by the framework after
 `execute_curator` returns.
 
+### `ArtifactStreamResult` — emit one draft at a time
+
+Use a stream when each output can be converted independently. `IngestFiles`
+already provides this behavior: implement `convert_file()` as shown
+[below](#pattern-c-ingest-new-artifacts), and the framework stages each draft
+before requesting the next conversion.
+
+For a custom ingestion loop, return an iterator of `ArtifactEmission` values.
+This fragment assumes resolved `file_refs`, a configured filesystem `fs`, and an
+output role `csv` with `derives_from={"inputs": ["file"]}`:
+
+```python
+from artisan.schemas import ArtifactEmission, ArtifactStreamResult, CSVArtifact
+
+def emissions():
+    for file_ref in file_refs:
+        yield ArtifactEmission(
+            role="csv",
+            artifact=CSVArtifact.draft(
+                content=file_ref.model_copy().read_content(fs=fs),
+                original_name=f"{file_ref.original_name}{file_ref.extension or ''}",
+                step_number=step_number,
+            ),
+            sources={"file": [file_ref.artifact_id]},
+        )
+
+return ArtifactStreamResult(items=emissions(), metadata={"source": "import"})
+```
+
+After yielding, do not retain or mutate the draft. Source IDs must be strings;
+every output must declare its exact input parents. Streams require static output
+roles and support input-parent or root lineage; use `sources={}` for a root.
+Sibling-output indices and dynamic roles require `ArtifactResult`.
+
+The complete iterator belongs to one execution and cache unit. A conversion,
+validation, iterator-close, or staging failure prevents acceptance of all its
+converted outputs. Retained temporary staging is diagnostic evidence, not a
+partially imported result. FileRef registration happens before conversion and
+may remain in the store after failure. Replay starts again at the first input.
+
+Execution metadata is copied before iteration, including nested values. Changes
+made by the iterator do not change the recorded metadata. The framework closes
+the iterator on both success and failure when it provides `close()`.
+
+CSV conversion still reads and parses one complete file. Memory includes the
+largest conversion, bounded staging buffers, and input/provenance metadata.
+`IngestFiles` gives each conversion a disposable FileRef copy so content caching
+does not retain all source files. Custom converters must also avoid retaining
+their own payload collections. Advance an existing custom ingester's operation
+version when adopting this execution contract.
+
 ### Preserve result roles and metadata
 
-A curator with an empty `outputs` declaration may return dynamic artifact roles.
+A curator returning `ArtifactResult` with an empty `outputs` declaration may
+return dynamic artifact roles.
 After commitment, its `StepResult.output_roles` and `output_types` describe the
 roles that contain accepted artifacts. A role containing one type reports that
 type; a role containing several types reports `ArtifactTypes.ANY`. Empty dynamic
@@ -154,7 +207,7 @@ reference a dynamic role; asynchronous handles expose the declared contract.
 Curators with declared outputs retain those
 descriptors, including optional roles with no artifacts.
 
-Operation-authored `ArtifactResult.metadata` and `PassthroughResult.metadata`
+Operation-authored metadata on all three result models
 are available at the top level of `StepResult.metadata`. They survive cache reuse
 and pipeline reopening. Reserve `timings`, `skip_reason`, `status`, `cancelled`,
 and `skipped` for the framework; returning any of those keys fails the execution.
@@ -206,7 +259,7 @@ def execute_curator(
     inputs: dict[str, pl.DataFrame],
     step_number: int,
     artifact_store: ArtifactStore,
-) -> PassthroughResult | ArtifactResult:
+) -> PassthroughResult | ArtifactResult | ArtifactStreamResult:
     ...
 ```
 
@@ -325,7 +378,8 @@ class TaggedMerge(OperationDefinition):
 ### Pattern C: Ingest (new artifacts)
 
 Subclass `IngestFiles` and implement `convert_file()` to create artifacts from
-external files. The base class iterates over inputs:
+external files. The base class resolves every input before conversion, then
+emits one draft at a time in input order, including repeated occurrences:
 
 ```python
 from artisan.operations.curator import IngestFiles

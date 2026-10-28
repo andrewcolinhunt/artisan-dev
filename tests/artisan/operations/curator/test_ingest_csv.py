@@ -7,7 +7,7 @@ Tests cover:
 4. external_path propagation
 5. Class attributes (name, description, input/output specs)
 
-Note: IngestCSV returns ArtifactResult with draft CSVArtifacts.
+Note: IngestCSV emits draft CSVArtifacts through ArtifactStreamResult.
 """
 
 from __future__ import annotations
@@ -21,6 +21,7 @@ from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator import IngestCSV
 from artisan.schemas.artifact import FileRefArtifact
+from artisan.schemas.execution.curator_result import ArtifactStreamResult
 from artisan.utils.hashing import compute_content_digest
 
 
@@ -78,10 +79,13 @@ class TestIngestCSVBasicExecution:
             artifact_store=store,
         )
 
-        assert result.success
-        assert len(result.artifacts["csv"]) == 1
+        assert isinstance(result, ArtifactStreamResult)
+        emissions = list(result.items)
+        assert len(emissions) == 1
+        assert emissions[0].role == "csv"
+        assert emissions[0].sources == {"file": [file_ref.artifact_id]}
 
-        artifact = result.artifacts["csv"][0]
+        artifact = emissions[0].artifact
         assert artifact.content == content
         assert artifact.original_name == "data"
         assert artifact.extension == ".csv"
@@ -107,13 +111,14 @@ class TestIngestCSVBasicExecution:
             artifact_store=store,
         )
 
-        assert result.success
-        assert len(result.artifacts["csv"]) == 3
-        assert [
-            (mapping.draft_index, mapping.source_role, mapping.source_artifact_id)
-            for mapping in result.lineage["csv"]
-        ] == [(index, "file", source.artifact_id) for index, source in enumerate(files)]
-        names = [a.original_name for a in result.artifacts["csv"]]
+        assert isinstance(result, ArtifactStreamResult)
+        emissions = list(result.items)
+        assert len(emissions) == 3
+        assert [emission.role for emission in emissions] == ["csv"] * 3
+        assert [emission.sources for emission in emissions] == [
+            {"file": [source.artifact_id]} for source in files
+        ]
+        names = [emission.artifact.original_name for emission in emissions]
         assert "data_0" in names
         assert "data_1" in names
         assert "data_2" in names
@@ -166,7 +171,8 @@ class TestIngestCSVExternalPath:
             artifact_store=store,
         )
 
-        artifact = result.artifacts["csv"][0]
+        assert isinstance(result, ArtifactStreamResult)
+        artifact = next(result.items).artifact
         assert artifact.external_path == str(path)
 
 
@@ -176,6 +182,7 @@ class TestIngestCSVClassAttributes:
     def test_should_have_correct_name(self):
         """Test IngestCSV has correct operation name."""
         assert IngestCSV.name == "ingest_csv"
+        assert IngestCSV.version == "2"
 
     def test_should_have_description(self):
         """Test IngestCSV has a description."""
@@ -187,7 +194,7 @@ class TestIngestCSVClassAttributes:
         assert "file" in IngestCSV.inputs
         assert IngestCSV.inputs["file"].required is True
 
-    def test_should_have_data_output_spec(self):
+    def test_should_have_csv_output_spec(self):
         """Test IngestCSV has 'csv' output specification."""
         assert "csv" in IngestCSV.outputs
         assert IngestCSV.outputs["csv"].artifact_type == "csv"
@@ -219,7 +226,8 @@ class TestIngestCSVOutputFormat:
             artifact_store=store,
         )
 
-        artifact = result.artifacts["csv"][0]
+        assert isinstance(result, ArtifactStreamResult)
+        artifact = next(result.items).artifact
         assert artifact.content is not None
         assert artifact.original_name is not None
         assert artifact.extension is not None
@@ -244,7 +252,8 @@ class TestIngestCSVOutputFormat:
             artifact_store=store,
         )
 
-        assert result.artifacts["csv"][0].original_name == "my_dataset"
+        assert isinstance(result, ArtifactStreamResult)
+        assert next(result.items).artifact.original_name == "my_dataset"
 
 
 if __name__ == "__main__":
