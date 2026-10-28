@@ -15,6 +15,16 @@ User-facing changes are recorded here using
   with format 8. Keep them with their matching Artisan version to inspect or
   export their contents before re-ingesting into a new store. CSV parsing
   behavior is unchanged.
+- `IngestFiles` now returns an explicit `ArtifactStreamResult`, and `IngestCSV`
+  converts and stages files incrementally within one execution. A failed import
+  exposes no converted prefix. Each individual CSV must still fit in memory.
+  Custom ingesters should advance their operation versions when adopting the
+  stream contract; the built-in CSV ingester now uses version 2.
+- Delta deposits, verification, and recovery process payloads in bounded batches
+  using private local scratch files. Historical content is read only for relevant
+  keys; all files for one table effect still enter Delta in one transaction.
+  The orchestrator needs local scratch space, including when storage uses S3.
+  PyArrow 26 and delta-rs 1.4 are the minimum supported versions for this path.
 
 ## [0.2.0] - 2026-10-23
 

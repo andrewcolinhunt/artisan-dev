@@ -7,6 +7,7 @@ domain-specific artifacts (e.g. CSVArtifact).
 from __future__ import annotations
 
 from abc import abstractmethod
+from collections.abc import Iterator
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -16,7 +17,11 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.execution.curator_result import (
+    ArtifactEmission,
+    ArtifactResult,
+    ArtifactStreamResult,
+)
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
@@ -69,8 +74,8 @@ class IngestFiles(OperationDefinition):
         inputs: dict[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
-    ) -> ArtifactResult:
-        """Hydrate FileRefArtifacts and convert them via ``convert_file()``.
+    ) -> ArtifactResult | ArtifactStreamResult:
+        """Resolve every descriptor, then convert one file per emission.
 
         Args:
             inputs: Must contain a ``file`` key with a DataFrame of artifact IDs.
@@ -78,7 +83,7 @@ class IngestFiles(OperationDefinition):
             artifact_store: Store for hydrating FileRefArtifact objects.
 
         Returns:
-            ArtifactResult with drafts keyed by the subclass output role.
+            A stream of drafts, or an eager failure for empty/unresolved inputs.
         """
         file_df = inputs.get("file")
 
@@ -93,26 +98,40 @@ class IngestFiles(OperationDefinition):
             file_ref_ids, ArtifactTypes.FILE_REF
         )
 
-        output_role = next(iter(self.outputs))
-
-        result = ArtifactResult()
-        for fid in file_ref_ids:
-            file_ref = file_refs_by_id.get(fid)
-            if file_ref is not None:
-                result.add_artifact(
-                    output_role,
-                    self.convert_file(
-                        cast("FileRefArtifact", file_ref),
-                        step_number,
-                        fs=artifact_store.filesystem,
-                    ),
-                    sources={"file": [fid]},
-                )
-
-        if not result.artifacts:
+        if any(fid not in file_refs_by_id for fid in file_ref_ids):
             return ArtifactResult(
                 success=False,
-                error="None of the provided file refs could be resolved from the artifact store",
+                error="Not all provided file refs could be resolved from the artifact store",
             )
 
-        return result
+        return ArtifactStreamResult(
+            items=self._convert_files(
+                file_ref_ids, file_refs_by_id, step_number, artifact_store.filesystem
+            )
+        )
+
+    def _convert_files(
+        self,
+        file_ref_ids: list[str],
+        file_refs_by_id: dict[str, Artifact],
+        step_number: int,
+        fs: AbstractFileSystem,
+    ) -> Iterator[ArtifactEmission]:
+        """Preserve ordered occurrences without retaining previous emissions."""
+        output_role = next(iter(self.outputs))
+        for fid in file_ref_ids:
+            yield ArtifactEmission(
+                role=output_role,
+                artifact=self._convert_occurrence(
+                    cast("FileRefArtifact", file_refs_by_id[fid]), step_number, fs
+                ),
+                sources={"file": [fid]},
+            )
+
+    def _convert_occurrence(
+        self, file_ref: FileRefArtifact, step_number: int, fs: AbstractFileSystem
+    ) -> Artifact:
+        """Confine read_content's cache to this conversion's disposable descriptor."""
+        disposable = file_ref.model_copy()
+        disposable._cached_content = None
+        return self.convert_file(disposable, step_number, fs=fs)

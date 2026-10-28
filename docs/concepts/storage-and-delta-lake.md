@@ -215,6 +215,39 @@ and commit-plan verification still check the actual staged evidence.
 
 ---
 
+## Memory and local scratch space
+
+Persistence processes payloads in bounded batches. Workers write successive
+Parquet row groups; the orchestrator captures verified staging on local disk,
+compares planned keys, and reads only the relevant historical content. It writes
+destination files sequentially and adds all files for one table effect in one
+Delta transaction. Recovery and explicit repair use the same bounded readers.
+A small deposit therefore does not load the whole historical content table.
+
+The orchestrator needs writable local temporary storage even when the Delta and
+staging roots use S3. Allow space for captured staging, canonical comparison
+data, and a destination file being written. Binary content expands when written
+to the canonical comparison spool, so scratch can exceed the compressed staging
+size substantially. Exhausting scratch fails the operation and retains durable
+staging for inspection or retry. Artisan does not fall back to collecting the
+payload in memory.
+
+Memory still includes planned keys, file metadata, lineage, the largest
+individual artifact or metadata row, and the Parquet decoder's page and
+dictionary buffers. A legacy file with a very large page or dictionary can
+therefore require more memory than the normal batch allowance. Generic
+operations may also retain their complete input or output collections before
+recording begins.
+
+`IngestCSV` converts and stages one complete CSV at a time, releasing prior
+content before converting the next file. Each CSV still needs to fit in worker
+memory, including parsing and serialization overhead. Importing many CSVs no
+longer requires keeping all converted CSVs in memory together. See
+[ingesting external files](../how-to-guides/building-a-pipeline.md#ingest-external-files)
+for the execution and failure behavior.
+
+---
+
 ## Commit ordering
 
 A commit plan records the exact staged files and expected rows for a write

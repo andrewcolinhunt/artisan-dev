@@ -113,6 +113,17 @@ pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b
 Raw file paths are auto-promoted to `FileRefArtifact` and committed to Delta
 Lake before the operation runs. The output role for `IngestCSV` is `"csv"`.
 
+`IngestCSV` converts and stages each file before moving to the next. It keeps
+one execution and one cache entry for the complete import. Each CSV must fit
+in worker memory, but the converted contents of all files do not stay in memory
+together. The commit also needs
+[local scratch space](../concepts/storage-and-delta-lake.md#memory-and-local-scratch-space).
+
+The converted outputs become accepted only after the complete execution seals
+and its logical commit completes. If conversion fails partway through, none of
+that execution's converted CSVs become accepted outputs. Registered raw file
+references remain available, and a retry starts conversion from the beginning.
+
 ---
 
 ## Name your steps

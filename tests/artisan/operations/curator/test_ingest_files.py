@@ -23,6 +23,7 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.curator_result import ArtifactStreamResult
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import compute_content_digest
 
@@ -118,9 +119,11 @@ class TestIngestFilesExecution:
             artifact_store=store,
         )
 
-        assert result.success
-        assert len(result.artifacts["data"]) == 1
-        assert result.artifacts["data"][0].content == b"test content"
+        assert isinstance(result, ArtifactStreamResult)
+        emissions = list(result.items)
+        assert len(emissions) == 1
+        assert emissions[0].role == "data"
+        assert emissions[0].artifact.content == b"test content"
 
     def test_should_convert_multiple_files(self, tmp_path):
         """Multiple file refs -> multiple output artifacts."""
@@ -138,12 +141,15 @@ class TestIngestFilesExecution:
             artifact_store=store,
         )
 
-        assert result.success
-        assert len(result.artifacts["data"]) == 3
-        assert [mapping.source_artifact_id for mapping in result.lineage["data"]] == [
-            ref.artifact_id for ref in refs
+        assert isinstance(result, ArtifactStreamResult)
+        emissions = list(result.items)
+        assert len(emissions) == 3
+        assert [emission.sources for emission in emissions] == [
+            {"file": [ref.artifact_id]} for ref in refs
         ]
-        assert [mapping.draft_index for mapping in result.lineage["data"]] == [0, 1, 2]
+        assert [emission.artifact.content for emission in emissions] == [
+            f"content_{i}".encode() for i in range(3)
+        ]
 
     def test_should_fail_for_empty_input(self):
         """Empty file list returns ArtifactResult(success=False)."""
@@ -183,8 +189,8 @@ class TestIngestFilesExecution:
             artifact_store=store,
         )
 
-        assert "data" in result.artifacts
-        assert len(result.artifacts) == 1
+        assert isinstance(result, ArtifactStreamResult)
+        assert [emission.role for emission in result.items] == ["data"]
 
 
 class TestIngestFilesClassAttributes:

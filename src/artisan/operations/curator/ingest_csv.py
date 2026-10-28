@@ -21,10 +21,11 @@ if TYPE_CHECKING:
 
 
 class IngestCSV(IngestFiles):
-    """Convert FileRefArtifacts into CSVArtifacts by reading file content."""
+    """Emit one CSV draft at a time within a single all-or-nothing execution."""
 
     # ---------- Metadata ----------
     name = "ingest_csv"
+    version = "2"
     description = "Import files into the provenance graph as CSV artifacts"
 
     # ---------- Outputs ----------

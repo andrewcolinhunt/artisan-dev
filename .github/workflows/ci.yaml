@@ -92,6 +92,47 @@ jobs:
       - name: Execute every CI-runnable tutorial notebook end-to-end
         run: pixi run -e dev test-notebook
 
+  bounded-storage:
+    name: Bounded storage (${{ matrix.platform }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-64
+            runner: ubuntu-24.04
+          - platform: linux-aarch64
+            runner: ubuntu-24.04-arm
+          - platform: osx-arm64
+            runner: macos-15
+    env:
+      PIXI_LOCKED: "true"
+      POLARS_MAX_THREADS: "2"
+    steps:
+      - uses: actions/checkout@v6
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.66.0
+          environments: dev
+          locked: true
+      - name: Qualify bounded Parquet, Delta transactions, and native RSS
+        run: >-
+          ~/.pixi/bin/pixi run --locked -e dev pytest -v -m 'not s3'
+          tests/artisan/storage/test_bounded_io.py
+          tests/artisan/storage/test_bounded_evidence.py
+          tests/artisan/storage/test_delta_files.py
+          tests/artisan/storage/test_file_publication.py
+          tests/integration/test_storage_memory.py
+          tests/integration/test_deposit_memory.py
+          tests/integration/test_decoder_memory.py
+          --junitxml=bounded-storage-results.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bounded-storage-${{ matrix.platform }}
+          path: bounded-storage-results.xml
+
   command-supervisor-proof:
     name: Command ownership proof (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}

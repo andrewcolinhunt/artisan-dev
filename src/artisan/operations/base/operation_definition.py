@@ -419,7 +419,8 @@ class OperationDefinition(BaseModel):
             artifact_store: Store for hydration and lineage lookups.
 
         Returns:
-            CuratorResult (ArtifactResult or PassthroughResult).
+            CuratorResult (ArtifactResult, ArtifactStreamResult, or
+            PassthroughResult). Stream items are consumed inside this execution.
 
         Raises:
             NotImplementedError: If not overridden (operation is a creator).
