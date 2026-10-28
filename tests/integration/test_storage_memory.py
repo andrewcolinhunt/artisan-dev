@@ -5,12 +5,12 @@ from __future__ import annotations
 import json
 import os
 import random
-import resource
 import subprocess
 import sys
 from pathlib import Path
 
 import pytest
+from fixtures.memory import peak_rss_bytes
 from pydantic import BaseModel, Field
 
 from artisan.operations.curator import IngestCSV
@@ -36,19 +36,14 @@ class MeasuredIngestCSV(IngestCSV):
 
         cleanup = StreamRecorder.cleanup
         peak_path = self.params.peak_path
-        Path(peak_path + ".baseline").write_text(str(_peak_bytes()))
+        Path(peak_path + ".baseline").write_text(str(peak_rss_bytes()))
 
         def measured_cleanup(session):
             cleanup(session)
-            Path(peak_path).write_text(str(_peak_bytes()))
+            Path(peak_path).write_text(str(peak_rss_bytes()))
 
         StreamRecorder.cleanup = measured_cleanup
         return super().execute_curator(inputs, step_number, artifact_store)
-
-
-def _peak_bytes():
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return int(peak if sys.platform == "darwin" else peak * 1024)
 
 
 def _prepare_inputs(configuration):
@@ -82,7 +77,7 @@ def _probe(configuration):
     storage = StorageConfig.model_validate(configuration["storage"])
     prefix = configuration.get("prefix", str(root))
     files = json.loads((root / "inputs.json").read_text())
-    driver_start = _peak_bytes()
+    driver_start = peak_rss_bytes()
     worker_peak = root / "worker-peak"
     config = PipelineConfig(
         name="memory_qualification",
@@ -108,7 +103,7 @@ def _probe(configuration):
                 "worker_start_bytes": int(
                     Path(str(worker_peak) + ".baseline").read_text()
                 ),
-                "driver_bytes": _peak_bytes(),
+                "driver_bytes": peak_rss_bytes(),
                 "driver_start_bytes": driver_start,
                 "payload_bytes": count * (6 + 64 * 65537),
             }
@@ -140,7 +135,16 @@ def test_ingestion_worker_and_driver_rss_do_not_scale_with_total_payload(
                 text=True,
                 timeout=300,
                 check=False,
-                env={**os.environ, "POLARS_MAX_THREADS": "2"},
+                env={
+                    **os.environ,
+                    "POLARS_MAX_THREADS": "2",
+                    "PYTHONPATH": os.pathsep.join(
+                        (
+                            str(Path(__file__).resolve().parents[1]),
+                            os.environ.get("PYTHONPATH", ""),
+                        )
+                    ),
+                },
             )
             assert completed.returncode == 0, (
                 completed.stdout[-3000:] + completed.stderr[-3000:]
