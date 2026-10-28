@@ -1060,25 +1060,31 @@ def _curator_summary(
         curator_result_summary,
         read_result_evidence,
     )
-    from artisan.storage.io.worker_seal import read_worker_files
+    from artisan.storage.io.worker_seal import capture_worker_files
 
     staged = None
     if staging_path is not None:
-        files = read_worker_files(staging_path, config.storage.filesystem())
-        staged = {
-            table.value: files[f"{table.table_name}.parquet"][1]
-            for table in (
-                TablePath.EXECUTIONS,
-                TablePath.EXECUTION_EDGES,
-                TablePath.ARTIFACT_INDEX,
-            )
-            if f"{table.table_name}.parquet" in files
-        }
+        with capture_worker_files(staging_path, config.storage.filesystem()) as files:
+            staged = {
+                table.value: files.read_frame(
+                    f"{table.table_name}.parquet",
+                    columns=["artifact_id", "artifact_type"]
+                    if table is TablePath.ARTIFACT_INDEX
+                    else None,
+                )
+                for table in (
+                    TablePath.EXECUTIONS,
+                    TablePath.EXECUTION_EDGES,
+                    TablePath.ARTIFACT_INDEX,
+                )
+                if f"{table.table_name}.parquet" in files.files
+            }
     frames = read_result_evidence(
         config.delta_root,
         fs=config.storage.filesystem(),
         storage_options=config.storage.delta_storage_options(),
         staged=staged,
+        execution_run_ids={execution_run_id} if execution_run_id else set(),
     )
     return curator_result_summary(
         frames, {execution_run_id} if execution_run_id else set()

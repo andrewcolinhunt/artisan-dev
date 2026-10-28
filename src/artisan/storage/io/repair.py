@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import posixpath
 from dataclasses import dataclass
+from tempfile import TemporaryDirectory
 from typing import Any, Literal, cast
 
 import polars as pl
@@ -29,9 +30,11 @@ from artisan.storage.core.committed_scan import (
     audit_table_owners,
     filter_committed_rows,
     read_logical_commits,
-    verify_plan_effect,
+    verify_snapshot_effect,
 )
+from artisan.storage.core.run_scope import read_source_attempt_rows
 from artisan.storage.core.store_format import assert_store_format
+from artisan.storage.io.bounded_io import capture_parquet, iter_parquet_frames
 from artisan.storage.io.commit import DeltaCommitter, PreparedCommitEvidence
 from artisan.storage.io.commit_plan import (
     CommitKind,
@@ -39,11 +42,11 @@ from artisan.storage.io.commit_plan import (
     prepare_commit_evidence,
     publish_commit_plan,
     read_commit_plan,
-    read_plan_evidence,
 )
+from artisan.storage.io.delta_files import DeltaSnapshot
 from artisan.storage.io.publication import is_publication_temporary
 from artisan.storage.io.staging import StagingManager
-from artisan.storage.io.worker_seal import read_worker_files
+from artisan.storage.io.worker_seal import capture_worker_files
 from artisan.utils.path import shard_uri, uri_join
 
 RepairClassification = Literal[
@@ -158,126 +161,136 @@ def repair_store(
         storage_options=options,
         files_root=files_root,
     )
-    staged_paths = tuple(fs.find(staging_root)) if fs.exists(staging_root) else ()
-    staged_relative = {_relative_path(staging_root, path, fs) for path in staged_paths}
-    controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
-    plans, items = _preflight_registration(committer, staged_paths)
-    items.extend(_plan_ownership_conflicts(plans))
-    control_by_id = {
-        row["logical_commit_id"]: row for row in controls.iter_rows(named=True)
-    }
-    items.extend(_inventory_items(plans, control_by_id, items))
-    if abandon is not None:
-        _abandon(committer, _report(items), plans, abandon, reason or "")
-        items = [item for item in items if item.evidence_id != abandon]
-        items.append(
-            RepairItem(
-                evidence_id=abandon,
-                classification="abandoned",
-                detail=f"Explicitly abandoned: {reason}",
+    try:
+        staged_paths = tuple(fs.find(staging_root)) if fs.exists(staging_root) else ()
+        staged_relative = {
+            _relative_path(staging_root, path, fs) for path in staged_paths
+        }
+        controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
+        plans, items = _preflight_registration(committer, staged_paths)
+        items.extend(_plan_ownership_conflicts(plans))
+        control_by_id = {
+            row["logical_commit_id"]: row for row in controls.iter_rows(named=True)
+        }
+        items.extend(_inventory_items(plans, control_by_id, items))
+        if abandon is not None:
+            _abandon(committer, _report(items), plans, abandon, reason or "")
+            items = [item for item in items if item.evidence_id != abandon]
+            items.append(
+                RepairItem(
+                    evidence_id=abandon,
+                    classification="abandoned",
+                    detail=f"Explicitly abandoned: {reason}",
+                )
             )
-        )
-        return _report(items + _unplanned_staging(committer, plans, staged_paths))
-    audited_frames: dict[str, pl.DataFrame] = {}
-    if not apply:
-        items, audited_frames = _audit_store(committer, plans, controls, items)
-    if apply and _report(items).blocking:
-        return _report(items + _unplanned_staging(committer, plans, staged_paths))
+            return _report(items + _unplanned_staging(committer, plans, staged_paths))
+        audited_snapshots: dict[str, DeltaSnapshot] = {}
+        if not apply:
+            items, audited_snapshots = _audit_store(committer, plans, controls, items)
+        if apply and _report(items).blocking:
+            return _report(items + _unplanned_staging(committer, plans, staged_paths))
 
-    visible_frames = {
-        path: _visible_rows(frame, path, controls)
-        for path, frame in audited_frames.items()
-    }
-    source_rows: pl.DataFrame | None = audited_frames.get(TablePath.STEPS.value)
-    for logical_id, plan in plans.items():
-        if any(
-            item.evidence_id == logical_id
-            and item.classification in {"corrupt", "conflict"}
-            for item in items
-        ):
-            continue
-        control = control_by_id.get(logical_id)
-        state = control["state"] if control is not None else "planned"
-        if state == "abandoned":
-            continue
-        if state == "complete":
-            if (
-                apply
-                and not preserve_staging
-                and _has_staged_files(plan, staged_relative)
+        source_snapshot = audited_snapshots.get(TablePath.STEPS.value)
+        for logical_id, plan in plans.items():
+            if any(
+                item.evidence_id == logical_id
+                and item.classification in {"corrupt", "conflict"}
+                for item in items
             ):
-                try:
-                    committer.commit_logical(plan)
-                    _replace_item(items, _complete_item(plan, audited=True))
-                except _EVIDENCE_ERRORS as exc:
-                    _replace_item(items, _failure_item(logical_id, exc))
-            continue
-        try:
-            if (
-                not apply
-                and source_rows is None
-                and plan.commit_kind != "input_registration"
-            ):
-                msg = "Unreadable source attempt table during audit"
-                raise StoreIntegrityError(msg)
-            if plan.commit_kind == "execution_recovery" and source_rows is None:
-                source_rows = _source_rows(committer)
-            prepared = committer.prepare_logical(
-                plan,
-                source_rows=(
-                    source_rows
-                    if plan.commit_kind == "execution_recovery"
-                    else visible_frames.get(TablePath.STEPS.value)
-                ),
-                committed_frames=None if apply else visible_frames,
-            )
-            if apply:
-                committer.commit_logical(
-                    plan, preserve_staging=preserve_staging, prepared=prepared
+                continue
+            control = control_by_id.get(logical_id)
+            state = control["state"] if control is not None else "planned"
+            if state == "abandoned":
+                continue
+            if state == "complete":
+                if (
+                    apply
+                    and not preserve_staging
+                    and _has_staged_files(plan, staged_relative)
+                ):
+                    try:
+                        committer.commit_logical(plan)
+                        _replace_item(items, _complete_item(plan, audited=True))
+                    except _EVIDENCE_ERRORS as exc:
+                        _replace_item(items, _failure_item(logical_id, exc))
+                continue
+            prepared: PreparedCommitEvidence | None = None
+            try:
+                if (
+                    not apply
+                    and source_snapshot is None
+                    and plan.commit_kind != "input_registration"
+                ):
+                    msg = "Unreadable source attempt table during audit"
+                    raise StoreIntegrityError(msg)
+                source_rows = (
+                    None
+                    if plan.commit_kind == "input_registration"
+                    else read_source_attempt_rows(
+                        source_snapshot or committer._snapshot(TablePath.STEPS.value),
+                        plan.step_run_id,
+                    )
                 )
-                _replace_item(items, _complete_item(plan, audited=True))
-                if plan.commit_kind == "step_result":
-                    source_rows = None
-            else:
-                _check_pending_effects(
-                    committer, plan, prepared, controls, audited_frames
+                if source_rows is not None and plan.commit_kind != "execution_recovery":
+                    source_rows = _visible_rows(
+                        source_rows, TablePath.STEPS.value, controls
+                    )
+                prepared = committer.prepare_logical(
+                    plan,
+                    source_rows=source_rows,
+                    committed_snapshots=None if apply else audited_snapshots,
                 )
-                _replace_item(
-                    items,
-                    RepairItem(
-                        evidence_id=logical_id,
-                        classification="replayable",
-                        detail="Valid planned commit can be replayed exactly",
-                    ),
-                )
-        except _EVIDENCE_ERRORS as exc:
-            _replace_item(items, _failure_item(logical_id, exc))
-    if _report(items).blocking:
-        return _report(items + _unplanned_staging(committer, plans, staged_paths))
-    if not recover_staging:
-        return _report(items + _unplanned_staging(committer, plans, staged_paths))
-
-    # Existing plans are resolved before reading source lifecycle or adopting shards.
-    candidates, retained = _worker_candidates(committer, plans, staged_paths)
-    items.extend(retained)
-    if candidates:
-        source_rows = _source_rows(committer) if source_rows is None else source_rows
-        batches, candidate_items = _prepare_batches(
-            committer, candidates, source_rows, None if apply else visible_frames
-        )
-        items.extend(candidate_items)
-        if apply and not _report(items).blocking:
-            for plan, prepared in batches:
-                publish_commit_plan(delta_root, fs, plan)
-                try:
+                if apply:
                     committer.commit_logical(
                         plan, preserve_staging=preserve_staging, prepared=prepared
                     )
                     _replace_item(items, _complete_item(plan, audited=True))
-                except _EVIDENCE_ERRORS as exc:
-                    _replace_item(items, _failure_item(plan.logical_commit_id, exc))
-                    break
-    return _report(items)
+                else:
+                    _check_pending_effects(
+                        committer, plan, prepared, controls, audited_snapshots
+                    )
+                    _replace_item(
+                        items,
+                        RepairItem(
+                            evidence_id=logical_id,
+                            classification="replayable",
+                            detail="Valid planned commit can be replayed exactly",
+                        ),
+                    )
+            except _EVIDENCE_ERRORS as exc:
+                _replace_item(items, _failure_item(logical_id, exc))
+            finally:
+                if prepared is not None:
+                    committer.discard_prepared(prepared)
+                source_rows = None
+        if _report(items).blocking:
+            return _report(items + _unplanned_staging(committer, plans, staged_paths))
+        if not recover_staging:
+            return _report(items + _unplanned_staging(committer, plans, staged_paths))
+
+        # Existing plans are resolved before reading source lifecycle or adopting shards.
+        candidates, retained = _worker_candidates(committer, plans, staged_paths)
+        items.extend(retained)
+        if candidates:
+            batches, candidate_items = _prepare_batches(
+                committer, candidates, None if apply else audited_snapshots
+            )
+            items.extend(candidate_items)
+            if apply and not _report(items).blocking:
+                for plan, prepared in batches:
+                    publish_commit_plan(delta_root, fs, plan)
+                    try:
+                        committer.commit_logical(
+                            plan, preserve_staging=preserve_staging, prepared=prepared
+                        )
+                        _replace_item(items, _complete_item(plan, audited=True))
+                    except _EVIDENCE_ERRORS as exc:
+                        _replace_item(items, _failure_item(plan.logical_commit_id, exc))
+                        break
+        return _report(items)
+
+    finally:
+        committer.close()
 
 
 _EVIDENCE_ERRORS = (
@@ -319,10 +332,6 @@ def _complete_item(plan: CommitPlan, *, audited: bool) -> RepairItem:
             else "Completion recorded; historical effects not audited"
         ),
     )
-
-
-def _source_rows(committer: DeltaCommitter) -> pl.DataFrame:
-    return committer._read_physical(TablePath.STEPS.value)
 
 
 def _has_staged_files(plan: CommitPlan, present: set[str]) -> bool:
@@ -441,20 +450,24 @@ def _audit_store(
     plans: dict[str, CommitPlan],
     controls: pl.DataFrame,
     items: list[RepairItem],
-) -> tuple[list[RepairItem], dict[str, pl.DataFrame]]:
-    """Audit every registered physical table once, including undeclared effects."""
+) -> tuple[list[RepairItem], dict[str, DeltaSnapshot]]:
+    """Audit fixed active-file snapshots without retaining decoded payloads."""
     complete = set(controls.filter(pl.col("state") == "complete")["logical_commit_id"])
     paths = {table.value for table in TablePath} | {
         definition.table_path for definition in ArtifactTypeDef.get_all().values()
     }
     failures: dict[str, Exception] = {}
-    frames: dict[str, pl.DataFrame] = {}
+    snapshots: dict[str, DeltaSnapshot] = {}
     for path in sorted(paths - {TablePath.LOGICAL_COMMITS.value}):
         try:
-            physical = committer._read_physical(path)
-            frames[path] = physical
-            audit_table_owners(physical, path, controls)
+            snapshot = committer._snapshot(path)
+            snapshots[path] = snapshot
+            columns = _owner_columns(path)
+            for frame in snapshot.iter_frames(columns=columns):
+                audit_table_owners(frame, path, controls)
         except _EVIDENCE_ERRORS as exc:
+            if _integrity_classification(exc) == "corrupt":
+                snapshots.pop(path, None)
             items.append(_failure_item(f"table:{path}", exc))
             for logical_id in complete & plans.keys():
                 if plans[logical_id].table(path) is not None:
@@ -462,7 +475,7 @@ def _audit_store(
             continue
         for logical_id in complete & plans.keys():
             try:
-                verify_plan_effect(plans[logical_id], path, physical, controls)
+                verify_snapshot_effect(plans[logical_id], path, snapshot, controls)
             except _EVIDENCE_ERRORS as exc:
                 failures.setdefault(logical_id, exc)
     for logical_id in complete & plans.keys():
@@ -475,7 +488,15 @@ def _audit_store(
             else _complete_item(plans[logical_id], audited=True)
         )
         _replace_item(items, replacement)
-    return items, frames
+    return items, snapshots
+
+
+def _owner_columns(table_path: str) -> list[str]:
+    if table_path == TablePath.CACHE_REUSE.value:
+        return ["current_step_run_id"]
+    if table_path == TablePath.STEPS.value:
+        return ["logical_commit_id", "step_run_id", "status"]
+    return ["logical_commit_id"]
 
 
 def _check_pending_effects(
@@ -483,19 +504,19 @@ def _check_pending_effects(
     plan: CommitPlan,
     prepared: PreparedCommitEvidence,
     controls: pl.DataFrame,
-    physical_frames: dict[str, pl.DataFrame],
+    snapshots: dict[str, DeltaSnapshot],
 ) -> None:
     for table in plan.tables:
-        physical = physical_frames.get(table.table_path)
-        if physical is None:
+        snapshot = snapshots.get(table.table_path)
+        if snapshot is None:
             msg = f"Unreadable planned table {table.table_path!r}"
             raise StoreIntegrityError(msg)
-        committer._missing_rows(
+        committer._missing_keys(
             plan,
             table,
-            prepared.staged.frames[table.table_path],
-            physical,
+            prepared.staged.tables[table.table_path],
             controls,
+            snapshot=snapshot,
         )
 
 
@@ -511,14 +532,30 @@ def _preflight_registration(
     plans, items = _read_all_plans(committer)
     for plan in plans.values():
         try:
-            evidence = read_plan_evidence(
-                plan, committer.staging_manager.staging_dir, committer._fs
-            )
+            index = plan.table(TablePath.ARTIFACT_INDEX.value)
+            if index is None:
+                continue
+            with TemporaryDirectory(prefix="artisan-registration-") as scratch:
+                for number, file in enumerate(index.files):
+                    captured = capture_parquet(
+                        uri_join(
+                            committer.staging_manager.staging_dir, file.relative_path
+                        ),
+                        committer._fs,
+                        f"{scratch}/{number}.parquet",
+                    )
+                    if (captured.digest, captured.size_bytes) != (
+                        file.digest,
+                        file.size_bytes,
+                    ):
+                        msg = "Staged index changed after planning"
+                        raise StoreIntegrityError(msg)
+                    for frame in iter_parquet_frames(
+                        captured.path, columns=["artifact_type"]
+                    ):
+                        _require_index_registrations(frame)
         except _EVIDENCE_ERRORS:
             continue
-        _require_index_registrations(
-            evidence.frames.get(TablePath.ARTIFACT_INDEX.value)
-        )
     _preflight_staging_registration(committer, staged_paths)
     return plans, items
 
@@ -533,12 +570,15 @@ def _preflight_staging_registration(
         ) != "executions.parquet" or "_orchestrator" in path.split("/"):
             continue
         try:
-            files = read_worker_files(posixpath.dirname(path), committer._fs)
+            with capture_worker_files(posixpath.dirname(path), committer._fs) as files:
+                if "index.parquet" in files.files:
+                    for frame in files.iter_frames(
+                        "index.parquet", columns=["artifact_type"]
+                    ):
+                        _require_index_registrations(frame)
         except _EVIDENCE_ERRORS:
             # The normal audit owns malformed evidence; configuration errors escape.
             continue
-        index = files.get("index.parquet")
-        _require_index_registrations(index[1] if index is not None else None)
 
 
 def _require_index_registrations(index: pl.DataFrame | None) -> None:
@@ -673,12 +713,25 @@ def _worker_candidates(
             )
             continue
         try:
-            with committer._fs.open(uri_join(root, seal), "rb") as stream:
-                frame = pl.read_parquet(stream)
-            if frame.height != 1:
+            columns = [
+                "execution_run_id",
+                "step_run_id",
+                "origin_step_number",
+                "operation_name",
+                "success",
+                "replay_of_execution_run_id",
+            ]
+            rows = [
+                row
+                for frame in iter_parquet_frames(
+                    uri_join(root, seal), fs=committer._fs, columns=columns
+                )
+                for row in frame.iter_rows(named=True)
+            ]
+            if len(rows) != 1:
                 msg = "Worker seal requires exactly one execution"
                 raise StoreIntegrityError(msg)
-            record = frame.row(0, named=True)
+            record = rows[0]
             execution_id = record["execution_run_id"]
             if execution_id in execution_owners:
                 msg = "Execution is already claimed by an immutable plan"
@@ -727,54 +780,47 @@ def _worker_candidates(
 def _prepare_batches(
     committer: DeltaCommitter,
     candidates: list[_WorkerCandidate],
-    source_rows: pl.DataFrame,
-    committed_frames: dict[str, pl.DataFrame] | None,
+    committed_snapshots: dict[str, DeltaSnapshot] | None,
 ) -> tuple[list[tuple[CommitPlan, PreparedCommitEvidence]], list[RepairItem]]:
-    visible_sources = filter_committed_rows(
-        source_rows, TablePath.STEPS.value, committer._controls()
+    """Validate each source independently, retaining only prepared disk evidence."""
+    snapshot = (
+        committer._snapshot(TablePath.STEPS.value)
+        if committed_snapshots is None
+        else committed_snapshots.get(TablePath.STEPS.value)
     )
-    owners = {
-        group["step_run_id"][0]: group.sort("state_sequence").row(-1, named=True)
-        for group in visible_sources.partition_by("step_run_id")
-    }
     groups: dict[str, list[_WorkerCandidate]] = {}
+    for candidate in candidates:
+        groups.setdefault(candidate.record["step_run_id"], []).append(candidate)
     items: list[RepairItem] = []
     batches: list[tuple[CommitPlan, PreparedCommitEvidence]] = []
-    for candidate in candidates:
-        owner = owners.get(candidate.record["step_run_id"])
-        classification: RepairClassification | None = None
-        detail = ""
-        if owner is None:
-            classification, detail = (
-                "unknown_owner",
-                "Execution has no known source attempt",
-            )
-        elif owner["replay_of_execution_run_id"] is not None:
-            classification, detail = (
-                "conflict",
-                "Ordinary execution claims a diagnostic source",
-            )
-        elif owner["status"] in {"pending", "skipped"}:
-            classification, detail = "ineligible", "Source attempt did not execute"
-        elif owner["status"] in {"succeeded", "partial"}:
-            classification, detail = (
-                "conflict",
-                "Unplanned execution would alter an accepted source attempt",
-            )
-        if classification is not None:
-            items.append(
-                RepairItem(
-                    evidence_id=f"staging:{candidate.directory}",
-                    classification=classification,
-                    detail=detail,
-                )
-            )
-        else:
-            groups.setdefault(candidate.record["step_run_id"], []).append(candidate)
     for step_id, workers in sorted(groups.items()):
         first = workers[0].record
         evidence_id = f"staging:{workers[0].directory}"
         try:
+            if snapshot is None:
+                msg = "Unreadable source attempt table during audit"
+                raise StoreIntegrityError(msg)
+            source_rows = read_source_attempt_rows(snapshot, step_id)
+            visible = filter_committed_rows(
+                source_rows, TablePath.STEPS.value, committer._controls()
+            )
+            owner = (
+                None
+                if visible.is_empty()
+                else visible.sort("state_sequence").row(-1, named=True)
+            )
+            finding = _recovery_eligibility(owner)
+            if finding is not None:
+                classification, detail = finding
+                items.extend(
+                    RepairItem(
+                        evidence_id=f"staging:{worker.directory}",
+                        classification=classification,
+                        detail=detail,
+                    )
+                    for worker in workers
+                )
+                continue
             if any(
                 (worker.record["origin_step_number"], worker.record["operation_name"])
                 != (first["origin_step_number"], first["operation_name"])
@@ -798,7 +844,7 @@ def _prepare_batches(
                 staged.plan,
                 staged=staged,
                 source_rows=source_rows,
-                committed_frames=committed_frames,
+                committed_snapshots=committed_snapshots,
             )
             batches.append((staged.plan, prepared))
             items.append(
@@ -811,6 +857,20 @@ def _prepare_batches(
         except _EVIDENCE_ERRORS as exc:
             items.append(_failure_item(evidence_id, exc))
     return batches, items
+
+
+def _recovery_eligibility(
+    owner: dict[str, Any] | None,
+) -> tuple[RepairClassification, str] | None:
+    if owner is None:
+        return "unknown_owner", "Execution has no known source attempt"
+    if owner["replay_of_execution_run_id"] is not None:
+        return "conflict", "Ordinary execution claims a diagnostic source"
+    if owner["status"] in {"pending", "skipped"}:
+        return "ineligible", "Source attempt did not execute"
+    if owner["status"] in {"succeeded", "partial"}:
+        return "conflict", "Unplanned execution would alter an accepted source attempt"
+    return None
 
 
 def _unplanned_staging(

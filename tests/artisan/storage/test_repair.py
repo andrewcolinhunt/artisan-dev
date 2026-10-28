@@ -1029,6 +1029,45 @@ def test_recovery_batches_workers_and_hydrates_shared_artifact_once(
     )["execution_run_id"].sort().to_list() == ["e" * 32, "f" * 32]
 
 
+def test_recovery_report_closes_every_prepared_snapshot(repair_env, monkeypatch):
+    from pathlib import Path
+
+    _worker_candidate(repair_env)
+    scratch_paths = []
+    original = DeltaCommitter.prepare_logical
+
+    def capture_preparation(self, *args, **kwargs):
+        prepared = original(self, *args, **kwargs)
+        scratch_paths.extend(
+            Path(path)
+            for table in prepared.staged.tables.values()
+            for path in table.paths
+        )
+        return prepared
+
+    monkeypatch.setattr(DeltaCommitter, "prepare_logical", capture_preparation)
+    report = _repair(repair_env, recover_staging=True)
+
+    assert not report.blocking
+    assert scratch_paths
+    assert all(not path.exists() for path in scratch_paths)
+
+
+def test_recovery_audit_never_collects_whole_artifact_tables(repair_env, monkeypatch):
+    _worker_candidate(repair_env)
+    original = DeltaCommitter._read_physical
+
+    def reject_payload_collect(self, table):
+        assert not table.startswith("artifacts/")
+        return original(self, table)
+
+    monkeypatch.setattr(DeltaCommitter, "_read_physical", reject_payload_collect)
+    report = _repair(repair_env, recover_staging=True)
+
+    assert not report.blocking
+    assert any(item.classification == "recoverable" for item in report.items)
+
+
 def test_recovery_batch_rejects_reference_declared_only_by_another_worker(repair_env):
     from artisan.schemas.artifact.csv import CSVArtifact
 
@@ -1165,7 +1204,7 @@ def test_audit_invalid_table_never_claims_completed_effects_verified(repair_env)
 def test_unreadable_pending_effect_returns_corrupt_report(repair_env, monkeypatch):
     committer, _, _, _, _ = repair_env
     plan = _plan(committer)
-    original = DeltaCommitter._read_physical
+    original = DeltaCommitter._snapshot
 
     def unreadable(self, table):
         if table == TablePath.ARTIFACT_INDEX.value:
@@ -1173,7 +1212,7 @@ def test_unreadable_pending_effect_returns_corrupt_report(repair_env, monkeypatc
             raise StoreIntegrityError(msg)
         return original(self, table)
 
-    monkeypatch.setattr(DeltaCommitter, "_read_physical", unreadable)
+    monkeypatch.setattr(DeltaCommitter, "_snapshot", unreadable)
     report = _repair(repair_env)
     assert report.blocking
     assert any(
@@ -1211,13 +1250,15 @@ def test_recovery_audit_unreadable_artifact_table_is_reported_without_reread(
             with fs.open(path, "wb") as stream:
                 stream.write(b"corrupt parquet payload")
     scans = Counter()
-    original = pl.scan_delta
+    from artisan.storage.io.delta_files import DeltaSnapshot
 
-    def count_scan(source, *args, **kwargs):
-        scans[str(source)] += 1
-        return original(source, *args, **kwargs)
+    original = DeltaSnapshot.iter_located
 
-    monkeypatch.setattr(pl, "scan_delta", count_scan)
+    def count_scan(self, *args, **kwargs):
+        scans[self.path] += 1
+        yield from original(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaSnapshot, "iter_located", count_scan)
     report = _repair(repair_env, recover_staging=True)
     assert report.blocking
     assert any(

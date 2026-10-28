@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import tracemalloc
 from io import BytesIO
 from typing import Any, ClassVar
+
+import pytest
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.step_executor import instantiate_operation
@@ -55,6 +58,50 @@ class TestComputeArtifactId:
         assert compute_artifact_id("ab", b"c", {}) != compute_artifact_id(
             "a", b"bc", {}
         )
+
+    @pytest.mark.parametrize(
+        ("artifact_type", "content", "metadata", "expected"),
+        [
+            ("csv", b"", {}, "36f46d6a3d5e00b9a17e4f98053b92f4"),
+            (
+                "csv",
+                b"value\n1\n",
+                {
+                    "metadata": {"source": "fixture"},
+                    "original_name": "values",
+                    "extension": ".csv",
+                },
+                "c3004cb2ebbd5f5fd372860faf5253c8",
+            ),
+            (
+                "custom",
+                bytes(range(256)),
+                {
+                    "metadata": {
+                        "unicode": "雪☃",
+                        "nested": [None, True, False, 1, -0.0],
+                    },
+                    "original_name": None,
+                },
+                "cef87236c30dccfae8de25c17eb6cfa3",
+            ),
+        ],
+    )
+    def test_incremental_hash_matches_original_framed_vectors(
+        self, artifact_type: str, content: bytes, metadata: dict, expected: str
+    ) -> None:
+        """Values were captured before replacing the complete v1 preimage."""
+        assert compute_artifact_id(artifact_type, content, metadata) == expected
+
+    def test_hash_does_not_allocate_a_copy_of_the_content(self) -> None:
+        content = b"x" * (8 * 1024 * 1024)
+        tracemalloc.start()
+        try:
+            compute_artifact_id("csv", content, {})
+            _, peak = tracemalloc.get_traced_memory()
+        finally:
+            tracemalloc.stop()
+        assert peak < 1024 * 1024
 
 
 class TestContentDigests:
