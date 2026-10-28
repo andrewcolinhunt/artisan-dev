@@ -42,6 +42,7 @@ import json
 import os
 import time
 import uuid
+from collections.abc import Iterator
 from pathlib import Path
 
 import httpx
@@ -129,13 +130,13 @@ def proxy_headers() -> _ProxyHeaders:
 
 
 @pytest.fixture(scope="module")
-def endpoint_url(r2: dict[str, str]) -> str:
-    """Deploy artisan-tool-wait_tool from the working branch; return its URL.
+def endpoint_url(r2: dict[str, str]) -> Iterator[str]:
+    """Deploy artisan-tool-wait_tool from the working branch; yield its URL.
 
     Mirrors ``artisan modal deploy wait_tool`` exactly (``build_app`` +
     ``app.deploy()``), with the R2 secret — and optionally a test image —
     set on the ``compute_provider`` model-field default that ``endpoint_spec``
-    reads, then restored after deployment.
+    reads, then restored after the tests finish using that declaration.
     """
     if not ((Path.home() / ".modal.toml").exists() or os.environ.get("MODAL_TOKEN_ID")):
         pytest.skip("no Modal credentials (~/.modal.toml or MODAL_TOKEN_ID)")
@@ -157,11 +158,13 @@ def endpoint_url(r2: dict[str, str]) -> str:
     field.default = ComputeProvider(modal=deploy_cfg)
     try:
         build_app(WaitTool).deploy()  # the same call the CLI makes
+        url = modal.Function.from_name(
+            "artisan-tool-wait_tool", "endpoint"
+        ).get_web_url()
+        assert url, "deployed endpoint has no web URL"
+        yield str(url)
     finally:
         field.default = original
-    url = modal.Function.from_name("artisan-tool-wait_tool", "endpoint").get_web_url()
-    assert url, "deployed endpoint has no web URL"
-    return str(url)
 
 
 def test_prefix_mode_via_artisan_client(
@@ -172,10 +175,7 @@ def test_prefix_mode_via_artisan_client(
 
     from artisan.execution.tool_endpoint.client import call_endpoint
     from artisan.operations.examples import WaitTool
-    from artisan.schemas.operation_config.compute import (
-        ComputeProvider,
-        ModalComputeConfig,
-    )
+    from artisan.schemas.operation_config.compute import ComputeProvider
     from artisan.schemas.specs.input_models import ExecuteInput
 
     run_prefix = f"{INTEGRATION_OUTPUT_PREFIX}/endpoint-{uuid.uuid4().hex[:8]}"
@@ -183,10 +183,11 @@ def test_prefix_mode_via_artisan_client(
         params=WaitTool.Params(seconds=2),
         compute_provider=ComputeProvider(
             active="modal",
-            modal=ModalComputeConfig(
-                output_store=f"s3://{r2['bucket']}/{run_prefix}",
-                poll_interval=2.0,
-                data_policy=_output_policy(r2),
+            modal=WaitTool.model_fields["compute_provider"].default.modal.model_copy(
+                update={
+                    "output_store": f"s3://{r2['bucket']}/{run_prefix}",
+                    "poll_interval": 2.0,
+                }
             ),
         ),
     )
