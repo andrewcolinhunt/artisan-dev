@@ -6,7 +6,6 @@ import base64
 import json
 import os
 import random
-import resource
 import subprocess
 import sys
 import time
@@ -17,6 +16,7 @@ import polars as pl
 import pyarrow.parquet as pq
 import pytest
 from deltalake import DeltaTable
+from fixtures.memory import peak_rss_bytes
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import CommitError
@@ -360,8 +360,7 @@ def _measure(root, phase):
         assert ids.filter(pl.col("origin_step_number") == 4).height == _RECOVERY_ROWS
         assert DeltaTable(str(root / "delta/artifacts/csvs")).version() == 3
         assert DeltaTable(str(root / "delta/artifacts/metrics")).version() == 2
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    peak_bytes = int(peak if sys.platform == "darwin" else peak * 1024)
+    peak_bytes = peak_rss_bytes()
     (root / f"{phase}.json").write_text(
         json.dumps(
             {
@@ -398,7 +397,14 @@ def _run_phase(root, phase, *, monitor):
             [sys.executable, str(Path(__file__).resolve()), phase, str(root)],
             stdout=output,
             stderr=subprocess.STDOUT,
-            env={**os.environ, "POLARS_MAX_THREADS": "2", "RAYON_NUM_THREADS": "2"},
+            env={
+                **os.environ,
+                "POLARS_MAX_THREADS": "2",
+                "RAYON_NUM_THREADS": "2",
+                "PYTHONPATH": str(Path(__file__).resolve().parents[1])
+                + os.pathsep
+                + os.environ.get("PYTHONPATH", ""),
+            },
         )
         deadline = time.monotonic() + 600
         sampled_peak = 0

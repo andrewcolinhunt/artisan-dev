@@ -6,7 +6,6 @@ import hashlib
 import json
 import os
 import random
-import resource
 import subprocess
 import sys
 from pathlib import Path
@@ -14,6 +13,7 @@ from pathlib import Path
 import pyarrow as pa
 import pyarrow.parquet as pq
 import pytest
+from fixtures.memory import peak_rss_bytes
 
 from artisan.storage.io.bounded_io import BATCH_BYTES, iter_parquet_frames
 
@@ -22,11 +22,6 @@ pytestmark = pytest.mark.integration
 _MIB = 1024 * 1024
 _VALUES = 32
 _LARGE_GROUPS = 16
-
-
-def _peak_bytes():
-    peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
-    return int(peak if sys.platform == "darwin" else peak * 1024)
 
 
 def _prepare(root, encoding):
@@ -77,7 +72,7 @@ def _prepare(root, encoding):
 
 
 def _measure(root, groups, projection):
-    baseline = _peak_bytes()
+    baseline = peak_rss_bytes()
     rows = 0
     id_sum = 0
     digest = hashlib.sha256()
@@ -90,7 +85,7 @@ def _measure(root, groups, projection):
                 digest.update(value)
     result = {
         "baseline_bytes": baseline,
-        "peak_bytes": _peak_bytes(),
+        "peak_bytes": peak_rss_bytes(),
         "rows": rows,
         "id_sum": id_sum,
         "content_sha256": digest.hexdigest() if projection == "content" else None,
@@ -105,11 +100,65 @@ def _run(*arguments):
         text=True,
         timeout=180,
         check=False,
-        env={**os.environ, "POLARS_MAX_THREADS": "2"},
+        env=_probe_environment(),
     )
     assert completed.returncode == 0, (
         completed.stdout[-3000:] + completed.stderr[-3000:]
     )
+
+
+def _probe_environment():
+    return {
+        **os.environ,
+        "POLARS_MAX_THREADS": "2",
+        "PYTHONPATH": os.pathsep.join(
+            (
+                str(Path(__file__).resolve().parents[1]),
+                os.environ.get("PYTHONPATH", ""),
+            )
+        ),
+    }
+
+
+def test_peak_rss_ignores_inflated_parent_and_retains_released_child_peak(request):
+    child = """
+import json, resource, sys
+from fixtures.memory import peak_rss_bytes
+before = peak_rss_bytes()
+payload = bytearray(96 * 1024 * 1024)
+payload[::4096] = b'x' * (len(payload) // 4096)
+during = peak_rss_bytes()
+del payload
+raw_peak = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+print(json.dumps({'before': before, 'during': during, 'after': peak_rss_bytes(),
+                  'rusage': int(raw_peak if sys.platform == 'darwin' else raw_peak * 1024)}))
+"""
+    parent = """
+import json, subprocess, sys
+from fixtures.memory import peak_rss_bytes
+payload = bytearray(384 * 1024 * 1024)
+payload[::4096] = b'x' * (len(payload) // 4096)
+child = subprocess.check_output([sys.executable, '-c', sys.argv[1]], text=True)
+print(json.dumps({'parent': peak_rss_bytes(), 'child': json.loads(child)}))
+"""
+    completed = subprocess.run(
+        [sys.executable, "-c", parent, child],
+        capture_output=True,
+        text=True,
+        timeout=30,
+        check=True,
+        env=_probe_environment(),
+    )
+    result = json.loads(completed.stdout)
+    request.node.user_properties.append(
+        ("inflated_parent_rss_json", json.dumps(result))
+    )
+    child_result = result["child"]
+    assert result["parent"] > 384 * _MIB
+    assert child_result["before"] < 64 * _MIB
+    assert child_result["during"] < 192 * _MIB
+    assert child_result["during"] - child_result["before"] > 80 * _MIB
+    assert child_result["after"] >= child_result["during"]
 
 
 @pytest.mark.parametrize("encoding", ["dictionary", "plain_page"])
