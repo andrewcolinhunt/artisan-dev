@@ -2792,13 +2792,14 @@ class TestSilentMisconfigRejection:
 
 # Golden IDs cover effective configuration and concrete input identity. Changing
 # one intentionally invalidates cache reuse for that override shape.
+# These vectors use the format-8 CSV artifact identity for the input fixture.
 # ``bare`` and ``environment_local`` match because local is already the default.
 _GOLDEN_STEP_SPEC_IDS: dict[str, str] = {
-    "bare": "92387ad3e5a1814738c3fdca68691d22",
-    "environment_local": "92387ad3e5a1814738c3fdca68691d22",
-    "environment_docker_dict": "03ec1a49005ae3dccb3b40a946c3831c",
-    "compute_resources_a100": "826868038f08147c42efef26c5ce9a32",
-    "group_by_cross": "d74e91064aabff4a5e9c8996f6d60e8f",
+    "bare": "46b1d563ac8d76506e0117ec48dd61e5",
+    "environment_local": "46b1d563ac8d76506e0117ec48dd61e5",
+    "environment_docker_dict": "c247e342a16ee6ad7134022b6fa9981e",
+    "compute_resources_a100": "320275c256ef35fe83a3a2c04a7ce8e4",
+    "group_by_cross": "710e98871bcf72dd173ab9de6926cc6e",
 }
 
 _GOLDEN_OVERRIDES: dict[str, dict[str, Any]] = {

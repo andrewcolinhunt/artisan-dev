@@ -237,7 +237,7 @@ def test_ingest_public_result_preserves_exact_source_metadata(tmp_path):
             compact=False,
         )
         assert result.status == StepStatus.SUCCEEDED, result.error
-        assert result.output_types == {"data": "csv"}
+        assert result.output_types == {"csv": "csv"}
         assert result.metadata["ingest_source"] == {
             "pipeline_run_id": "source-run",
             "source_step": 0,
