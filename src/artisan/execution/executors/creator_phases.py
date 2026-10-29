@@ -331,6 +331,7 @@ def post_unit(
             postprocess_dir=prepped.postprocess_dir,
             _associated=prepped.associated,
             _references=prepped.references,
+            files_dir=prepped.files_dir,
         )
         op_result = operation.postprocess(postprocess_input)
 

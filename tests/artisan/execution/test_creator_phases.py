@@ -8,10 +8,13 @@ import shutil
 from dataclasses import replace
 from enum import StrEnum, auto
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, ClassVar
 
 import polars as pl
 import pytest
+from fixtures import managed_file_ops
+from fixtures.managed_file_ops import ManagedFileCommand, WholeBatchManagedFileCommand
 from fixtures.reference_ops import ReferenceConsumer
 from fixtures.run_outputs import commit_outputs
 from fixtures.store_format import commit_test_tables
@@ -20,6 +23,7 @@ from fsspec.implementations.local import LocalFileSystem
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executors.creator import (
     LifecycleResult,
+    run_creator_flow,
     run_creator_lifecycle,
 )
 from artisan.execution.executors.creator_phases import (
@@ -427,6 +431,153 @@ class TestRoundTripEquivalence:
         for role in mono_result.artifacts:
             assert len(split_result.artifacts[role]) == len(mono_result.artifacts[role])
         assert len(split_result.edges) == len(mono_result.edges)
+
+
+@pytest.fixture
+def managed_file_unit(
+    delta_env: tuple[RuntimeEnvironment, list[str]],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[ExecutionUnit, RuntimeEnvironment]:
+    """Prepare declared inputs and make the command fixture importable by workers."""
+    runtime, ids = delta_env
+    tests_root = str(Path(__file__).resolve().parents[2])
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, [tests_root, os.getenv("PYTHONPATH")])),
+    )
+    return (
+        ExecutionUnit(
+            operation=ManagedFileCommand(),
+            inputs={"source": ids},
+            execution_spec_id="a" * 32,
+            step_number=1,
+        ),
+        runtime.model_copy(update={"files_root": str(tmp_path / "files")}),
+    )
+
+
+@pytest.mark.parametrize(
+    "operation_class", [ManagedFileCommand, WholeBatchManagedFileCommand]
+)
+def test_post_unit_retains_command_files_after_cleanup(
+    managed_file_unit: tuple[ExecutionUnit, RuntimeEnvironment],
+    operation_class: type[ManagedFileCommand],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Relocation preserves descriptors and parents across both dispatch shapes."""
+    unit, runtime = managed_file_unit
+    unit = unit.model_copy(update={"operation": operation_class()})
+    prepped = prep_unit(unit, runtime)
+    raw_results = LocalExecuteRouter().route_execute(
+        prepped.operation, prepped.artifact_execute_inputs, prepped.sandbox_path
+    )
+    original_postprocess = ManagedFileCommand.postprocess
+    descriptors = []
+
+    def capture_drafts(
+        operation: ManagedFileCommand, inputs: PostprocessInput
+    ) -> ArtifactResult:
+        assert inputs.files_dir == prepped.files_dir
+        result = original_postprocess(operation, inputs)
+        descriptors.extend(
+            draft.model_copy(deep=True)
+            .finalize()
+            .model_dump(exclude={"path", "materialized_path"})
+            for draft in result.artifacts["files"]
+        )
+        return result
+
+    monkeypatch.setattr(ManagedFileCommand, "postprocess", capture_drafts)
+    result = post_unit(prepped, raw_results, runtime)
+    files = result.artifacts["files"]
+    assert len(files) == 2
+    assert len({artifact.path for artifact in files}) == 2
+    assert len({artifact.artifact_id for artifact in files}) == 2
+    assert [
+        artifact.model_dump(exclude={"path", "materialized_path"}) for artifact in files
+    ] == descriptors
+    assert not Path(prepped.sandbox_path).exists()
+    retained_paths = {
+        str(path) for path in Path(runtime.files_root).rglob("*") if path.is_file()
+    }
+    assert retained_paths == {artifact.path for artifact in files}
+    assert {Path(path).name for path in retained_paths} == {"output.bin"}
+    assert {
+        (edge.source_artifact_id, edge.target_artifact_id) for edge in result.edges
+    } == {
+        (artifact.read_content().decode(), artifact.artifact_id) for artifact in files
+    }
+
+
+def test_post_unit_managed_files_require_storage(
+    managed_file_unit: tuple[ExecutionUnit, RuntimeEnvironment],
+) -> None:
+    """Operations requiring retention receive None when storage is absent."""
+    unit, runtime = managed_file_unit
+    runtime = runtime.model_copy(update={"files_root": None})
+    prepped = prep_unit(unit, runtime)
+    assert prepped.files_dir is None
+    with pytest.raises(ValueError, match="Managed file storage must be configured"):
+        post_unit(prepped, [None, None], runtime)
+    assert Path(prepped.sandbox_path).exists()
+
+
+@pytest.mark.parametrize(
+    "failure", ["copy", "digest", "bad_digest", "bad_size", "upload"]
+)
+def test_managed_file_failure_rejects_outputs_and_preserves_command_evidence(
+    managed_file_unit: tuple[ExecutionUnit, RuntimeEnvironment],
+    failure: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Postprocess and storage failures stage no successful output artifacts."""
+    unit, runtime = managed_file_unit
+
+    def fail_io(*args: Any, **kwargs: Any) -> None:
+        msg = f"injected {failure} failure"
+        raise OSError(msg)
+
+    original_postprocess = ManagedFileCommand.postprocess
+
+    def corrupt_descriptor(
+        operation: ManagedFileCommand, inputs: PostprocessInput
+    ) -> ArtifactResult:
+        result = original_postprocess(operation, inputs)
+        artifact = result.artifacts["files"][0]
+        if failure == "bad_digest":
+            artifact.content_hash = "0" * 32
+        else:
+            artifact.size_bytes += 1
+        return result
+
+    if failure == "copy":
+        monkeypatch.setattr(
+            managed_file_ops, "shutil", SimpleNamespace(copyfile=fail_io)
+        )
+    elif failure == "digest":
+        monkeypatch.setattr(managed_file_ops, "compute_stream_digest", fail_io)
+    elif failure == "upload":
+        monkeypatch.setattr(
+            "artisan.execution.executors.creator_phases.shutil.move", fail_io
+        )
+    else:
+        monkeypatch.setattr(ManagedFileCommand, "postprocess", corrupt_descriptor)
+
+    result = run_creator_flow(unit, runtime)
+
+    assert not result.success
+    assert result.artifact_ids == []
+    assert result.staging_path is not None
+    expected_error = (
+        "failed integrity"
+        if failure.startswith("bad_")
+        else f"injected {failure} failure"
+    )
+    assert expected_error in result.error
+    command_outputs = list(Path(runtime.working_root).rglob("selected-*/output.bin"))
+    assert {path.read_text() for path in command_outputs} == set(unit.inputs["source"])
+    assert len(list(Path(runtime.working_root).rglob("scratch.txt"))) == 2
 
 
 @pytest.fixture
