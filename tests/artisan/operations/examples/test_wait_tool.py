@@ -10,7 +10,7 @@ import pytest
 
 from artisan.execution.compute.invoke import invoke_op_work
 from artisan.operations.examples import WaitTool
-from artisan.schemas import DataArtifact, ExecuteInput, PostprocessInput
+from artisan.schemas import CSVArtifact, ExecuteInput, PostprocessInput
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 
@@ -69,7 +69,7 @@ class TestWaitTool:
         markers = []
         sources = []
         for host in ("host-a", "host-b"):
-            source = DataArtifact.draft(
+            source = CSVArtifact.draft(
                 content=f"value\n{host}\n".encode(),
                 original_name=f"{host}.csv",
                 step_number=0,

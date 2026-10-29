@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -38,6 +38,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
     """
 
     name = "data_generator_with_metrics"
+    version: ClassVar[str] = "2"
     description = "Generate datasets with co-produced statistics"
 
     inputs: ClassVar[dict[str, Any]] = {}
@@ -48,7 +49,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.datasets: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Generated CSV dataset files",
             derives_from={"inputs": []},
         ),
@@ -142,7 +143,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
         }
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build DataArtifact and MetricArtifact drafts from execution output."""
+        """Build CSVArtifact and MetricArtifact drafts from execution output."""
         raw = inputs.memory_outputs
 
         result = ArtifactResult(
@@ -156,7 +157,7 @@ class DataGeneratorWithMetrics(OperationDefinition):
         )
         for metric_data in raw.get("calculated_metrics", []):
             with open(metric_data["dataset_path"], "rb") as f:
-                dataset = DataArtifact.draft(
+                dataset = CSVArtifact.draft(
                     content=f.read(),
                     original_name=metric_data["dataset_name"],
                     step_number=inputs.step_number,

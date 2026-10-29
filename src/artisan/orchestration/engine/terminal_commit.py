@@ -59,7 +59,7 @@ def commit_terminal_result(
         step_number=result.step_number,
         operation_name=operation_name,
     )
-    staged = prepare_commit_evidence(
+    with prepare_commit_evidence(
         staging_root=staging_root,
         fs=fs,
         commit_kind="step_result",
@@ -67,18 +67,21 @@ def commit_terminal_result(
         step_number=result.step_number,
         operation_name=operation_name,
         execution_run_ids=execution_run_ids,
-    )
-    committer = DeltaCommitter(
-        delta_root,
-        staging,
-        fs=fs,
-        storage_options=storage_options,
-    )
-    prepared = committer.prepare_logical(staged.plan, staged=staged)
-    publish_commit_plan(delta_root, fs, staged.plan)
-    committer.commit_logical(
-        staged.plan,
-        prepared=prepared,
-        preserve_staging=preserve_staging,
-    )
+    ) as staged:
+        committer = DeltaCommitter(
+            delta_root,
+            staging,
+            fs=fs,
+            storage_options=storage_options,
+        )
+        prepared = committer.prepare_logical(staged.plan, staged=staged)
+        try:
+            publish_commit_plan(delta_root, fs, staged.plan)
+            committer.commit_logical(
+                staged.plan,
+                prepared=prepared,
+                preserve_staging=preserve_staging,
+            )
+        finally:
+            committer.discard_prepared(prepared)
     return tracker.current_state(step_run_id).to_step_result()

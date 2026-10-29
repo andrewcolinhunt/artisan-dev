@@ -60,7 +60,7 @@ class TestPackUnits:
 def _cache_inputs(inputs: dict[str, list[str]]) -> dict[str, list[CacheInputIdentity]]:
     return {
         role: [
-            CacheInputIdentity(role, None, position, "data", artifact_id)
+            CacheInputIdentity(role, None, position, "csv", artifact_id)
             for position, artifact_id in enumerate(artifact_ids)
         ]
         for role, artifact_ids in inputs.items()

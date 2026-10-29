@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -50,7 +50,7 @@ class DataTransformerConfig(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             materialize=False,
             description="Input dataset to reference in configs",
@@ -96,8 +96,8 @@ class DataTransformerConfig(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract per-dataset info as parallel lists (one entry per artifact)."""
-        datasets: list[DataArtifact] = [
-            d for d in inputs.input_artifacts["dataset"] if isinstance(d, DataArtifact)
+        datasets: list[CSVArtifact] = [
+            d for d in inputs.input_artifacts["dataset"] if isinstance(d, CSVArtifact)
         ]
         return {
             "dataset_artifact_ids": PerArtifact([d.artifact_id for d in datasets]),

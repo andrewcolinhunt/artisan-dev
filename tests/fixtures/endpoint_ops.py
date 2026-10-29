@@ -20,7 +20,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 _OUTPUTS: dict[str, OutputSpec] = {
     "output": OutputSpec(
-        artifact_type="data",
+        artifact_type="csv",
         derives_from={"inputs": []},
     ),
 }
@@ -39,7 +39,7 @@ class GpuTool(OperationDefinition):
     description: ClassVar[str] = "Tool op with hardware spec"
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.reference: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=False,
             description="Optional reference structure",
         ),

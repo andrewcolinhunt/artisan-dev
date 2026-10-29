@@ -6,10 +6,10 @@ Registration is automatic via ``__init_subclass__``.
 
 Example::
 
-    class DataTypeDef(ArtifactTypeDef):
-        key = "data"
-        table_path = "artifacts/data"
-        model = DataArtifact
+    class CSVTypeDef(ArtifactTypeDef):
+        key = "csv"
+        table_path = "artifacts/csvs"
+        model = CSVArtifact
 """
 
 from __future__ import annotations
@@ -30,8 +30,8 @@ class ArtifactTypeDef:
     definition time.
 
     Attributes:
-        key: Unique string identifier (e.g. "data").
-        table_path: Delta Lake table path (e.g. "artifacts/data").
+        key: Unique string identifier (e.g. "csv").
+        table_path: Delta Lake table path (e.g. "artifacts/csvs").
         model: The artifact model class (must have POLARS_SCHEMA, to_row, from_row).
     """
 
@@ -152,7 +152,7 @@ class ArtifactTypeDef:
         """Get the type def class for a given key.
 
         Args:
-            key: Artifact type key (e.g. "data").
+            key: Artifact type key (e.g. "csv").
 
         Returns:
             The ArtifactTypeDef subclass.
@@ -178,10 +178,10 @@ class ArtifactTypeDef:
         """Get the artifact model class for a given key.
 
         Args:
-            key: Artifact type key (e.g. "data").
+            key: Artifact type key (e.g. "csv").
 
         Returns:
-            The artifact model class (e.g. DataArtifact).
+            The artifact model class (e.g. CSVArtifact).
         """
         return ArtifactTypeDef.get(key).model
 
@@ -190,10 +190,10 @@ class ArtifactTypeDef:
         """Get the Delta Lake table path for a given key.
 
         Args:
-            key: Artifact type key (e.g. "data").
+            key: Artifact type key (e.g. "csv").
 
         Returns:
-            Table path string (e.g. "artifacts/data").
+            Table path string (e.g. "artifacts/csvs").
         """
         return ArtifactTypeDef.get(key).table_path
 
@@ -202,7 +202,7 @@ class ArtifactTypeDef:
         """Get the Polars schema for a given key.
 
         Args:
-            key: Artifact type key (e.g. "data").
+            key: Artifact type key (e.g. "csv").
 
         Returns:
             Dict mapping column names to Polars data types.

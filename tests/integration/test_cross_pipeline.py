@@ -103,10 +103,10 @@ def test_ingest_pipeline_step_basic(
     # Imported roots preserve bytes but receive distinct semantic identities
     # because their metadata records the source step.
     a_ids = set(get_execution_outputs(env_a["delta_root"], 1, "dataset"))
-    b_ids = set(get_execution_outputs(env_b["delta_root"], 0, "data"))
+    b_ids = set(get_execution_outputs(env_b["delta_root"], 0, "csv"))
     assert a_ids.isdisjoint(b_ids)
-    source_rows = read_table(env_a["delta_root"], "artifacts/data")
-    imported_rows = read_table(env_b["delta_root"], "artifacts/data")
+    source_rows = read_table(env_a["delta_root"], "artifacts/csvs")
+    imported_rows = read_table(env_b["delta_root"], "artifacts/csvs")
     source_content = set(
         source_rows.filter(pl.col("artifact_id").is_in(a_ids))["content"].to_list()
     )
@@ -167,7 +167,7 @@ def test_ingest_pipeline_step_type_filter(
 
     # Only metric artifacts imported
     assert count_artifacts_by_type(env_b["delta_root"], "metric") == 2
-    assert count_artifacts_by_type(env_b["delta_root"], "data") == 0
+    assert count_artifacts_by_type(env_b["delta_root"], "csv") == 0
 
 
 def test_execution_config_artifact_references(pipeline_env: dict[str, str]):
@@ -243,7 +243,7 @@ def _imported_source_ids(pipeline: PipelineManager, step_number: int) -> set[str
     return {
         artifact.metadata["imported_from"]["artifact_id"]
         for artifact in store.get_artifacts_by_type(
-            rows["artifact_id"].to_list(), "data"
+            rows["artifact_id"].to_list(), "csv"
         ).values()
     }
 
@@ -277,7 +277,7 @@ def test_ingest_through_union_includes_cached_and_repeated_passthrough(
     assert destination.finalize()["overall_success"]
     assert _imported_source_ids(destination, 0) == set(source_ids[:1])
     assert _imported_source_ids(destination, 1) == set(source_ids)
-    imported = read_table(destination.config.delta_root, "artifacts/data")
+    imported = read_table(destination.config.delta_root, "artifacts/csvs")
     assert {
         json.loads(value)["imported_from"]["pipeline_run_id"]
         for value in imported["metadata"]
@@ -357,7 +357,7 @@ def test_ingest_repeated_position_observes_source_retry_and_always_executes(
     assert read_table(
         destination.config.delta_root, TablePath.CACHE_REUSE.value
     ).is_empty()
-    assert count_artifacts_by_type(destination.config.delta_root, "data") == 2
+    assert count_artifacts_by_type(destination.config.delta_root, "csv") == 2
 
 
 @pytest.mark.parametrize("backend", ["local", pytest.param("s3", marks=pytest.mark.s3)])

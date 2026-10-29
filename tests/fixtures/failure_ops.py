@@ -25,7 +25,7 @@ from artisan.errors import ArtisanError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import (
     ArtifactResult as CuratorArtifactResult,
@@ -56,7 +56,7 @@ class _GenBase(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.datasets: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="generated dataset",
             derives_from={"inputs": []},
         ),
@@ -77,7 +77,7 @@ class _GenBase(OperationDefinition):
             if file_path.endswith(".csv"):
                 with open(file_path, "rb") as f:
                     drafts.append(
-                        DataArtifact.draft(
+                        CSVArtifact.draft(
                             content=f.read(),
                             original_name=os.path.basename(file_path),
                             step_number=inputs.step_number,
@@ -191,7 +191,7 @@ class _CuratorBase(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.passthrough: InputSpec(
-            artifact_type="data", required=True, description="in"
+            artifact_type="csv", required=True, description="in"
         ),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {}
@@ -276,7 +276,7 @@ class FailingComposite(CompositeDefinition):
         datasets = auto()
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.datasets: OutputSpec(artifact_type="data", description="out"),
+        OutputRole.datasets: OutputSpec(artifact_type="csv", description="out"),
     }
 
     class Params(BaseModel):

@@ -1,4 +1,4 @@
-"""Unit tests for the IngestData curator operation.
+"""Unit tests for the IngestCSV curator operation.
 
 Tests cover:
 1. Basic file ingestion via execute_curator
@@ -7,7 +7,7 @@ Tests cover:
 4. external_path propagation
 5. Class attributes (name, description, input/output specs)
 
-Note: IngestData returns ArtifactResult with draft DataArtifacts.
+Note: IngestCSV emits draft CSVArtifacts through ArtifactStreamResult.
 """
 
 from __future__ import annotations
@@ -19,8 +19,9 @@ import pytest
 from fixtures.csv import make_csv
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.operations.curator import IngestData
+from artisan.operations.curator import IngestCSV
 from artisan.schemas.artifact import FileRefArtifact
+from artisan.schemas.execution.curator_result import ArtifactStreamResult
 from artisan.utils.hashing import compute_content_digest
 
 
@@ -59,8 +60,8 @@ def _mock_store_with_refs(file_refs: list[FileRefArtifact]) -> Mock:
     return store
 
 
-class TestIngestDataBasicExecution:
-    """Tests for basic IngestData execute_curator() execution."""
+class TestIngestCSVBasicExecution:
+    """Tests for basic IngestCSV execute_curator() execution."""
 
     def test_should_ingest_single_csv_file(self, tmp_path):
         """Test should successfully ingest a single CSV file."""
@@ -70,7 +71,7 @@ class TestIngestDataBasicExecution:
 
         file_ref = make_file_ref(str(path))
 
-        op = IngestData()
+        op = IngestCSV()
         store = _mock_store_with_refs([file_ref])
         result = op.execute_curator(
             inputs={"file": _df([file_ref.artifact_id])},
@@ -78,10 +79,13 @@ class TestIngestDataBasicExecution:
             artifact_store=store,
         )
 
-        assert result.success
-        assert len(result.artifacts["data"]) == 1
+        assert isinstance(result, ArtifactStreamResult)
+        emissions = list(result.items)
+        assert len(emissions) == 1
+        assert emissions[0].role == "csv"
+        assert emissions[0].sources == {"file": [file_ref.artifact_id]}
 
-        artifact = result.artifacts["data"][0]
+        artifact = emissions[0].artifact
         assert artifact.content == content
         assert artifact.original_name == "data"
         assert artifact.extension == ".csv"
@@ -99,7 +103,7 @@ class TestIngestDataBasicExecution:
             path.write_bytes(content)
             files.append(make_file_ref(str(path)))
 
-        op = IngestData()
+        op = IngestCSV()
         store = _mock_store_with_refs(files)
         result = op.execute_curator(
             inputs={"file": _df([f.artifact_id for f in files])},
@@ -107,24 +111,25 @@ class TestIngestDataBasicExecution:
             artifact_store=store,
         )
 
-        assert result.success
-        assert len(result.artifacts["data"]) == 3
-        assert [
-            (mapping.draft_index, mapping.source_role, mapping.source_artifact_id)
-            for mapping in result.lineage["data"]
-        ] == [(index, "file", source.artifact_id) for index, source in enumerate(files)]
-        names = [a.original_name for a in result.artifacts["data"]]
+        assert isinstance(result, ArtifactStreamResult)
+        emissions = list(result.items)
+        assert len(emissions) == 3
+        assert [emission.role for emission in emissions] == ["csv"] * 3
+        assert [emission.sources for emission in emissions] == [
+            {"file": [source.artifact_id]} for source in files
+        ]
+        names = [emission.artifact.original_name for emission in emissions]
         assert "data_0" in names
         assert "data_1" in names
         assert "data_2" in names
 
 
-class TestIngestDataErrorHandling:
+class TestIngestCSVErrorHandling:
     """Tests for error handling."""
 
     def test_should_fail_for_empty_input(self):
         """Test should fail when no files provided."""
-        op = IngestData()
+        op = IngestCSV()
         result = op.execute_curator(
             inputs={"file": _df([])},
             step_number=0,
@@ -136,7 +141,7 @@ class TestIngestDataErrorHandling:
 
     def test_should_fail_for_missing_file_key(self):
         """Test should fail when 'file' key is missing."""
-        op = IngestData()
+        op = IngestCSV()
         result = op.execute_curator(
             inputs={},
             step_number=0,
@@ -147,7 +152,7 @@ class TestIngestDataErrorHandling:
         assert "No input files" in result.error
 
 
-class TestIngestDataExternalPath:
+class TestIngestCSVExternalPath:
     """Tests for external_path propagation."""
 
     def test_should_set_external_path_from_file_ref(self, tmp_path):
@@ -158,7 +163,7 @@ class TestIngestDataExternalPath:
 
         file_ref = make_file_ref(str(path))
 
-        op = IngestData()
+        op = IngestCSV()
         store = _mock_store_with_refs([file_ref])
         result = op.execute_curator(
             inputs={"file": _df([file_ref.artifact_id])},
@@ -166,41 +171,43 @@ class TestIngestDataExternalPath:
             artifact_store=store,
         )
 
-        artifact = result.artifacts["data"][0]
+        assert isinstance(result, ArtifactStreamResult)
+        artifact = next(result.items).artifact
         assert artifact.external_path == str(path)
 
 
-class TestIngestDataClassAttributes:
-    """Tests for IngestData class attributes."""
+class TestIngestCSVClassAttributes:
+    """Tests for IngestCSV class attributes."""
 
     def test_should_have_correct_name(self):
-        """Test IngestData has correct operation name."""
-        assert IngestData.name == "ingest_data"
+        """Test IngestCSV has correct operation name."""
+        assert IngestCSV.name == "ingest_csv"
+        assert IngestCSV.version == "2"
 
     def test_should_have_description(self):
-        """Test IngestData has a description."""
-        assert IngestData.description is not None
-        assert "import files" in IngestData.description.lower()
+        """Test IngestCSV has a description."""
+        assert IngestCSV.description is not None
+        assert "import files" in IngestCSV.description.lower()
 
     def test_should_have_file_input_spec(self):
-        """Test IngestData has 'file' input specification."""
-        assert "file" in IngestData.inputs
-        assert IngestData.inputs["file"].required is True
+        """Test IngestCSV has 'file' input specification."""
+        assert "file" in IngestCSV.inputs
+        assert IngestCSV.inputs["file"].required is True
 
-    def test_should_have_data_output_spec(self):
-        """Test IngestData has 'data' output specification."""
-        assert "data" in IngestData.outputs
-        assert IngestData.outputs["data"].artifact_type == "data"
+    def test_should_have_csv_output_spec(self):
+        """Test IngestCSV has 'csv' output specification."""
+        assert "csv" in IngestCSV.outputs
+        assert IngestCSV.outputs["csv"].artifact_type == "csv"
 
     def test_should_have_resource_config(self):
-        """Test IngestData has resource configuration."""
-        op = IngestData()
+        """Test IngestCSV has resource configuration."""
+        op = IngestCSV()
         assert op.runner_resources.cpus == 1
         assert op.runner_resources.time_limit == "00:10:00"
         assert op.batch_strategy.job_name == "ingest"
 
 
-class TestIngestDataOutputFormat:
+class TestIngestCSVOutputFormat:
     """Tests for output format correctness."""
 
     def test_output_should_contain_all_required_fields(self, tmp_path):
@@ -211,7 +218,7 @@ class TestIngestDataOutputFormat:
 
         file_ref = make_file_ref(str(path))
 
-        op = IngestData()
+        op = IngestCSV()
         store = _mock_store_with_refs([file_ref])
         result = op.execute_curator(
             inputs={"file": _df([file_ref.artifact_id])},
@@ -219,7 +226,8 @@ class TestIngestDataOutputFormat:
             artifact_store=store,
         )
 
-        artifact = result.artifacts["data"][0]
+        assert isinstance(result, ArtifactStreamResult)
+        artifact = next(result.items).artifact
         assert artifact.content is not None
         assert artifact.original_name is not None
         assert artifact.extension is not None
@@ -236,7 +244,7 @@ class TestIngestDataOutputFormat:
 
         file_ref = make_file_ref(str(path))
 
-        op = IngestData()
+        op = IngestCSV()
         store = _mock_store_with_refs([file_ref])
         result = op.execute_curator(
             inputs={"file": _df([file_ref.artifact_id])},
@@ -244,7 +252,8 @@ class TestIngestDataOutputFormat:
             artifact_store=store,
         )
 
-        assert result.artifacts["data"][0].original_name == "my_dataset"
+        assert isinstance(result, ArtifactStreamResult)
+        assert next(result.items).artifact.original_name == "my_dataset"
 
 
 if __name__ == "__main__":

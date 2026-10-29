@@ -294,7 +294,7 @@ class TestBulkLoadMethods:
         # Create artifact_index
         index_data = {
             "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
-            "artifact_type": ["data", "data", "metric", "metric"],
+            "artifact_type": ["csv", "csv", "metric", "metric"],
             "origin_step_number": [0, 1, 2, 1],
             "metadata": ["{}", "{}", "{}", "{}"],
         }
@@ -305,8 +305,8 @@ class TestBulkLoadMethods:
             "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
             "source_artifact_id": ["a" * 32, "b" * 32, "a" * 32],
             "target_artifact_id": ["b" * 32, "c" * 32, "d" * 32],
-            "source_artifact_type": ["data", "data", "data"],
-            "target_artifact_type": ["data", "metric", "metric"],
+            "source_artifact_type": ["csv", "csv", "csv"],
+            "target_artifact_type": ["csv", "metric", "metric"],
             "source_role": ["data", "data", "data"],
             "target_role": ["data", "metric", "metric"],
             "group_id": [None, None, None],
@@ -624,7 +624,7 @@ class TestArtifactStoreProvenanceQueries:
         # Create artifact_index with test data
         index_data = {
             "artifact_id": ["a" * 32, "b" * 32, "c" * 32],
-            "artifact_type": ["data", "data", "metric"],
+            "artifact_type": ["csv", "csv", "metric"],
             "origin_step_number": [0, 1, 2],
             "metadata": ["{}", "{}", "{}"],
         }
@@ -635,8 +635,8 @@ class TestArtifactStoreProvenanceQueries:
             "execution_run_id": ["x" * 32, "y" * 32],
             "source_artifact_id": ["a" * 32, "b" * 32],
             "target_artifact_id": ["b" * 32, "c" * 32],
-            "source_artifact_type": ["data", "data"],
-            "target_artifact_type": ["data", "metric"],
+            "source_artifact_type": ["csv", "csv"],
+            "target_artifact_type": ["csv", "metric"],
             "source_role": ["data", "data"],
             "target_role": ["data", "metric"],
             "group_id": [None, None],
@@ -844,8 +844,8 @@ class TestGetDescendantArtifactIds:
             "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
             "source_artifact_id": ["a" * 32, "b" * 32, "a" * 32],
             "target_artifact_id": ["b" * 32, "c" * 32, "d" * 32],
-            "source_artifact_type": ["data", "data", "data"],
-            "target_artifact_type": ["data", "metric", "metric"],
+            "source_artifact_type": ["csv", "csv", "csv"],
+            "target_artifact_type": ["csv", "metric", "metric"],
             "source_role": ["data", "data", "data"],
             "target_role": ["data", "metric", "metric"],
             "group_id": [None, None, None],
@@ -922,8 +922,8 @@ class TestLoadArtifactTypeMap:
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
                 "artifact_type": [
-                    "data",
-                    "data",
+                    "csv",
+                    "csv",
                     "metric",
                     "config",
                 ],
@@ -944,7 +944,7 @@ class TestLoadArtifactTypeMap:
         """Load all types when no filter provided."""
         result = store_with_index.provenance.load_type_map()
         assert len(result) == 4
-        assert result["a" * 32] == "data"
+        assert result["a" * 32] == "csv"
         assert result["c" * 32] == "metric"
         assert result["d" * 32] == "config"
 
@@ -952,7 +952,7 @@ class TestLoadArtifactTypeMap:
         """Load only requested IDs."""
         result = store_with_index.provenance.load_type_map(["a" * 32, "c" * 32])
         assert len(result) == 2
-        assert result["a" * 32] == "data"
+        assert result["a" * 32] == "csv"
         assert result["c" * 32] == "metric"
 
     def test_empty_index(self, backend_fs):
@@ -981,7 +981,7 @@ class TestLoadArtifactIdsByType:
         index = pl.DataFrame(
             {
                 "artifact_id": ["a" * 32, "b" * 32, "c" * 32, "d" * 32],
-                "artifact_type": ["data", "data", "metric", "metric"],
+                "artifact_type": ["csv", "csv", "metric", "metric"],
                 "origin_step_number": [0, 1, 2, 2],
                 "metadata": ["{}", "{}", "{}", "{}"],
             },
@@ -998,14 +998,14 @@ class TestLoadArtifactIdsByType:
     def test_filter_by_type(self, store_with_index):
         """Returns only IDs of the requested type."""
         result = store_with_index.provenance.load_artifact_ids_by_type(
-            ArtifactTypes.DATA
+            ArtifactTypes.CSV
         )
         assert result == {"a" * 32, "b" * 32}
 
     def test_filter_by_type_and_step(self, store_with_index):
         """Filters by both type and step number."""
         result = store_with_index.provenance.load_artifact_ids_by_type(
-            ArtifactTypes.DATA, step_numbers=[0]
+            ArtifactTypes.CSV, step_numbers=[0]
         )
         assert result == {"a" * 32}
 
@@ -1029,7 +1029,7 @@ class TestLoadArtifactIdsByType:
         store = ArtifactStore(
             root, fs=fs, storage_options=storage.delta_storage_options()
         )
-        result = store.provenance.load_artifact_ids_by_type(ArtifactTypes.DATA)
+        result = store.provenance.load_artifact_ids_by_type(ArtifactTypes.CSV)
         assert result == set()
 
 
@@ -1047,8 +1047,8 @@ class TestLoadForwardProvenanceMap:
                 "execution_run_id": ["x" * 32, "y" * 32, "z" * 32],
                 "source_artifact_id": ["a" * 32, "b" * 32, "a" * 32],
                 "target_artifact_id": ["b" * 32, "c" * 32, "d" * 32],
-                "source_artifact_type": ["data", "data", "data"],
-                "target_artifact_type": ["data", "metric", "metric"],
+                "source_artifact_type": ["csv", "csv", "csv"],
+                "target_artifact_type": ["csv", "metric", "metric"],
                 "source_role": ["data", "data", "data"],
                 "target_role": ["data", "metric", "metric"],
                 "group_id": [None, None, None],

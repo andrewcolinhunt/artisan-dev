@@ -1,7 +1,7 @@
 """Execute curator operations via the single-phase execute_curator lifecycle.
 
-Curator operations receive DataFrames of artifact IDs and return either
-an ArtifactResult (new artifacts) or a PassthroughResult (existing IDs).
+Curator operations receive DataFrames of artifact IDs and return an artifact
+collection, an artifact stream, or a passthrough result containing existing IDs.
 Routing is decided by ``is_curator_operation``, which checks whether the
 operation class overrides ``execute_curator``.
 """
@@ -16,6 +16,7 @@ from typing import Any
 import polars as pl
 
 from artisan.execution.context.builder import build_execution_context
+from artisan.execution.executors.curator_stream import handle_artifact_stream
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.enrich import (
     build_artifact_edges_from_types,
@@ -56,6 +57,7 @@ from artisan.registry.discovery import bootstrap_applications
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import (
     ArtifactResult,
+    ArtifactStreamResult,
     PassthroughResult,
 )
 from artisan.schemas.execution.execution_context import ExecutionContext
@@ -230,6 +232,7 @@ def _run_curator_flow(
     params_dict = serialize_params(operation)
     user_overrides = unit.user_overrides
     execution_context = None
+    stream_started = False
 
     try:
         check_command_scope()
@@ -255,13 +258,29 @@ def _run_curator_flow(
         # --- execute phase ---
         with phase_timer("execute", timings):
             try:
+                execute_start = time.perf_counter()
                 result = operation.execute_curator(
                     inputs=input_dfs,
                     step_number=unit.step_number,
                     artifact_store=artifact_store,
                 )
+                if isinstance(result, ArtifactStreamResult):
+                    stream_started = True
+                    return handle_artifact_stream(
+                        result,
+                        execution_context,
+                        inputs,
+                        timings,
+                        execute_start,
+                        total_start,
+                        params_dict,
+                        user_overrides,
+                        runtime_env.failure_logs_root,
+                    )
                 close_command_scope()
             except Exception as exc:
+                if stream_started:
+                    raise
                 close_command_scope(exc)
                 return record_execution_failure(
                     **replay_recording_fields(),
@@ -351,6 +370,19 @@ def _run_curator_flow(
                         )
 
     except Exception as exc:
+        if stream_started:
+            error = format_error(exc)
+            try:
+                close_command_scope(exc)
+            except Exception as cleanup:
+                error += f" | Command scope close failed: {format_error(cleanup)}"
+            return StagingResult(
+                success=False,
+                error=sanitize_diagnostic(
+                    f"{error} | Original stream shard: {execution_run_id}"
+                ),
+                execution_run_id=None,
+            )
         close_command_scope(exc)
         if execution_context is not None and execution_is_sealed(execution_context):
             raise

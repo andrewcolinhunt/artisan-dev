@@ -12,8 +12,8 @@ from artisan.schemas.artifact.types import ArtifactTypes
 class TestBuiltinTypes:
     """Built-in types compare equal to their string values."""
 
-    def test_data_is_string(self) -> None:
-        assert ArtifactTypes.DATA == "data"
+    def test_csv_is_string(self) -> None:
+        assert ArtifactTypes.CSV == "csv"
 
     def test_metric_is_string(self) -> None:
         assert ArtifactTypes.METRIC == "metric"
@@ -25,15 +25,15 @@ class TestBuiltinTypes:
         assert ArtifactTypes.CONFIG == "config"
 
     def test_string_equality_both_directions(self) -> None:
-        assert ArtifactTypes.DATA == "data"
-        assert "data" == ArtifactTypes.DATA  # noqa: SIM300 -- Test the reverse comparison.
+        assert ArtifactTypes.CSV == "csv"
+        assert "csv" == ArtifactTypes.CSV  # noqa: SIM300 -- Test the reverse comparison.
 
 
 class TestMembership:
     """Membership checks via ``in``."""
 
     def test_contains_builtin(self) -> None:
-        assert "data" in ArtifactTypes
+        assert "csv" in ArtifactTypes
         assert "metric" in ArtifactTypes
         assert "file_ref" in ArtifactTypes
         assert "config" in ArtifactTypes
@@ -50,7 +50,7 @@ class TestIteration:
 
     def test_iter_contains_all_builtins(self) -> None:
         keys = list(ArtifactTypes)
-        assert "data" in keys
+        assert "csv" in keys
         assert "metric" in keys
         assert "file_ref" in keys
         assert "config" in keys
@@ -61,14 +61,14 @@ class TestAll:
 
     def test_all_contains_builtins(self) -> None:
         result = ArtifactTypes.all()
-        assert set(result) >= {"data", "metric", "file_ref", "config"}
+        assert set(result) >= {"csv", "metric", "file_ref", "config"}
 
 
 class TestIsRegistered:
     """is_registered() check."""
 
     def test_builtin_is_registered(self) -> None:
-        assert ArtifactTypes.is_registered("data") is True
+        assert ArtifactTypes.is_registered("csv") is True
 
     def test_unknown_is_not_registered(self) -> None:
         assert ArtifactTypes.is_registered("nonexistent") is False
@@ -97,15 +97,15 @@ class TestMatches:
     """Tests for matches() spec-type matching."""
 
     def test_any_matches_all(self) -> None:
-        assert ArtifactTypes.matches(ArtifactTypes.ANY, "data") is True
+        assert ArtifactTypes.matches(ArtifactTypes.ANY, "csv") is True
         assert ArtifactTypes.matches(ArtifactTypes.ANY, "metric") is True
         assert ArtifactTypes.matches(ArtifactTypes.ANY, "custom") is True
 
     def test_exact_match(self) -> None:
-        assert ArtifactTypes.matches("data", "data") is True
+        assert ArtifactTypes.matches("csv", "csv") is True
 
     def test_mismatch(self) -> None:
-        assert ArtifactTypes.matches("data", "metric") is False
+        assert ArtifactTypes.matches("csv", "metric") is False
 
 
 class TestArtifactRejectsAny:
@@ -116,5 +116,5 @@ class TestArtifactRejectsAny:
             Artifact(artifact_type="any")
 
     def test_artifact_with_concrete_type_ok(self) -> None:
-        artifact = Artifact(artifact_type="data")
-        assert artifact.artifact_type == "data"
+        artifact = Artifact(artifact_type="csv")
+        assert artifact.artifact_type == "csv"

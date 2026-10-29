@@ -1,17 +1,19 @@
 """Result models returned by curator operations.
 
-Curator operations return one of two shapes:
+Curator operations return one of three shapes:
 - ``ArtifactResult`` -- creates new draft artifacts.
+- ``ArtifactStreamResult`` -- emits drafts incrementally within one execution.
 - ``PassthroughResult`` -- routes existing artifact IDs.
 
-The ``CuratorResult`` union captures both for typing and validation.
+The ``CuratorResult`` union captures all three for typing and validation.
 """
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Any, cast
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
@@ -28,7 +30,7 @@ class ArtifactResult(BaseModel):
         success: Whether execution completed successfully.
         error: Error message if success is False.
         artifacts: Output role -> draft artifact list.
-            e.g. {"data": [DataArtifact(...), ...]}
+            e.g. {"data": [CSVArtifact(...), ...]}
         lineage: Explicit parent declarations keyed by output role. Every emitted
             role must be present; root roles explicitly contain an empty list.
         metadata: Extensibility escape hatch for additional data.
@@ -145,5 +147,52 @@ class PassthroughResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
+class ArtifactEmission(BaseModel):
+    """One draft and its explicit input parents, handed to the framework.
+
+    Attributes:
+        role: Declared output role receiving the draft.
+        artifact: Unfinalized artifact. The framework owns it after emission.
+        sources: Input roles mapped to parent IDs. An empty mapping explicitly
+            declares a root; sibling-output indices are not supported.
+    """
+
+    model_config = ConfigDict(
+        extra="forbid", arbitrary_types_allowed=True, revalidate_instances="always"
+    )
+
+    role: StrictStr = Field(min_length=1)
+    artifact: Artifact
+    sources: dict[StrictStr, list[StrictStr]]
+
+    @field_validator("sources")
+    @classmethod
+    def _validate_sources(cls, sources: dict[str, list[str]]) -> dict[str, list[str]]:
+        """Require named input roles and nonempty parent lists."""
+        for role, ids in sources.items():
+            if not role or not ids or any(not artifact_id for artifact_id in ids):
+                msg = "Sources require nonempty roles, parent lists, and string IDs"
+                raise ValueError(msg)
+        return sources
+
+
+class ArtifactStreamResult(BaseModel):
+    """Deferred draft production consumed inside one curator execution.
+
+    The framework stages and releases each emission before requesting the next.
+    Exhaustion and successful closure are required before the execution is
+    sealed. The iterator remains worker-local and is never serialized.
+
+    Attributes:
+        items: Iterator of draft emissions with explicit input lineage.
+        metadata: Execution metadata snapshotted before consuming any items.
+    """
+
+    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
+
+    items: Iterator[ArtifactEmission]
+    metadata: dict[str, Any] = Field(default_factory=dict)
+
+
 # Union of supported curator-operation result models.
-CuratorResult = ArtifactResult | PassthroughResult
+CuratorResult = ArtifactResult | ArtifactStreamResult | PassthroughResult

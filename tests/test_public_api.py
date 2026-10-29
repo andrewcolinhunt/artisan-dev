@@ -31,7 +31,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "ConsolidateAppendables",
         "DeclareLineage",
         "Filter",
-        "IngestData",
+        "IngestCSV",
         "IngestFiles",
         "IngestPipelineStep",
         "InteractiveFilter",
@@ -98,15 +98,17 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "AppendableArtifact",
         "ApptainerEnvironmentSpec",
         "Artifact",
+        "ArtifactEmission",
         "ArtifactResult",
+        "ArtifactStreamResult",
         "ArtifactTypeDef",
         "ArtifactTypes",
         "BatchStrategy",
+        "CSVArtifact",
         "CachePolicy",
         "ComputeProvider",
         "ComputeResources",
         "CuratorResult",
-        "DataArtifact",
         "DockerEnvironmentSpec",
         "EnvironmentSpec",
         "Environments",
@@ -175,7 +177,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "display_provenance_stepper",
         "get_max_step_number",
         "inspect_commands",
-        "inspect_data",
+        "inspect_csv",
         "inspect_failures",
         "inspect_metrics",
         "inspect_pipeline",
@@ -225,7 +227,7 @@ _SCHEMA_SUBPACKAGE_EXPORTS: dict[str, tuple[str, ...]] = {
         "Artifact",
         "ArtifactTypeDef",
         "ArtifactTypes",
-        "DataArtifact",
+        "CSVArtifact",
         "ExecutionConfigArtifact",
         "FileRefArtifact",
         "JsonContentMixin",
@@ -234,7 +236,9 @@ _SCHEMA_SUBPACKAGE_EXPORTS: dict[str, tuple[str, ...]] = {
     ),
     "artisan.schemas.composites": (),
     "artisan.schemas.execution": (
+        "ArtifactEmission",
         "ArtifactResult",
+        "ArtifactStreamResult",
         "BatchStrategy",
         "CuratorResult",
         "PassthroughResult",
@@ -293,6 +297,7 @@ def test_facade_exports_are_exact_and_importable(
                 "CacheMiss",
                 "CancellationAcknowledgement",
                 "CancellationStatus",
+                "DataArtifact",
                 "ExecutionContext",
                 "ExecutionRecord",
                 "OutputReference",
@@ -302,7 +307,11 @@ def test_facade_exports_are_exact_and_importable(
                 "StepStatus",
             ),
         ),
-        ("artisan.schemas.artifact", ("ArtifactProvenanceEdge",)),
+        ("artisan.schemas.artifact", ("ArtifactProvenanceEdge", "DataArtifact")),
+        ("artisan.schemas.artifact.csv", ("DataArtifact", "DataTypeDef")),
+        ("artisan.operations.curator", ("IngestData",)),
+        ("artisan.visualization", ("inspect_data",)),
+        ("artisan.visualization.inspect", ("inspect_data",)),
         (
             "artisan.schemas.execution",
             (
@@ -334,6 +343,16 @@ def test_removed_facade_names_are_absent(
 def test_execution_record_module_was_deleted() -> None:
     with pytest.raises(ModuleNotFoundError):
         importlib.import_module("artisan.schemas.execution.execution_record")
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    ["artisan.schemas.artifact.data", "artisan.operations.curator.ingest_data"],
+)
+def test_retired_csv_modules_are_absent(module_name: str) -> None:
+    with pytest.raises(ModuleNotFoundError) as error:
+        importlib.import_module(module_name)
+    assert error.value.name == module_name
 
 
 def test_composite_ref_has_only_the_supported_fields() -> None:

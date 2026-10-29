@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import tracemalloc
 from typing import Any, ClassVar
 
 import polars as pl
@@ -57,6 +58,67 @@ def _clean_registry():
     for attr in set(dir(ArtifactTypes)) - original_attrs:
         with contextlib.suppress(AttributeError):
             delattr(ArtifactTypes, attr)
+
+
+@pytest.fixture
+def binary_fields_artifact() -> Artifact:
+    """Register an artifact with nested binary durable fields."""
+
+    class BinaryFieldsArtifact(Artifact):
+        POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]] = {
+            "artifact_id": pl.String,
+            "content": pl.Binary,
+        }
+        artifact_type: str = Field(default="_test_binary_fields", frozen=True)
+        content: bytes
+        payload: dict[str, Any]
+
+    class BinaryFieldsTypeDef(ArtifactTypeDef):
+        key = "_test_binary_fields"
+        table_path = "artifacts/_binary_fields"
+        model = BinaryFieldsArtifact
+
+    return BinaryFieldsArtifact(
+        content=b"identity",
+        payload={
+            "mapping": {"raw": b"before"},
+            "list": [b"before"],
+            "tuple": ({"raw": b"before"},),
+        },
+    )
+
+
+@pytest.mark.parametrize("path", [("mapping", "raw"), ("list", 0), ("tuple", 0, "raw")])
+def test_nested_binary_fields_remain_protected(
+    binary_fields_artifact: Artifact, path: tuple[str | int, ...]
+) -> None:
+    artifact = binary_fields_artifact.finalize()
+    container = artifact.payload
+    for key in path[:-1]:
+        container = container[key]
+    container[path[-1]] = b"mutate"
+
+    with pytest.raises(ArtifactIntegrityError, match="was mutated"):
+        artifact.to_row()
+
+
+def test_binary_integrity_snapshots_have_bounded_allocation(
+    binary_fields_artifact: Artifact,
+) -> None:
+    artifact = binary_fields_artifact
+    content = b"x" * (8 * 1024 * 1024)
+    artifact.content = content
+    artifact.payload = {"nested": [content]}
+    tracemalloc.start()
+    try:
+        artifact.finalize()
+        row = artifact.to_row()
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+
+    assert row["content"] is content
+    assert peak < 1024 * 1024
 
 
 # --- Tests ---

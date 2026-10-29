@@ -7,7 +7,7 @@ from artisan.operations.curator.consolidate_appendables import (
 )
 from artisan.operations.curator.declare_lineage import DeclareLineage
 from artisan.operations.curator.filter import Filter
-from artisan.operations.curator.ingest_data import IngestData
+from artisan.operations.curator.ingest_csv import IngestCSV
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
 from artisan.operations.curator.interactive_filter import InteractiveFilter
@@ -17,7 +17,7 @@ __all__ = [
     "ConsolidateAppendables",
     "DeclareLineage",
     "Filter",
-    "IngestData",
+    "IngestCSV",
     "IngestFiles",
     "IngestPipelineStep",
     "InteractiveFilter",

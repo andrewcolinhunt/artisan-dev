@@ -166,11 +166,11 @@ class _StubOp(OperationDefinition):
 
     name: ClassVar[str] = "stub_op_for_kwarg_plumbing"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=False),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=False),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.out: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
     }

@@ -105,13 +105,24 @@ must match the downstream operation's input role name.
 Bring files from disk into the pipeline as artifacts:
 
 ```python
-from artisan.operations.curator import IngestData
+from artisan.operations.curator import IngestCSV
 
-pipeline.run(operation=IngestData, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
+pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
 ```
 
 Raw file paths are auto-promoted to `FileRefArtifact` and committed to Delta
-Lake before the operation runs. The output role for `IngestData` is `"data"`.
+Lake before the operation runs. The output role for `IngestCSV` is `"csv"`.
+
+`IngestCSV` converts and stages each file before moving to the next. It keeps
+one execution and one cache entry for the complete import. Each CSV must fit
+in worker memory, but the converted contents of all files do not stay in memory
+together. The commit also needs
+[local scratch space](../concepts/storage-and-delta-lake.md#memory-and-local-scratch-space).
+
+The converted outputs become accepted only after the complete execution seals
+and its logical commit completes. If conversion fails partway through, none of
+that execution's converted CSVs become accepted outputs. Registered raw file
+references remain available, and a retry starts conversion from the beginning.
 
 ---
 
@@ -393,7 +404,7 @@ print(runs)  # polars DataFrame with run IDs, step counts, and timestamps
 |---------|-------|-----|
 | `Output role 'X' not available` | Mismatched role name in `.output()` | Check the operation's output role names |
 | Downstream step receives 0 artifacts | Upstream step failed or filtered everything out | Check `step.status` and `step.succeeded_count` |
-| `Raw file paths are not allowed for creator operations` | Passed a file path list to a creator operation | Use `IngestData` first, then wire its output |
+| `Raw file paths are not allowed for creator operations` | Passed a file path list to a creator operation | Use `IngestCSV` first, then wire its output |
 | Pipeline hangs on exit | Forgot `finalize()` after using `submit()` | Call `pipeline.finalize()` |
 | Re-run a step after changing code or external state | A prior cached result is still eligible | Pass `skip_cache=True`; see [Bypass caching](configuring-execution.md#bypass-caching-and-resume). Use a fresh store only when you want separate history |
 
@@ -420,7 +431,7 @@ from artisan.visualization import inspect_step
 outputs = inspect_step(
     "test/delta", step.step_number, pipeline_run_id=pipeline.config.pipeline_run_id
 )
-assert outputs.filter(outputs["artifact_type"] == "data").height == 3
+assert outputs.filter(outputs["artifact_type"] == "csv").height == 3
 assert pipeline.finalize()["overall_success"]
 ```
 

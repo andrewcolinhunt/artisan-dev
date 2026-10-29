@@ -23,7 +23,7 @@ from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import InlineTransport
 from artisan.operations.base import OperationDefinition
 from artisan.operations.examples import CsvHead, WaitTool
-from artisan.schemas import DataArtifact, ExecuteInput, PostprocessInput
+from artisan.schemas import CSVArtifact, ExecuteInput, PostprocessInput
 
 pytestmark = pytest.mark.integration
 
@@ -36,7 +36,7 @@ def test_builtin_exact_parents_and_names_survive_worker_transport(
     tmp_path: Path, operation_cls: type[OperationDefinition], params: dict, suffix: str
 ) -> None:
     sources = [
-        DataArtifact.draft(
+        CSVArtifact.draft(
             content=f"id,value\n1,{value}\n2,9\n".encode(),
             original_name=f"sample_{value}.csv",
             step_number=0,
@@ -139,8 +139,8 @@ def test_builtin_exact_parents_and_names_survive_worker_transport(
             source.artifact_id,
             "dataset",
             target_role,
-            "data",
-            "data",
+            "csv",
+            "csv",
             None,
         )
         for source in sources

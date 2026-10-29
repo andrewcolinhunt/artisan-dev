@@ -6,7 +6,7 @@ import polars as pl
 import pytest
 
 from artisan.execution.recording.parquet_writer import StagingResult
-from artisan.operations.curator.ingest_data import IngestData
+from artisan.operations.curator.ingest_csv import IngestCSV
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
@@ -24,7 +24,7 @@ from artisan.storage.io.worker_seal import verify_worker_seal
 
 
 @pytest.mark.parametrize("request_recorded", [False, True])
-@pytest.mark.parametrize("operation", [DataGenerator, IngestData])
+@pytest.mark.parametrize("operation", [DataGenerator, IngestCSV])
 def test_unknown_cancellation_persists_custom_named_attempt_and_allows_resume(
     tmp_path, monkeypatch, request_recorded, operation
 ):

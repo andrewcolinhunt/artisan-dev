@@ -22,7 +22,7 @@ def _make_edges(pairs: list[tuple[str, str, str]]) -> pl.DataFrame:
             "execution_run_id": ["run"] * n,
             "source_artifact_id": [p[0] for p in pairs],
             "target_artifact_id": [p[1] for p in pairs],
-            "source_artifact_type": ["data"] * n,
+            "source_artifact_type": ["csv"] * n,
             "target_artifact_type": [p[2] for p in pairs],
             "source_role": ["input"] * n,
             "target_role": ["output"] * n,
@@ -80,15 +80,15 @@ class TestGetAncestorIds:
         store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
-                (A, B, "data"),
-                (B, C, "data"),
+                (A, B, "csv"),
+                (B, C, "csv"),
             ]
         )
         index = _make_index(
             [
-                (A, "data", 1),
-                (B, "data", 2),
-                (C, "data", 3),
+                (A, "csv", 1),
+                (B, "csv", 2),
+                (C, "csv", 3),
             ]
         )
         _commit_tables(
@@ -107,7 +107,7 @@ class TestGetAncestorIds:
     def test_no_ancestors(self, prov_env):
         """Root node has no ancestors."""
         store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "data")])
+        edges = _make_edges([(A, B, "csv")])
         _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_ancestor_ids(A) == []
@@ -117,18 +117,18 @@ class TestGetAncestorIds:
         store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
-                (A, B, "data"),
-                (A, C, "data"),
-                (B, D, "data"),
-                (C, D, "data"),
+                (A, B, "csv"),
+                (A, C, "csv"),
+                (B, D, "csv"),
+                (C, D, "csv"),
             ]
         )
         index = _make_index(
             [
-                (A, "data", 1),
-                (B, "data", 2),
-                (C, "data", 2),
-                (D, "data", 3),
+                (A, "csv", 1),
+                (B, "csv", 2),
+                (C, "csv", 2),
+                (D, "csv", 3),
             ]
         )
         _commit_tables(
@@ -150,14 +150,14 @@ class TestGetAncestorIds:
         edges = _make_edges(
             [
                 (A, B, "metric"),
-                (B, C, "data"),
+                (B, C, "csv"),
             ]
         )
         index = _make_index(
             [
-                (A, "data", 1),
+                (A, "csv", 1),
                 (B, "metric", 2),
-                (C, "data", 3),
+                (C, "csv", 3),
             ]
         )
         _commit_tables(
@@ -174,7 +174,7 @@ class TestGetAncestorIds:
         assert set(store.get_ancestor_ids(C)) == {A, B}
 
         # Only data ancestors
-        result = store.get_ancestor_ids(C, ancestor_type="data")
+        result = store.get_ancestor_ids(C, ancestor_type="csv")
         assert result == [A]
 
         # Only metric ancestors
@@ -184,7 +184,7 @@ class TestGetAncestorIds:
     def test_unknown_artifact(self, prov_env):
         """Artifact not in any edge returns empty list."""
         store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "data")])
+        edges = _make_edges([(A, B, "csv")])
         _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_ancestor_ids(C) == []
@@ -203,8 +203,8 @@ class TestGetDescendantIds:
         store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
-                (A, B, "data"),
-                (B, C, "data"),
+                (A, B, "csv"),
+                (B, C, "csv"),
             ]
         )
         _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
@@ -215,7 +215,7 @@ class TestGetDescendantIds:
     def test_no_descendants(self, prov_env):
         """Leaf node has no descendants."""
         store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "data")])
+        edges = _make_edges([(A, B, "csv")])
         _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_descendant_ids(B) == []
@@ -225,9 +225,9 @@ class TestGetDescendantIds:
         store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
-                (A, B, "data"),
+                (A, B, "csv"),
                 (A, C, "metric"),
-                (B, D, "data"),
+                (B, D, "csv"),
             ]
         )
         _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
@@ -240,9 +240,9 @@ class TestGetDescendantIds:
         store, _fs, opts, root = prov_env
         edges = _make_edges(
             [
-                (A, B, "data"),
+                (A, B, "csv"),
                 (A, C, "metric"),
-                (B, D, "data"),
+                (B, D, "csv"),
             ]
         )
         _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
@@ -252,13 +252,13 @@ class TestGetDescendantIds:
         assert result == [C]
 
         # Only data descendants
-        result = store.get_descendant_ids(A, descendant_type="data")
+        result = store.get_descendant_ids(A, descendant_type="csv")
         assert set(result) == {B, D}
 
     def test_unknown_artifact(self, prov_env):
         """Artifact not in any edge returns empty list."""
         store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "data")])
+        edges = _make_edges([(A, B, "csv")])
         _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
 
         assert store.get_descendant_ids(C) == []
@@ -277,8 +277,8 @@ class TestLoadEdgesDf:
     def test_returns_base_columns_by_default(self, prov_env):
         """Default call returns only source/target IDs, no roles or types."""
         store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "data")])
-        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        edges = _make_edges([(A, B, "csv")])
+        index = _make_index([(A, "csv", 1), (B, "csv", 2)])
         _commit_tables(
             root,
             _fs,
@@ -299,7 +299,7 @@ class TestLoadEdgesDf:
         """include_target_type=True adds target_artifact_type."""
         store, _fs, opts, root = prov_env
         edges = _make_edges([(A, B, "metric")])
-        index = _make_index([(A, "data", 1), (B, "metric", 2)])
+        index = _make_index([(A, "csv", 1), (B, "metric", 2)])
         _commit_tables(
             root,
             _fs,
@@ -317,8 +317,8 @@ class TestLoadEdgesDf:
     def test_include_roles_adds_role_and_group_columns(self, prov_env):
         """include_roles=True surfaces source_role, target_role, group_id."""
         store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "data")])
-        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        edges = _make_edges([(A, B, "csv")])
+        index = _make_index([(A, "csv", 1), (B, "csv", 2)])
         _commit_tables(
             root,
             _fs,
@@ -339,8 +339,8 @@ class TestLoadEdgesDf:
     def test_include_both_flags_returns_all_extra_columns(self, prov_env):
         """Combining include_target_type and include_roles returns all extras."""
         store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "data")])
-        index = _make_index([(A, "data", 1), (B, "data", 2)])
+        edges = _make_edges([(A, B, "csv")])
+        index = _make_index([(A, "csv", 1), (B, "csv", 2)])
         _commit_tables(
             root,
             _fs,
@@ -370,8 +370,8 @@ class TestProvenanceStoreBackendParametrized:
         fs, storage_config, root = backend_fs
         storage_options = storage_config.delta_storage_options()
 
-        edges = _make_edges([(A, B, "data"), (B, C, "data")])
-        index = _make_index([(A, "data", 1), (B, "data", 2), (C, "data", 3)])
+        edges = _make_edges([(A, B, "csv"), (B, C, "csv")])
+        index = _make_index([(A, "csv", 1), (B, "csv", 2), (C, "csv", 3)])
 
         _commit_tables(
             root,

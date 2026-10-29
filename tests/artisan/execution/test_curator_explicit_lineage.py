@@ -19,7 +19,7 @@ from artisan.execution.executors.creator_phases import PreppedUnit, post_unit
 from artisan.execution.executors.curator import _handle_artifact_result
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -44,9 +44,9 @@ class _TestOp(OperationDefinition):
     class OutputRole(StrEnum):
         data = auto()
 
-    inputs: ClassVar[dict[str, InputSpec]] = {"data": InputSpec(artifact_type="data")}
+    inputs: ClassVar[dict[str, InputSpec]] = {"data": InputSpec(artifact_type="csv")}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "data": OutputSpec(artifact_type="data", derives_from={"inputs": ["data"]})
+        "data": OutputSpec(artifact_type="csv", derives_from={"inputs": ["data"]})
     }
 
     def execute_curator(self, inputs, step_number, artifact_store):
@@ -70,8 +70,8 @@ class _NamelessArtifact(Artifact):
         return self.value.encode()
 
 
-def _draft(name: str = "unrelated.csv") -> DataArtifact:
-    return DataArtifact.draft(b"value\n1\n", name, step_number=1)
+def _draft(name: str = "unrelated.csv") -> CSVArtifact:
+    return CSVArtifact.draft(b"value\n1\n", name, step_number=1)
 
 
 def _mapping(source: str = "a" * 32, **kwargs) -> LineageMapping:
@@ -87,7 +87,7 @@ def _mapping(source: str = "a" * 32, **kwargs) -> LineageMapping:
 def execute_declared_result(request, tmp_path, monkeypatch):
     """Exercise real validation/resolution, replacing only final persistence."""
     store = MagicMock()
-    store.provenance.load_type_map.side_effect = lambda ids: dict.fromkeys(ids, "data")
+    store.provenance.load_type_map.side_effect = lambda ids: dict.fromkeys(ids, "csv")
 
     def execute(result, *, inputs=None, specs=None):
         inputs = {"data": ["a" * 32, "b" * 32]} if inputs is None else inputs
@@ -123,7 +123,7 @@ def execute_declared_result(request, tmp_path, monkeypatch):
             files_dir=None,
             operation=operation,
             input_artifacts={
-                role: [DataArtifact(artifact_id=aid) for aid in ids]
+                role: [CSVArtifact(artifact_id=aid) for aid in ids]
                 for role, ids in inputs.items()
             },
             associated={},
@@ -195,7 +195,7 @@ def test_required_parent_roles_are_enforced(execute_declared_result):
             inputs={"data": ["a" * 32], "reference": ["b" * 32]},
             specs={
                 "data": OutputSpec(
-                    artifact_type="data", derives_from={"inputs": ["data", "reference"]}
+                    artifact_type="csv", derives_from={"inputs": ["data", "reference"]}
                 )
             },
         )
@@ -232,7 +232,7 @@ def test_missing_source_type_fails_before_recording(execute_declared_result):
 
 
 def test_root_requires_explicit_empty_role(execute_declared_result):
-    specs = {"data": OutputSpec(artifact_type="data", derives_from={"inputs": []})}
+    specs = {"data": OutputSpec(artifact_type="csv", derives_from={"inputs": []})}
     assert (
         execute_declared_result(
             ArtifactResult(artifacts={"data": [_draft()]}, lineage={"data": []}),
@@ -268,7 +268,7 @@ def test_dynamic_curator_roles_are_explicit_roots(execute_declared_result):
 def test_optional_output_has_no_occurrence_to_cover(execute_declared_result, present):
     specs = {
         "data": OutputSpec(
-            artifact_type="data", required=False, derives_from={"inputs": ["data"]}
+            artifact_type="csv", required=False, derives_from={"inputs": ["data"]}
         )
     }
     result = (
@@ -341,7 +341,7 @@ def test_creator_cannot_emit_undeclared_dynamic_roles(execute_declared_result):
 
 def test_executor_preserves_names_order_and_sibling_indices(execute_declared_result):
     first = _draft("z-last-alphabetically.csv")
-    second = DataArtifact.draft(b"value\n2\n", "a-first-alphabetically.csv", 1)
+    second = CSVArtifact.draft(b"value\n2\n", "a-first-alphabetically.csv", 1)
     child = _draft("unrelated-child.csv")
     result = ArtifactResult(
         artifacts={"data": [first, second], "child": [child]},
@@ -355,9 +355,9 @@ def test_executor_preserves_names_order_and_sibling_indices(execute_declared_res
     edges = execute_declared_result(
         result,
         specs={
-            "data": OutputSpec(artifact_type="data", derives_from={"inputs": ["data"]}),
+            "data": OutputSpec(artifact_type="csv", derives_from={"inputs": ["data"]}),
             "child": OutputSpec(
-                artifact_type="data", derives_from={"outputs": ["data"]}
+                artifact_type="csv", derives_from={"outputs": ["data"]}
             ),
         },
     )
@@ -385,7 +385,7 @@ def test_identity_neutral_output_cannot_supply_missing_input_type(
     store = execute_declared_result.store
     store.provenance.load_type_map.side_effect = None
     store.provenance.load_type_map.return_value = (
-        {source_id: "data"} if source_exists else {}
+        {source_id: "csv"} if source_exists else {}
     )
     if source_exists:
         edges = execute_declared_result(result, inputs={"data": [source_id]})

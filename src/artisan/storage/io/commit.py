@@ -19,9 +19,10 @@ from artisan.schemas.orchestration.step_lifecycle import (
     StepStatus,
 )
 from artisan.storage.core.committed_scan import (
-    read_committed,
+    filter_committed_rows,
     read_logical_commits,
-    verify_plan_effect,
+    scan_plan_keys,
+    verify_snapshot_effect,
 )
 from artisan.storage.core.store_format import (
     assert_store_format,
@@ -37,15 +38,15 @@ from artisan.storage.core.table_schemas import (
     get_physical_schema_for_path,
     is_global_artifact_table,
 )
+from artisan.storage.io.bounded_evidence import DiskTable
 from artisan.storage.io.commit_plan import (
     CommitPlan,
     PlannedTable,
     StagedPlanEvidence,
-    canonical_table_plan_key,
-    comparable_effect_rows,
     read_commit_plan,
     read_plan_evidence,
 )
+from artisan.storage.io.delta_files import DeltaSnapshot, append_table_files
 from artisan.storage.io.staging import StagingManager
 from artisan.utils.path import uri_join
 
@@ -94,7 +95,7 @@ class DeltaCommitter:
         *,
         staged: StagedPlanEvidence | None = None,
         source_rows: pl.DataFrame | None = None,
-        committed_frames: dict[str, pl.DataFrame] | None = None,
+        committed_snapshots: dict[str, DeltaSnapshot] | None = None,
     ) -> PreparedCommitEvidence:
         """Validate exact staged evidence for one immediate application.
 
@@ -105,19 +106,26 @@ class DeltaCommitter:
         staged = staged or read_plan_evidence(
             plan, self.staging_manager.staging_dir, self._fs
         )
-        if (
-            staged.plan != plan
-            or staged.staging_root != self.staging_manager.staging_dir
-        ):
-            msg = "Prepared staging evidence does not match this plan/root"
-            raise StoreIntegrityError(msg)
-        if plan.commit_kind == "execution_recovery":
-            self._validate_recovery(
-                plan, staged, source_rows=source_rows, committed_frames=committed_frames
-            )
-        else:
-            self._reject_terminal_attempt(plan, source_rows=source_rows)
-            self._validate_dynamic_result(staged, source_rows=source_rows)
+        try:
+            if (
+                staged.plan != plan
+                or staged.staging_root != self.staging_manager.staging_dir
+            ):
+                msg = "Prepared staging evidence does not match this plan/root"
+                raise StoreIntegrityError(msg)
+            if plan.commit_kind == "execution_recovery":
+                self._validate_recovery(
+                    plan,
+                    staged,
+                    source_rows=source_rows,
+                    committed_snapshots=committed_snapshots,
+                )
+            else:
+                self._reject_terminal_attempt(plan, source_rows=source_rows)
+                self._validate_dynamic_result(staged, source_rows=source_rows)
+        except BaseException:
+            staged.close()
+            raise
         prepared = PreparedCommitEvidence(staged, self.delta_base_path, object())
         self._prepared[prepared.token] = prepared
         return prepared
@@ -133,17 +141,12 @@ class DeltaCommitter:
             validate_dynamic_result,
         )
 
-        candidates = staged.frames.get(TablePath.STEPS.value)
+        candidates = staged.tables.get(TablePath.STEPS.value)
         if candidates is None:
             return
-        row = candidates.row(0, named=True)
+        row = candidates.get_row(candidates.keys[0])
         if source_rows is None:
-            source_rows = read_committed(
-                self.delta_base_path,
-                TablePath.STEPS,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            source_rows = self._visible_attempt_rows(row["step_run_id"])
         history = (
             source_rows.filter(pl.col("step_run_id") == row["step_run_id"])
             .unique()
@@ -158,11 +161,36 @@ class DeltaCommitter:
         StepTracker._validate_history(history)
         if row["status"] not in {"succeeded", "partial"}:
             return
+        columns = {
+            TablePath.EXECUTIONS.value: [
+                "execution_run_id",
+                "step_run_id",
+                "success",
+                "metadata",
+            ],
+            TablePath.EXECUTION_EDGES.value: [
+                "execution_run_id",
+                "direction",
+                "role",
+                "artifact_id",
+            ],
+            TablePath.ARTIFACT_INDEX.value: ["artifact_id", "artifact_type"],
+            TablePath.CACHE_REUSE.value: [
+                "current_step_run_id",
+                "cached_execution_run_id",
+            ],
+        }
+        pending = {
+            path: _collect_columns(table, columns[path])
+            for path, table in staged.tables.items()
+            if path in columns
+        }
         frames = read_result_evidence(
             self.delta_base_path,
             fs=self._fs,
             storage_options=self._storage_options,
-            staged=staged.frames,
+            staged=pending,
+            step_run_id=row["step_run_id"],
         )
         validate_dynamic_result(row, frames)
 
@@ -183,19 +211,34 @@ class DeltaCommitter:
         self._require_persisted_plan(plan)
         if prepared is not None:
             self._consume_prepared(plan, prepared)
-        controls = self._controls()
-        control = self._control_for(plan, controls)
-        if control is not None and control["state"] == "complete":
-            if not preserve_staging and self._has_staging(plan):
-                self._cleanup_plan(plan)
-            return {}
-        if control is not None and control["state"] == "abandoned":
-            msg = f"Logical commit {plan.logical_commit_id} is abandoned"
-            raise StoreIntegrityError(msg)
-        if prepared is None:
-            prepared = self.prepare_logical(plan)
-            self._consume_prepared(plan, prepared)
-        frames = prepared.staged.frames
+        try:
+            controls = self._controls()
+            control = self._control_for(plan, controls)
+            if control is not None and control["state"] == "complete":
+                if not preserve_staging and self._has_staging(plan):
+                    self._cleanup_plan(plan)
+                return {}
+            if control is not None and control["state"] == "abandoned":
+                msg = f"Logical commit {plan.logical_commit_id} is abandoned"
+                raise StoreIntegrityError(msg)
+            if prepared is None:
+                prepared = self.prepare_logical(plan)
+                self._consume_prepared(plan, prepared)
+            return self._apply_prepared(
+                plan, prepared.staged, controls, control, preserve_staging
+            )
+        finally:
+            if prepared is not None:
+                prepared.staged.close()
+
+    def _apply_prepared(
+        self,
+        plan: CommitPlan,
+        staged: StagedPlanEvidence,
+        controls: pl.DataFrame,
+        control: dict[str, Any] | None,
+        preserve_staging: bool,
+    ) -> dict[str, int]:
         if control is None:
             try:
                 controls = self._insert_planned(plan)
@@ -216,7 +259,7 @@ class DeltaCommitter:
         for table in plan.tables:
             try:
                 written = self._commit_table_effect(
-                    plan, table, frames[table.table_path], controls
+                    plan, table, staged.tables[table.table_path], controls
                 )
                 verified.append(table.table_path)
                 if written:
@@ -249,10 +292,21 @@ class DeltaCommitter:
             self._delete_planned_files(plan)
         return results
 
+    def discard_prepared(self, prepared: PreparedCommitEvidence) -> None:
+        """Release an unused snapshot issued by this writer without any mutation."""
+        if self._prepared.get(prepared.token) is prepared:
+            self._prepared.pop(prepared.token)
+            prepared.staged.close()
+
+    def close(self) -> None:
+        """Release all unconsumed private evidence owned by this writer."""
+        for prepared in list(self._prepared.values()):
+            self.discard_prepared(prepared)
+
     def _consume_prepared(
         self, plan: CommitPlan, prepared: PreparedCommitEvidence
     ) -> None:
-        issued = self._prepared.pop(prepared.token, None)
+        issued = self._prepared.get(prepared.token)
         if (
             issued is not prepared
             or prepared.delta_root != self.delta_base_path
@@ -261,6 +315,7 @@ class DeltaCommitter:
         ):
             msg = "Prepared commit evidence is stale or belongs to another writer/plan/root"
             raise StoreIntegrityError(msg)
+        self._prepared.pop(prepared.token)
 
     def _has_staging(self, plan: CommitPlan) -> bool:
         return any(
@@ -288,12 +343,7 @@ class DeltaCommitter:
     ) -> None:
         """Prevent an incomplete plan from reviving an already terminal attempt."""
         if source_rows is None:
-            source_rows = read_committed(
-                self.delta_base_path,
-                TablePath.STEPS,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            source_rows = self._visible_attempt_rows(plan.step_run_id)
         rows = source_rows.filter(pl.col("step_run_id") == plan.step_run_id)
         if rows.is_empty():
             return
@@ -316,28 +366,42 @@ class DeltaCommitter:
             )
             raise StoreIntegrityError(msg)
 
+    def _visible_attempt_rows(self, step_run_id: str) -> pl.DataFrame:
+        """Decode one source attempt and apply ordinary lifecycle visibility."""
+        from artisan.storage.core.run_scope import read_source_attempt_rows
+
+        rows = read_source_attempt_rows(
+            self._snapshot(TablePath.STEPS.value), step_run_id
+        )
+        return filter_committed_rows(rows, TablePath.STEPS.value, self._controls())
+
     def _validate_recovery(
         self,
         plan: CommitPlan,
         staged: StagedPlanEvidence,
         *,
         source_rows: pl.DataFrame | None = None,
-        committed_frames: dict[str, pl.DataFrame] | None = None,
+        committed_snapshots: dict[str, DeltaSnapshot] | None = None,
     ) -> None:
         """Validate all recovered workers through one shared source/artifact view."""
-        from artisan.storage.core.run_scope import validate_staged_executions
+        from artisan.storage.core.run_scope import (
+            read_source_attempt_rows,
+            validate_staged_executions,
+        )
 
         if source_rows is None:
-            source_rows = self._read_physical(TablePath.STEPS.value)
+            source_rows = read_source_attempt_rows(
+                self._snapshot(TablePath.STEPS.value), plan.step_run_id
+            )
         validate_staged_executions(
             self.delta_base_path,
-            staged.frames,
+            staged.tables,
             step_run_id=plan.step_run_id,
             step_number=plan.step_number,
             operation_name=plan.operation_name,
             source_rows=source_rows,
             per_execution_artifact_ids=staged.per_execution_artifact_ids,
-            committed_frames=committed_frames,
+            committed_snapshots=committed_snapshots,
             fs=self._fs,
             storage_options=self._storage_options,
             files_root=self._files_root,
@@ -394,145 +458,73 @@ class DeltaCommitter:
             raise StoreIntegrityError(msg)
         return controls
 
+    def _snapshot(self, table_path: str) -> DeltaSnapshot:
+        """Open one fixed Delta version for sequential payload access."""
+        return DeltaSnapshot(
+            self._table_path(table_path),
+            get_physical_schema_for_path(table_path),
+            fs=self._fs,
+            storage_options=self._storage_options,
+        )
+
     def _commit_table_effect(
         self,
         plan: CommitPlan,
         table: PlannedTable,
-        expected: pl.DataFrame,
+        expected: DiskTable,
         controls: pl.DataFrame,
     ) -> int:
-        physical = self._read_physical(table.table_path)
-        missing = self._missing_rows(plan, table, expected, physical, controls)
-        if not missing.is_empty():
-            self._append(
-                self._inject_owner(missing, table.table_path, plan.logical_commit_id),
-                table.table_path,
+        snapshot = self._snapshot(table.table_path)
+        missing = self._missing_keys(plan, table, expected, controls, snapshot=snapshot)
+        written = 0
+        if missing:
+            schema = pl.Schema(get_physical_schema_for_path(table.table_path))
+            frames = (
+                self._inject_owner(
+                    frame, table.table_path, plan.logical_commit_id
+                ).cast(schema)
+                for frame in expected.iter_frames(keys=missing)
             )
-            physical = self._read_physical(table.table_path)
-        verify_plan_effect(plan, table.table_path, physical, controls)
-        return missing.height
+            stats = list(table.natural_key)
+            if "logical_commit_id" in schema:
+                stats.append("logical_commit_id")
+            written = append_table_files(
+                snapshot,
+                frames,
+                step_number=plan.step_number,
+                statistics_columns=stats,
+            )
+            snapshot = self._snapshot(table.table_path)
+        verify_snapshot_effect(plan, table.table_path, snapshot, controls)
+        return written
 
-    def _missing_rows(
+    def _missing_keys(
         self,
         plan: CommitPlan,
         table: PlannedTable,
-        expected: pl.DataFrame,
-        physical: pl.DataFrame,
+        expected: DiskTable,
         controls: pl.DataFrame,
-    ) -> pl.DataFrame:
-        keys = list(table.natural_key)
-        keyed = physical.join(
-            expected.select(keys),
-            on=keys,
-            how="inner",
-            nulls_equal=True,
-        )
-        self._reject_conflicting_values(
-            table.table_path, table.natural_key, expected, keyed
-        )
-        if table.table_path == TablePath.CACHE_REUSE.value:
-            owned = physical.filter(pl.col("current_step_run_id") == plan.step_run_id)
-        else:
-            owned = physical.filter(
-                pl.col("logical_commit_id") == plan.logical_commit_id
-            )
-            if keyed["logical_commit_id"].null_count():
-                msg = f"Table {table.table_path!r} contains unowned rows"
-                raise StoreIntegrityError(msg)
-        extras = owned.join(
-            expected.select(keys), on=keys, how="anti", nulls_equal=True
-        )
-        if not extras.is_empty():
-            msg = f"Commit {plan.logical_commit_id} owns unplanned {table.table_path} rows"
-            raise StoreIntegrityError(msg)
-        if (
-            "origin_step_number" in owned
-            and not owned.filter(
-                pl.col("origin_step_number").is_null()
-                | (pl.col("origin_step_number") != plan.step_number)
-            ).is_empty()
+        *,
+        snapshot: DeltaSnapshot | None = None,
+    ) -> set[tuple[Any, ...]]:
+        snapshot = snapshot or self._snapshot(table.table_path)
+        selected = scan_plan_keys(plan, table, snapshot, controls)
+        for frame in snapshot.iter_frames(rows_by_file=selected.matched):
+            for row in frame.iter_rows(named=True):
+                key = tuple(row[name] for name in table.natural_key)
+                if not expected.matches_row(
+                    key, row, comparable=is_global_artifact_table(table.table_path)
+                ):
+                    msg = f"Natural key has conflicting values in {table.table_path}"
+                    raise StoreIntegrityError(msg)
+        if not is_global_artifact_table(table.table_path) and (
+            0 < len(selected.satisfied) < table.row_count
         ):
-            msg = (
-                f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
-            )
-            raise StoreIntegrityError(msg)
-        if table.table_path == TablePath.CACHE_REUSE.value:
-            satisfied = keyed
-            if 0 < satisfied.height < expected.height:
-                self._raise_partial(table.table_path)
-        elif is_global_artifact_table(table.table_path):
-            complete = set(
-                controls.filter(pl.col("state") == "complete")[
-                    "logical_commit_id"
-                ].to_list()
-            )
-            satisfied = keyed.filter(
-                (pl.col("logical_commit_id") == plan.logical_commit_id)
-                | pl.col("logical_commit_id").is_in(complete)
-            )
-        else:
-            foreign = keyed.filter(
-                pl.col("logical_commit_id") != plan.logical_commit_id
-            )
-            if not foreign.is_empty():
-                msg = f"Natural key already belongs to another commit in {table.table_path}"
-                raise StoreIntegrityError(msg)
-            satisfied = keyed.filter(
-                pl.col("logical_commit_id") == plan.logical_commit_id
-            )
-            if 0 < satisfied.height < expected.height:
-                self._raise_partial(table.table_path)
-        if not satisfied.group_by(keys).len().filter(pl.col("len") != 1).is_empty():
-            msg = f"Duplicate natural key in table {table.table_path!r}"
-            raise StoreIntegrityError(msg)
-        missing = expected.join(
-            satisfied.select(keys).unique(),
-            on=keys,
-            how="anti",
-            nulls_equal=True,
-        )
-        if missing.is_empty():
-            self._verify_table_plan_key(plan, table, expected)
-        return missing
-
-    @staticmethod
-    def _reject_conflicting_values(
-        table_path: str,
-        natural_key: tuple[str, ...],
-        expected: pl.DataFrame,
-        keyed: pl.DataFrame,
-    ) -> None:
-        if keyed.is_empty():
-            return
-        expected = comparable_effect_rows(table_path, expected)
-        columns = expected.columns
-        ownerless = keyed.select(columns).unique(maintain_order=True)
-        intended = expected.join(
-            keyed.select(list(natural_key)).unique(),
-            on=list(natural_key),
-            how="inner",
-            nulls_equal=True,
-        )
-        if not _frames_equal(ownerless, intended, sort_by=list(natural_key)):
-            msg = f"Natural key has conflicting values in {table_path}"
-            raise StoreIntegrityError(msg)
-
-    @staticmethod
-    def _verify_table_plan_key(
-        plan: CommitPlan,
-        table: PlannedTable,
-        expected: pl.DataFrame,
-    ) -> None:
-        if (
-            canonical_table_plan_key(
-                plan.logical_commit_id,
-                table.table_path,
-                expected,
-            )
-            != table.table_plan_key
-        ):
+            self._raise_partial(table.table_path)
+        if expected.canonical_key(plan.logical_commit_id) != table.table_plan_key:
             msg = f"Table plan key disagrees for {table.table_path}"
             raise StoreIntegrityError(msg)
+        return set(table.row_keys) - selected.satisfied
 
     @staticmethod
     def _raise_partial(table_path: str) -> None:
@@ -587,8 +579,8 @@ class DeltaCommitter:
             )
             raise StoreIntegrityError(msg)
         for table in plan.tables:
-            verify_plan_effect(
-                plan, table.table_path, self._read_physical(table.table_path), controls
+            verify_snapshot_effect(
+                plan, table.table_path, self._snapshot(table.table_path), controls
             )
 
     def _cleanup_plan(self, plan: CommitPlan) -> None:
@@ -763,15 +755,13 @@ class DeltaCommitter:
         return uri_join(self.delta_base_path, table_path)
 
 
-def _frames_equal(
-    left: pl.DataFrame,
-    right: pl.DataFrame,
-    *,
-    sort_by: list[str],
-) -> bool:
-    return left.sort(sort_by).equals(
-        right.select(left.columns).sort(sort_by),
-        null_equal=True,
+def _collect_columns(table: DiskTable, columns: list[str]) -> pl.DataFrame:
+    """Collect only explicitly selected result membership or single-row metadata."""
+    frames = list(table.iter_frames(columns=columns))
+    return (
+        pl.concat(frames)
+        if frames
+        else pl.DataFrame(schema={name: table.schema[name] for name in columns})
     )
 
 

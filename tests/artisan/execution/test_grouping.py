@@ -281,37 +281,37 @@ class TestComputeGroupId:
 
     def test_deterministic_for_same_inputs(self):
         """Same artifact IDs produce the same group_id."""
-        artifacts = {"data": ("data", "artifact_abc")}
+        artifacts = {"data": ("csv", "artifact_abc")}
         assert compute_group_id(artifacts) == compute_group_id(artifacts)
 
     def test_order_independent(self):
         """Dictionary insertion order does not affect the role-aware hash."""
         artifacts_a = {
-            "data": ("data", "artifact_abc"),
+            "data": ("csv", "artifact_abc"),
             "config": ("config", "artifact_def"),
         }
         artifacts_b = {
             "config": ("config", "artifact_def"),
-            "data": ("data", "artifact_abc"),
+            "data": ("csv", "artifact_abc"),
         }
         assert compute_group_id(artifacts_a) == compute_group_id(artifacts_b)
 
     def test_different_inputs_produce_different_ids(self):
         """Different artifact IDs produce different group_ids."""
-        artifacts_a = {"data": ("data", "artifact_abc")}
-        artifacts_b = {"data": ("data", "artifact_xyz")}
+        artifacts_a = {"data": ("csv", "artifact_abc")}
+        artifacts_b = {"data": ("csv", "artifact_xyz")}
         assert compute_group_id(artifacts_a) != compute_group_id(artifacts_b)
 
     def test_produces_32_char_hex(self):
         """xxh3_128 produces a 32-character hex string."""
-        result = compute_group_id({"data": ("data", "a")})
+        result = compute_group_id({"data": ("csv", "a")})
         assert len(result) == 32
         assert all(c in "0123456789abcdef" for c in result)
 
     def test_role_swap_changes_group_id(self):
         """Role assignment is part of group identity."""
-        artifacts = {"left": ("data", "a"), "right": ("config", "b")}
-        swapped = {"left": ("config", "b"), "right": ("data", "a")}
+        artifacts = {"left": ("csv", "a"), "right": ("config", "b")}
+        swapped = {"left": ("config", "b"), "right": ("csv", "a")}
         assert compute_group_id(artifacts) != compute_group_id(swapped)
 
 

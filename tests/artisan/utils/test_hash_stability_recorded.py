@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from artisan.operations import examples
 from artisan.operations.examples.data_transformer import DataTransformer
 from artisan.orchestration.engine.step_executor import instantiate_operation
 from artisan.schemas.orchestration.step_overrides import StepOverrides
@@ -31,6 +32,41 @@ def _cache_inputs(
     }
 
 
+@pytest.mark.parametrize(
+    ("operation_name", "version"),
+    [
+        ("DataGenerator", "2"),
+        ("DataGeneratorWithMetrics", "2"),
+        ("DataTransformer", "2"),
+        ("SequentialDataTransformer", "2"),
+        ("DataTransformerScript", "2"),
+        ("SlowTransformer", "2"),
+        ("SequentialSlowTransformer", "2"),
+        ("CsvHead", "2"),
+        ("Wait", "2"),
+        ("WaitTool", "2"),
+        ("StreamingEcho", "2"),
+        ("MetricCalculator", "1"),
+        ("DataTransformerConfig", "1"),
+    ],
+)
+def test_csv_producer_behavior_versions(operation_name: str, version: str) -> None:
+    assert getattr(examples, operation_name).version == version
+
+
+def test_csv_generator_invalidates_cache_without_input_artifacts() -> None:
+    operation = examples.DataGenerator()
+    current = effective_config_payload(operation)
+    previous = {**current, "version": "1"}
+    assert current["version"] == "2"
+    assert compute_step_spec_id(operation.name, 0, None, {}, current) != (
+        compute_step_spec_id(operation.name, 0, None, {}, previous)
+    )
+    assert compute_execution_spec_id(operation.name, {}, None, current) != (
+        compute_execution_spec_id(operation.name, {}, None, previous)
+    )
+
+
 # ---------------------------------------------------------------------------
 # Step spec hashes
 # ---------------------------------------------------------------------------
@@ -41,14 +77,14 @@ RECORDED_STEP_HASHES = [
             "operation_name": "data_transformer",
             "step_number": 1,
             "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
-            "inputs": _cache_inputs({"dataset": ("upstream_id_aaa", "data")}),
+            "inputs": _cache_inputs({"dataset": ("upstream_id_aaa", "csv")}),
             "config_overrides": {
                 "environment": "docker",
                 "tool": None,
                 "compute": "local",
             },
         },
-        "b9969508c50b7f3c8d6a6a37bce8f0e4",
+        "e98f30b6465b2900261119cf2e96c081",
         id="env=docker,compute=local",
     ),
     pytest.param(
@@ -67,10 +103,10 @@ RECORDED_STEP_HASHES = [
             "operation_name": "metric_calculator",
             "step_number": 2,
             "params": {"window": 10},
-            "inputs": _cache_inputs({"data": ("step1_aaa", "data")}),
+            "inputs": _cache_inputs({"data": ("step1_aaa", "csv")}),
             "config_overrides": None,
         },
-        "b34554a41102f2a96d099f80e8ff4ba9",
+        "04534d620543430ee073f25569ebfbf6",
         id="step1-no-config",
     ),
     pytest.param(
@@ -78,14 +114,14 @@ RECORDED_STEP_HASHES = [
             "operation_name": "merge_op",
             "step_number": 3,
             "params": None,
-            "inputs": _cache_inputs({"a": ("up_a", "data"), "b": ("up_b", "data")}),
+            "inputs": _cache_inputs({"a": ("up_a", "csv"), "b": ("up_b", "csv")}),
             "config_overrides": {
                 "environment": "local",
                 "tool": None,
                 "compute": "modal",
             },
         },
-        "9d0076257a4ef86e2b24922e87bd7f38",
+        "673fea2bbe6c69a7e49552a181027c70",
         id="multi-input",
     ),
 ]
@@ -125,11 +161,11 @@ _MERGE_SPEC_KWARGS = {
     "operation_name": "data_transformer",
     "step_number": 1,
     "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
-    "inputs": _cache_inputs({"dataset": ("upstream_id_aaa", "data")}),
+    "inputs": _cache_inputs({"dataset": ("upstream_id_aaa", "csv")}),
 }
 _MERGE_EXEC_KWARGS = {
     "operation_name": "data_transformer",
-    "inputs": _cache_inputs({"dataset": ("artifact_aaa", "data")}),
+    "inputs": _cache_inputs({"dataset": ("artifact_aaa", "csv")}),
     "params": {"scale_factor": 0.5, "variants": 1, "seed": 100},
 }
 
@@ -142,8 +178,8 @@ RECORDED_MERGE_HASHES = [
             "compute_provider": None,
             "compute_resources": None,
         },
-        "a71c54e23f6b903ccf8396a6ad192b9d",
-        "97b9639aa4889a963a12c99035c687c5",
+        "5475086b0705cda7216adf4e569edad1",
+        "47ce433c579bf773efed632036f9534f",
         id="defaults_only",
     ),
     pytest.param(
@@ -153,8 +189,8 @@ RECORDED_MERGE_HASHES = [
             "compute_provider": None,
             "compute_resources": {"gpu": "A100", "memory_gb": 32},
         },
-        "948d7c73e739a4a32d394daca41e9172",
-        "fe93e1db1df7a182b4c43150dd8aa608",
+        "9248481f76604cd104e28adfb840ac3d",
+        "d9d64797b7c16178e4ac9367d47aa8dd",
         id="compute_resources_split",
     ),
 ]

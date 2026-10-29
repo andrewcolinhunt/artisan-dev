@@ -1,6 +1,6 @@
 """Tests for artifact-ID-based materialization filenames.
 
-Verifies that DataArtifact, MetricArtifact, and ExecutionConfigArtifact
+Verifies that CSVArtifact, MetricArtifact, and ExecutionConfigArtifact
 materialize using artifact_id as the filename stem, preventing collisions
 when parallel workers produce artifacts with the same original_name.
 FileRefArtifact preserves its basename inside an artifact-ID directory.
@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pytest
 
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -25,12 +25,12 @@ def _csv_bytes(text: str) -> bytes:
     return text.encode("utf-8")
 
 
-class TestDataArtifactMaterialization:
-    """DataArtifact materializes with artifact_id filename."""
+class TestCSVArtifactMaterialization:
+    """CSVArtifact materializes with artifact_id filename."""
 
     def test_materialize_uses_artifact_id(self, tmp_path: Path):
         content = _csv_bytes("a,b\n1,2\n")
-        artifact = DataArtifact.draft(
+        artifact = CSVArtifact.draft(
             content=content, original_name="my_data.csv", step_number=0
         )
         artifact.finalize()
@@ -43,7 +43,7 @@ class TestDataArtifactMaterialization:
 
     def test_materialize_preserves_extension(self, tmp_path: Path):
         content = _csv_bytes("a\tb\n1\t2\n")
-        artifact = DataArtifact.draft(
+        artifact = CSVArtifact.draft(
             content=content, original_name="data.tsv", step_number=0
         )
         artifact.finalize()
@@ -54,7 +54,7 @@ class TestDataArtifactMaterialization:
 
     def test_materialize_default_csv_extension(self, tmp_path: Path):
         """When extension is None, defaults to .csv."""
-        artifact = DataArtifact.draft(
+        artifact = CSVArtifact.draft(
             content=b"a\n1\n",
             original_name="test",
             step_number=0,
@@ -68,7 +68,7 @@ class TestDataArtifactMaterialization:
 
     def test_materialize_requires_finalized(self, tmp_path: Path):
         """Draft artifacts cannot be materialized (no artifact_id)."""
-        artifact = DataArtifact.draft(
+        artifact = CSVArtifact.draft(
             content=_csv_bytes("a\n1\n"), original_name="test.csv", step_number=0
         )
         with pytest.raises(ValueError, match="not finalized"):
@@ -76,10 +76,10 @@ class TestDataArtifactMaterialization:
 
     def test_no_collision_with_duplicate_original_name(self, tmp_path: Path):
         """Two artifacts with same original_name get different filenames."""
-        a = DataArtifact.draft(
+        a = CSVArtifact.draft(
             content=_csv_bytes("a\n1\n"), original_name="output.csv", step_number=0
         )
-        b = DataArtifact.draft(
+        b = CSVArtifact.draft(
             content=_csv_bytes("a\n2\n"), original_name="output.csv", step_number=0
         )
         a.finalize()

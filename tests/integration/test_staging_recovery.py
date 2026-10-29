@@ -274,7 +274,7 @@ def test_recovery_does_not_override_cache_bypass(
         "sealed",
         "published",
         "planned",
-        "table:artifacts/data",
+        "table:artifacts/csvs",
         "table:artifacts/index",
         "table:orchestration/executions",
         "table:provenance/execution_edges",

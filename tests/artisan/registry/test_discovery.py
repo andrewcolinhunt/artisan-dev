@@ -165,13 +165,13 @@ class TestNameCollision:
 
                 inputs: ClassVar[dict[str, InputSpec]] = {
                     InputRole.data: InputSpec(
-                        artifact_type=ArtifactTypes.DATA,
+                        artifact_type=ArtifactTypes.CSV,
                         required=True,
                     ),
                 }
                 outputs: ClassVar[dict[str, OutputSpec]] = {
                     OutputRole.data: OutputSpec(
-                        artifact_type=ArtifactTypes.DATA,
+                        artifact_type=ArtifactTypes.CSV,
                         derives_from={"inputs": ["data"]},
                     ),
                 }

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -26,6 +26,7 @@ class Wait(OperationDefinition):
     """
 
     name = "wait"
+    version: ClassVar[str] = "2"
     description = "Wait a specified duration then produce a marker file"
 
     inputs: ClassVar[dict[str, Any]] = {}
@@ -35,7 +36,7 @@ class Wait(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Marker file recording the actual wait duration",
             derives_from={"inputs": []},
         ),
@@ -72,14 +73,14 @@ class Wait(OperationDefinition):
         return {"elapsed": elapsed}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build a DataArtifact from the marker file."""
+        """Build a CSVArtifact from the marker file."""
         drafts: list[Artifact] = []
         for file_path in inputs.file_outputs:
             if file_path.endswith(".csv"):
                 with open(file_path, "rb") as f:
                     content = f.read()
                 drafts.append(
-                    DataArtifact.draft(
+                    CSVArtifact.draft(
                         content=content,
                         original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,

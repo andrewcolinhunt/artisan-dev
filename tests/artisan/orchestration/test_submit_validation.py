@@ -81,7 +81,7 @@ class MockOpWithParams(OperationDefinition):
     name: ClassVar[str] = "mock_with_params"
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     class Params(BaseModel):
@@ -114,11 +114,11 @@ class MockCreatorOp(OperationDefinition):
 
     name: ClassVar[str] = "mock_creator_cmd"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
     }
@@ -147,10 +147,10 @@ class MockCuratorOp(OperationDefinition):
 
     name: ClassVar[str] = "mock_curator_no_cmd"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -169,7 +169,7 @@ class MockRuntimeInputsOp(OperationDefinition):
     runtime_defined_inputs: ClassVar[bool] = True
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.merged: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.merged: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -190,13 +190,11 @@ class MockOpWithOptionalInput(OperationDefinition):
 
     name: ClassVar[str] = "mock_with_optional"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.dataset: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
-        InputRole.reference: InputSpec(
-            artifact_type=ArtifactTypes.DATA, required=False
-        ),
+        InputRole.dataset: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
+        InputRole.reference: InputSpec(artifact_type=ArtifactTypes.CSV, required=False),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -219,7 +217,7 @@ class MockOpWithAnyInput(OperationDefinition):
         InputRole.data: InputSpec(artifact_type=ArtifactTypes.ANY, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     def execute_curator(self, execute_input: Any) -> Any:
@@ -440,14 +438,14 @@ class TestValidateInputTypes:
     def test_type_match_no_error(self):
         """Matching types should not raise."""
         ref = OutputReference(
-            source_step=0, role="output", artifact_type=ArtifactTypes.DATA
+            source_step=0, role="output", artifact_type=ArtifactTypes.CSV
         )
         _validate_input_types(MockCuratorOp, {"data": ref})
 
     def test_any_downstream_spec_no_error(self):
         """ANY downstream spec should accept any upstream type."""
         ref = OutputReference(
-            source_step=0, role="output", artifact_type=ArtifactTypes.DATA
+            source_step=0, role="output", artifact_type=ArtifactTypes.CSV
         )
         _validate_input_types(MockOpWithAnyInput, {"data": ref})
 

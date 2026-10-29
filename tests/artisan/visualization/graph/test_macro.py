@@ -121,7 +121,7 @@ def simple_pipeline(tmp_path: Path) -> Path:
                     }
                 ),
                 "output_roles_json": json.dumps(["data"]),
-                "output_types_json": json.dumps({"data": "data"}),
+                "output_types_json": json.dumps({"data": "csv"}),
             },
             {
                 "step_run_id": "run_2",
@@ -134,7 +134,7 @@ def simple_pipeline(tmp_path: Path) -> Path:
                             "type": "output_ref",
                             "source_step": 1,
                             "role": "data",
-                            "artifact_type": "data",
+                            "artifact_type": "csv",
                         }
                     }
                 ),
@@ -219,7 +219,7 @@ def multi_input_pipeline(tmp_path: Path) -> Path:
                     }
                 ),
                 "output_roles_json": json.dumps(["data"]),
-                "output_types_json": json.dumps({"data": "data"}),
+                "output_types_json": json.dumps({"data": "csv"}),
             },
             {
                 "step_run_id": "run_2",
@@ -238,12 +238,12 @@ def multi_input_pipeline(tmp_path: Path) -> Path:
                             "type": "output_ref",
                             "source_step": 1,
                             "role": "data",
-                            "artifact_type": "data",
+                            "artifact_type": "csv",
                         },
                     ]
                 ),
                 "output_roles_json": json.dumps(["merged"]),
-                "output_types_json": json.dumps({"merged": "data"}),
+                "output_types_json": json.dumps({"merged": "csv"}),
             },
         ],
     )
@@ -264,7 +264,7 @@ class TestParseInputRefs:
                     "type": "output_ref",
                     "source_step": 1,
                     "role": "data",
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                 }
             }
         )
@@ -285,7 +285,7 @@ class TestParseInputRefs:
                     "type": "output_ref",
                     "source_step": 1,
                     "role": "data",
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                 },
             ]
         )
@@ -318,7 +318,7 @@ class TestParseInputRefs:
                     "type": "output_ref",
                     "source_step": 0,
                     "role": "data",
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                 },
                 "config": {"type": "literal", "value": "some_value"},
             }

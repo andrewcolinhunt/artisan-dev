@@ -32,7 +32,7 @@ def _edges(
         "target_artifact_id": [e[1] for e in edges],
     }
     if type_map is not None:
-        data["target_artifact_type"] = [type_map.get(e[1], "data") for e in edges]
+        data["target_artifact_type"] = [type_map.get(e[1], "csv") for e in edges]
     return pl.DataFrame(data)
 
 
@@ -204,7 +204,7 @@ class TestWalkForwardToTargets:
         """Source finds target two hops forward."""
         edges = _edges(
             [("S", "M"), ("M", "T")],
-            type_map={"M": "data", "T": "metric"},
+            type_map={"M": "csv", "T": "metric"},
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
@@ -216,7 +216,7 @@ class TestWalkForwardToTargets:
 
     def test_no_targets_reachable(self):
         """No targets of the requested type -> empty result."""
-        edges = _edges([("S", "M")], type_map={"M": "data"})
+        edges = _edges([("S", "M")], type_map={"M": "csv"})
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
         result = walk_forward(sources, edges, target_type="metric")
@@ -227,7 +227,7 @@ class TestWalkForwardToTargets:
         """Only nodes matching target_type count as targets."""
         edges = _edges(
             [("S", "D"), ("S", "M")],
-            type_map={"D": "data", "M": "metric"},
+            type_map={"D": "csv", "M": "metric"},
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
@@ -254,7 +254,7 @@ class TestWalkForwardToTargets:
         """Diamond: S -> A, S -> B, A -> T, B -> T still finds T once."""
         edges = _edges(
             [("S", "A"), ("S", "B"), ("A", "T"), ("B", "T")],
-            type_map={"A": "data", "B": "data", "T": "metric"},
+            type_map={"A": "csv", "B": "csv", "T": "metric"},
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 
@@ -285,7 +285,7 @@ class TestWalkForwardToTargets:
         """Without target_type, all reachable nodes are targets."""
         edges = _edges(
             [("S", "A"), ("A", "B")],
-            type_map={"A": "data", "B": "metric"},
+            type_map={"A": "csv", "B": "metric"},
         )
         sources = pl.DataFrame({"artifact_id": ["S"]})
 

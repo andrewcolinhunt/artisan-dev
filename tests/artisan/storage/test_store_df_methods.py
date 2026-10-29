@@ -66,7 +66,7 @@ class TestLoadProvenanceEdgesDf:
             [
                 {
                     "artifact_id": "A",
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 1,
                     "metadata": "{}",
                 },
@@ -87,7 +87,7 @@ class TestLoadProvenanceEdgesDf:
                     "execution_run_id": "run1",
                     "source_artifact_id": "A",
                     "target_artifact_id": "B",
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "data",
                     "target_role": "metric",
@@ -115,7 +115,7 @@ class TestLoadProvenanceEdgesDf:
             [
                 {
                     "artifact_id": "A",
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 1,
                     "metadata": "{}",
                 },
@@ -136,7 +136,7 @@ class TestLoadProvenanceEdgesDf:
                     "execution_run_id": "run1",
                     "source_artifact_id": "A",
                     "target_artifact_id": "B",
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "data",
                     "target_role": "metric",

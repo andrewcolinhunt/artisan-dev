@@ -18,7 +18,7 @@ import polars as pl
 from fsspec import AbstractFileSystem
 
 from artisan.storage.core.table_schemas import CACHE_REUSE_SCHEMA
-from artisan.utils.hashing import compute_content_digest
+from artisan.utils.hashing import compute_stream_digest
 from artisan.utils.path import step_dir_name
 
 if TYPE_CHECKING:
@@ -155,9 +155,9 @@ class StagingManager:
             try:
                 if not self._fs.exists(path):
                     continue
-                with self._fs.open(path, "rb") as stream:
-                    data = stream.read()
-                if (len(data), compute_content_digest(data)) != (
+                with self._fs.open(path, "rb", cache_type="none") as stream:
+                    digest, size_bytes = compute_stream_digest(stream)
+                if (size_bytes, digest) != (
                     evidence.size_bytes,
                     evidence.digest,
                 ):

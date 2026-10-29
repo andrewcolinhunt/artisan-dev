@@ -216,7 +216,7 @@ def _metric_content(values: dict) -> bytes:
 
 
 # ---------------------------------------------------------------------------
-# Fixture: minimal delta store with 4 data artifacts and 2 metric steps
+# Fixture: minimal delta store with 4 csv artifacts and 2 metric steps
 # ---------------------------------------------------------------------------
 
 
@@ -225,11 +225,11 @@ def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
     """Build a test delta store with known data.
 
     Layout:
-      - 4 data artifacts at step 0 (s0..s3)
+      - 4 csv artifacts at step 0 (s0..s3)
       - 2 metric steps:
         - step 1 "calc_metrics": computes confidence and accuracy for each artifact
         - step 2 "extra_metrics": computes score for each artifact
-      - Provenance edges: each data artifact -> its metrics
+      - Provenance edges: each CSV artifact -> its metrics
     """
     root = tmp_path / "delta"
     root.mkdir()
@@ -244,7 +244,7 @@ def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
         index_rows.append(
             {
                 "artifact_id": sid,
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "origin_step_number": 0,
                 "metadata": "{}",
             }
@@ -312,7 +312,7 @@ def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
                 "execution_run_id": _pad("exec1"),
                 "source_artifact_id": s_ids[i],
                 "target_artifact_id": m1_ids[i],
-                "source_artifact_type": "data",
+                "source_artifact_type": "csv",
                 "target_artifact_type": "metric",
                 "source_role": "samples",
                 "target_role": "metrics",
@@ -324,7 +324,7 @@ def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
                 "execution_run_id": _pad("exec2"),
                 "source_artifact_id": s_ids[i],
                 "target_artifact_id": m2_ids[i],
-                "source_artifact_type": "data",
+                "source_artifact_type": "csv",
                 "target_artifact_type": "metric",
                 "source_role": "samples",
                 "target_role": "metrics",
@@ -359,7 +359,7 @@ def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
                 "compute_backend": "local",
                 "compute_options_json": "{}",
                 "output_roles_json": '["samples"]',
-                "output_types_json": '{"samples": "data"}',
+                "output_types_json": '{"samples": "csv"}',
                 "total_count": 4,
                 "succeeded_count": 4,
                 "failed_count": 0,
@@ -431,7 +431,7 @@ class TestLoad:
             filt.load(step_numbers=[99])
 
     def test_load_raises_on_no_metrics(self, tmp_path: Path) -> None:
-        """Delta store with data artifacts but no metrics."""
+        """Delta store with CSV artifacts but no metrics."""
         root = tmp_path / "delta_no_metrics"
         root.mkdir()
 
@@ -441,7 +441,7 @@ class TestLoad:
             [
                 {
                     "artifact_id": _pad("s0"),
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 }
@@ -554,13 +554,13 @@ class TestFiltering:
             [
                 {
                     "artifact_id": s_ids[0],
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 },
                 {
                     "artifact_id": s_ids[1],
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 },
@@ -615,7 +615,7 @@ class TestFiltering:
                     "execution_run_id": _pad("enull"),
                     "source_artifact_id": s_ids[0],
                     "target_artifact_id": m_ids[0],
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "samples",
                     "target_role": "metrics",
@@ -625,7 +625,7 @@ class TestFiltering:
                     "execution_run_id": _pad("enull"),
                     "source_artifact_id": s_ids[1],
                     "target_artifact_id": m_ids[1],
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "samples",
                     "target_role": "metrics",
@@ -659,7 +659,7 @@ class TestFiltering:
                     "compute_backend": "local",
                     "compute_options_json": "{}",
                     "output_roles_json": '["samples"]',
-                    "output_types_json": '{"samples": "data"}',
+                    "output_types_json": '{"samples": "csv"}',
                     "total_count": 2,
                     "succeeded_count": 2,
                     "failed_count": 0,
@@ -1099,13 +1099,13 @@ class TestWideColumnDisambiguation:
             [
                 {
                     "artifact_id": s_ids[0],
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 },
                 {
                     "artifact_id": s_ids[1],
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 },
@@ -1159,7 +1159,7 @@ class TestWideColumnDisambiguation:
                     "execution_run_id": _pad("e1"),
                     "source_artifact_id": s_ids[0],
                     "target_artifact_id": m1_id,
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "s",
                     "target_role": "m",
@@ -1169,7 +1169,7 @@ class TestWideColumnDisambiguation:
                     "execution_run_id": _pad("e2"),
                     "source_artifact_id": s_ids[1],
                     "target_artifact_id": m2_id,
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "s",
                     "target_role": "m",
@@ -1296,13 +1296,13 @@ class TestWideColumnDisambiguation:
             [
                 {
                     "artifact_id": s_ids[0],
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 },
                 {
                     "artifact_id": s_ids[1],
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 },
@@ -1356,7 +1356,7 @@ class TestWideColumnDisambiguation:
                     "execution_run_id": _pad("ed1"),
                     "source_artifact_id": s_ids[0],
                     "target_artifact_id": m1_id,
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "s",
                     "target_role": "m",
@@ -1366,7 +1366,7 @@ class TestWideColumnDisambiguation:
                     "execution_run_id": _pad("ed2"),
                     "source_artifact_id": s_ids[1],
                     "target_artifact_id": m2_id,
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "s",
                     "target_role": "m",
@@ -1496,7 +1496,7 @@ def mixed_type_delta_root(tmp_path: Path) -> Path:
             *[
                 {
                     "artifact_id": sid,
-                    "artifact_type": "data",
+                    "artifact_type": "csv",
                     "origin_step_number": 0,
                     "metadata": "{}",
                 }
@@ -1565,7 +1565,7 @@ def mixed_type_delta_root(tmp_path: Path) -> Path:
                 "execution_run_id": _pad("emix"),
                 "source_artifact_id": s_ids[i],
                 "target_artifact_id": m_ids[i],
-                "source_artifact_type": "data",
+                "source_artifact_type": "csv",
                 "target_artifact_type": "metric",
                 "source_role": "samples",
                 "target_role": "metrics",
@@ -1600,7 +1600,7 @@ def mixed_type_delta_root(tmp_path: Path) -> Path:
                 "compute_backend": "local",
                 "compute_options_json": "{}",
                 "output_roles_json": '["samples"]',
-                "output_types_json": '{"samples": "data"}',
+                "output_types_json": '{"samples": "csv"}',
                 "total_count": 2,
                 "succeeded_count": 2,
                 "failed_count": 0,
@@ -1714,7 +1714,7 @@ class TestRunScopedStepNames:
                 *[
                     {
                         "artifact_id": sid,
-                        "artifact_type": "data",
+                        "artifact_type": "csv",
                         "origin_step_number": 0,
                         "metadata": "{}",
                     }
@@ -1759,7 +1759,7 @@ class TestRunScopedStepNames:
                     "execution_run_id": _pad(f"ers{i}"),
                     "source_artifact_id": s_ids[i],
                     "target_artifact_id": m_ids[i],
-                    "source_artifact_type": "data",
+                    "source_artifact_type": "csv",
                     "target_artifact_type": "metric",
                     "source_role": "samples",
                     "target_role": "metrics",

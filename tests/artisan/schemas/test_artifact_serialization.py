@@ -7,7 +7,7 @@ import pytest
 
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -93,7 +93,7 @@ class TestConcreteTypeDefs:
 
     def test_all_four_registered(self) -> None:
         all_defs = ArtifactTypeDef.get_all()
-        assert set(all_defs.keys()) >= {"data", "metric", "config", "file_ref"}
+        assert set(all_defs.keys()) >= {"csv", "metric", "config", "file_ref"}
 
 
 class TestDataFrameIntegration:
@@ -124,7 +124,7 @@ class TestDataFrameIntegration:
 
 
 _ALL_TYPE_INSTANCES = [
-    DataArtifact.draft(
+    CSVArtifact.draft(
         content=b"x,y\n1,2\n",
         original_name="d.csv",
         step_number=0,

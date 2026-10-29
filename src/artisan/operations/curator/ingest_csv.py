@@ -1,7 +1,7 @@
-"""Ingest files as DataArtifacts.
+"""Ingest files as CSVArtifacts.
 
 Concrete IngestFiles subclass that reads file content from disk and
-produces DataArtifact drafts.
+produces CSVArtifact drafts.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar
 
 from artisan.operations.curator.ingest_files import IngestFiles
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -20,21 +20,22 @@ if TYPE_CHECKING:
     from fsspec import AbstractFileSystem
 
 
-class IngestData(IngestFiles):
-    """Convert FileRefArtifacts into DataArtifacts by reading file content."""
+class IngestCSV(IngestFiles):
+    """Emit one CSV draft at a time within a single all-or-nothing execution."""
 
     # ---------- Metadata ----------
-    name = "ingest_data"
-    description = "Import files into the provenance graph as data artifacts"
+    name = "ingest_csv"
+    version = "2"
+    description = "Import files into the provenance graph as CSV artifacts"
 
     # ---------- Outputs ----------
     class OutputRole(StrEnum):
-        data = auto()
+        csv = auto()
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.data: OutputSpec(
-            artifact_type="data",
-            description="Ingested data artifact",
+        OutputRole.csv: OutputSpec(
+            artifact_type="csv",
+            description="Ingested CSV artifact",
             derives_from={"inputs": ["file"]},
         ),
     }
@@ -56,8 +57,8 @@ class IngestData(IngestFiles):
         step_number: int,
         *,
         fs: AbstractFileSystem | None = None,
-    ) -> DataArtifact:
-        """Convert a FileRefArtifact into a draft DataArtifact.
+    ) -> CSVArtifact:
+        """Convert a FileRefArtifact into a draft CSVArtifact.
 
         Args:
             file_ref: The file reference to convert.
@@ -65,13 +66,13 @@ class IngestData(IngestFiles):
             fs: Configured filesystem for reading the file.
 
         Returns:
-            A draft DataArtifact with content read from disk.
+            A draft CSVArtifact with content read from disk.
         """
 
         content = file_ref.read_content(fs=fs)
         filename = f"{file_ref.original_name}{file_ref.extension or ''}"
 
-        return DataArtifact.draft(
+        return CSVArtifact.draft(
             content=content,
             original_name=filename,
             step_number=step_number,

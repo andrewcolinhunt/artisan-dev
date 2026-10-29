@@ -14,7 +14,7 @@ from pydantic import ValidationError
 
 from artisan.errors import ArtifactIntegrityError
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.curator_result import ArtifactResult
 
@@ -36,9 +36,9 @@ def _execute(operation: IngestPipelineStep) -> ArtifactResult:
     return operation.execute_curator({}, 7, Mock())
 
 
-def _data(content: bytes, step_number: int = 0, **metadata: object) -> DataArtifact:
+def _data(content: bytes, step_number: int = 0, **metadata: object) -> CSVArtifact:
     """Create a finalized source artifact."""
-    return DataArtifact.draft(
+    return CSVArtifact.draft(
         content=content,
         original_name="source.csv",
         step_number=step_number,
@@ -101,7 +101,7 @@ def test_ingest_selects_accepted_union_and_sorts_hydrated_ids(
     result = _execute(
         _operation(root, source_step=1, include_prior_steps=include_prior)
     )
-    imported = result.artifacts["data"]
+    imported = result.artifacts["csv"]
     assert result.success
     assert result.lineage == {role: [] for role in result.artifacts}
     assert len(imported) == expected
@@ -119,7 +119,7 @@ def test_ingest_selects_accepted_union_and_sorts_hydrated_ids(
 
 
 @pytest.mark.parametrize(
-    ("type_filter", "expected"), [(None, ["data", "metric"]), ("metric", ["metric"])]
+    ("type_filter", "expected"), [(None, ["csv", "metric"]), ("metric", ["metric"])]
 )
 def test_ingest_type_filter_limits_contributing_attempts(
     tmp_path: Path,
@@ -155,7 +155,7 @@ def test_ingest_preserves_content_and_replaces_only_owned_metadata(
     source_metadata = dict(original.metadata)
     commit_outputs(str(tmp_path), artifacts=[original])
     operation = _operation(tmp_path)
-    imported = _execute(operation).artifacts["data"][0]
+    imported = _execute(operation).artifacts["csv"][0]
     assert imported.content == original.content
     assert imported.original_name == original.original_name
     assert imported.extension == original.extension
@@ -232,7 +232,7 @@ def test_ingest_missing_typed_content_fails_before_success(
         tables: dict[str, pl.DataFrame],
         **kwargs: Any,
     ) -> None:
-        tables["artifacts/data"] = tables["artifacts/data"].filter(
+        tables["artifacts/csvs"] = tables["artifacts/csvs"].filter(
             pl.col("artifact_id") != artifacts[0].artifact_id
         )
         original(root, staging, steps, tables, **kwargs)

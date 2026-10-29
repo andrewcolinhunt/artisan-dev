@@ -20,7 +20,7 @@ import pytest
 
 pytestmark = pytest.mark.integration
 
-from artisan.operations.curator import Filter, IngestData, Merge
+from artisan.operations.curator import Filter, IngestCSV, Merge
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
@@ -109,7 +109,7 @@ def test_linear_chain(pipeline_env: dict[str, str]):
     assert count_artifacts_by_step(delta_root, 2) == 2, "MetricCalc should produce 2"
 
     # Type totals
-    assert count_artifacts_by_type(delta_root, "data") == 4, "2 gen + 2 transform"
+    assert count_artifacts_by_type(delta_root, "csv") == 4, "2 gen + 2 transform"
     assert count_artifacts_by_type(delta_root, "metric") == 2
 
     # Execution records
@@ -205,7 +205,7 @@ def test_fan_out_execution(pipeline_env: dict[str, str]):
     )
 
     # Total: 2 (gen) + 2 (A) + 2 (B) = 6
-    assert count_artifacts_by_type(delta_root, "data") == 6
+    assert count_artifacts_by_type(delta_root, "csv") == 6
 
 
 # =============================================================================
@@ -585,9 +585,9 @@ def comprehensive_pipeline(
     )
 
     # Stage 1: Sources
-    # Step 0: Ingest 3 external CSV files as data artifacts
+    # Step 0: Ingest 3 external CSV files as CSV artifacts
     step0 = pipeline.run(
-        operation=IngestData,
+        operation=IngestCSV,
         inputs=[str(f) for f in source_files],
         step_runner=Runner.LOCAL,
     )
@@ -603,7 +603,7 @@ def comprehensive_pipeline(
     step2 = pipeline.run(
         operation=Merge,
         inputs={
-            "ingested": step0.output("data"),
+            "ingested": step0.output("csv"),
             "generated": step1.output("datasets"),
         },
         step_runner=Runner.LOCAL,
@@ -711,7 +711,7 @@ def test_comprehensive(pipeline_env: dict[str, str], sample_csv_files: list[Path
     assert result["overall_success"], "Pipeline should complete successfully"
 
     # Stage 1
-    # Ingest: 3 data artifacts + 3 file_refs = 6 artifacts
+    # Ingest: 3 csv artifacts + 3 file_refs = 6 artifacts
     assert count_artifacts_by_step(delta_root, 0) == 6
     assert count_artifacts_by_step(delta_root, 1) == 2  # Generator
     merged_step2 = get_execution_outputs(delta_root, 2, "merged")
@@ -736,6 +736,6 @@ def test_comprehensive(pipeline_env: dict[str, str], sample_csv_files: list[Path
     assert count_artifacts_by_type(delta_root, "file_ref") == 3
     assert count_artifacts_by_type(delta_root, "metric") == 10
 
-    # Total data artifacts: 3 (ingest) + 2 (gen) + 5 (A) + 5 (B) + n_passed*2 (final)
+    # Total CSV artifacts: 3 (ingest) + 2 (gen) + 5 (A) + 5 (B) + n_passed*2 (final)
     expected_data = 3 + 2 + 5 + 5 + n_passed * 2
-    assert count_artifacts_by_type(delta_root, "data") == expected_data
+    assert count_artifacts_by_type(delta_root, "csv") == expected_data

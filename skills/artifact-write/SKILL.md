@@ -18,7 +18,7 @@ working directory:
   the detailed model, registration, serialization, and testing example.
 - [Artifact base](../../src/artisan/schemas/artifact/base.py) and
   [registry](../../src/artisan/schemas/artifact/registry.py): read before authoring.
-- [DataArtifact](../../src/artisan/schemas/artifact/data.py): embedded bytes,
+- [CSVArtifact](../../src/artisan/schemas/artifact/csv.py): embedded CSV bytes,
   derived descriptors, and structured column encoding. Inspect the nearest
   existing model for other representations.
 - [Identity and hydration](../../docs/concepts/artifacts-and-content-addressing.md):

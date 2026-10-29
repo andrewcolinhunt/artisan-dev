@@ -72,12 +72,12 @@ class DualInputConfigConsumer(OperationDefinition):
         result = "result"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.dataset: InputSpec(artifact_type="data"),
+        InputRole.dataset: InputSpec(artifact_type="csv"),
         InputRole.config: InputSpec(artifact_type="config"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["dataset", "config"]},
         ),
     }
@@ -281,7 +281,7 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     # Resumed steps are restored
     assert p2.current_step >= 3
 
-    # Extend: Filter on step 2 metrics, passthrough step 1 data
+    # Extend: Filter on step 2 metrics, passthrough step 1 csv
     step3 = p2.run(
         Filter,
         inputs={"passthrough": p2[1].output("dataset")},
