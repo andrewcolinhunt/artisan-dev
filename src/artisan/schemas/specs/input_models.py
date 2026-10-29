@@ -157,6 +157,14 @@ class PostprocessInput(_InputArtifactsMixin):
             Artifacts have materialized_path set for reference.
             Use for output naming and explicit parent declarations.
         metadata: Escape hatch for additional data from the engine.
+        files_dir: Local staging directory for this lifecycle unit's managed
+            external files. Set when ``files_root`` is configured; None
+            otherwise. Copy selected complete outputs here before drafting
+            file references to their staged paths. Use distinct subdirectories
+            for outputs with the same basename. The framework relocates
+            referenced files and updates their locators before successful
+            sandbox cleanup. This path is temporary: do not retain it as a
+            permanent locator or write to it after postprocess returns.
     """
 
     step_number: int
@@ -171,3 +179,4 @@ class PostprocessInput(_InputArtifactsMixin):
     _references: dict[str, dict[str, Artifact]] = field(
         default_factory=dict, repr=False
     )
+    files_dir: str | None = None

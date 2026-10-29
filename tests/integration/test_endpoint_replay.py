@@ -3,18 +3,20 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Literal
+from typing import Any, Literal
 
 import polars as pl
 import pytest
 import uvicorn
 from fastapi import FastAPI, File, Form, UploadFile
 from fastapi.responses import Response
+from fixtures.managed_file_ops import ManagedFileCommand
 
 from artisan.execution.tool_endpoint import client as client_module
 from artisan.execution.tool_endpoint import server as server_module
@@ -26,11 +28,17 @@ from artisan.execution.tool_endpoint.protocol import (
 from artisan.execution.tool_endpoint.server import run_tool_request
 from artisan.execution.tool_endpoint.spec import command_contract
 from artisan.execution.tool_endpoint.transport import InlineTransport
-from artisan.operations.examples import DataGenerator, WaitTool
+from artisan.operations.examples import (
+    DataGenerator,
+    DataGeneratorWithMetrics,
+    WaitTool,
+)
 from artisan.orchestration import PipelineManager, StepStatus, replay_execution
 from artisan.registry.resolve import operation_identity
+from artisan.schemas import ExecuteInput, FileRefArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.storage import ArtifactStore
 from artisan.storage.core.committed_scan import read_committed
 
 pytestmark = pytest.mark.integration
@@ -43,7 +51,9 @@ def endpoint_requests() -> dict[str, list[str]]:
 
 @pytest.fixture
 def endpoint_url(monkeypatch, request, endpoint_requests):
-    mode = request.param
+    operation, mode = (
+        request.param if isinstance(request.param, tuple) else (WaitTool, request.param)
+    )
     if mode == "compute_failure":
         original = server_module.invoke_op_work
 
@@ -69,9 +79,9 @@ def endpoint_url(monkeypatch, request, endpoint_requests):
     @app.get("/schema")
     def schema():
         return SchemaResponse(
-            command_contract=command_contract(WaitTool),
-            operation=WaitTool.name,
-            operation_identity=operation_identity(WaitTool),
+            command_contract=command_contract(operation),
+            operation=operation.name,
+            operation_identity=operation_identity(operation),
             debug_capture_supported=True,
         ).model_dump()
 
@@ -93,7 +103,7 @@ def endpoint_url(monkeypatch, request, endpoint_requests):
             for file in files
         ]
         result = run_tool_request(
-            WaitTool,
+            operation,
             ToolRequest(
                 expected_command_contract=json.loads(expected_command_contract),
                 params=json.loads(params),
@@ -160,6 +170,81 @@ def endpoint_url(monkeypatch, request, endpoint_requests):
             server.should_exit = True
             thread.join(timeout=10)
             assert not thread.is_alive()
+
+
+@pytest.mark.parametrize(
+    "endpoint_url", [(ManagedFileCommand, "success")], indirect=True
+)
+def test_endpoint_command_files_remain_readable_after_cleanup(
+    tmp_path: Path,
+    endpoint_url: tuple[str, str],
+    endpoint_requests: dict[str, list[str]],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tests_root = str(Path(__file__).parents[1])
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(filter(None, [tests_root, os.environ.get("PYTHONPATH", "")])),
+    )
+    remote_workspaces: list[Path] = []
+    invoke = server_module.invoke_op_work
+
+    def track_remote_execute(
+        operation: Any, execute_input: ExecuteInput, **kwargs: Any
+    ) -> Any:
+        assert execute_input.files_dir is None
+        remote_workspaces.append(Path(execute_input.execute_dir).parent)
+        return invoke(operation, execute_input, **kwargs)
+
+    monkeypatch.setattr(server_module, "invoke_op_work", track_remote_execute)
+    url, _ = endpoint_url
+    working_root = tmp_path / "work"
+    files_root = tmp_path / "files"
+    manager = PipelineManager.create(
+        "endpoint-managed-files",
+        str(tmp_path / "delta"),
+        str(tmp_path / "staging"),
+        working_root=str(working_root),
+        files_root=str(files_root),
+    )
+    source = manager.run(
+        DataGeneratorWithMetrics, params={"count": 1, "seed": 42}, compact=False
+    )
+    retained = manager.run(
+        ManagedFileCommand,
+        inputs={"source": source.output("metrics")},
+        compute_provider={
+            "active": "modal",
+            "modal": {"endpoint_url": url, "poll_interval": 0.001},
+        },
+        compact=False,
+    )
+    assert manager.finalize()["overall_success"], retained.error
+    assert retained.status == StepStatus.SUCCEEDED
+    assert len(endpoint_requests["submit"]) == 1
+    assert endpoint_requests["download"] == endpoint_requests["submit"]
+    assert len(remote_workspaces) == 1
+    assert all(not path.exists() for path in remote_workspaces)
+    assert not list(working_root.rglob("execute"))
+
+    delta_root = manager.config.delta_root
+    fs = manager.config.storage.filesystem()
+    store = ArtifactStore(delta_root, files_root=str(files_root), fs=fs)
+    (source_id,) = store.provenance.load_artifact_ids_by_type(
+        "metric", step_numbers=[source.step_number]
+    )
+    (file_id,) = store.provenance.load_artifact_ids_by_type(
+        "file_ref", step_numbers=[retained.step_number]
+    )
+    file_ref = store.get_artifact(file_id, "file_ref")
+    assert isinstance(file_ref, FileRefArtifact)
+    assert file_ref.path is not None
+    assert Path(file_ref.path).is_relative_to(files_root)
+    assert file_ref.read_content(fs=fs) == source_id.encode("utf-8")
+    assert [path.name for path in files_root.rglob("*") if path.is_file()] == [
+        "output.bin"
+    ]
+    assert store.provenance.get_direct_ancestors(file_id) == [source_id]
 
 
 @pytest.mark.parametrize("endpoint_url", ["poll_recovery"], indirect=True)
