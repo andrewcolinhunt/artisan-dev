@@ -35,7 +35,7 @@ class _IngestMockOp(OperationDefinition):
     name: ClassVar[str] = "ingest_for_run_history_tests"
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.DATA),
+        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
     }
 
     def execute_curator(self, *args, **kwargs):

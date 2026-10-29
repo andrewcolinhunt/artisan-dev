@@ -2,6 +2,11 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
+from dataclasses import dataclass
+from typing import Any
+
 import polars as pl
 from fsspec import AbstractFileSystem
 
@@ -12,11 +17,15 @@ from artisan.storage.core.table_schemas import (
     get_physical_schema_for_path,
     is_global_artifact_table,
 )
+from artisan.storage.io.bounded_evidence import DiskTable
+from artisan.storage.io.bounded_io import write_parquet_rows
 from artisan.storage.io.commit_plan import (
     CommitPlan,
+    PlannedTable,
     canonical_table_plan_key,
     logical_commit_identity,
 )
+from artisan.storage.io.delta_files import DeltaSnapshot
 from artisan.utils.path import uri_join
 
 _CONTROL_STATES = frozenset({"planned", "complete", "abandoned"})
@@ -265,6 +274,118 @@ def _owned_rows(
             return physical.head(0)
         return physical.filter(pl.col("current_step_run_id") == plan.step_run_id)
     return physical.filter(pl.col("logical_commit_id") == plan.logical_commit_id)
+
+
+@dataclass
+class EffectKeys:
+    """Compact row locations for all matching values and eligible representatives."""
+
+    matched: dict[str, set[int]]
+    eligible: dict[str, set[int]]
+    satisfied: set[tuple[Any, ...]]
+
+
+def scan_plan_keys(
+    plan: CommitPlan,
+    table: PlannedTable,
+    snapshot: DeltaSnapshot,
+    controls: pl.DataFrame,
+) -> EffectKeys:
+    """Check owners and complete membership before reading matching payloads."""
+    wanted = set(table.row_keys)
+    complete = set(_complete_ids(controls))
+    cache = table.table_path == TablePath.CACHE_REUSE.value
+    owner_column = "current_step_run_id" if cache else "logical_commit_id"
+    columns = list(dict.fromkeys([*table.natural_key, owner_column]))
+    if "origin_step_number" in snapshot.schema:
+        columns.append("origin_step_number")
+    result = EffectKeys({}, {}, set())
+    global_artifacts = is_global_artifact_table(table.table_path)
+    for path, positions, frame in snapshot.iter_located(columns):
+        for position, row in zip(positions, frame.iter_rows(named=True), strict=True):
+            key = tuple(row[column] for column in table.natural_key)
+            owner = row[owner_column]
+            owned = owner == (plan.step_run_id if cache else plan.logical_commit_id)
+            if owned:
+                if key not in wanted:
+                    msg = f"Commit {plan.logical_commit_id} owns unplanned {table.table_path} rows"
+                    raise StoreIntegrityError(msg)
+                if (
+                    "origin_step_number" in row
+                    and row["origin_step_number"] != plan.step_number
+                ):
+                    msg = f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
+                    raise StoreIntegrityError(msg)
+            if key not in wanted:
+                continue
+            if owner is None:
+                msg = f"Table {table.table_path!r} contains unowned rows"
+                raise StoreIntegrityError(msg)
+            if not global_artifacts and not owned:
+                msg = f"Natural key already belongs to another commit in {table.table_path}"
+                raise StoreIntegrityError(msg)
+            result.matched.setdefault(path, set()).add(position)
+            if owned or (global_artifacts and owner in complete):
+                if key in result.satisfied:
+                    msg = f"Duplicate natural key in table {table.table_path!r}"
+                    raise StoreIntegrityError(msg)
+                result.satisfied.add(key)
+                result.eligible.setdefault(path, set()).add(position)
+    return result
+
+
+def verify_snapshot_effect(
+    plan: CommitPlan,
+    table_path: str,
+    snapshot: DeltaSnapshot,
+    controls: pl.DataFrame,
+) -> None:
+    """Verify a complete effect through projected keys and a bounded disk spool."""
+    table = plan.table(table_path)
+    if table is None:
+        owner = (
+            "current_step_run_id"
+            if table_path == TablePath.CACHE_REUSE.value
+            else "logical_commit_id"
+        )
+        for frame in snapshot.iter_frames([owner]):
+            if not _owned_rows(plan, table_path, frame).is_empty():
+                msg = f"Complete commit {plan.logical_commit_id} has unplanned {table_path} rows"
+                raise StoreIntegrityError(msg)
+        return
+    selection = scan_plan_keys(plan, table, snapshot, controls)
+    if len(selection.satisfied) != table.row_count:
+        msg = f"Complete commit {plan.logical_commit_id} is missing {table_path} rows"
+        raise StoreIntegrityError(msg)
+    schema = {
+        name: dtype
+        for name, dtype in snapshot.schema.items()
+        if name != "logical_commit_id"
+    }
+    with tempfile.TemporaryDirectory(prefix="artisan-verify-") as scratch:
+        path = os.path.join(scratch, "effect.parquet")
+        rows = (
+            {name: row[name] for name in schema}
+            for frame in snapshot.iter_frames(rows_by_file=selection.eligible)
+            for row in frame.iter_rows(named=True)
+        )
+        write_parquet_rows(path, rows, schema)
+        effect = DiskTable(table_path, [path], scratch)
+        if effect.canonical_key(plan.logical_commit_id) != table.table_plan_key:
+            msg = f"Complete commit {plan.logical_commit_id} has conflicting {table_path} rows"
+            raise StoreIntegrityError(msg)
+        foreign = {
+            filename: positions - selection.eligible.get(filename, set())
+            for filename, positions in selection.matched.items()
+        }
+        for frame in snapshot.iter_frames(rows_by_file=foreign):
+            for row in frame.iter_rows(named=True):
+                key = tuple(row[name] for name in table.natural_key)
+                if not effect.matches_row(
+                    key, row, comparable=is_global_artifact_table(table_path)
+                ):
+                    msg = f"Natural key has conflicting values in {table_path}"
+                    raise StoreIntegrityError(msg)
 
 
 def _complete_ids(controls: pl.DataFrame) -> list[str]:

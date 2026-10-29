@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 from collections import defaultdict
-from collections.abc import Collection
+from collections.abc import Collection, Iterator
 from typing import Any
 
 import polars as pl
@@ -17,8 +17,10 @@ from artisan.errors import (
     StoreIntegrityError,
 )
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.committed_scan import read_committed
+from artisan.storage.core.committed_scan import scan_committed
 from artisan.storage.core.store_format import assert_store_manifest
+from artisan.storage.io.bounded_evidence import DiskTable
+from artisan.storage.io.delta_files import DeltaSnapshot
 from artisan.utils.path import uri_join
 
 _HEX_ID = re.compile(r"[0-9a-f]{32}")
@@ -89,9 +91,11 @@ def load_execution_membership(
         (TablePath.STEPS, TablePath.EXECUTIONS, TablePath.CACHE_REUSE),
     )
     steps = _read_steps(delta_root, fs, options)
-    executions = _read_executions(delta_root, fs, options)
+    identities = _read_executions(
+        delta_root, fs, options, columns=["execution_run_id", "step_run_id"]
+    )
     reuse = _read_cache_reuse(delta_root, fs, options)
-    _validate_relations(steps, executions, reuse)
+    _validate_relations(steps, identities, reuse)
 
     attempts = _current_attempts(
         delta_root,
@@ -102,6 +106,16 @@ def load_execution_membership(
     )
     if attempts.is_empty():
         return pl.DataFrame(schema=_MEMBERSHIP_SCHEMA)
+    attempt_ids = attempts["current_step_run_id"].to_list()
+    selected_ids = set(
+        identities.filter(pl.col("step_run_id").is_in(attempt_ids))["execution_run_id"]
+    )
+    selected_ids.update(
+        reuse.filter(pl.col("current_step_run_id").is_in(attempt_ids))[
+            "cached_execution_run_id"
+        ]
+    )
+    executions = _read_executions(delta_root, fs, options, execution_ids=selected_ids)
 
     execution_columns = [
         "execution_run_id",
@@ -175,27 +189,35 @@ def load_accepted_outputs(
         (TablePath.EXECUTION_EDGES, TablePath.ARTIFACT_INDEX),
     )
     edges = (
-        read_committed(
+        scan_committed(
             delta_root,
             TablePath.EXECUTION_EDGES,
             fs=fs,
             storage_options=options,
         )
-        .filter(pl.col("direction") == "output")
+        .filter(
+            (pl.col("direction") == "output")
+            & pl.col("execution_run_id").is_in(membership["execution_run_id"].to_list())
+        )
         .select("execution_run_id", "role", "artifact_id")
     )
     if role is not None:
         edges = edges.filter(pl.col("role") == role)
-    outputs = membership.join(edges, on="execution_run_id", how="inner")
+    outputs = membership.join(edges.collect(), on="execution_run_id", how="inner")
     if outputs.is_empty():
         return pl.DataFrame(schema=_OUTPUT_SCHEMA)
 
-    index = read_committed(
-        delta_root,
-        TablePath.ARTIFACT_INDEX,
-        fs=fs,
-        storage_options=options,
-    ).select("artifact_id", "artifact_type", "origin_step_number")
+    index = (
+        scan_committed(
+            delta_root,
+            TablePath.ARTIFACT_INDEX,
+            fs=fs,
+            storage_options=options,
+        )
+        .filter(pl.col("artifact_id").is_in(outputs["artifact_id"].to_list()))
+        .select("artifact_id", "artifact_type", "origin_step_number")
+        .collect()
+    )
     _validate_output_index(outputs.select("artifact_id"), index)
     return (
         outputs.join(index, on="artifact_id", how="inner")
@@ -300,8 +322,12 @@ def validate_cached_executions(
         fs,
         (TablePath.EXECUTIONS, TablePath.EXECUTION_EDGES, TablePath.ARTIFACT_INDEX),
     )
-    executions = _read_executions(delta_root, fs, options).filter(
-        pl.col("execution_run_id").is_in(execution_ids)
+    executions = _read_executions(
+        delta_root,
+        fs,
+        options,
+        execution_ids=execution_ids,
+        columns=["execution_run_id", "step_run_id"],
     )
     counts = executions.group_by("execution_run_id").len()
     found = set(counts["execution_run_id"].to_list())
@@ -315,7 +341,7 @@ def validate_cached_executions(
         raise PersistenceIntegrityError(msg)
 
     edges = (
-        read_committed(
+        scan_committed(
             delta_root,
             TablePath.EXECUTION_EDGES,
             fs=fs,
@@ -326,15 +352,21 @@ def validate_cached_executions(
             & (pl.col("direction") == "output")
         )
         .select("artifact_id")
+        .collect()
     )
     if edges.is_empty():
         return execution_ids
-    index = read_committed(
-        delta_root,
-        TablePath.ARTIFACT_INDEX,
-        fs=fs,
-        storage_options=options,
-    ).select("artifact_id", "artifact_type")
+    index = (
+        scan_committed(
+            delta_root,
+            TablePath.ARTIFACT_INDEX,
+            fs=fs,
+            storage_options=options,
+        )
+        .filter(pl.col("artifact_id").is_in(edges["artifact_id"].to_list()))
+        .select("artifact_id", "artifact_type")
+        .collect()
+    )
     _validate_output_index(edges, index)
     _validate_output_content(
         delta_root,
@@ -349,7 +381,7 @@ def validate_cached_executions(
 
 def validate_staged_executions(
     delta_root: str,
-    frames: dict[str, pl.DataFrame],
+    tables: dict[str, DiskTable],
     *,
     step_run_id: str,
     step_number: int,
@@ -359,54 +391,46 @@ def validate_staged_executions(
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
     files_root: str | None = None,
-    committed_frames: dict[str, pl.DataFrame] | None = None,
+    committed_snapshots: dict[str, DeltaSnapshot] | None = None,
 ) -> None:
-    """Validate one source's recovery batch against a shared source snapshot.
+    """Validate each recovery record while retaining only keys and references.
 
     Each worker may reference committed artifacts or artifacts declared in its
-    own sealed shard. Shared hydration never lets another worker's uncommitted
-    artifacts satisfy that requirement.
+    own sealed shard. Shared hydration never allows another worker's uncommitted
+    declaration to satisfy that requirement.
     """
     from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+    from artisan.schemas.artifact.types import ArtifactTypes
     from artisan.storage.core.artifact_store import ArtifactStore
-    from artisan.storage.core.table_schemas import get_schema
+    from artisan.storage.core.curator_result import dynamic_output_roles
 
-    executions = frames.get(TablePath.EXECUTIONS.value)
-    if executions is None or executions.is_empty():
+    executions = tables.get(TablePath.EXECUTIONS.value)
+    if executions is None or executions.row_count == 0:
         msg = "Recovery requires at least one execution"
         raise StoreIntegrityError(msg)
-    execution_ids = set(executions["execution_run_id"].to_list())
-    if len(execution_ids) != executions.height or execution_ids != set(
-        per_execution_artifact_ids
-    ):
+    execution_ids = {key[0] for key in executions.keys}
+    if execution_ids != set(per_execution_artifact_ids):
         msg = "Recovery execution membership is invalid"
         raise StoreIntegrityError(msg)
     source_step = _recovery_source(
         delta_root, source_rows, step_run_id, step_number, fs, storage_options
     )
-    for record in executions.iter_rows(named=True):
-        if (
-            record["step_run_id"] != step_run_id
-            or record["origin_step_number"] != step_number
-            or record["operation_name"] != operation_name
-            or record["success"] is not True
-            or record["replay_of_execution_run_id"] is not None
-        ):
-            msg = "Recovery execution ownership or outcome is invalid"
-            raise StoreIntegrityError(msg)
-        for field in ("execution_run_id", "execution_spec_id", "step_run_id"):
-            _require_hex(record[field], field)
-        _validate_staged_replay(record, source_step)
-    edges = frames.get(
-        TablePath.EXECUTION_EDGES.value,
-        pl.DataFrame(schema=get_schema(TablePath.EXECUTION_EDGES)),
-    )
-    provenance = frames.get(
-        TablePath.ARTIFACT_EDGES.value,
-        pl.DataFrame(schema=get_schema(TablePath.ARTIFACT_EDGES)),
-    )
+    for frame in executions.iter_frames():
+        for record in frame.iter_rows(named=True):
+            if (
+                record["step_run_id"] != step_run_id
+                or record["origin_step_number"] != step_number
+                or record["operation_name"] != operation_name
+                or record["success"] is not True
+                or record["replay_of_execution_run_id"] is not None
+            ):
+                msg = "Recovery execution ownership or outcome is invalid"
+                raise StoreIntegrityError(msg)
+            for field in ("execution_run_id", "execution_spec_id", "step_run_id"):
+                _require_hex(record[field], field)
+            _validate_staged_replay(record, source_step)
     references: dict[str, set[str]] = {key: set() for key in execution_ids}
-    for row in edges.iter_rows(named=True):
+    for row in _staged_rows(tables, TablePath.EXECUTION_EDGES):
         if (
             row["execution_run_id"] not in execution_ids
             or row["direction"] not in {"input", "output"}
@@ -416,7 +440,7 @@ def validate_staged_executions(
             raise StoreIntegrityError(msg)
         _require_hex(row["artifact_id"], "artifact_id")
         references[row["execution_run_id"]].add(row["artifact_id"])
-    for row in provenance.iter_rows(named=True):
+    for row in _staged_rows(tables, TablePath.ARTIFACT_EDGES):
         edge = ArtifactProvenanceEdge.model_validate(row)
         if edge.execution_run_id not in execution_ids:
             msg = "Recovery provenance belongs to another execution"
@@ -427,29 +451,57 @@ def validate_staged_executions(
     types = ArtifactStore(
         delta_root, fs=fs, storage_options=storage_options, files_root=files_root
     ).validate_staged_artifacts(
-        frames,
+        tables,
         references,
         per_execution_artifact_ids=per_execution_artifact_ids,
-        committed_frames=committed_frames,
+        committed_snapshots=committed_snapshots,
     )
-    from artisan.schemas.artifact.types import ArtifactTypes
-    from artisan.storage.core.curator_result import dynamic_output_roles
-
     output_types = json.loads(source_step["output_types_json"])
     dynamic = dynamic_output_roles(source_step["compute_options_json"])
-    for row in edges.filter(pl.col("direction") == "output").iter_rows(named=True):
-        if not dynamic and (
-            row["role"] not in output_types
-            or output_types[row["role"]]
-            not in {None, ArtifactTypes.ANY, types[row["artifact_id"]]}
+    for row in _staged_rows(tables, TablePath.EXECUTION_EDGES):
+        if (
+            row["direction"] == "output"
+            and not dynamic
+            and (
+                row["role"] not in output_types
+                or output_types[row["role"]]
+                not in {None, ArtifactTypes.ANY, types[row["artifact_id"]]}
+            )
         ):
             msg = "Recovery output edges disagree with source role declarations"
             raise StoreIntegrityError(msg)
-    for row in provenance.iter_rows(named=True):
+    for row in _staged_rows(tables, TablePath.ARTIFACT_EDGES):
         for side in ("source", "target"):
             if types[row[f"{side}_artifact_id"]] != row[f"{side}_artifact_type"]:
                 msg = "Recovery provenance artifact types conflict"
                 raise StoreIntegrityError(msg)
+
+
+def _staged_rows(
+    tables: dict[str, DiskTable], path: TablePath
+) -> Iterator[dict[str, Any]]:
+    table = tables.get(path.value)
+    if table is not None:
+        for frame in table.iter_frames():
+            yield from frame.iter_rows(named=True)
+
+
+def read_source_attempt_rows(
+    snapshot: DeltaSnapshot,
+    step_run_id: str,
+) -> pl.DataFrame:
+    """Read complete lifecycle evidence for one source attempt, preserving history."""
+    selected: dict[str, set[int]] = {}
+    for path, positions, frame in snapshot.iter_located(columns=["step_run_id"]):
+        matching = {
+            position
+            for position, owner in zip(positions, frame["step_run_id"], strict=True)
+            if owner == step_run_id
+        }
+        if matching:
+            selected.setdefault(path, set()).update(matching)
+    frames = list(snapshot.iter_frames(rows_by_file=selected))
+    return pl.concat(frames) if frames else pl.DataFrame(schema=snapshot.schema)
 
 
 def _recovery_source(
@@ -528,19 +580,23 @@ def _read_steps(
     fs: AbstractFileSystem,
     options: dict[str, str],
 ) -> pl.DataFrame:
-    """Read the ownership and lifecycle columns used by membership."""
-    return read_committed(
-        delta_root,
-        TablePath.STEPS,
-        fs=fs,
-        storage_options=options,
-    ).select(
-        "step_run_id",
-        "pipeline_run_id",
-        "step_number",
-        "step_name",
-        "status",
-        "timestamp",
+    """Project ownership and lifecycle before collecting metadata."""
+    return (
+        scan_committed(
+            delta_root,
+            TablePath.STEPS,
+            fs=fs,
+            storage_options=options,
+        )
+        .select(
+            "step_run_id",
+            "pipeline_run_id",
+            "step_number",
+            "step_name",
+            "status",
+            "timestamp",
+        )
+        .collect()
     )
 
 
@@ -548,14 +604,19 @@ def _read_executions(
     delta_root: str,
     fs: AbstractFileSystem,
     options: dict[str, str],
+    *,
+    execution_ids: Collection[str] | None = None,
+    columns: list[str] | None = None,
 ) -> pl.DataFrame:
-    """Read execution identity and inspection fields once."""
-    return read_committed(
-        delta_root,
-        TablePath.EXECUTIONS,
-        fs=fs,
-        storage_options=options,
-    ).select(
+    """Select executions before decoding their diagnostic and inspection fields."""
+    scanner = scan_committed(
+        delta_root, TablePath.EXECUTIONS, fs=fs, storage_options=options
+    )
+    if execution_ids is not None:
+        scanner = scanner.filter(pl.col("execution_run_id").is_in(execution_ids))
+    if columns is not None:
+        return scanner.select(columns).collect()
+    return scanner.select(
         "execution_run_id",
         "step_run_id",
         "success",
@@ -566,7 +627,7 @@ def _read_executions(
         "error_envelope",
         "metadata",
         "command_recording",
-    )
+    ).collect()
 
 
 def _read_cache_reuse(
@@ -576,7 +637,7 @@ def _read_cache_reuse(
 ) -> pl.DataFrame:
     """Read and pair-deduplicate the exact physical reuse relation."""
     return (
-        read_committed(
+        scan_committed(
             delta_root,
             TablePath.CACHE_REUSE,
             fs=fs,
@@ -584,6 +645,7 @@ def _read_cache_reuse(
         )
         .select("current_step_run_id", "cached_execution_run_id")
         .unique(maintain_order=True)
+        .collect()
     )
 
 
@@ -750,15 +812,11 @@ def _validate_output_content(
         storage_options=storage_options,
         files_root=files_root,
     )
-    for artifact_type in relevant["artifact_type"].unique().to_list():
-        typed_ids = relevant.filter(pl.col("artifact_type") == artifact_type)[
-            "artifact_id"
-        ].to_list()
-        loaded = store.get_artifacts_by_type(typed_ids, artifact_type)
-        missing = sorted(set(typed_ids) - set(loaded))
-        if missing:
-            msg = f"Cached outputs are missing content rows: {missing!r}"
-            raise ArtifactIntegrityError(msg)
+    store.validate_staged_artifacts(
+        {},
+        {"cached": set(relevant["artifact_id"].to_list())},
+        per_execution_artifact_ids={"cached": set()},
+    )
 
 
 def _require_tables(

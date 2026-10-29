@@ -39,13 +39,13 @@ def metadata(monkeypatch):
         tags=["z", "a"],
         inputs={
             role: InputSpecMetadata(
-                artifact_type="data", required=True, description=role, materialize=False
+                artifact_type="csv", required=True, description=role, materialize=False
             )
             for role in ["z", "a"]
         },
         outputs={
             "result": OutputSpecMetadata(
-                artifact_type="data", required=True, description="Output"
+                artifact_type="csv", required=True, description="Output"
             )
         },
         params_schema={
@@ -177,7 +177,7 @@ def test_metadata_narrowing_does_not_clip_one_selected_value(monkeypatch):
     refs = [
         ArtifactRef(
             artifact_id="a",
-            artifact_type="data",
+            artifact_type="csv",
             origin_step_number=1,
             metadata={"large": {"nested": "x" * 60_000}},
         )

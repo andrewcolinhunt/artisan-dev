@@ -17,7 +17,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -26,7 +26,7 @@ class TestArtifactProvenanceEdge:
         assert edge.execution_run_id == "a" * 32
         assert edge.source_artifact_id == "b" * 32
         assert edge.target_artifact_id == "c" * 32
-        assert edge.source_artifact_type == "data"
+        assert edge.source_artifact_type == "csv"
         assert edge.target_artifact_type == "metric"
         assert edge.source_role == "data"
         assert edge.target_role == "score"
@@ -38,7 +38,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -54,7 +54,7 @@ class TestArtifactProvenanceEdge:
                 execution_run_id="short",
                 source_artifact_id="b" * 32,
                 target_artifact_id="c" * 32,
-                source_artifact_type="data",
+                source_artifact_type="csv",
                 target_artifact_type="metric",
                 source_role="data",
                 target_role="score",
@@ -71,7 +71,7 @@ class TestArtifactProvenanceEdge:
                 execution_run_id="a" * 33,
                 source_artifact_id="b" * 32,
                 target_artifact_id="c" * 32,
-                source_artifact_type="data",
+                source_artifact_type="csv",
                 target_artifact_type="metric",
                 source_role="data",
                 target_role="score",
@@ -84,7 +84,7 @@ class TestArtifactProvenanceEdge:
                 execution_run_id="a" * 32,
                 source_artifact_id="short",
                 target_artifact_id="c" * 32,
-                source_artifact_type="data",
+                source_artifact_type="csv",
                 target_artifact_type="metric",
                 source_role="data",
                 target_role="score",
@@ -97,7 +97,7 @@ class TestArtifactProvenanceEdge:
                 execution_run_id="a" * 32,
                 source_artifact_id="b" * 32,
                 target_artifact_id="short",
-                source_artifact_type="data",
+                source_artifact_type="csv",
                 target_artifact_type="metric",
                 source_role="data",
                 target_role="score",
@@ -109,7 +109,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -125,7 +125,7 @@ class TestArtifactProvenanceEdge:
                 execution_run_id="a" * 32,
                 source_artifact_id="b" * 32,
                 target_artifact_id="c" * 32,
-                source_artifact_type="data",
+                source_artifact_type="csv",
                 target_artifact_type="metric",
                 source_role="data",
                 target_role="score",
@@ -139,7 +139,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -148,7 +148,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -167,7 +167,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -177,7 +177,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -193,7 +193,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -202,7 +202,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="different_role",  # Different role
             target_role="score",
@@ -217,7 +217,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -227,7 +227,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -243,7 +243,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -253,7 +253,7 @@ class TestArtifactProvenanceEdge:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
@@ -275,8 +275,8 @@ class TestEdgeTypeDetection:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id=target,
-            source_artifact_type="data",
-            target_artifact_type="data",
+            source_artifact_type="csv",
+            target_artifact_type="csv",
             source_role="data",
             target_role="processed",
             group_id=group_id,
@@ -286,7 +286,7 @@ class TestEdgeTypeDetection:
             source_artifact_id="d" * 32,
             target_artifact_id=target,
             source_artifact_type="file_ref",
-            target_artifact_type="data",
+            target_artifact_type="csv",
             source_role="config",
             target_role="processed",
             group_id=group_id,
@@ -300,8 +300,8 @@ class TestEdgeTypeDetection:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,
             target_artifact_id="c" * 32,
-            source_artifact_type="data",
-            target_artifact_type="data",
+            source_artifact_type="csv",
+            target_artifact_type="csv",
             source_role="input",
             target_role="processed",
         )
@@ -313,14 +313,14 @@ class TestEdgeTypeDetection:
             execution_run_id="a" * 32,
             source_artifact_id="b" * 32,  # Output data
             target_artifact_id="c" * 32,  # Metric
-            source_artifact_type="data",
+            source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
         )
         # This is an output->output edge, detected by checking if source
         # is in execution outputs (via join), not from schema alone
-        assert edge.source_artifact_type == "data"
+        assert edge.source_artifact_type == "csv"
         assert edge.target_artifact_type == "metric"
 
 
@@ -343,7 +343,7 @@ class TestArtifactTypeValues:
 
     def test_standard_artifact_types(self):
         """Test that standard artifact type values work."""
-        for artifact_type in ["data", "metric", "file_ref"]:
+        for artifact_type in ["csv", "metric", "file_ref"]:
             edge = ArtifactProvenanceEdge(
                 execution_run_id="a" * 32,
                 source_artifact_id="b" * 32,

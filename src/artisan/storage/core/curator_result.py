@@ -11,7 +11,13 @@ from fsspec import AbstractFileSystem
 from artisan.errors import PersistenceIntegrityError
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.committed_scan import read_committed
+from artisan.storage.core.committed_scan import (
+    filter_committed_rows,
+    read_logical_commits,
+)
+from artisan.storage.core.table_schemas import get_physical_schema
+from artisan.storage.io.delta_files import DeltaSnapshot
+from artisan.utils.path import uri_join
 
 
 def dynamic_output_roles(options_json: str) -> bool:
@@ -36,25 +42,104 @@ def read_result_evidence(
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
     staged: dict[str, pl.DataFrame] | None = None,
+    execution_run_ids: set[str] | None = None,
+    step_run_id: str | None = None,
 ) -> dict[str, pl.DataFrame]:
-    """Combine visible evidence with the exact verified frames being committed."""
-    frames = {}
-    for table in (
-        TablePath.EXECUTIONS,
-        TablePath.EXECUTION_EDGES,
-        TablePath.ARTIFACT_INDEX,
-        TablePath.CACHE_REUSE,
-    ):
-        committed = read_committed(
-            delta_root, table, fs=fs, storage_options=storage_options
+    """Read only the membership and authored metadata needed for one result."""
+    if execution_run_ids is None and step_run_id is None:
+        msg = "Curator result evidence requires an execution or step scope"
+        raise ValueError(msg)
+    controls = read_logical_commits(delta_root, fs=fs, storage_options=storage_options)
+
+    def rows(table: TablePath, columns: list[str], predicate: pl.Expr) -> pl.DataFrame:
+        committed = _result_rows(
+            delta_root,
+            table,
+            columns,
+            predicate,
+            controls,
+            fs=fs,
+            storage_options=storage_options,
         )
         pending = (staged or {}).get(table.value)
-        frames[table.value] = (
+        return (
             committed
             if pending is None
-            else pl.concat([committed, pending.select(committed.columns)]).unique()
+            else pl.concat(
+                [committed, pending.filter(predicate).select(columns)]
+            ).unique()
         )
-    return frames
+
+    reuse = rows(
+        TablePath.CACHE_REUSE,
+        ["current_step_run_id", "cached_execution_run_id"],
+        pl.col("current_step_run_id") == step_run_id
+        if step_run_id is not None
+        else pl.lit(False),
+    )
+    ids = set(execution_run_ids or ()) | set(reuse["cached_execution_run_id"])
+    predicate = pl.col("execution_run_id").is_in(ids)
+    if step_run_id is not None:
+        predicate |= pl.col("step_run_id") == step_run_id
+    executions = rows(
+        TablePath.EXECUTIONS,
+        ["execution_run_id", "step_run_id", "success", "metadata"],
+        predicate,
+    )
+    edges = rows(
+        TablePath.EXECUTION_EDGES,
+        ["execution_run_id", "direction", "role", "artifact_id"],
+        pl.col("execution_run_id").is_in(executions["execution_run_id"].to_list()),
+    )
+    index = rows(
+        TablePath.ARTIFACT_INDEX,
+        ["artifact_id", "artifact_type"],
+        pl.col("artifact_id").is_in(edges["artifact_id"].unique().to_list()),
+    )
+    return {
+        TablePath.EXECUTIONS.value: executions,
+        TablePath.EXECUTION_EDGES.value: edges,
+        TablePath.ARTIFACT_INDEX.value: index,
+        TablePath.CACHE_REUSE.value: reuse,
+    }
+
+
+def _result_rows(
+    delta_root: str,
+    table: TablePath,
+    columns: list[str],
+    predicate: pl.Expr,
+    controls: pl.DataFrame,
+    *,
+    fs: AbstractFileSystem,
+    storage_options: dict[str, str] | None,
+) -> pl.DataFrame:
+    """Locate result membership before decoding any execution metadata."""
+    schema = get_physical_schema(table)
+    snapshot = DeltaSnapshot(
+        uri_join(delta_root, table.value),
+        schema,
+        fs=fs,
+        storage_options=storage_options,
+    )
+    owner = (
+        "current_step_run_id" if table is TablePath.CACHE_REUSE else "logical_commit_id"
+    )
+    projection = list(dict.fromkeys([*predicate.meta.root_names(), owner]))
+    selected: dict[str, set[int]] = {}
+    for filename, positions, frame in snapshot.iter_located(projection):
+        located = frame.with_columns(
+            pl.Series("_row_ordinal", positions, dtype=pl.UInt64)
+        )
+        found = filter_committed_rows(located, table.value, controls).filter(predicate)
+        if not found.is_empty():
+            selected.setdefault(filename, set()).update(found["_row_ordinal"])
+    frames = list(snapshot.iter_frames(columns, rows_by_file=selected))
+    return (
+        pl.concat(frames)
+        if frames
+        else pl.DataFrame(schema={name: schema[name] for name in columns})
+    )
 
 
 def curator_result_summary(

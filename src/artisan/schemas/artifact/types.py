@@ -2,7 +2,7 @@
 
 Provides ``ArtifactTypes``, a facade that supports both built-in types
 (with IDE autocomplete) and dynamically registered types. Built-in values
-are string-compatible enum members: ``ArtifactTypes.DATA == "data"`` is True.
+are string-compatible enum members: ``ArtifactTypes.CSV == "csv"`` is True.
 """
 
 from __future__ import annotations
@@ -18,7 +18,7 @@ class _BuiltinArtifactType(StrEnum):
     METRIC = "metric"
     FILE_REF = "file_ref"
     CONFIG = "config"
-    DATA = "data"
+    CSV = "csv"
 
 
 class _ArtifactTypesMeta(type):
@@ -42,16 +42,16 @@ class ArtifactTypes(metaclass=_ArtifactTypesMeta):
     Dynamic types are added at registration time via ``register()``.
 
     Examples:
-        >>> str(ArtifactTypes.DATA)
-        'data'
-        >>> "data" in ArtifactTypes
+        >>> str(ArtifactTypes.CSV)
+        'csv'
+        >>> "csv" in ArtifactTypes
         True
     """
 
     METRIC: ClassVar[str] = _BuiltinArtifactType.METRIC
     FILE_REF: ClassVar[str] = _BuiltinArtifactType.FILE_REF
     CONFIG: ClassVar[str] = _BuiltinArtifactType.CONFIG
-    DATA: ClassVar[str] = _BuiltinArtifactType.DATA
+    CSV: ClassVar[str] = _BuiltinArtifactType.CSV
 
     ANY: ClassVar[str] = "any"
     """Wildcard sentinel for specs: "accept/produce any concrete type."

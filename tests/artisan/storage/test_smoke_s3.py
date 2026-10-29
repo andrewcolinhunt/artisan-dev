@@ -132,7 +132,7 @@ def test_delta_commit_roundtrip_on_minio(
     df = pl.DataFrame(
         {
             "artifact_id": ["a" * 32, "b" * 32],
-            "artifact_type": ["data", "metric"],
+            "artifact_type": ["csv", "metric"],
             "origin_step_number": [0, 0],
             "metadata": ["{}", "{}"],
         },

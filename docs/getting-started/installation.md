@@ -13,11 +13,13 @@ The same environment supplies Python, Graphviz, and the notebook kernel.
 
 ---
 
-## Before upgrading to 0.2.0
+## Before upgrading
 
-Start a **new Delta root for store format 7**. Earlier stores and their staging
-cannot be migrated or read by this release; keep each older root with its
-matching Artisan version. Do not edit its manifest to force an upgrade. See
+Start **fresh Delta and staging roots for store format 8**. Earlier stores and
+their staging cannot be migrated or read by this release; keep each older root
+with its matching Artisan version to inspect or export its contents before
+re-ingesting into a new store. Do not edit its manifest to force an upgrade or
+attach old staging to the new Delta root. See
 [the store format contract](../concepts/storage-and-delta-lake.md#the-store-format-is-explicit).
 
 Update downstream operations, pipelines, runner providers, and inspection

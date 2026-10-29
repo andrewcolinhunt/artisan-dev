@@ -17,7 +17,7 @@ from artisan.errors import (
     IncompatibleStoreError,
     PersistenceIntegrityError,
 )
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.run_scope import (
     load_accepted_outputs,
@@ -411,9 +411,9 @@ def _selected(
     )
 
 
-def _artifact(content: bytes, number: int = 0) -> DataArtifact:
+def _artifact(content: bytes, number: int = 0) -> CSVArtifact:
     """Create typed committed output content."""
-    return DataArtifact.draft(
+    return CSVArtifact.draft(
         content=content, original_name="data.csv", step_number=number
     ).finalize()
 

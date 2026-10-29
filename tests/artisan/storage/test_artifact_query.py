@@ -147,20 +147,20 @@ A, B, C = "a" * 32, "b" * 32, "c" * 32
 
 class TestQueryArtifacts:
     def test_all_refs(self, tmp_path) -> None:
-        _seed_index(tmp_path, [(A, "data", 1), (B, "metric", 2)])
+        _seed_index(tmp_path, [(A, "csv", 1), (B, "metric", 2)])
         refs = query_artifacts(str(tmp_path))
         assert {r.artifact_id for r in refs} == {A, B}
         assert all(isinstance(r, ArtifactRef) for r in refs)
 
     def test_type_filter(self, tmp_path) -> None:
-        _seed_index(tmp_path, [(A, "data", 1), (B, "metric", 2)])
+        _seed_index(tmp_path, [(A, "csv", 1), (B, "metric", 2)])
         refs = query_artifacts(str(tmp_path), artifact_type="metric")
         assert [r.artifact_id for r in refs] == [B]
         assert refs[0].artifact_type == "metric"
         assert refs[0].origin_step_number == 2
 
     def test_run_filter_via_exact_execution_membership(self, tmp_path) -> None:
-        _seed_index(tmp_path, [(A, "data", 1), (B, "data", 2), (C, "data", 9)])
+        _seed_index(tmp_path, [(A, "csv", 1), (B, "csv", 2), (C, "csv", 9)])
         _seed_run_outputs(tmp_path, "run-x", [(1, A), (2, B)])
         refs = query_artifacts(str(tmp_path), pipeline_run_id="run-x")
         assert {r.artifact_id for r in refs} == {A, B}
@@ -170,7 +170,7 @@ class TestQueryArtifacts:
     def test_run_filter_isolates_same_steps_and_projects_cached_origin(
         self, tmp_path
     ) -> None:
-        _seed_index(tmp_path, [(A, "data", 1), (B, "data", 7), (C, "data", 7)])
+        _seed_index(tmp_path, [(A, "csv", 1), (B, "csv", 7), (C, "csv", 7)])
         _seed_run_outputs(tmp_path, "source-run", [(1, A)])
         _seed_run_outputs(
             tmp_path,
@@ -189,7 +189,7 @@ class TestQueryArtifacts:
         assert C not in {ref.artifact_id for ref in refs}
 
     def test_refs_carry_metadata_not_payload(self, tmp_path) -> None:
-        _seed_index(tmp_path, [(A, "data", 1)])
+        _seed_index(tmp_path, [(A, "csv", 1)])
         ref = query_artifacts(str(tmp_path))[0]
         assert ref.metadata == {"note": "x"}
         # No content / payload field exists on the ref.

@@ -10,7 +10,7 @@ from typing import Any, ClassVar, cast
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
@@ -43,6 +43,7 @@ class DataTransformerScript(OperationDefinition):
     """
 
     name: ClassVar[str] = "data_transformer_script"
+    version: ClassVar[str] = "2"
     description: ClassVar[str] = "Execute data transformation script"
 
     class InputRole(StrEnum):
@@ -51,7 +52,7 @@ class DataTransformerScript(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             materialize=True,
             description="Input CSV dataset to transform",
         ),
@@ -67,7 +68,7 @@ class DataTransformerScript(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": ["config"]},
             description="Transformed dataset files",
         ),
@@ -145,12 +146,12 @@ class DataTransformerScript(OperationDefinition):
         return {"outputs": outputs}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build DataArtifact drafts from script-produced CSV files."""
+        """Build CSVArtifact drafts from script-produced CSV files."""
         result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
         for output in inputs.memory_outputs["outputs"]:
             with open(output["path"], "rb") as fh:
                 content = fh.read()
-            draft = DataArtifact.draft(
+            draft = CSVArtifact.draft(
                 content=content,
                 original_name=output["original_name"],
                 step_number=inputs.step_number,

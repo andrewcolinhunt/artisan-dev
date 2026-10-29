@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import polars as pl
 import pytest
@@ -369,15 +371,15 @@ def test_planned_rows_are_invisible_after_first_table_failure(
 ):
     committer, fs, options, delta_root, staging_root = commit_env
     plan = _stage_registration(committer)
-    original = committer._append
+    original = committer._commit_table_effect
 
-    def fail_index(frame, table_path):
-        if table_path == TablePath.ARTIFACT_INDEX.value:
+    def fail_index(plan, table, expected, controls):
+        if table.table_path == TablePath.ARTIFACT_INDEX.value:
             msg = "injected storage failure"
             raise OSError(msg)
-        original(frame, table_path)
+        return original(plan, table, expected, controls)
 
-    monkeypatch.setattr(committer, "_append", fail_index)
+    monkeypatch.setattr(committer, "_commit_table_effect", fail_index)
     with pytest.raises(CommitError) as caught:
         committer.commit_logical(plan)
 
@@ -695,21 +697,63 @@ def test_prepared_evidence_is_writer_bound_and_single_use(commit_env):
         committer.commit_logical(plan, prepared=prepared)
 
 
+@pytest.mark.parametrize("invalid_use", ["copied_token", "wrong_plan"])
+def test_rejected_prepared_use_retains_owner_cleanup(commit_env, invalid_use):
+    committer, _fs, _options, _delta_root, _staging_root = commit_env
+    plan = _stage_registration(committer)
+    prepared = committer.prepare_logical(plan)
+    scratch = Path(prepared.staged._scratch.name)
+    wrong_plan = (
+        _stage_registration(committer, step_run_id="c" * 32)
+        if invalid_use == "wrong_plan"
+        else plan
+    )
+    supplied = replace(prepared) if invalid_use == "copied_token" else prepared
+    with pytest.raises(StoreIntegrityError, match="another writer/plan/root"):
+        committer.commit_logical(wrong_plan, prepared=supplied)
+    assert scratch.is_dir()
+    committer.discard_prepared(prepared)
+    assert not scratch.exists()
+
+
+def test_consumed_prepared_failure_releases_private_snapshot(commit_env, monkeypatch):
+    committer, fs, _options, _delta_root, staging_root = commit_env
+    plan = _stage_registration(committer)
+    prepared = committer.prepare_logical(plan)
+    scratch = Path(prepared.staged._scratch.name)
+
+    def fail_controls():
+        msg = "interrupted control read"
+        raise OSError(msg)
+
+    monkeypatch.setattr(committer, "_controls", fail_controls)
+    with pytest.raises(OSError, match="interrupted control read"):
+        committer.commit_logical(plan, prepared=prepared)
+    assert not scratch.exists()
+    assert all(
+        fs.exists(f"{staging_root}/{file.relative_path}")
+        for table in plan.tables
+        for file in table.files
+    )
+
+
 def test_fresh_commit_reads_each_table_only_for_write_and_verification(
     commit_env, monkeypatch
 ):
     committer, _fs, _options, _delta_root, _ = commit_env
     plan = _stage_registration(committer)
-    original = committer._read_physical
+    original = committer._snapshot
     calls = []
 
     def read(table):
         calls.append(table)
         return original(table)
 
-    monkeypatch.setattr(committer, "_read_physical", read)
+    monkeypatch.setattr(committer, "_snapshot", read)
     committer.commit_logical(plan)
-    assert calls == [table.table_path for table in plan.tables for _ in range(2)]
+    assert calls == [TablePath.STEPS.value] + [
+        table.table_path for table in plan.tables for _ in range(2)
+    ]
     calls.clear()
     committer.commit_logical(plan)
     assert calls == []
@@ -734,7 +778,7 @@ def test_completed_preservation_skips_payload_verification(commit_env, monkeypat
     committer.commit_logical(plan, preserve_staging=True)
     monkeypatch.setattr(
         committer,
-        "_read_physical",
+        "_snapshot",
         lambda *_: pytest.fail("completed preserved plan was reverified"),
     )
     assert committer.commit_logical(plan, preserve_staging=True) == {}
@@ -748,7 +792,8 @@ def test_retry_rejects_corrupt_non_global_effect_before_completion(
     plan = _stage_step_result(committer, cached_execution_ids=["e" * 32, "f" * 32])
     committer._insert_planned(plan)
     table_path = TablePath.CACHE_REUSE.value
-    expected = read_plan_evidence(plan, staging_root, fs).frames[table_path]
+    with read_plan_evidence(plan, staging_root, fs) as evidence:
+        expected = pl.concat(evidence.tables[table_path].iter_frames())
     if mutation == "partial":
         corrupt = expected.head(1)
     elif mutation == "duplicate":

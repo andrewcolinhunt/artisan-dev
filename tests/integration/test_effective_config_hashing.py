@@ -21,7 +21,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
@@ -50,7 +50,7 @@ class _ImageStampV1(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.RESULT: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             derives_from={"inputs": []},
         ),
     }
@@ -63,12 +63,12 @@ class _ImageStampV1(OperationDefinition):
         return {}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        drafts: list[DataArtifact] = []
+        drafts: list[CSVArtifact] = []
         for file_path in inputs.file_outputs:
             with open(file_path, "rb") as f:
                 content = f.read()
             drafts.append(
-                DataArtifact.draft(
+                CSVArtifact.draft(
                     content=content,
                     original_name=os.path.basename(file_path),
                     step_number=inputs.step_number,

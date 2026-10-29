@@ -33,7 +33,7 @@ class DeclaredPairs(OperationDefinition):
         prediction = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        role: InputSpec(artifact_type="data", materialize=False) for role in InputRole
+        role: InputSpec(artifact_type="csv", materialize=False) for role in InputRole
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.prediction: OutputSpec(

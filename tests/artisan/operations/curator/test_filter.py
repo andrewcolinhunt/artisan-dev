@@ -64,7 +64,7 @@ def _build_edges_df(
     }
     if include_target_type:
         type_map = type_map or {}
-        data["target_artifact_type"] = [type_map.get(e[1], "data") for e in edges]
+        data["target_artifact_type"] = [type_map.get(e[1], "csv") for e in edges]
     return pl.DataFrame(data)
 
 
@@ -794,7 +794,7 @@ class TestForwardMetricDiscovery:
             step_map={pt_id: 0, mid_id: 1, m_id: 2},
             edges=[(pt_id, mid_id), (mid_id, m_id)],
             metric_values={m_id: {"score": 0.9}},
-            type_map={mid_id: "data", m_id: "metric"},
+            type_map={mid_id: "csv", m_id: "metric"},
         )
 
         op = Filter(

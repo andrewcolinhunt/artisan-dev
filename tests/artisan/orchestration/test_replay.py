@@ -257,7 +257,7 @@ def test_malformed_group_length_is_validation_error(tmp_path):
                 "role": "data",
                 "group_id": "group",
                 "position": 0,
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "artifact_id": "a" * 32,
             }
         ]
@@ -370,7 +370,7 @@ def test_complete_association_evidence_requires_explicit_empty_owner(tmp_path):
                 "role": "dataset",
                 "group_id": None,
                 "position": 0,
-                "artifact_type": "data",
+                "artifact_type": "csv",
                 "artifact_id": "a" * 32,
             }
         ]

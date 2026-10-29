@@ -143,7 +143,7 @@ def test_builder_requires_explicit_classification() -> None:
 
 
 def test_builder_hides_outputs_for_unusable_terminal_state() -> None:
-    builder = StepResultBuilder("op", 0, {"data": "data"}, "a" * 32)
+    builder = StepResultBuilder("op", 0, {"data": "csv"}, "a" * 32)
     builder.add_failure()
 
     result = builder.build(StepStatus.FAILED, error="worker failed")
@@ -184,7 +184,7 @@ class TestStepResult:
             succeeded_count=95,
             failed_count=5,
             output_roles=frozenset(["data", "metrics"]),
-            output_types={"data": "data", "metrics": "metric"},
+            output_types={"data": "csv", "metrics": "metric"},
         )
         assert result.total_count == 100
         assert result.succeeded_count == 95
@@ -200,13 +200,13 @@ class TestStepResult:
             status=StepStatus.SUCCEEDED,
             disposition=StepDisposition.EXECUTED,
             output_roles=frozenset(["data"]),
-            output_types={"data": "data"},
+            output_types={"data": "csv"},
         )
         ref = result.output("data")
         assert isinstance(ref, OutputReference)
         assert ref.source_step == 0
         assert ref.role == "data"
-        assert ref.artifact_type == "data"
+        assert ref.artifact_type == "csv"
 
     def test_output_missing_role_raises(self):
         """Test that output() raises ValueError for missing role."""
@@ -273,7 +273,7 @@ class TestStepResultBuilder:
         builder = StepResultBuilder(
             step_name="test",
             step_number=0,
-            operation_outputs={"out": "data"},
+            operation_outputs={"out": "csv"},
         )
         result = builder.build(StepStatus.SUCCEEDED, StepDisposition.EXECUTED)
         assert result.step_name == "test"

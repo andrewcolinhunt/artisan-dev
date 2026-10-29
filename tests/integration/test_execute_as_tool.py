@@ -57,7 +57,7 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
     assert count_executions_by_step(delta_root, 1) == 2
 
     # the subprocess-run body truncated each CSV to header + 3 rows
-    data = read_table(delta_root, "artifacts/data")
+    data = read_table(delta_root, "artifacts/csvs")
     heads = data.filter(pl.col("origin_step_number") == 1)
     assert heads.height == 2
     for name, content in zip(

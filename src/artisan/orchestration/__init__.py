@@ -20,8 +20,8 @@ Example:
     )
     output = pipeline.output
 
-    pipeline.run(operation=IngestData, name="ingest", inputs=files)
-    pipeline.run(operation=ScoreOp, name="score", inputs={"data": output("ingest", "data")})
+    pipeline.run(operation=IngestCSV, name="ingest", inputs=files)
+    pipeline.run(operation=ScoreOp, name="score", inputs={"data": output("ingest", "csv")})
     result = pipeline.finalize()
 
     df = list_runs("/data/delta")

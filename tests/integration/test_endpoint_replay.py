@@ -217,7 +217,7 @@ def test_result_poll_recovery_commits_original_call_with_lineage(
         mode="json"
     )
 
-    artifacts = read_committed(delta_root, "artifacts/data", fs=fs)
+    artifacts = read_committed(delta_root, "artifacts/csvs", fs=fs)
     inputs = artifacts.filter(pl.col("origin_step_number") == source.step_number)
     outputs = artifacts.filter(pl.col("origin_step_number") == recovered.step_number)
     assert inputs.height == outputs.height == 1
@@ -237,8 +237,8 @@ def test_result_poll_recovery_commits_original_call_with_lineage(
             "execution_run_id": execution["execution_run_id"],
             "source_artifact_id": parent["artifact_id"],
             "target_artifact_id": output["artifact_id"],
-            "source_artifact_type": "data",
-            "target_artifact_type": "data",
+            "source_artifact_type": "csv",
+            "target_artifact_type": "csv",
             "source_role": "dataset",
             "target_role": "output",
             "group_id": None,

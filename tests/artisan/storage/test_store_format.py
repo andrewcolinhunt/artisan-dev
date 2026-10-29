@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, ClassVar
+from unittest.mock import Mock
 
 import polars as pl
 import pytest
@@ -12,6 +13,8 @@ from deltalake import DeltaTable
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import IncompatibleStoreError
+from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
+from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -25,6 +28,7 @@ from artisan.storage.core.store_format import (
     publish_store_manifest,
 )
 from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.repair import repair_store
 from artisan.storage.io.staging import StagingManager
 
 
@@ -182,9 +186,16 @@ def test_manifest_round_trip_for_initialized_store(tmp_path) -> None:
     ).initialize_tables()
 
     assert_store_format(root, fs)
+    assert STORE_MANIFEST == {
+        "store_format": 8,
+        "artifact_identity": 1,
+        "cache_identity": 2,
+    }
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "r") as stream:
         assert json.load(stream) == STORE_MANIFEST
     assert fs.exists(f"{root}/artifacts/file_refs")
+    assert fs.exists(f"{root}/artifacts/csvs")
+    assert not fs.exists(f"{root}/artifacts/data")
     assert not fs.exists(f"{root}/artifacts/large_files")
 
 
@@ -272,7 +283,7 @@ def test_nonempty_legacy_root_cannot_be_initialized(tmp_path) -> None:
         prepare_store_initialization(root, fs)
 
 
-@pytest.mark.parametrize("previous_format", [5, 6])
+@pytest.mark.parametrize("previous_format", [5, 6, 7])
 def test_previous_manifest_rejected_even_with_current_tables(
     tmp_path, previous_format: int
 ) -> None:
@@ -294,3 +305,67 @@ def test_previous_manifest_rejected_even_with_current_tables(
     # Rejection must not rewrite an old manifest to bless inferred history.
     with fs.open(f"{root}/{STORE_MANIFEST_PATH}") as stream:
         assert json.load(stream) == previous_manifest
+
+
+@pytest.mark.parametrize(
+    "action", ["open", "initialize", "resume", "repair", "report", "import"]
+)
+def test_format_seven_rejected_without_changing_store_or_staging(
+    tmp_path: Path, action: str
+) -> None:
+    root = tmp_path / "delta"
+    staging = tmp_path / "staging"
+    legacy_files = {
+        root / STORE_MANIFEST_PATH: json.dumps(
+            {"store_format": 7, "artifact_identity": 1, "cache_identity": 2}
+        ).encode(),
+        root / "artifacts/data/old.parquet": b"old table content",
+        staging / "old/data.parquet": b"old staged content",
+    }
+    for path, content in legacy_files.items():
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    before = {
+        str(path.relative_to(tmp_path)): path.read_bytes() for path in legacy_files
+    }
+    paths_before = {
+        path for directory in (root, staging) for path in directory.rglob("*")
+    }
+    fs = LocalFileSystem()
+    operations = {
+        "open": lambda: ArtifactStore(str(root), fs=fs),
+        "initialize": lambda: DeltaCommitter(
+            str(root), StagingManager(str(staging), fs), fs=fs
+        ).initialize_tables(),
+        "resume": lambda: PipelineManager.resume(str(root), str(staging)),
+        "repair": lambda: repair_store(
+            delta_root=str(root), staging_root=str(staging), fs=fs, apply=True
+        ),
+        "report": lambda: repair_store(
+            delta_root=str(root), staging_root=str(staging), fs=fs
+        ),
+        "import": lambda: IngestPipelineStep(
+            params={
+                "source_delta_root": str(root),
+                "source_run_id": "old-run",
+                "source_step": 0,
+            }
+        ).execute_curator({}, 0, Mock()),
+    }
+    if action == "report":
+        report = operations[action]()
+        assert report.items[0].classification == "legacy_unverifiable"
+    else:
+        with pytest.raises(IncompatibleStoreError, match="Use a new Delta root"):
+            operations[action]()
+
+    after = {
+        str(path.relative_to(tmp_path)): path.read_bytes()
+        for directory in (root, staging)
+        for path in directory.rglob("*")
+        if path.is_file()
+    }
+    assert after == before
+    assert {
+        path for directory in (root, staging) for path in directory.rglob("*")
+    } == paths_before

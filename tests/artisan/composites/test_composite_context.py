@@ -46,10 +46,10 @@ class InnerComposite(CompositeDefinition):
         RESULT = "result"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "data": InputSpec(artifact_type="data", required=True),
+        "data": InputSpec(artifact_type="csv", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "result": OutputSpec(artifact_type="data"),
+        "result": OutputSpec(artifact_type="csv"),
     }
 
     def compose(self, ctx) -> None:
@@ -113,9 +113,9 @@ class TestOutput:
     def test_get_output_types_returns_declared_types(self) -> None:
         ctx = _make_ctx(MagicMock())
         types = ctx.get_output_types()
-        assert types == {"result": "data"}
+        assert types == {"result": "csv"}
         types.clear()
-        assert ctx.get_output_types() == {"result": "data"}
+        assert ctx.get_output_types() == {"result": "csv"}
 
     def test_output_records_output_reference(self):
         out_ref = OutputReference(source_step=1, role="result")

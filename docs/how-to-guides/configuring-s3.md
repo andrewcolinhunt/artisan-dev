@@ -92,11 +92,11 @@ Pass cloud URIs directly as inputs; you do not need to download them before
 calling the pipeline:
 
 ```python
-from artisan.operations.curator import IngestData
+from artisan.operations.curator import IngestCSV
 
 # `pipeline` continues from the AWS S3 example above.
 pipeline.run(
-    IngestData,
+    IngestCSV,
     inputs=[
         "s3://my-bucket/raw/dataset_a.csv",
         "s3://my-bucket/raw/dataset_b.csv",
@@ -151,7 +151,7 @@ verify access and writes:
 ```python
 from artisan.orchestration import StepStatus
 
-step = pipeline.run(IngestData, inputs=["s3://my-bucket/raw/dataset_a.csv"])
+step = pipeline.run(IngestCSV, inputs=["s3://my-bucket/raw/dataset_a.csv"])
 assert step.status is StepStatus.SUCCEEDED, step.error
 pipeline.finalize()
 ```

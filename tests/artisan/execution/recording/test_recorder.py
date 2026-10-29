@@ -40,11 +40,11 @@ class MockCreatorOp(OperationDefinition):
 
     name: ClassVar[str] = "mock_creator"
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.DATA, required=True),
+        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data"]},
         ),
     }

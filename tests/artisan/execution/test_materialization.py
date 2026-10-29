@@ -16,7 +16,7 @@ from artisan.execution.inputs.materialization import (
 )
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.specs.input_spec import InputSpec
@@ -69,8 +69,8 @@ def _typed_spec() -> InputSpec:
 def test_typed_references_preserve_occurrences_and_config_scoped_dependencies(
     tmp_path: Path,
 ) -> None:
-    first = DataArtifact.draft(b"value\n1\n", "same.csv", 0).finalize()
-    second = DataArtifact.draft(b"value\n2\n", "same.csv", 0).finalize()
+    first = CSVArtifact.draft(b"value\n1\n", "same.csv", 0).finalize()
+    second = CSVArtifact.draft(b"value\n2\n", "same.csv", 0).finalize()
     payload = {
         "nested": [{"$artifact": first.artifact_id}, {"$artifact": first.artifact_id}],
         "other": {"source": {"$artifact": second.artifact_id}},
@@ -136,7 +136,7 @@ def test_typed_references_fail_before_writing_partial_inputs(
     tmp_path: Path, corrupt: bool
 ) -> None:
     before = set(tmp_path.iterdir())
-    valid = DataArtifact.draft(b"value\n1\n", "valid.csv", 0).finalize()
+    valid = CSVArtifact.draft(b"value\n1\n", "valid.csv", 0).finalize()
     config = ExecutionConfigArtifact.draft(
         [{"$artifact": valid.artifact_id}, {"$artifact": "a" * 32}],
         "config.json",
@@ -413,15 +413,15 @@ class TestEndpointRoutedSkip:
         art.materialize_to.assert_called_once()
 
     def test_inline_data_artifact_materializes_in_both_modes(self, tmp_path: Path):
-        # a DataArtifact carries no external_path — the inline path is
+        # a CSVArtifact carries no external_path — the inline path is
         # unchanged whether or not the step is endpoint-routed
         for routed in (True, False):
             sub = tmp_path / f"routed_{routed}"
             sub.mkdir()
-            art = DataArtifact.draft(
+            art = CSVArtifact.draft(
                 content=b"a,b\n1,2\n", original_name="d.csv", step_number=0
             ).finalize()
-            specs = {"data": InputSpec(artifact_type="data")}
+            specs = {"data": InputSpec(artifact_type="csv")}
 
             result = materialize_inputs(
                 {"data": [art]},
@@ -526,7 +526,7 @@ def test_local_config_substitutes_materialized_reference(tmp_path: Path) -> None
 
     from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 
-    artifact = DataArtifact.draft(b"value\n1\n", "input.csv", 0).finalize()
+    artifact = CSVArtifact.draft(b"value\n1\n", "input.csv", 0).finalize()
     config = ExecutionConfigArtifact.draft(
         {"input": {"$artifact": artifact.artifact_id}}, "config.json", 1
     ).finalize()
@@ -545,10 +545,10 @@ def test_local_config_substitutes_materialized_reference(tmp_path: Path) -> None
 def test_embedded_artifact_materializes_without_origin_metadata(
     tmp_path: Path,
 ) -> None:
-    artifact = DataArtifact.draft(b"value\n1\n", "input.csv", 0)
+    artifact = CSVArtifact.draft(b"value\n1\n", "input.csv", 0)
     artifact.origin_step_number = None
     artifact.finalize()
-    shell = DataArtifact(artifact_id="a" * 32)
+    shell = CSVArtifact(artifact_id="a" * 32)
     assert artifact.origin_step_number is None
     result = materialize_inputs(
         {"data": [artifact, shell]}, {"data": InputSpec()}, str(tmp_path), MagicMock()

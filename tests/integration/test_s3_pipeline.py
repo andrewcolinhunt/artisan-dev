@@ -64,13 +64,13 @@ class TestS3PipelineEndToEnd:
         index_uri = f"{env['delta_root']}/artifacts/index"
         index_df = pl.read_delta(index_uri, storage_options=storage_options)
 
-        # DataGenerator emits 2 data artifacts; MetricCalculator emits
+        # DataGenerator emits 2 csv artifacts; MetricCalculator emits
         # 2 metric artifacts. Index is the union.
         assert index_df.height >= 4, (
             f"Expected ≥4 artifacts in index, got {index_df.height}"
         )
         types = set(index_df["artifact_type"].to_list())
-        assert "data" in types, f"Expected 'data' in {types}"
+        assert "csv" in types, f"Expected 'csv' in {types}"
         assert "metric" in types, f"Expected 'metric' in {types}"
 
         # Verify the executions table was committed.
@@ -113,11 +113,11 @@ class TestS3PipelineEndToEnd:
             with fs.open(stripped, "wb") as f:
                 f.write(f"x,y\n{i},{i + 1}\n{i + 2},{i + 3}\n".encode())
 
-        from artisan.operations.curator import IngestData
+        from artisan.operations.curator import IngestCSV
 
         pipeline = _make_pipeline(env, "s3_ingest")
         pipeline.run(
-            IngestData,
+            IngestCSV,
             inputs=[
                 f"{uri_prefix}/raw/data_0.csv",
                 f"{uri_prefix}/raw/data_1.csv",

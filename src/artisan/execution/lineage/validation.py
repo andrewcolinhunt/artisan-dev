@@ -19,6 +19,7 @@ def validate_artifacts_match_specs(
     output_specs: dict[str, OutputSpec],
     *,
     allow_dynamic_outputs: bool = False,
+    check_required_roles: bool = True,
 ) -> None:
     """Verify artifacts satisfy output specs (presence, types, no extras).
 
@@ -29,7 +30,7 @@ def validate_artifacts_match_specs(
             type mismatches, or undeclared output roles.
     """
     for role, spec in output_specs.items():
-        if spec.required and role not in artifacts:
+        if check_required_roles and spec.required and role not in artifacts:
             msg = f"Missing required output role: {role}"
             raise ArtifactValidationError(msg)
         if role not in artifacts:
@@ -138,6 +139,8 @@ def validate_lineage_integrity(
     input_artifact_ids: dict[str, list[str]],
     output_artifacts: dict[str, list[Artifact]],
     output_specs: dict[str, OutputSpec],
+    *,
+    prepared_input_ids: dict[str, set[str]] | None = None,
 ) -> None:
     """Validate explicit role coverage, contracts, references, and uniqueness.
 
@@ -154,7 +157,11 @@ def validate_lineage_integrity(
             f"extra={sorted(set(lineage) - set(output_artifacts))}"
         )
         raise LineageIntegrityError(msg)
-    input_ids = {role: set(ids) for role, ids in input_artifact_ids.items()}
+    input_ids = (
+        prepared_input_ids
+        if prepared_input_ids is not None
+        else {role: set(ids) for role, ids in input_artifact_ids.items()}
+    )
     for target_role, mappings in lineage.items():
         kind, allowed_roles = _lineage_contract(target_role, output_specs)
         if not allowed_roles and mappings:

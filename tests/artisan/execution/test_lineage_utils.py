@@ -26,8 +26,8 @@ def mapping(
 
 def types_for(*artifacts: MetricArtifact) -> dict[str, str]:
     return {
-        "a" * 32: "data",
-        "b" * 32: "data",
+        "a" * 32: "csv",
+        "b" * 32: "csv",
         **{a.artifact_id: a.artifact_type for a in artifacts},
     }
 
@@ -59,7 +59,7 @@ def test_same_role_fan_in_targets_one_occurrence() -> None:
         canonical_json_bytes(
             {
                 "domain": "lineage-parents-v1",
-                "parents": [("data", "data", "a" * 32), ("data", "data", "b" * 32)],
+                "parents": [("data", "csv", "a" * 32), ("data", "csv", "b" * 32)],
             }
         )
     )
@@ -151,7 +151,7 @@ def test_identical_targets_keep_distinct_parent_sets() -> None:
         ]
     }
     edges = build_edges(
-        lineage, {"out": [target, target]}, {**types_for(target), "c" * 32: "data"}
+        lineage, {"out": [target, target]}, {**types_for(target), "c" * 32: "csv"}
     )
     groups: dict[str, set[str]] = {}
     for edge in edges:

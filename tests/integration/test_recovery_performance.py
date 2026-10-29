@@ -11,12 +11,14 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from deltalake import DeltaTable
 from fsspec.implementations.local import LocalFileSystem
 
+from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.committed_scan import read_committed, read_logical_commits
 from artisan.storage.core.run_scope import load_accepted_outputs
-from artisan.storage.io.commit import DeltaCommitter
+from artisan.storage.io.delta_files import DeltaSnapshot
 from artisan.storage.io.repair import repair_store
 from integration.test_staging_recovery import _cancel_finished_work
 
@@ -30,15 +32,18 @@ def test_recovery_writes_one_batch_and_repeated_pass_does_no_data_work(
     _cancel_finished_work(
         pipeline_env, monkeypatch, preserve=False, count=count, finished=count
     )
-    writes: Counter[str] = Counter()
     reads: Counter[str] = Counter()
-    original_append = DeltaCommitter._append
     original_scan = pl.scan_delta
-    original_complete = DeltaCommitter._complete
+    original_iter = DeltaSnapshot.iter_located
+    paths = {table.value for table in TablePath} | {
+        definition.table_path for definition in ArtifactTypeDef.get_all().values()
+    }
 
-    def append(self, frame, table):
-        writes[table] += 1
-        return original_append(self, frame, table)
+    def versions():
+        return {
+            table: DeltaTable(f"{pipeline_env['delta_root']}/{table}").version()
+            for table in paths
+        }
 
     def scan(source, *args, **kwargs):
         table = str(source).removeprefix(pipeline_env["delta_root"] + "/")
@@ -46,13 +51,13 @@ def test_recovery_writes_one_batch_and_repeated_pass_does_no_data_work(
             reads[table] += 1
         return original_scan(source, *args, **kwargs)
 
-    def complete(self, plan):
-        writes["completion"] += 1
-        return original_complete(self, plan)
+    def iterate(self, *args, **kwargs):
+        reads[self.path.removeprefix(pipeline_env["delta_root"] + "/")] += 1
+        yield from original_iter(self, *args, **kwargs)
 
-    monkeypatch.setattr(DeltaCommitter, "_append", append)
     monkeypatch.setattr(pl, "scan_delta", scan)
-    monkeypatch.setattr(DeltaCommitter, "_complete", complete)
+    monkeypatch.setattr(DeltaSnapshot, "iter_located", iterate)
+    before = versions()
 
     def recover():
         return repair_store(
@@ -64,15 +69,19 @@ def test_recovery_writes_one_batch_and_repeated_pass_does_no_data_work(
         )
 
     assert not recover().blocking
-    assert writes[TablePath.EXECUTIONS.value] == 1
-    assert writes[TablePath.LOGICAL_COMMITS.value] == 1
-    assert writes["completion"] == 1
-    assert all(value == 1 for value in writes.values())
-    writes.clear()
+    after = versions()
+    advances = {table: after[table] - before[table] for table in paths}
+    assert advances[TablePath.EXECUTIONS.value] == 1
+    assert advances[TablePath.LOGICAL_COMMITS.value] == 2
+    assert all(
+        value in {0, 1}
+        for table, value in advances.items()
+        if table != TablePath.LOGICAL_COMMITS.value
+    )
     reads.clear()
 
     assert not recover().blocking
-    assert not writes
+    assert versions() == after
     assert not reads
 
 
@@ -81,7 +90,7 @@ def test_recovery_writes_one_batch_and_repeated_pass_does_no_data_work(
     [
         "published",
         "planned",
-        "table:artifacts/data",
+        "table:artifacts/csvs",
         "table:artifacts/index",
         "table:orchestration/executions",
         "table:provenance/execution_edges",
