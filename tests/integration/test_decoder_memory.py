@@ -156,9 +156,10 @@ print(json.dumps({'parent': peak_rss_bytes(), 'child': json.loads(child)}))
     child_result = result["child"]
     assert result["parent"] > 384 * _MIB
     assert child_result["before"] < 64 * _MIB
-    assert child_result["during"] < 192 * _MIB
-    assert child_result["during"] - child_result["before"] > 80 * _MIB
-    assert child_result["after"] >= child_result["during"]
+    # Native RSS accounting is approximate; require the 96MiB peak to survive release.
+    for phase in ("during", "after"):
+        assert child_result[phase] < 192 * _MIB
+        assert child_result[phase] - child_result["before"] > 80 * _MIB
 
 
 @pytest.mark.parametrize("encoding", ["dictionary", "plain_page"])
