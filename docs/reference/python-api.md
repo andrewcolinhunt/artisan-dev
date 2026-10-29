@@ -12,6 +12,7 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Match filenames inside an operation | `artisan.operations.lineage` | `match_outputs_to_inputs_by_stem` |
 | Define an operation | `artisan.operations.base` | `OperationDefinition`, `PerArtifact` |
 | Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
+| Retain generated external files | `artisan.schemas` | `ExecuteInput`, `PostprocessInput`, `FileRefArtifact` |
 | Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
 | Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |
 | Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
@@ -72,6 +73,7 @@ Use `pixi run artisan --help` to find CLI commands, then append
 - [Build a pipeline](../how-to-guides/building-a-pipeline.md).
 - [Configure execution](../how-to-guides/configuring-execution.md).
 - [Write an operation](../how-to-guides/writing-creator-operations.md).
+- [Retain command-generated files](../how-to-guides/writing-creator-operations.md#retain-command-files).
 - [Resolve configuration references](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 - [Write a composite](../how-to-guides/writing-composite-operations.md).
 - [Inspect a particular run](../how-to-guides/inspecting-provenance.md#select-the-run-you-want-to-inspect).

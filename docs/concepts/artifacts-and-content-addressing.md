@@ -140,10 +140,15 @@ without rewriting the artifact row. A missing, malformed, or mismatched location
 fails instead of returning unverified bytes.
 
 Where an operation writes a file determines how Artisan manages its location.
-A creator writes generated files under its supplied `files_dir`; after
-finalization, Artisan moves or uploads them to `files_root` and updates their
-locators before sandbox cleanup. References to existing files outside
-`files_dir` retain their locations. This lifecycle does not depend on file size.
+Function creators can write generated files directly to `ExecuteInput.files_dir`.
+Command creators copy selected outputs into `PostprocessInput.files_dir` after
+local execution or endpoint download. After finalization, Artisan moves or
+uploads referenced files to `files_root`, updates their locators, and verifies
+their bytes before successful sandbox cleanup. Unselected command outputs remain
+temporary; references to existing files outside `files_dir` retain their
+locations. This lifecycle does not depend on file size. See
+[Retain command-generated files](../how-to-guides/writing-creator-operations.md#retain-command-files)
+for the staging and drafting pattern.
 
 Verification and materialization stream bytes in bounded chunks and compare
 both digest and size. A finalized FileRef materializes to
