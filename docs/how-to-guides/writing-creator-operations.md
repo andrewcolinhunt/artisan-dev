@@ -670,6 +670,9 @@ and removes the successful execution's sandbox. Files left in `execute_dir` or
 [Python API lookup](../reference/python-api.md#inspect-the-installed-version)
 for the directory's lifetime and configuration contract.
 
+Plain function creators can also write directly to `ExecuteInput.files_dir`;
+they can use this postprocess pattern when selecting files after execution.
+
 This variant continues the `CopyCsv` example above. It keeps the same command
 and explicit filename-matching contract, but returns file references. Each copy
 gets its own staging subdirectory so repeated basenames cannot overwrite one
