@@ -343,6 +343,7 @@ Override `postprocess` when the operation produces artifacts; the default return
 - `inputs.memory_outputs` — whatever `execute` returned
 
 Build drafts under the declared output roles, as in `ScaleData`.
+For complete external files, follow [Retain command-generated files](#retain-command-files).
 
 `original_name` is the human name you choose. The framework preserves it and
 never derives parents from it. Include a lineage declaration for every emitted
@@ -657,6 +658,131 @@ Python memory outputs.
 A Python `execute_function` that calls `run_command` manually is still a function
 operation; that form runs where the lifecycle worker runs. For remote command
 execution, follow [Deploy Tool Endpoints](deploying-tool-endpoints.md).
+
+(retain-command-files)=
+### Retain command-generated files
+
+To retain a complete command output as a `FileRefArtifact`, copy it into
+`inputs.files_dir` during postprocessing and draft the reference from that copy.
+Artisan relocates referenced files into managed storage, verifies their bytes,
+and removes the successful execution's sandbox. Files left in `execute_dir` or
+`postprocess_dir` remain temporary. See the `PostprocessInput` docstring through
+[Python API lookup](../reference/python-api.md#inspect-the-installed-version)
+for the directory's lifetime and configuration contract.
+
+Plain function creators can also write directly to `ExecuteInput.files_dir`;
+they can use this postprocess pattern when selecting files after execution.
+
+This variant continues the `CopyCsv` example above. It keeps the same command
+and explicit filename-matching contract, but returns file references. Each copy
+gets its own staging subdirectory so repeated basenames cannot overwrite one
+another. The original display name and extension remain separate from that path.
+
+```python
+import hashlib
+import shutil
+
+import xxhash
+
+from artisan.schemas import FileRefArtifact
+
+
+class RetainCsvFiles(CopyCsv):
+    name = "retain_csv_files"
+
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "dataset": OutputSpec(
+            artifact_type="file_ref", derives_from={"inputs": ["dataset"]}
+        ),
+    }
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        if inputs.files_dir is None:
+            raise ValueError("Configure managed file storage to retain command outputs")
+        paths = [Path(f) for f in inputs.file_outputs if f.endswith(".csv")]
+        sources = inputs.input_artifacts["dataset"]
+        source_by_id = {a.artifact_id: a for a in sources}
+        parent_ids = match_outputs_to_inputs_by_stem(
+            [str(path) for path in paths],
+            [(a.materialized_path, a.artifact_id) for a in sources],
+        )
+        result = ArtifactResult()
+        for index, (path, parent_id) in enumerate(zip(paths, parent_ids, strict=True)):
+            source = source_by_id[parent_id]
+            staged = Path(inputs.files_dir) / str(index) / path.name
+            staged.parent.mkdir(parents=True)
+            shutil.copyfile(path, staged)
+            with staged.open("rb") as stream:
+                digest = hashlib.file_digest(stream, xxhash.xxh3_128).hexdigest()
+            draft = FileRefArtifact.draft(
+                path=str(staged),
+                content_hash=digest,
+                size_bytes=staged.stat().st_size,
+                step_number=inputs.step_number,
+                original_name=source.original_name,
+                extension=source.extension,
+            )
+            result.add_artifact("dataset", draft, sources={"dataset": [parent_id]})
+        return result
+```
+
+Hashing reads the copied file incrementally. Copying also leaves the command's
+original output available if postprocessing fails. For tools whose filenames do
+not identify parents, select files and their exact parent IDs from the tool's
+output manifest instead. Separate paths do not force separate artifact IDs:
+identical bytes and semantic metadata retain the existing deduplication behavior.
+
+The same postprocess code handles local commands and endpoint downloads. The
+managed directory stays on the lifecycle worker; command bodies and remote
+workers do not receive its path. Existing endpoint input constraints still apply:
+send a batch manifest file when a whole batch must travel under one input role.
+Retention requires the whole execution unit to succeed, including postprocessing
+and verification. This does not publish partial
+state from interrupted commands. Failed uploads can leave unreferenced objects;
+their cleanup is outside this workflow.
+
+Run the variant in a fresh temporary store, then hydrate new references after
+the pipeline closes. This continuation requires the `CopyCsv` and `RetainCsvFiles`
+definitions above and the local `cp` command:
+
+```python
+from tempfile import TemporaryDirectory
+
+from artisan.operations.examples import DataGenerator
+from artisan.orchestration import PipelineManager
+from artisan.storage import ArtifactStore
+
+with TemporaryDirectory() as tmp:
+    root = Path(tmp)
+    pipeline = PipelineManager.create(
+        name="retained-files",
+        delta_root=str(root / "delta"),
+        staging_root=str(root / "staging"),
+        working_root=str(root / "working"),
+        files_root=str(root / "files"),
+    )
+    generated = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
+    retained = pipeline.run(
+        RetainCsvFiles,
+        inputs={"dataset": generated.output("datasets")},
+        batch_strategy={"artifacts_per_unit": 2},
+    )
+    assert pipeline.finalize()["overall_success"]
+    assert not any((root / "working").rglob("*.csv"))
+
+    store = ArtifactStore(str(root / "delta"), files_root=str(root / "files"))
+    ids = store.provenance.load_artifact_ids_by_type(
+        "file_ref", step_numbers=[retained.step_number]
+    )
+    assert len(ids) == 2
+    for artifact_id in ids:
+        file_ref = store.get_artifact(artifact_id, artifact_type="file_ref")
+        assert file_ref.read_content().startswith(b"id,x,y,z,score")
+```
+
+The origin-step lookup here selects files created in this fresh store. For an
+existing store with cached steps or multiple runs, select the accepted output
+IDs through [run-scoped inspection](inspecting-evidence.md).
 
 (execute-as-tool)=
 ### Python body as a command (`execute_as_tool`)

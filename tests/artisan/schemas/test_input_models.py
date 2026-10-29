@@ -138,6 +138,28 @@ class TestPostprocessInput:
         assert inp.memory_outputs is None
         assert inp.input_artifacts == {}
         assert inp.metadata == {}
+        assert inp.files_dir is None
+
+    def test_create_with_files_dir(self, tmp_path: Path) -> None:
+        """Expose the managed directory supplied by the lifecycle worker."""
+        files_dir = str(tmp_path / "files_outputs")
+        inp = PostprocessInput(
+            step_number=0, postprocess_dir=str(tmp_path), files_dir=files_dir
+        )
+        assert inp.files_dir == files_dir
+
+    def test_existing_positional_fields_keep_their_meaning(
+        self, tmp_path: Path
+    ) -> None:
+        """Append the optional field after all existing constructor arguments."""
+        associated = {("a" * 32, "metric"): []}
+        references = {"b" * 32: {}}
+        inp = PostprocessInput(
+            0, str(tmp_path), [], None, {}, {}, associated, references
+        )
+        assert inp._associated is associated
+        assert inp._references is references
+        assert inp.files_dir is None
 
     def test_create_with_memory_outputs(self, tmp_path: Path):
         """Create with dict as memory outputs."""

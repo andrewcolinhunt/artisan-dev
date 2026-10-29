@@ -126,6 +126,9 @@ Point `files_root` at a cloud URI to store generated `FileRefArtifact` and
 `AppendableArtifact` content there. Creators still write to local
 `inputs.files_dir`; Artisan uploads finalized files to `files_root`. References
 to existing files outside `files_dir` keep their original locations.
+Function creators can write there during execute; command creators copy selected
+outputs there during postprocess, after endpoint downloads complete. See
+[Retain command-generated files](writing-creator-operations.md#retain-command-files).
 
 If an upload fails, the unit fails with a postprocess-style error and the
 local sandbox is preserved so the bytes are recoverable.
