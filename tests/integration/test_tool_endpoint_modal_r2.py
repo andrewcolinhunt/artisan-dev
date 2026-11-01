@@ -25,8 +25,7 @@ Requirements (each missing one skips with a reason):
 - Modal credentials (``~/.modal.toml`` or ``MODAL_TOKEN_ID``/``SECRET``)
 - proxy-auth tokens ``MODAL_PROXY_TOKEN_ID``/``SECRET`` (repo-root .env)
 - R2 credentials: ``AWS_ACCESS_KEY_ID``, ``AWS_SECRET_ACCESS_KEY``,
-  ``ARTISAN_S3_ENDPOINT_URL``, ``ARTISAN_S3_BUCKET`` (repo-root .env,
-  falling back to ``_dev/demos/s3_real/.env``)
+  ``ARTISAN_S3_ENDPOINT_URL``, ``ARTISAN_S3_BUCKET`` (repo-root .env)
 - the ``r2-artisan`` Modal Secret carrying ``AWS_ACCESS_KEY_ID``,
   ``AWS_SECRET_ACCESS_KEY``, ``AWS_REGION``, ``AWS_ENDPOINT_URL``
 - a worker image carrying s3fs and ca-certificates;
@@ -53,10 +52,7 @@ from artisan.schemas.operation_config import ToolEndpointDataPolicy
 pytestmark = pytest.mark.modal
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_ENV_FILES = (
-    _REPO_ROOT / ".env",
-    _REPO_ROOT / "_dev" / "demos" / "s3_real" / ".env",
-)
+_ENV_FILES = (_REPO_ROOT / ".env",)
 
 R2_SECRET_NAME = "r2-artisan"
 INTEGRATION_OUTPUT_PREFIX = "integration"
