@@ -71,6 +71,26 @@ Each terminal can use a different environment.
 
 ---
 
+(working-in-multiple-worktrees)=
+## Working in multiple worktrees
+
+Run Pixi from the Git worktree you are editing. Each checkout keeps its own
+environments under `.pixi/envs/`, with its editable Artisan install pointing at
+that checkout. Install the development environment when starting a new worktree:
+
+```bash
+cd /path/to/your/worktree
+pixi install -e dev
+pixi run -e dev python -c "import sys, artisan; print(sys.executable); print(artisan.__file__)"
+```
+
+Both printed paths should belong to that worktree. Keep these installed
+environments separate: do not copy or symlink another worktree's `.pixi/envs`
+directory or use its interpreter. Pixi's shared package cache already reuses
+downloads across checkouts. Agents should use `--locked` for routine commands.
+
+---
+
 ## Working across multiple projects with workspaces
 
 Workspaces let you run tasks across Pixi projects without changing directories.
@@ -120,24 +140,25 @@ After adding a dependency, `pixi.lock` updates automatically. Commit both
 (reviewing-lockfile-changes)=
 ## Reviewing lockfile changes
 
-Keep `pixi.lock` in version control. After editing `pyproject.toml`, refresh the
-lockfile and review the changes:
+Keep `pixi.lock` in version control. Changes to dependencies, Python requirements,
+or supported platforms can require a refresh. Use the existing lockfile when
+resolving them, then review the changes:
 
 ```bash
 pixi lock
 git diff -- pyproject.toml pixi.lock
 ```
 
-Tooling edits can require a refresh even when dependencies stay the same. Pixi
-0.66 hashes the entire `pyproject.toml` for Artisan's editable package, so
-changing a task, lint setting, or comment can change its recorded `sha256`.
-Refreshing package metadata can also record a newer Git-derived version.
+With Pixi 0.83.0, comments and task-only edits do not require relocking. Artisan's
+version is a tracked value in `pyproject.toml`; source edits, commits, and dirty
+working trees do not change it. A version-only edit does not require a lockfile
+update; the lock records the local package's dependency requirements.
 
-Check that the lockfile changes match the manifest edits, and review any
-dependency version or source changes. Commit required lockfile updates with
-the corresponding manifest edits. Do not discard a diff solely because it
-only changes Artisan's `version` or `sha256`; a hash update may be necessary.
-For unexpected changes, investigate the cause before restoring anything.
+Check that lockfile changes match the intended manifest edits, including any
+dependency version or source changes. Commit required updates with the manifest.
+For unexpected changes, investigate the cause before restoring anything. Avoid
+deleting the lockfile or running a broad dependency update just to refresh local
+package metadata.
 
 CI and agent tasks that should not rewrite the lockfile use `--locked`:
 
@@ -147,6 +168,12 @@ pixi run --locked -e dev test-unit
 
 If this reports a stale lockfile after an intentional manifest edit, refresh
 and review it using the commands above, then rerun the check.
+
+After changing the package version, `pixi install` or the next `pixi run`
+synchronizes the installed metadata, including in locked mode. Add `-e dev` or
+`-e docs` for the environment you use. Editable source code changes need no
+reinstall. See [release preparation](https://github.com/dexterity-systems/artisan/blob/main/CONTRIBUTING.md#package-versions-and-releases)
+for when to change the package version.
 
 ---
 

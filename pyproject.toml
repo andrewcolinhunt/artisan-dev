@@ -1,6 +1,6 @@
 [project]
 name = "dexterity-artisan"
-dynamic = ["version"]
+version = "0.2.0.dev0"
 description = "A domain-agnostic pipeline framework with provenance tracking"
 readme = "README.md"
 requires-python = ">=3.12"
@@ -54,17 +54,8 @@ Documentation = "https://artisan.readthedocs.io"
 
 # Build settings ----------------------------------------------------------------------
 [build-system]
-requires = ["hatchling>=1.27,<1.32", "hatch-vcs"]
+requires = ["hatchling>=1.27,<1.32"]
 build-backend = "hatchling.build"
-
-[tool.hatch.version]
-source = "vcs"
-
-[tool.hatch.version.raw-options]
-fallback_version = "0.0.0"
-
-[tool.hatch.build.hooks.vcs]
-version-file = "src/artisan/_version.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artisan", "src/artisan_mcp"]
@@ -79,7 +70,7 @@ skip-excluded-dirs = true
 [tool.pixi.workspace]
 channels = ["conda-forge"]
 platforms = ["linux-64", "linux-aarch64", "osx-arm64"]
-requires-pixi = "==0.66.0"
+requires-pixi = "==0.83.0"
 
 # =============================================================================
 # DEFAULT ENVIRONMENT - Core runtime dependencies

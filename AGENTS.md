@@ -8,7 +8,7 @@ Project conventions for contributors (human and AI).
 
 | Setting     | Value                       |
 | ----------- | --------------------------- |
-| Environment | Pixi (`~/.pixi/bin/pixi`)   |
+| Environment | Pixi 0.83.0 (`~/.pixi/bin/pixi`) |
 | Formatting  | Ruff                        |
 | Testing     | Pytest                      |
 | Docs        | Jupyter Book 2 (MyST)       |
@@ -22,17 +22,25 @@ Use ordinary `pixi run` and `pixi install` for local development. Keep `--locked
 in CI and for agent tasks unrelated to environment changes, so those commands
 stop instead of incidentally rewriting `pixi.lock`.
 
-After relevant `pyproject.toml` edits, refresh the lock with
+After dependency, Python requirement, or platform edits, refresh the lock with
 `~/.pixi/bin/pixi lock`, review the diff, and commit the manifest and lockfile
-changes together. Tooling edits can also require a refresh: Pixi hashes the
-entire `pyproject.toml` for the editable package, including tasks and comments.
-Keep Hatch's Git-derived package versions and the committed lockfile.
+changes together. Comments and task-only edits do not require relocking.
+Keep the committed lockfile and the static `[project].version`; ordinary feature
+work does not bump the version. After a version change, `pixi install` or
+`pixi run` synchronizes the installed metadata, including in locked mode.
+A version-only edit does not require a lockfile update.
 
 If `pixi.lock` becomes dirty unexpectedly, inspect the diff and its cause.
-Changes limited to the editable project's `version` and `sha256` can be
-necessary; do not discard them solely because dependencies did not change.
 Restore only changes confirmed to be incidental to the task, preserving any
 existing user changes and lock updates required by manifest edits.
+
+### Worktree environments
+
+Run Pixi from the assigned worktree and let it install that checkout's own
+`.pixi/envs/` environments. Do not copy, symlink, or activate another worktree's
+installed environment. Pixi's shared package cache can remain shared. When
+checking isolation, verify that `sys.executable` and `artisan.__file__` both
+point into the assigned checkout.
 
 ---
 

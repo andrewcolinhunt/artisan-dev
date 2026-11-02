@@ -55,12 +55,12 @@ storage model, including its limits.
 
 ## Quick start
 
-**Prerequisites:** [Pixi 0.66.0](https://pixi.sh), Linux (x86_64 or aarch64) or
+**Prerequisites:** [Pixi 0.83.0](https://pixi.sh), Linux (x86_64 or aarch64) or
 macOS (Apple Silicon). Pixi supplies Python 3.12 and the other dependencies.
 
 ```bash
 # Install Pixi (if needed)
-curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.66.0 bash
+curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.83.0 bash
 # Restart your terminal if Pixi was newly installed.
 
 # Clone and install
@@ -154,10 +154,14 @@ registration sets the **Artisan** kernel to the environment that ran the task.
 
 Use ordinary `pixi install` and `pixi run` for local development. CI and agent
 tasks unrelated to environment changes use `--locked` to prevent incidental
-lockfile updates. Review lockfile changes alongside relevant `pyproject.toml`
-edits, including tooling edits, and commit them together. See
+lockfile updates. Review required lockfile changes alongside dependency or
+platform edits and commit them together. Comments and task-only edits do not
+require relocking. See
 [reviewing lockfile changes](docs/getting-started/using-pixi.md#reviewing-lockfile-changes)
 for the refresh and review workflow.
+
+Each Git worktree uses its own Pixi environments. Run commands from the checkout
+you are editing; see [working in multiple worktrees](docs/getting-started/using-pixi.md#working-in-multiple-worktrees).
 
 ### Running tests
 
