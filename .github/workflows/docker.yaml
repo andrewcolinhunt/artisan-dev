@@ -6,6 +6,7 @@ on:
     paths:
       - docker/artisan-worker/**
       - src/**
+      - skills/pipeline-operate/**
       - pyproject.toml
       - pixi.lock
       - README.md # the Dockerfile copies it
