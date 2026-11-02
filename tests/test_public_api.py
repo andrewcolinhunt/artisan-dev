@@ -208,6 +208,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "params_schema_for",
     ),
     "artisan.utils": (
+        "ExternalToolError",
         "TutorialEnv",
         "configure_logging",
         "env_or_dotenv",
@@ -282,6 +283,15 @@ def test_facade_exports_are_exact_and_importable(
     assert tuple(module.__all__) == expected
     for name in expected:
         assert getattr(module, name) is not None
+
+
+def test_external_tool_error_preserves_existing_exception_type() -> None:
+    public = importlib.import_module("artisan.utils")
+    external_tools = importlib.import_module("artisan.utils.external_tools")
+    supervisor = importlib.import_module("artisan.utils.command_supervisor")
+
+    assert public.ExternalToolError is external_tools.ExternalToolError
+    assert not issubclass(supervisor.CommandOwnershipError, public.ExternalToolError)
 
 
 @pytest.mark.parametrize(
