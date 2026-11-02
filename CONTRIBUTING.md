@@ -25,7 +25,7 @@ Wait for feedback on the proposal before implementing it.
 
 ### Prerequisites
 
-- [Pixi 0.66.0](docs/getting-started/installation.md) supplies Python and the
+- [Pixi 0.83.0](docs/getting-started/installation.md) supplies Python and the
   project dependencies.
 
 ### Getting started
@@ -36,6 +36,9 @@ cd artisan
 pixi install -e dev
 pixi run -e dev setup
 ```
+
+For parallel work, install an environment in each Git worktree and run commands
+from that checkout. See [worktree setup](docs/getting-started/using-pixi.md#working-in-multiple-worktrees).
 
 ### Environments
 
@@ -105,6 +108,42 @@ pixi run -e dev pre-commit run --all-files
 - Include tests for new functionality.
 - Make sure CI passes before requesting review.
 - Update documentation if you change user-facing behavior.
+
+---
+
+## Package versions and releases
+
+`[project].version` in `pyproject.toml` is the version source. Development uses
+`0.2.0.dev0` until release preparation; ordinary commits and feature branches do
+not bump it. `artisan.__version__` reads the installed distribution metadata.
+After changing the version, `pixi install` or the next `pixi run` synchronizes
+the installed metadata. Editable Python source changes need no reinstall.
+
+To prepare a release, using `0.2.0` as the example:
+
+1. Set `[project].version` to `"0.2.0"` and update the changelog.
+2. Run `pixi install -e dev` and complete the required checks. A version-only
+   change does not require a lockfile update. If dependencies or environment
+   requirements also changed, review and keep the required lockfile changes.
+3. Remove old build artifacts from `dist/`, then build and validate:
+
+   ```bash
+   pixi run --locked -e dev build-dist
+   pixi run --locked -e dev check-dist
+   pixi run --locked -e dev python scripts/check_release.py v0.2.0
+   ```
+
+4. Commit the version, release notes, and any required lockfile changes together.
+   Create the matching `v0.2.0` tag on that commit and publish its GitHub release.
+   The release workflow checks the wheel and source distribution versions against the tag
+   before uploading either artifact for publication.
+5. After publication, advance to the next planned development version, run
+   `pixi install -e dev`, and commit the version change.
+
+Use the intended release number in each step. The checker requires exactly one
+wheel and one source distribution in `dist/`, both for `dexterity-artisan` and
+both matching the tag. A version identifies a release or development series;
+record the Git commit separately when you need to identify a source checkout.
 
 ---
 

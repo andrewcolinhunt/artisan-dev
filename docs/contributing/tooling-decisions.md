@@ -19,8 +19,14 @@ See [installation](../getting-started/installation.md) and
 ## Packaging: Hatchling
 
 Hatchling builds the wheel and source distribution from the `src` layout.
-Hatch-vcs derives the package version from Git. This keeps packaging configuration
-in `pyproject.toml` and avoids a separate executable setup script.
+`[project].version` in `pyproject.toml` supplies one tracked version, which stays
+constant across development commits and worktrees. `artisan.__version__` reads
+the installed distribution metadata; `pixi install` or `pixi run` synchronizes
+it after a version edit. Builds need no Git metadata.
+
+Release preparation updates the tracked version. The publishing workflow checks
+the built wheel and source distribution against the release tag
+before upload; see [release preparation](https://github.com/dexterity-systems/artisan/blob/main/CONTRIBUTING.md#package-versions-and-releases).
 
 ## Orchestration: native runners
 

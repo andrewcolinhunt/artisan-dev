@@ -8,7 +8,7 @@ The same environment supplies Python, Graphviz, and the notebook kernel.
 ## Prerequisites
 
 - **Platform:** Linux (x86_64 or aarch64) or macOS (Apple Silicon)
-- [Pixi](https://pixi.sh) **0.66.0**, which installs Python 3.12 and the other
+- [Pixi](https://pixi.sh) **0.83.0**, which installs Python 3.12 and the other
   dependencies
 
 ---
@@ -33,13 +33,27 @@ For SLURM, use a compatible `artisan-submitit` provider and qualify it separatel
 on your cluster. Core Artisan qualification does not qualify external runner
 packages; see [step runner configuration](../how-to-guides/configuring-execution.md#choose-a-step-runner).
 
+For an existing source checkout, install Pixi 0.83.0 and synchronize each
+environment you use. From the repository root, remove the old generated version
+file if it remains, then reinstall the development environment:
+
+```bash
+rm -f src/artisan/_version.py
+pixi install -e dev
+```
+
+Use `pixi install` for the default environment or `pixi install -e docs` for
+documentation. Package versions now come from the installed metadata for the
+static version in `pyproject.toml`. Replace uses of `artisan.__version_tuple__`
+with `artisan.__version__`.
+
 ---
 
 ## Install Artisan
 
 ```bash
 # Install Pixi (if not already installed)
-curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.66.0 bash
+curl -fsSL https://pixi.sh/install.sh | PIXI_VERSION=v0.83.0 bash
 ```
 
 :::{tip}

@@ -24,6 +24,11 @@ jobs:
       - name: Build distribution
         run: python -m build
 
+      - name: Check release version
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: python scripts/check_release.py "$RELEASE_TAG"
+
       - name: Upload artifacts
         uses: actions/upload-artifact@v7
         with:

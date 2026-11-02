@@ -1,11 +1,9 @@
 # --- Build stage: resolve all dependencies from pixi.lock ---
-FROM ghcr.io/prefix-dev/pixi:0.66.0 AS build
+FROM ghcr.io/prefix-dev/pixi:0.83.0 AS build
 WORKDIR /app
 COPY pyproject.toml pixi.lock README.md ./
 COPY src/ src/
-# hatch-vcs uses setuptools-scm, which needs .git to determine the version.
-# .git is excluded from the build context, so we provide a placeholder.
-ENV SETUPTOOLS_SCM_PRETEND_VERSION="0.0.0.dev0"
+COPY skills/pipeline-operate/ skills/pipeline-operate/
 RUN pixi install --locked
 
 # --- Runtime stage: slim image with resolved environment ---
@@ -20,5 +18,6 @@ RUN apt-get update \
 WORKDIR /app
 COPY --from=build /app/.pixi/envs/default /app/.pixi/envs/default
 COPY --from=build /app/src /app/src
+COPY --from=build /app/skills/pipeline-operate /app/src/artisan/inspection/_skills/pipeline-operate
 ENV PATH="/app/.pixi/envs/default/bin:$PATH"
 ENV CONDA_PREFIX="/app/.pixi/envs/default"

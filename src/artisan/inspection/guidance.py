@@ -51,7 +51,7 @@ class OperatingGuideCatalog(_OperatingGuide):
 
     Attributes:
         guidance_format_version: Retrieval format, independent of package version.
-        artisan_version: Version generated when the executing package was built.
+        artisan_version: Installed distribution version.
         guide_id: The supported operating skill's fixed identifier.
         origin: Whether every topic came from package resources or source files.
         topics: Topic-name-sorted metadata with canonical relative paths, raw-byte
@@ -66,7 +66,7 @@ class OperatingGuideTopic(_OperatingGuide, _GuideMetadata):
 
     Attributes:
         guidance_format_version: Retrieval format, independent of package version.
-        artisan_version: Build-generated version; editable text can change later.
+        artisan_version: Installed distribution version; editable text can change later.
         guide_id: The supported operating skill's fixed identifier.
         origin: The complete resource directory used for this retrieval.
         topic: Topic identifier from the fixed allow-list.
