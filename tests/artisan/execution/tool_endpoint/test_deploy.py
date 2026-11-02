@@ -782,6 +782,78 @@ class TestRetainedResultRoutes:
         assert response.status_code == 200
         assert response.content == b"tarbytes"
 
+    @pytest.mark.parametrize("plane", ["outputs", "diagnostics"])
+    @pytest.mark.parametrize(
+        "payload",
+        [
+            b"",
+            b"\x00tail\xff\n",
+            b"\n" * (2 * 64 * 1024 + 17),
+            b"\x00\xff" * (64 * 1024),
+        ],
+        ids=["empty", "small-binary-tail", "newline-dense-tail", "binary-exact-blocks"],
+    )
+    def test_download_streams_bounded_binary_chunks(
+        self,
+        client: TestClient,
+        monkeypatch: pytest.MonkeyPatch,
+        plane: str,
+        payload: bytes,
+    ) -> None:
+        self._retain(
+            monkeypatch,
+            {
+                "manifest": {
+                    "stored": None,
+                    "debug_capture": {"status": "complete", "stored": None},
+                },
+                "output_tar": payload if plane == "outputs" else b"other outputs",
+                "debug_tar": payload
+                if plane == "diagnostics"
+                else b"other diagnostics",
+            },
+        )
+        messages, chunks = [], []
+        expected_chunks = (len(payload) + 64 * 1024 - 1) // (64 * 1024)
+
+        async def receive() -> dict[str, Any]:
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        async def send(message: dict[str, Any]) -> None:
+            messages.append(message)
+            if message["type"] == "http.response.body" and message.get("body"):
+                assert len(message["body"]) <= 64 * 1024
+                chunks.append(message["body"])
+                # Fail immediately on newline iteration instead of spending seconds
+                # scheduling a thread-pool call for every tiny binary fragment.
+                assert len(chunks) <= expected_chunks
+
+        scope = {
+            "type": "http",
+            "asgi": {"version": "3.0", "spec_version": "2.4"},
+            "http_version": "1.1",
+            "method": "GET",
+            "scheme": "http",
+            "path": "/download",
+            "raw_path": b"/download",
+            "query_string": f"call_id=fc-1&plane={plane}".encode(),
+            "headers": [],
+            "client": ("testclient", 50000),
+            "server": ("testserver", 80),
+            "root_path": "",
+        }
+        asyncio.run(client.app(scope, receive, send))
+
+        assert messages[0]["status"] == 200
+        assert dict(messages[0]["headers"])[b"content-type"] == b"application/x-tar"
+        assert b"".join(chunks) == payload
+        assert len(chunks) == expected_chunks
+        assert messages[-1] == {
+            "type": "http.response.body",
+            "body": b"",
+            "more_body": False,
+        }
+
     def test_diagnostic_download_streams_separate_plane(self, client, monkeypatch):
         self._retain(
             monkeypatch,

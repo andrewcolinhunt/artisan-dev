@@ -421,8 +421,11 @@ def build_app(
                 return RedirectResponse(stored["presigned_url"], status_code=307)
             if payload is None:
                 raise HTTPException(status_code=404, detail="no output tar for call")
+            # File-object iteration splits binary archives on newlines.
+            archive = io.BytesIO(payload)
             return StreamingResponse(
-                io.BytesIO(payload), media_type="application/x-tar"
+                iter(lambda: archive.read(64 * 1024), b""),
+                media_type="application/x-tar",
             )
 
         @web.post("/cancel")
