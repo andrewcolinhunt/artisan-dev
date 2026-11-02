@@ -7,6 +7,14 @@ User-facing changes are recorded here using
 
 ### Changed
 
+- Package versions now use the static `[project].version` in `pyproject.toml`,
+  starting at `0.2.0.dev0`, and stay unchanged across development commits and
+  worktrees. `artisan.__version__` reports the installed distribution version.
+  **Breaking:** `artisan.__version_tuple__` is removed; use `artisan.__version__`.
+  Release publication checks both built distribution versions against the tag.
+- Development environments now require Pixi 0.83.0. Comments and task-only
+  manifest edits no longer require lockfile refreshes. Existing source checkouts
+  should follow the [upgrade instructions](docs/getting-started/installation.md#before-upgrading).
 - **Breaking: explicit CSV artifact contract and store format 8.** Replace
   `DataArtifact`, `IngestData`, and `inspect_data` with `CSVArtifact`, `IngestCSV`,
   and `inspect_csv`. The registered type and built-in ingestion output role are

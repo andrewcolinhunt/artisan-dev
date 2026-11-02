@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from pydantic import BaseModel
 
-from artisan._version import __version__ as _artisan_version
+from artisan import __version__ as _artisan_version
 from artisan.registry.models import DiscoveryReport
 
 
