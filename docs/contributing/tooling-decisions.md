@@ -26,7 +26,7 @@ it after a version edit. Builds need no Git metadata.
 
 Release preparation updates the tracked version. The publishing workflow checks
 the built wheel and source distribution against the release tag
-before upload; see [release preparation](../../CONTRIBUTING.md#package-versions-and-releases).
+before upload; see [release preparation](https://github.com/dexterity-systems/artisan/blob/main/CONTRIBUTING.md#package-versions-and-releases).
 
 ## Orchestration: native runners
 

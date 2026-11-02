@@ -172,7 +172,7 @@ and review it using the commands above, then rerun the check.
 After changing the package version, `pixi install` or the next `pixi run`
 synchronizes the installed metadata, including in locked mode. Add `-e dev` or
 `-e docs` for the environment you use. Editable source code changes need no
-reinstall. See [release preparation](../../CONTRIBUTING.md#package-versions-and-releases)
+reinstall. See [release preparation](https://github.com/dexterity-systems/artisan/blob/main/CONTRIBUTING.md#package-versions-and-releases)
 for when to change the package version.
 
 ---
