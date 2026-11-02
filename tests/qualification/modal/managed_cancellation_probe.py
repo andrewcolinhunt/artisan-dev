@@ -25,12 +25,10 @@ MARKER = "ARTISAN_CANCELLATION_QUALIFICATION "
 
 
 def source_digest() -> str:
-    """Digest the actual overlaid framework source files, excluding generated version."""
+    """Digest the actual overlaid framework source files."""
     root = Path(artisan.__file__).parent
     digest = hashlib.sha256()
     for path in sorted(root.rglob("*.py")):
-        if path.name == "_version.py":
-            continue
         digest.update(path.relative_to(root).as_posix().encode() + b"\0")
         digest.update(path.read_bytes() + b"\0")
     return digest.hexdigest()

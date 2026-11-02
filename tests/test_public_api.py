@@ -3,14 +3,29 @@
 from __future__ import annotations
 
 import importlib
+import tomllib
 from dataclasses import fields
+from importlib.metadata import version
+from pathlib import Path
 
 import pytest
 
 from artisan.composites import CompositeRef
 
+
+def test_package_version_matches_manifest_and_installed_metadata() -> None:
+    import artisan
+
+    manifest = tomllib.loads((Path(__file__).parents[1] / "pyproject.toml").read_text())
+    assert (
+        artisan.__version__
+        == version("dexterity-artisan")
+        == manifest["project"]["version"]
+    )
+
+
 _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
-    "artisan": ("__version__", "__version_tuple__"),
+    "artisan": ("__version__",),
     "artisan.inspection": (
         "EvidenceExportReceipt",
         "InspectionCatalog",

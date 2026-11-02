@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
-from artisan._version import __version__, __version_tuple__
+from importlib.metadata import version as _distribution_version
 
-__all__ = ["__version__", "__version_tuple__"]
+__version__ = _distribution_version("dexterity-artisan")
+
+__all__ = ["__version__"]
