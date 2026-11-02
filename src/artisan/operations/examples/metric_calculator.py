@@ -11,7 +11,7 @@ from typing import Any, ClassVar, cast
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -51,7 +51,7 @@ class MetricCalculator(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Input CSV dataset for metric calculation",
         ),
@@ -89,7 +89,7 @@ class MetricCalculator(OperationDefinition):
                         "original_name": artifact.original_name,
                     }
                     for artifact in cast(
-                        list[DataArtifact], inputs.input_artifacts["dataset"]
+                        list[CSVArtifact], inputs.input_artifacts["dataset"]
                     )
                 ]
             )

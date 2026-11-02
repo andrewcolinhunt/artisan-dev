@@ -190,5 +190,5 @@ def test_completed_cleanup_rejects_identical_global_duplicate(
         table_path,
     )
 
-    with pytest.raises(StoreIntegrityError, match="duplicate"):
+    with pytest.raises(StoreIntegrityError, match="Duplicate"):
         committer.commit_logical(plan)

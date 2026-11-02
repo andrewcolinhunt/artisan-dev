@@ -15,7 +15,7 @@ how accepted step outputs differ from artifact origin.
 from pathlib import Path
 
 from artisan.orchestration import list_runs
-from artisan.visualization import inspect_data, inspect_pipeline
+from artisan.visualization import inspect_csv, inspect_pipeline
 
 delta_root = "runs/delta"
 runs = list_runs(delta_root)
@@ -27,16 +27,16 @@ output_dir.mkdir(parents=True, exist_ok=True)
 
 # Choose a data-producing step from the overview.
 step_number = 0
-data = inspect_data(delta_root, step_number=step_number, pipeline_run_id=run_id)
+data = inspect_csv(delta_root, step_number=step_number, pipeline_run_id=run_id)
 data.write_csv(output_dir / f"step_{step_number}.csv")
 ```
 
 The CSV combines accepted datasets, including cached and passthrough outputs,
 with `_source` identifying their original names.
-`inspect_data` raises if no matching data artifacts exist. Run-scoped selection
+`inspect_csv` raises if no matching CSV artifacts exist. Run-scoped selection
 uses the newest attempt at each logical step; a newer failed attempt does not
 fall back to older successful outputs. To export a historical attempt, pass its
-exact `step_run_id` to `inspect_data` or `inspect_metrics`. Any run or step
+exact `step_run_id` to `inspect_csv` or `inspect_metrics`. Any run or step
 filters you also provide must agree with that attempt.
 
 ## Export metrics
@@ -197,7 +197,7 @@ recorded operation inputs, provenance queries, or
 from artisan.storage import ArtifactStore
 
 store = ArtifactStore(delta_root)
-artifact = store.get_artifact("<artifact ID>", artifact_type="data")
+artifact = store.get_artifact("<artifact ID>", artifact_type="csv")
 path = artifact.materialize_to(str(output_dir))
 ```
 
@@ -208,7 +208,7 @@ embedded content until hydrated.
 For several known IDs:
 
 ```python
-artifacts = store.get_artifacts_by_type(artifact_ids, artifact_type="data")
+artifacts = store.get_artifacts_by_type(artifact_ids, artifact_type="csv")
 for artifact in artifacts.values():
     artifact.materialize_to(str(output_dir))
 ```

@@ -79,7 +79,7 @@ class TestDeclareLineageZIP:
         parents = [_id(c) for c in "abc"]
         children = [_id(c) for c in "xyz"]
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
         )
 
         op = _make_op(GroupByStrategy.ZIP)
@@ -126,7 +126,7 @@ class TestDeclareLineageZIP:
         parents = [_id(c) for c in "abc"]
         children = [_id(c) for c in "xy"]
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
         )
 
         op = _make_op(GroupByStrategy.ZIP)
@@ -159,7 +159,7 @@ class TestDeclareLineageNAME:
             children[2]: "c.tsv",
         }
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
             original_names=names,
         )
 
@@ -189,7 +189,7 @@ class TestDeclareLineageNAME:
             children[0]: "shared.csv",
         }
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
             original_names=names,
         )
 
@@ -215,7 +215,7 @@ class TestDeclareLineageCrossProduct:
         parents = [_id("a"), _id("b")]
         children = [_id(c) for c in "xyz"]
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
         )
 
         op = _make_op(GroupByStrategy.CROSS_PRODUCT)
@@ -238,7 +238,7 @@ class TestDeclareLineageCrossProduct:
         parents = [_id("a")]
         children = [_id(c) for c in "xyz"]
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
         )
 
         op = _make_op(GroupByStrategy.CROSS_PRODUCT)
@@ -264,7 +264,7 @@ class TestDeclareLineageValidation:
         parents = [_id("a")]
         children = [_id("x")]
         store = _make_store(
-            types={parents[0]: "data", children[0]: "data"},
+            types={parents[0]: "csv", children[0]: "csv"},
         )
 
         op = _make_op(GroupByStrategy.LINEAGE)
@@ -282,9 +282,9 @@ class TestDeclareLineageValidation:
         # Only one parent is in the index; the other is missing.
         store = _make_store(
             types={
-                parents[0]: "data",
-                children[0]: "data",
-                children[1]: "data",
+                parents[0]: "csv",
+                children[0]: "csv",
+                children[1]: "csv",
                 # parents[1] is intentionally missing
             },
         )
@@ -301,7 +301,7 @@ class TestDeclareLineageValidation:
         """A pairing that emits source == target raises."""
         same = _id("a")
         # Same ID used as both parent and child → self-loop under ZIP.
-        store = _make_store(types={same: "data"})
+        store = _make_store(types={same: "csv"})
 
         op = _make_op(GroupByStrategy.ZIP)
         with pytest.raises(ValueError, match="self-loop"):
@@ -313,7 +313,7 @@ class TestDeclareLineageValidation:
 
     def test_should_raise_when_role_missing(self):
         """Missing 'parents' or 'children' input role raises."""
-        store = _make_store(types={_id("a"): "data"})
+        store = _make_store(types={_id("a"): "csv"})
         op = _make_op(GroupByStrategy.ZIP)
         with pytest.raises(ValueError, match="requires 'parents'"):
             op.execute_curator(
@@ -336,7 +336,7 @@ class TestDeclareLineagePassthrough:
         parents = [_id("a")]
         children = [_id("x"), _id("y"), _id("z")]
         store = _make_store(
-            types={parents[0]: "data"} | dict.fromkeys(children, "data"),
+            types={parents[0]: "csv"} | dict.fromkeys(children, "csv"),
         )
 
         op = _make_op(GroupByStrategy.CROSS_PRODUCT)
@@ -353,7 +353,7 @@ class TestDeclareLineagePassthrough:
         parents = [_id("a")]
         children = [_id("x")]
         store = _make_store(
-            types={parents[0]: "data", children[0]: "data"},
+            types={parents[0]: "csv", children[0]: "csv"},
         )
 
         op = _make_op(GroupByStrategy.ZIP)
@@ -411,7 +411,7 @@ class TestDeclareLineageIdempotence:
             },
         )
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
             existing_edges=existing,
             step_range=(0, 5),
         )
@@ -450,7 +450,7 @@ class TestDeclareLineageIdempotence:
             },
         )
         store = _make_store(
-            types=dict.fromkeys(parents, "data") | dict.fromkeys(children, "data"),
+            types=dict.fromkeys(parents, "csv") | dict.fromkeys(children, "csv"),
             existing_edges=existing,
             step_range=(0, 5),
         )
@@ -493,7 +493,7 @@ class TestDeclareLineageIdempotence:
             },
         )
         store = _make_store(
-            types={parents[0]: "data", children[0]: "data"},
+            types={parents[0]: "csv", children[0]: "csv"},
             existing_edges=existing,
             step_range=(0, 5),
         )

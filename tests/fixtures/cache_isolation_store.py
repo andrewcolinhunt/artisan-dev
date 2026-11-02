@@ -9,7 +9,7 @@ from pathlib import Path
 
 import polars as pl
 
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.command_record import CommandRecording
@@ -71,9 +71,9 @@ def build_cache_isolation_store(
         "other_metric": digest_utf8("other-run:metric"),
     }
 
-    data = DataArtifact.draft(b"value\n1\n", "shared.csv", 0).finalize()
+    data = CSVArtifact.draft(b"value\n1\n", "shared.csv", 0).finalize()
     metric = MetricArtifact.draft({"score": 0.9}, "source_metric.json", 1).finalize()
-    other_data = DataArtifact.draft(b"value\n2\n", "other.csv", 0).finalize()
+    other_data = CSVArtifact.draft(b"value\n2\n", "other.csv", 0).finalize()
     other_metric = MetricArtifact.draft(
         {"score": 0.1}, "other_metric.json", 5
     ).finalize()
@@ -106,8 +106,8 @@ def build_cache_isolation_store(
         tables: dict[str, pl.DataFrame] = {}
         if produced is not None:
             tables[
-                "artifacts/data"
-                if produced.artifact_type == "data"
+                "artifacts/csvs"
+                if produced.artifact_type == "csv"
                 else "artifacts/metrics"
             ] = pl.DataFrame([produced.to_row()], schema=type(produced).POLARS_SCHEMA)
             tables[TablePath.ARTIFACT_INDEX.value] = pl.DataFrame(
@@ -314,7 +314,7 @@ def _artifact_edge(
         "execution_run_id": execution_id,
         "source_artifact_id": source_id,
         "target_artifact_id": target_id,
-        "source_artifact_type": "data",
+        "source_artifact_type": "csv",
         "target_artifact_type": "metric",
         "source_role": "data",
         "target_role": "metric",

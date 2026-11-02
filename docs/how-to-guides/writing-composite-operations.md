@@ -36,10 +36,10 @@ class TransformAndScore(CompositeDefinition):
         METRICS = "metrics"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATASET: InputSpec(artifact_type="data", required=True),
+        InputRole.DATASET: InputSpec(artifact_type="csv", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.DATASET: OutputSpec(artifact_type="data"),
+        OutputRole.DATASET: OutputSpec(artifact_type="csv"),
         OutputRole.METRICS: OutputSpec(artifact_type="metric"),
     }
 
@@ -144,7 +144,7 @@ Each entry maps a role name to an `InputSpec`:
 
 ```python
 inputs: ClassVar[dict[str, InputSpec]] = {
-    InputRole.DATA: InputSpec(artifact_type="data", required=True),
+    InputRole.DATA: InputSpec(artifact_type="csv", required=True),
 }
 ```
 
@@ -287,8 +287,8 @@ class AlignAndScore(CompositeDefinition):
         METRICS = "metrics"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATA: InputSpec(artifact_type="data", required=True),
-        InputRole.REFERENCE: InputSpec(artifact_type="data", required=True),
+        InputRole.DATA: InputSpec(artifact_type="csv", required=True),
+        InputRole.REFERENCE: InputSpec(artifact_type="csv", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.METRICS: OutputSpec(artifact_type="metric"),

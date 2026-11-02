@@ -331,7 +331,7 @@ def test_control_plan_disagreement_is_conflict(repair_env, monkeypatch):
 
 def test_unplanned_staging_without_plan_is_reported(repair_env):
     _, fs, _, _, staging_root = repair_env
-    path = f"{staging_root}/unknown/data.parquet"
+    path = f"{staging_root}/unknown/csvs.parquet"
     fs.makedirs(f"{staging_root}/unknown", exist_ok=True)
     with fs.open(path, "wb") as stream:
         pl.DataFrame({"value": [1]}).write_parquet(stream)
@@ -339,7 +339,7 @@ def test_unplanned_staging_without_plan_is_reported(repair_env):
     report = _repair(repair_env)
 
     assert [(item.evidence_id, item.classification) for item in report.items] == [
-        ("staging:unknown/data.parquet", "unplanned")
+        ("staging:unknown/csvs.parquet", "unplanned")
     ]
 
 
@@ -448,7 +448,7 @@ def test_conflicting_rows_can_be_abandoned_when_plan_identity_matches(
     pl.DataFrame(
         {
             "artifact_id": [plan.step_run_id],
-            "artifact_type": ["data"],
+            "artifact_type": ["csv"],
             "origin_step_number": [0],
             "metadata": ["{}"],
             "logical_commit_id": ["input_registration:" + "f" * 32],
@@ -615,7 +615,7 @@ def _worker_candidate(
 
     from artisan.execution.recording.parquet_writer import _stage_artifacts
     from artisan.execution.recording.recorder import build_execution_edges
-    from artisan.schemas.artifact.data import DataArtifact
+    from artisan.schemas.artifact.csv import CSVArtifact
     from artisan.schemas.execution.command_record import CommandRecording
     from artisan.schemas.execution.replay import ReplaySnapshot
     from artisan.schemas.orchestration.step_lifecycle import (
@@ -648,7 +648,7 @@ def _worker_candidate(
                     {
                         "output": artifact.artifact_type
                         if artifact is not None
-                        else "data"
+                        else "csv"
                     }
                 ),
             )
@@ -691,7 +691,7 @@ def _worker_candidate(
     fs.makedirs(directory, exist_ok=True)
     artifact = (
         artifact
-        or DataArtifact.draft(
+        or CSVArtifact.draft(
             content=b"value\n1\n", original_name="result.csv", step_number=0
         ).finalize()
     )
@@ -746,7 +746,7 @@ def test_recover_worker_keeps_source_history_and_is_idempotent(
         source = read_committed(
             delta_root, TablePath.STEPS, fs=fs, storage_options=options
         ).sort("state_sequence")
-        assert json.loads(source["output_types_json"][0]) == {"output": "data"}
+        assert json.loads(source["output_types_json"][0]) == {"output": "csv"}
     before = _root_bytes(fs, directory)
     report = _repair(repair_env, recover_staging=True)
     assert [item.classification for item in report.items] == ["recoverable"]
@@ -943,7 +943,7 @@ def test_recovery_rejects_invalid_semantics_even_with_valid_inventory(
     _, fs, _, delta_root, staging_root = repair_env
     _, directory, _ = _worker_candidate(repair_env)
     filename = {
-        "content_identity": "data.parquet",
+        "content_identity": "csvs.parquet",
         "missing_reference": "execution_edges.parquet",
         "diagnostics": "executions.parquet",
     }[mutation]
@@ -1029,12 +1029,51 @@ def test_recovery_batches_workers_and_hydrates_shared_artifact_once(
     )["execution_run_id"].sort().to_list() == ["e" * 32, "f" * 32]
 
 
+def test_recovery_report_closes_every_prepared_snapshot(repair_env, monkeypatch):
+    from pathlib import Path
+
+    _worker_candidate(repair_env)
+    scratch_paths = []
+    original = DeltaCommitter.prepare_logical
+
+    def capture_preparation(self, *args, **kwargs):
+        prepared = original(self, *args, **kwargs)
+        scratch_paths.extend(
+            Path(path)
+            for table in prepared.staged.tables.values()
+            for path in table.paths
+        )
+        return prepared
+
+    monkeypatch.setattr(DeltaCommitter, "prepare_logical", capture_preparation)
+    report = _repair(repair_env, recover_staging=True)
+
+    assert not report.blocking
+    assert scratch_paths
+    assert all(not path.exists() for path in scratch_paths)
+
+
+def test_recovery_audit_never_collects_whole_artifact_tables(repair_env, monkeypatch):
+    _worker_candidate(repair_env)
+    original = DeltaCommitter._read_physical
+
+    def reject_payload_collect(self, table):
+        assert not table.startswith("artifacts/")
+        return original(self, table)
+
+    monkeypatch.setattr(DeltaCommitter, "_read_physical", reject_payload_collect)
+    report = _repair(repair_env, recover_staging=True)
+
+    assert not report.blocking
+    assert any(item.classification == "recoverable" for item in report.items)
+
+
 def test_recovery_batch_rejects_reference_declared_only_by_another_worker(repair_env):
-    from artisan.schemas.artifact.data import DataArtifact
+    from artisan.schemas.artifact.csv import CSVArtifact
 
     _, fs, options, delta_root, staging_root = repair_env
     _, first, _ = _worker_candidate(repair_env, execution_id="e" * 32)
-    other = DataArtifact.draft(
+    other = CSVArtifact.draft(
         content=b"different\n2\n", original_name="other.csv", step_number=0
     ).finalize()
     _worker_candidate(repair_env, execution_id="f" * 32, artifact=other)
@@ -1130,7 +1169,7 @@ def test_audit_checks_owners_without_any_completed_plans(repair_env):
     pl.DataFrame(
         {
             "artifact_id": ["a" * 32],
-            "artifact_type": ["data"],
+            "artifact_type": ["csv"],
             "origin_step_number": [0],
             "metadata": ["{}"],
             "logical_commit_id": ["input_registration:" + "b" * 32],
@@ -1165,7 +1204,7 @@ def test_audit_invalid_table_never_claims_completed_effects_verified(repair_env)
 def test_unreadable_pending_effect_returns_corrupt_report(repair_env, monkeypatch):
     committer, _, _, _, _ = repair_env
     plan = _plan(committer)
-    original = DeltaCommitter._read_physical
+    original = DeltaCommitter._snapshot
 
     def unreadable(self, table):
         if table == TablePath.ARTIFACT_INDEX.value:
@@ -1173,7 +1212,7 @@ def test_unreadable_pending_effect_returns_corrupt_report(repair_env, monkeypatc
             raise StoreIntegrityError(msg)
         return original(self, table)
 
-    monkeypatch.setattr(DeltaCommitter, "_read_physical", unreadable)
+    monkeypatch.setattr(DeltaCommitter, "_snapshot", unreadable)
     report = _repair(repair_env)
     assert report.blocking
     assert any(
@@ -1211,13 +1250,15 @@ def test_recovery_audit_unreadable_artifact_table_is_reported_without_reread(
             with fs.open(path, "wb") as stream:
                 stream.write(b"corrupt parquet payload")
     scans = Counter()
-    original = pl.scan_delta
+    from artisan.storage.io.delta_files import DeltaSnapshot
 
-    def count_scan(source, *args, **kwargs):
-        scans[str(source)] += 1
-        return original(source, *args, **kwargs)
+    original = DeltaSnapshot.iter_located
 
-    monkeypatch.setattr(pl, "scan_delta", count_scan)
+    def count_scan(self, *args, **kwargs):
+        scans[self.path] += 1
+        yield from original(self, *args, **kwargs)
+
+    monkeypatch.setattr(DeltaSnapshot, "iter_located", count_scan)
     report = _repair(repair_env, recover_staging=True)
     assert report.blocking
     assert any(
@@ -1279,7 +1320,7 @@ def test_recovery_allows_visible_gap_backed_by_abandoned_physical_snapshot(repai
         total_count=1,
         succeeded_count=1,
         output_roles=frozenset({"output"}),
-        output_types={"output": "data"},
+        output_types={"output": "csv"},
     )
     candidate = tracker.prepare_terminal_candidate(
         step_id,

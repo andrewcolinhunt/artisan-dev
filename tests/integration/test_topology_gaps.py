@@ -45,7 +45,7 @@ class _GenerateAndTransform(CompositeDefinition):
         DATASET = "dataset"
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "dataset": OutputSpec(artifact_type="data"),
+        "dataset": OutputSpec(artifact_type="csv"),
     }
 
     def compose(self, ctx: CompositeContext) -> None:
@@ -427,7 +427,7 @@ def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # DataGenerator (step 0) produced 2 data artifacts
+    # DataGenerator (step 0) produced 2 csv artifacts
     assert count_artifacts_by_step(delta_root, 0) == 2
 
     # MetricCalculator (step 2) produced 2 metric artifacts

@@ -129,7 +129,7 @@ class TestRunResources:
                     "step_number": index,
                     "name": f"step-{index}",
                     "status": "succeeded",
-                    "produced": "1 data",
+                    "produced": "1 csv",
                     "duration": "1s",
                 }
                 for index in range(101)

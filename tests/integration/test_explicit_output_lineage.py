@@ -58,7 +58,7 @@ class StructureAndMetricCurator(OperationDefinition):
         metrics = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.datasets: InputSpec(artifact_type=ArtifactTypes.DATA),
+        InputRole.datasets: InputSpec(artifact_type=ArtifactTypes.CSV),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.structures: OutputSpec(
@@ -168,8 +168,8 @@ class TwoInputParity(OperationDefinition):
         result = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.primary: InputSpec(artifact_type=ArtifactTypes.DATA),
-        InputRole.secondary: InputSpec(artifact_type=ArtifactTypes.DATA),
+        InputRole.primary: InputSpec(artifact_type=ArtifactTypes.CSV),
+        InputRole.secondary: InputSpec(artifact_type=ArtifactTypes.CSV),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
@@ -328,7 +328,7 @@ class ConfigDeclarationCurator(OperationDefinition):
         config = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "referenced": InputSpec(artifact_type="data"),
+        "referenced": InputSpec(artifact_type="csv"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "config": OutputSpec(
@@ -395,7 +395,7 @@ class DeclarationCreator(OperationDefinition):
         result = auto()
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "dataset": InputSpec(artifact_type="data"),
+        "dataset": InputSpec(artifact_type="csv"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "result": OutputSpec(
@@ -434,7 +434,7 @@ class DeclarationCurator(DeclarationCreator):
 
     def execute_curator(self, inputs, step_number, artifact_store) -> ArtifactResult:
         parent_id = inputs["dataset"]["artifact_id"][0]
-        parent = artifact_store.get_artifacts_by_type([parent_id], "data")[parent_id]
+        parent = artifact_store.get_artifacts_by_type([parent_id], "csv")[parent_id]
         return self.postprocess(
             PostprocessInput(
                 input_artifacts={"dataset": [parent]},

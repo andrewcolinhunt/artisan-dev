@@ -12,13 +12,14 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Match filenames inside an operation | `artisan.operations.lineage` | `match_outputs_to_inputs_by_stem` |
 | Define an operation | `artisan.operations.base` | `OperationDefinition`, `PerArtifact` |
 | Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
+| Retain generated external files | `artisan.schemas` | `ExecuteInput`, `PostprocessInput`, `FileRefArtifact` |
 | Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
 | Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |
 | Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
 | Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |
 | Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
 | Read stored artifacts | `artisan.storage` | `ArtifactStore` |
-| Inspect results, failures, and timing | `artisan.visualization` | `inspect_pipeline`, `inspect_data`, `inspect_failures`, `PipelineTimings` |
+| Inspect results, failures, and timing | `artisan.visualization` | `inspect_pipeline`, `inspect_csv`, `inspect_failures`, `PipelineTimings` |
 | Discover and query bounded evidence | `artisan.inspection` | `list_inspections`, `describe_inspection`, `inspect_evidence` |
 | Read installed operating guidance | `artisan.inspection` | `list_operating_guides`, `read_operating_guide` |
 | Save and reload complete reports | `artisan.inspection` | `export_evidence`, `load_evidence_export` |
@@ -72,6 +73,7 @@ Use `pixi run artisan --help` to find CLI commands, then append
 - [Build a pipeline](../how-to-guides/building-a-pipeline.md).
 - [Configure execution](../how-to-guides/configuring-execution.md).
 - [Write an operation](../how-to-guides/writing-creator-operations.md).
+- [Retain command-generated files](../how-to-guides/writing-creator-operations.md#retain-command-files).
 - [Resolve configuration references](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 - [Write a composite](../how-to-guides/writing-composite-operations.md).
 - [Inspect a particular run](../how-to-guides/inspecting-provenance.md#select-the-run-you-want-to-inspect).

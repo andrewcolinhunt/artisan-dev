@@ -2,11 +2,12 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
+from pathlib import Path
 
 import polars as pl
 import pytest
-from deltalake import DeltaTable
 from fixtures.execution_records import executions_df
 from fixtures.store_format import publish_test_store
 
@@ -64,7 +65,6 @@ def _stage_registration(
     step_run_id: str = STEP_ID,
     step_number: int = 0,
     content: bytes = b'{"score": 0.5}',
-    artifact_count: int = 1,
 ) -> CommitPlan:
     staging = committer.staging_manager
     kwargs = {
@@ -96,16 +96,6 @@ def _stage_registration(
         {"artifact_id": [ARTIFACT_ID], "uri": ["file:///input.json"]},
         schema=ARTIFACT_LOCATIONS_SCHEMA,
     )
-    if artifact_count > 1:
-        metric, index, locations = (
-            pl.concat(
-                [
-                    frame.with_columns(pl.lit(f"{number:032x}").alias("artifact_id"))
-                    for number in range(artifact_count)
-                ]
-            )
-            for frame in (metric, index, locations)
-        )
     staging.stage_orchestrator_dataframe(
         metric,
         "artifacts/metrics",
@@ -381,15 +371,15 @@ def test_planned_rows_are_invisible_after_first_table_failure(
 ):
     committer, fs, options, delta_root, staging_root = commit_env
     plan = _stage_registration(committer)
-    original = committer._append
+    original = committer._commit_table_effect
 
-    def fail_index(frame, table_path, **kwargs):
-        if table_path == TablePath.ARTIFACT_INDEX.value:
+    def fail_index(plan, table, expected, controls):
+        if table.table_path == TablePath.ARTIFACT_INDEX.value:
             msg = "injected storage failure"
             raise OSError(msg)
-        original(frame, table_path, **kwargs)
+        return original(plan, table, expected, controls)
 
-    monkeypatch.setattr(committer, "_append", fail_index)
+    monkeypatch.setattr(committer, "_commit_table_effect", fail_index)
     with pytest.raises(CommitError) as caught:
         committer.commit_logical(plan)
 
@@ -707,134 +697,79 @@ def test_prepared_evidence_is_writer_bound_and_single_use(commit_env):
         committer.commit_logical(plan, prepared=prepared)
 
 
-def test_fresh_commit_does_not_materialize_whole_tables(commit_env, monkeypatch):
+@pytest.mark.parametrize("invalid_use", ["copied_token", "wrong_plan"])
+def test_rejected_prepared_use_retains_owner_cleanup(commit_env, invalid_use):
+    committer, _fs, _options, _delta_root, _staging_root = commit_env
+    plan = _stage_registration(committer)
+    prepared = committer.prepare_logical(plan)
+    scratch = Path(prepared.staged._scratch.name)
+    wrong_plan = (
+        _stage_registration(committer, step_run_id="c" * 32)
+        if invalid_use == "wrong_plan"
+        else plan
+    )
+    supplied = replace(prepared) if invalid_use == "copied_token" else prepared
+    with pytest.raises(StoreIntegrityError, match="another writer/plan/root"):
+        committer.commit_logical(wrong_plan, prepared=supplied)
+    assert scratch.is_dir()
+    committer.discard_prepared(prepared)
+    assert not scratch.exists()
+
+
+def test_consumed_prepared_failure_releases_private_snapshot(commit_env, monkeypatch):
+    committer, fs, _options, _delta_root, staging_root = commit_env
+    plan = _stage_registration(committer)
+    prepared = committer.prepare_logical(plan)
+    scratch = Path(prepared.staged._scratch.name)
+
+    def fail_controls():
+        msg = "interrupted control read"
+        raise OSError(msg)
+
+    monkeypatch.setattr(committer, "_controls", fail_controls)
+    with pytest.raises(OSError, match="interrupted control read"):
+        committer.commit_logical(plan, prepared=prepared)
+    assert not scratch.exists()
+    assert all(
+        fs.exists(f"{staging_root}/{file.relative_path}")
+        for table in plan.tables
+        for file in table.files
+    )
+
+
+def test_fresh_commit_reads_each_table_only_for_write_and_verification(
+    commit_env, monkeypatch
+):
     committer, _fs, _options, _delta_root, _ = commit_env
     plan = _stage_registration(committer)
-    from artisan.storage.io.staged_frames import StagedTable
+    original = committer._snapshot
+    calls = []
 
-    def eager_read(*args):
-        pytest.fail("commit attempted to materialize a whole table")
+    def read(table):
+        calls.append(table)
+        return original(table)
 
-    monkeypatch.setattr(committer, "_read_physical", eager_read)
-    monkeypatch.setattr(StagedTable, "collect", eager_read)
+    monkeypatch.setattr(committer, "_snapshot", read)
     committer.commit_logical(plan)
+    assert calls == [TablePath.STEPS.value] + [
+        table.table_path for table in plan.tables for _ in range(2)
+    ]
+    calls.clear()
     committer.commit_logical(plan)
+    assert calls == []
 
 
-def test_prepared_commit_rejects_changed_staging_and_retains_evidence(commit_env):
-    committer, fs, options, delta_root, staging_root = commit_env
+def test_prepared_snapshot_commits_but_changed_staging_is_retained(commit_env):
+    committer, fs, _options, _delta_root, staging_root = commit_env
     plan = _stage_registration(committer)
     prepared = committer.prepare_logical(plan)
     path = f"{staging_root}/{plan.tables[0].files[0].relative_path}"
     with fs.open(path, "wb") as stream:
         stream.write(b"changed after preparation")
-    with pytest.raises(CommitError, match="failed at") as failure:
-        committer.commit_logical(plan, prepared=prepared)
-    assert isinstance(failure.value.__cause__, StoreIntegrityError)
-    assert "changed" in str(failure.value.__cause__).lower()
-    assert pl.read_delta(
-        f"{delta_root}/{plan.tables[0].table_path}", storage_options=options
-    ).is_empty()
+    committer.commit_logical(plan, prepared=prepared)
     assert fs.exists(path)
     with fs.open(path, "rb") as stream:
         assert stream.read() == b"changed after preparation"
-
-
-def test_streamed_commit_filters_reads_and_appends_once_per_table(
-    commit_env, monkeypatch
-):
-    from artisan.storage.io import staged_frames
-    from artisan.storage.io.staged_frames import StagedTable
-
-    monkeypatch.setattr(staged_frames, "COMMIT_BATCH_ROWS", 3)
-    committer, fs, options, delta_root, _ = commit_env
-    plan = _stage_registration(committer, artifact_count=11)
-    original = committer._iter_matching_rows
-    reads = []
-
-    def matching(table, keys):
-        for row in original(table, keys):
-            reads.append(row.height)
-            assert row.height == 1
-            yield row
-
-    versions = {
-        table.table_path: DeltaTable(
-            f"{delta_root}/{table.table_path}", storage_options=options
-        ).version()
-        for table in plan.tables
-    }
-    monkeypatch.setattr(committer, "_iter_matching_rows", matching)
-    monkeypatch.setattr(
-        StagedTable, "collect", lambda *_: pytest.fail("eager snapshot read")
-    )
-    committer.commit_logical(plan)
-    assert len(reads) > len(plan.tables) * 2
-    for table in plan.tables:
-        assert (
-            DeltaTable(
-                f"{delta_root}/{table.table_path}", storage_options=options
-            ).version()
-            == versions[table.table_path] + 1
-        )
-        assert (
-            read_committed(
-                delta_root, table.table_path, fs=fs, storage_options=options
-            ).height
-            == 11
-        )
-
-
-def test_failure_mid_stream_keeps_table_atomic_and_retryable(commit_env, monkeypatch):
-    from artisan.storage.io import staged_frames
-
-    monkeypatch.setattr(staged_frames, "COMMIT_BATCH_ROWS", 1)
-    committer, fs, options, delta_root, _ = commit_env
-    plan = _stage_step_result(committer, cached_execution_ids=["e" * 32, "f" * 32])
-    original = committer._write_batch_file
-    table_path = TablePath.CACHE_REUSE.value
-    written = 0
-
-    def fail_stream(frame, path, *args):
-        nonlocal written
-        if path == table_path:
-            written += 1
-            if written == 2:
-                msg = "interrupted Parquet stream"
-                raise OSError(msg)
-        return original(frame, path, *args)
-
-    monkeypatch.setattr(committer, "_write_batch_file", fail_stream)
-    with pytest.raises(CommitError):
-        committer.commit_logical(plan)
-    assert pl.read_delta(
-        f"{delta_root}/{table_path}", storage_options=options
-    ).is_empty()
-    assert read_committed(
-        delta_root, "artifacts/metrics", fs=fs, storage_options=options
-    ).is_empty()
-    monkeypatch.setattr(committer, "_write_batch_file", original)
-    committer.commit_logical(plan)
-    assert (
-        read_committed(delta_root, table_path, fs=fs, storage_options=options).height
-        == 2
-    )
-
-
-def test_streamed_commit_preserves_initialized_partition_columns(commit_env):
-    original, fs, options, delta_root, _ = commit_env
-    delta_root += "-partitioned"
-    committer = DeltaCommitter(
-        delta_root, original.staging_manager, fs=fs, storage_options=options
-    )
-    committer.initialize_tables()
-    plan = _stage_registration(committer, artifact_count=3)
-    committer.commit_logical(plan)
-    rows = read_committed(
-        delta_root, "artifacts/metrics", fs=fs, storage_options=options
-    )
-    assert rows.height == 3
-    assert rows["origin_step_number"].to_list() == [0, 0, 0]
 
 
 def test_completed_preservation_skips_payload_verification(commit_env, monkeypatch):
@@ -843,7 +778,7 @@ def test_completed_preservation_skips_payload_verification(commit_env, monkeypat
     committer.commit_logical(plan, preserve_staging=True)
     monkeypatch.setattr(
         committer,
-        "_read_physical",
+        "_snapshot",
         lambda *_: pytest.fail("completed preserved plan was reverified"),
     )
     assert committer.commit_logical(plan, preserve_staging=True) == {}
@@ -857,7 +792,8 @@ def test_retry_rejects_corrupt_non_global_effect_before_completion(
     plan = _stage_step_result(committer, cached_execution_ids=["e" * 32, "f" * 32])
     committer._insert_planned(plan)
     table_path = TablePath.CACHE_REUSE.value
-    expected = read_plan_evidence(plan, staging_root, fs).frames[table_path]
+    with read_plan_evidence(plan, staging_root, fs) as evidence:
+        expected = pl.concat(evidence.tables[table_path].iter_frames())
     if mutation == "partial":
         corrupt = expected.head(1)
     elif mutation == "duplicate":

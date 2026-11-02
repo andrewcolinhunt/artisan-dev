@@ -56,7 +56,7 @@ class TestGetStepResult:
             "artisan_get_step_result",
             {"pipeline_run_id": seeded_run.run_id, "step_name": "generate"},
         )
-        assert {row["artifact_type"] for row in result["items"]} == {"data"}
+        assert {row["artifact_type"] for row in result["items"]} == {"csv"}
         assert {r["artifact_id"] for r in result["items"]} == seeded_run.data_ids
 
     def test_failed_step_has_no_accepted_output(

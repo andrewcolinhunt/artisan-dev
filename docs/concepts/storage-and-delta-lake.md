@@ -12,21 +12,23 @@ Every supported Delta root contains `_artisan/store.json` with the exact format
 contract:
 
 ```json
-{"store_format":7,"artifact_identity":1,"cache_identity":2}
+{"store_format":8,"artifact_identity":1,"cache_identity":2}
 ```
 
-Format 7 uses `file_ref` for complete external files and requires
-operation-declared lineage. Earlier stores, including format 6, and their sealed
-staging are rejected before cache reuse or recovery. Deploy updated workers
-and tool endpoints with the release. Cache reuse and replay preserve explicit
-edges; authors must still bump operation versions when changing lineage
-semantics.
+Format 8 names the built-in CSV type `csv` and stores its content in
+`artifacts/csvs`. Complete external files use `file_ref`, and operations declare
+output lineage. Earlier stores, including format 7, and their sealed staging
+are rejected before cache reuse or recovery. Deploy updated workers and tool
+endpoints with the release. Cache reuse and replay preserve explicit edges;
+authors must still bump operation versions when changing lineage semantics.
 
 Writers publish this manifest only after initializing an empty root. Readers
 validate it before opening framework state. A missing, malformed, older, newer,
-or partially matching manifest fails closed. Start a new root for this release;
-there is no migration, fallback reader, or manifest-edit upgrade. Keep an older
-root with its matching Artisan version. Opening it does not migrate or clean it.
+or partially matching manifest fails closed. Start fresh Delta and staging roots
+for this release; there is no migration, fallback reader, or manifest-edit
+upgrade. Keep older roots with their matching Artisan version to inspect or
+export their contents before re-ingesting into a new store. Never attach older
+staging to a format-8 Delta root. Opening an older root does not migrate or clean it.
 
 ---
 
@@ -63,7 +65,7 @@ delta_root/
 │   ├── locations/          Verified artifact identity → URI mappings
 │   ├── metrics/            Metric values (built-in)
 │   ├── configs/            Execution configuration snapshots (built-in)
-│   ├── data/               Generic tabular data (built-in)
+│   ├── csvs/               CSV content (built-in)
 │   ├── file_refs/          Complete external files (built-in)
 │   ├── appendables/        Appendable JSONL records (built-in)
 │   └── [custom_type]/      Domain types registered at runtime
@@ -140,40 +142,11 @@ results as Parquet files to an isolated staging directory. After all workers
 complete, the orchestrator verifies the staged files and includes them in an
 immutable logical commit plan. It also stages the terminal step snapshot.
 
-Commit preparation reads worker shards in sequence and retains their keys,
-row fingerprints, and original file locations. Table writes reread and verify
-the original staging files in bounded chunks; they do not create a second
-payload snapshot. Output batches contain at most 250 rows or 32 MiB of estimated
-row data (a single larger row is processed on its own). Each table publishes its
-bounded Parquet files in one atomic Delta append, and the logical completion
-marker controls visibility of the whole step. No setting is needed to enable
-this behavior. A staged file changed after preparation is rejected when reread.
-
-Conflict checks and verification traverse matching table rows once per phase.
-Completed-commit cleanup uses the same streaming verification, even if staged
-payload files are missing or changed. Physical rows are consumed individually
-so cleanup does not group unknown-size payloads into an unbounded batch.
-
-New commit plans use table digest version 2: fingerprints are sorted by natural
-key and hashed together, so verification retains metadata rather than payloads.
-Existing plans without a digest version retain their original full-row digest
-and exact serialized identity. Their verification can reread Parquet files in
-key order. The store manifest remains format 7; existing roots do not need a
-migration. Older Artisan versions cannot interpret newly written version 2
-plans, so keep readers and writers on this release after writing new commits.
-
-Keys, digests and commit-plan metadata remain in memory. A single worker
-shard must still fit in memory. Polars also buffers decoded Parquet row groups;
-reader memory depends on their size and the Polars thread count. Older or
-compacted files can have larger row groups than the bounded writer creates.
-Explicit repair audits and artifact validation can still materialize whole
-tables.
-
 ```
                               staging_root/
                               ├── 1_tool_b/
 Worker A ──writes──>          │   ├── ab/cd/{run_id_abcd...}/
-Worker B ──writes──>          │   │   ├── data.parquet
+Worker B ──writes──>          │   │   ├── csvs.parquet
 Worker C ──writes──>          │   │   ├── metrics.parquet
                               │   │   ├── index.parquet
                               │   │   ├── artifact_edges.parquet
@@ -239,6 +212,39 @@ directory listings and polls for readable `executions.parquet` seals.
 
 These checks reduce the chance of treating a delayed file as missing. Inventory
 and commit-plan verification still check the actual staged evidence.
+
+---
+
+## Memory and local scratch space
+
+Persistence processes payloads in bounded batches. Workers write successive
+Parquet row groups; the orchestrator captures verified staging on local disk,
+compares planned keys, and reads only the relevant historical content. It writes
+destination files sequentially and adds all files for one table effect in one
+Delta transaction. Recovery and explicit repair use the same bounded readers.
+A small deposit therefore does not load the whole historical content table.
+
+The orchestrator needs writable local temporary storage even when the Delta and
+staging roots use S3. Allow space for captured staging, canonical comparison
+data, and a destination file being written. Binary content expands when written
+to the canonical comparison spool, so scratch can exceed the compressed staging
+size substantially. Exhausting scratch fails the operation and retains durable
+staging for inspection or retry. Artisan does not fall back to collecting the
+payload in memory.
+
+Memory still includes planned keys, file metadata, lineage, the largest
+individual artifact or metadata row, and the Parquet decoder's page and
+dictionary buffers. A legacy file with a very large page or dictionary can
+therefore require more memory than the normal batch allowance. Generic
+operations may also retain their complete input or output collections before
+recording begins.
+
+`IngestCSV` converts and stages one complete CSV at a time, releasing prior
+content before converting the next file. Each CSV still needs to fit in worker
+memory, including parsing and serialization overhead. Importing many CSVs no
+longer requires keeping all converted CSVs in memory together. See
+[ingesting external files](../how-to-guides/building-a-pipeline.md#ingest-external-files)
+for the execution and failure behavior.
 
 ---
 

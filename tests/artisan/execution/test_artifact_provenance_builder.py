@@ -26,11 +26,11 @@ def pair() -> SourceTargetPair:
 
 def test_enrichment_preserves_exact_pair_and_metadata() -> None:
     edges = build_artifact_edges_from_types(
-        [pair()], "d" * 32, {"a" * 32: "data", "b" * 32: "metric"}
+        [pair()], "d" * 32, {"a" * 32: "csv", "b" * 32: "metric"}
     )
     assert len(edges) == 1
     edge = edges[0]
-    assert edge.source_artifact_type == "data"
+    assert edge.source_artifact_type == "csv"
     assert edge.target_artifact_type == "metric"
     assert (edge.source_artifact_id, edge.target_artifact_id) == ("a" * 32, "b" * 32)
     assert (
@@ -44,7 +44,7 @@ def test_enrichment_preserves_exact_pair_and_metadata() -> None:
 @pytest.mark.parametrize("endpoint", ["a" * 32, "b" * 32])
 @pytest.mark.parametrize("missing_type", [None, "UNKNOWN", "any", ""])
 def test_missing_endpoint_types_fail(endpoint: str, missing_type: str | None) -> None:
-    types = {"a" * 32: "data", "b" * 32: "metric"}
+    types = {"a" * 32: "csv", "b" * 32: "metric"}
     if missing_type is None:
         del types[endpoint]
     else:
@@ -55,7 +55,7 @@ def test_missing_endpoint_types_fail(endpoint: str, missing_type: str | None) ->
 
 def test_store_wrapper_does_one_deduplicated_bulk_lookup() -> None:
     store = MagicMock()
-    types = {"a" * 32: "data", "b" * 32: "metric"}
+    types = {"a" * 32: "csv", "b" * 32: "metric"}
     store.provenance.load_type_map.return_value = types
     pairs = [pair(), pair()]
     actual = build_artifact_edges_from_store(pairs, "d" * 32, store)
@@ -71,6 +71,6 @@ def test_empty_pairs_do_not_read_store() -> None:
 
 def test_store_missing_endpoint_raises() -> None:
     store = MagicMock()
-    store.provenance.load_type_map.return_value = {"a" * 32: "data"}
+    store.provenance.load_type_map.return_value = {"a" * 32: "csv"}
     with pytest.raises(LineageIntegrityError):
         build_artifact_edges_from_store([pair()], "d" * 32, store)

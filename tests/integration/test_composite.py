@@ -75,10 +75,10 @@ class TransformComposite(CompositeDefinition):
         DATASET = "dataset"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        "data": InputSpec(artifact_type="data", required=True),
+        "data": InputSpec(artifact_type="csv", required=True),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "dataset": OutputSpec(artifact_type="data"),
+        "dataset": OutputSpec(artifact_type="csv"),
     }
 
     def compose(self, ctx: CompositeContext) -> None:
@@ -105,7 +105,7 @@ class GenThenNested(CompositeDefinition):
         DATASET = "dataset"
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "dataset": OutputSpec(artifact_type="data"),
+        "dataset": OutputSpec(artifact_type="csv"),
     }
 
     def compose(self, ctx: CompositeContext) -> None:
@@ -136,7 +136,7 @@ class _OverrideChildComposite(CompositeDefinition):
         DATASET = "dataset"
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "dataset": OutputSpec(artifact_type="data"),
+        "dataset": OutputSpec(artifact_type="csv"),
     }
 
     def compose(self, ctx: CompositeContext) -> None:
@@ -156,7 +156,7 @@ class _NestedOverrideComposite(CompositeDefinition):
         DATASET = "dataset"
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        "dataset": OutputSpec(artifact_type="data"),
+        "dataset": OutputSpec(artifact_type="csv"),
     }
 
     def compose(self, ctx: CompositeContext) -> None:

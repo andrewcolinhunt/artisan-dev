@@ -13,7 +13,7 @@ from pydantic import BaseModel, Field
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -32,6 +32,7 @@ class DataGenerator(OperationDefinition):
     """
 
     name = "data_generator"
+    version: ClassVar[str] = "2"
     description = "Generate CSV datasets with random numeric data"
 
     inputs: ClassVar[dict[str, Any]] = {}
@@ -41,7 +42,7 @@ class DataGenerator(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.datasets: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Generated CSV dataset files",
             derives_from={"inputs": []},
         ),
@@ -108,7 +109,7 @@ class DataGenerator(OperationDefinition):
         return {"created_files": created_files}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build DataArtifact drafts from generated CSV files."""
+        """Build CSVArtifact drafts from generated CSV files."""
         raw = inputs.memory_outputs
         created_files = raw.get("created_files", [])
 
@@ -118,7 +119,7 @@ class DataGenerator(OperationDefinition):
                 with open(file_path, "rb") as f:
                     content = f.read()
                 drafts.append(
-                    DataArtifact.draft(
+                    CSVArtifact.draft(
                         content=content,
                         original_name=os.path.basename(file_path),
                         step_number=inputs.step_number,

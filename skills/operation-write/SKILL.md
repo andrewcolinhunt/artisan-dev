@@ -53,7 +53,7 @@ from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas import (
     ArtifactResult,
     BatchStrategy,
-    DataArtifact,
+    CSVArtifact,
     ExecuteInput,
     InputSpec,
     OutputSpec,
@@ -77,7 +77,7 @@ class MyOperation(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATASET: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Input CSV dataset",
         ),
@@ -88,7 +88,7 @@ class MyOperation(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             description="Transformed dataset",
             derives_from={"inputs": ["dataset"]},
         ),
@@ -148,7 +148,7 @@ class MyOperation(OperationDefinition):
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         result = ArtifactResult()
         for item in inputs.memory_outputs["outputs"]:
-            draft = DataArtifact.draft(
+            draft = CSVArtifact.draft(
                 content=Path(item["path"]).read_bytes(),
                 original_name=item["name"],
                 step_number=inputs.step_number,
@@ -245,6 +245,22 @@ class MyCurator(OperationDefinition):
 ---
 
 ## Lineage Patterns
+
+For file ingestion, prefer subclassing `IngestFiles` and implementing
+`convert_file(file_ref, step_number, *, fs=...)`. It resolves every requested
+descriptor, preserves ordered repeated inputs, and returns `ArtifactStreamResult`
+with one `ArtifactEmission(role, artifact, sources)` per conversion. The framework
+validates, finalizes, and stages each draft before requesting the next; custom
+converters must not retain previous drafts or source content.
+
+A custom stream requires static output roles and explicit input-parent or root
+lineage. Parent IDs must be strings; sibling-output indices and dynamic roles
+require `ArtifactResult`. Release each draft after yielding. Metadata is deeply
+snapshotted before iteration, and iterator closure must succeed before success.
+One failure rejects the complete execution's converted outputs; replay starts
+from the beginning. CSV conversion still holds one complete file and its parsing
+workspace. Advance a custom ingester's version when adopting this contract.
+See [streamed curator results](../../docs/how-to-guides/writing-curator-operations.md#artifactstreamresult-emit-one-draft-at-a-time).
 
 Every creator output **must** set `derives_from`. It declares required and
 allowed parent roles, never actual parents. Curator passthrough outputs may use
@@ -469,8 +485,8 @@ The framework validates at class definition time (import). These cause
 Use the appropriate `draft()` class method in `postprocess`:
 
 ```python
-# File-based data (CSV, binary, etc.)
-DataArtifact.draft(content=bytes, original_name=str, step_number=int)
+# CSV content stored as bytes
+CSVArtifact.draft(content=bytes, original_name=str, step_number=int)
 
 # Key-value metrics (JSON-serializable dict)
 MetricArtifact.draft(content=dict, original_name=str, step_number=int)
@@ -499,7 +515,7 @@ def test_my_operation(tmp_path):
 
     execute_dir = tmp_path / "execute"
     execute_dir.mkdir()
-    source = DataArtifact.draft(
+    source = CSVArtifact.draft(
         content=input_csv.read_bytes(), original_name="input.csv", step_number=0
     ).finalize()
     source.materialized_path = str(input_csv)

@@ -38,7 +38,7 @@ def test_capture_exact_duplicates_and_groups(tmp_path):
     groups = ["g1", "g1", "g2"]
     occurrences = {
         "dataset": [
-            CacheInputIdentity("dataset", groups[i], i, "data", aid)
+            CacheInputIdentity("dataset", groups[i], i, "csv", aid)
             for i, aid in enumerate(ids)
         ]
     }

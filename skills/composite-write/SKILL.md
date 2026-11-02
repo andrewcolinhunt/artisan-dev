@@ -63,7 +63,7 @@ class TransformAndScore(CompositeDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.DATA: InputSpec(
-            artifact_type="data",
+            artifact_type="csv",
             required=True,
             description="Input dataset to transform and score",
         ),

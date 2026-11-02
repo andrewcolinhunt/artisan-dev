@@ -129,7 +129,7 @@ class OperationDefinition(BaseModel):
     Example:
         outputs: ClassVar[dict[str, OutputSpec]] = {
             "processed_data": OutputSpec(
-                artifact_type=ArtifactTypes.DATA,
+                artifact_type=ArtifactTypes.CSV,
                 derives_from={"inputs": ["data"]},
             ),
             "scores": OutputSpec(
@@ -419,7 +419,8 @@ class OperationDefinition(BaseModel):
             artifact_store: Store for hydration and lineage lookups.
 
         Returns:
-            CuratorResult (ArtifactResult or PassthroughResult).
+            CuratorResult (ArtifactResult, ArtifactStreamResult, or
+            PassthroughResult). Stream items are consumed inside this execution.
 
         Raises:
             NotImplementedError: If not overridden (operation is a creator).

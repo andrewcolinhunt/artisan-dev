@@ -20,7 +20,7 @@ classifiers = [
 ]
 dependencies = [
     "cloudpickle>=3,<4",
-    "deltalake>=1.0.0",
+    "deltalake>=1.4.0",
     "fsspec",
     "graphviz",
     "griffe",
@@ -28,7 +28,8 @@ dependencies = [
     "ipython",
     "ipywidgets",
     "matplotlib",
-    "polars>=1.37.1",
+    "polars>=1.30.0",
+    "pyarrow>=26.0.0",
     "pydantic>=2",
     "python-dotenv",
     "rich",
@@ -119,8 +120,9 @@ fastapi = "*"
 xxhash = "*"           # Fast hashing for file tracking
 
 # Delta Lake storage layer
-deltalake = ">=1.0.0"   # Public atomic file-action transactions
-polars = ">=1.37.1"     # Native streaming iterator for bounded commit verification
+deltalake = ">=1.4.0"   # Explicit file transactions for bounded Delta writes
+polars = ">=1.30.0"     # DataFrame operations with native Delta Lake support
+pyarrow = ">=26.0.0"    # Bounded Parquet row-group reading and writing
 
 # Visualization
 graphviz = "*"          # Python bindings for Graphviz (provenance graph visualization)
@@ -296,6 +298,8 @@ module = [
     "modal.*",
     "IPython",
     "IPython.*",
+    "pyarrow",
+    "pyarrow.*",
 ]
 ignore_missing_imports = true
 

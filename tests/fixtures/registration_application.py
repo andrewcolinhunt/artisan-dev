@@ -10,13 +10,13 @@ from artisan.operations.examples import DataGenerator
 from artisan.schemas import (
     ArtifactResult,
     ArtifactTypeDef,
-    DataArtifact,
+    CSVArtifact,
     OutputSpec,
     PostprocessInput,
 )
 
 
-class ApplicationNote(DataArtifact):
+class ApplicationNote(CSVArtifact):
     """A CSV payload with an application-owned artifact type."""
 
     artifact_type: str = Field(default="application_note", frozen=True)

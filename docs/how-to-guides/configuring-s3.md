@@ -92,11 +92,11 @@ Pass cloud URIs directly as inputs; you do not need to download them before
 calling the pipeline:
 
 ```python
-from artisan.operations.curator import IngestData
+from artisan.operations.curator import IngestCSV
 
 # `pipeline` continues from the AWS S3 example above.
 pipeline.run(
-    IngestData,
+    IngestCSV,
     inputs=[
         "s3://my-bucket/raw/dataset_a.csv",
         "s3://my-bucket/raw/dataset_b.csv",
@@ -126,6 +126,9 @@ Point `files_root` at a cloud URI to store generated `FileRefArtifact` and
 `AppendableArtifact` content there. Creators still write to local
 `inputs.files_dir`; Artisan uploads finalized files to `files_root`. References
 to existing files outside `files_dir` keep their original locations.
+Function creators can write there during execute; command creators copy selected
+outputs there during postprocess, after endpoint downloads complete. See
+[Retain command-generated files](writing-creator-operations.md#retain-command-files).
 
 If an upload fails, the unit fails with a postprocess-style error and the
 local sandbox is preserved so the bytes are recoverable.
@@ -151,7 +154,7 @@ verify access and writes:
 ```python
 from artisan.orchestration import StepStatus
 
-step = pipeline.run(IngestData, inputs=["s3://my-bucket/raw/dataset_a.csv"])
+step = pipeline.run(IngestCSV, inputs=["s3://my-bucket/raw/dataset_a.csv"])
 assert step.status is StepStatus.SUCCEEDED, step.error
 pipeline.finalize()
 ```

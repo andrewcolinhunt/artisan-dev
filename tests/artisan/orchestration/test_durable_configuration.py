@@ -11,13 +11,13 @@ import pytest
 from pydantic import BaseModel, Field, SecretStr
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.operations.curator.ingest_data import IngestData
+from artisan.operations.curator.ingest_csv import IngestCSV
 from artisan.orchestration.pipeline_manager import (
     PipelineManager,
     _serialize_input_refs,
 )
 from artisan.orchestration.runners.local import LocalRunner
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
@@ -50,7 +50,7 @@ class DurableCurator(OperationDefinition):
         result = ArtifactResult(metadata={"alias": value, "public": self.params.label})
         result.add_artifact(
             "actual",
-            DataArtifact.draft(value.encode(), "original.txt", step_number),
+            CSVArtifact.draft(value.encode(), "original.txt", step_number),
             sources={},
         )
         return result
@@ -141,7 +141,7 @@ def test_initial_pending_row_and_every_terminal_copy_are_safe(
     if outcome == "success":
         assert result.metadata["alias"] == "<redacted>"
         assert result.metadata["public"] == "public value"
-        assert _rows(manager, "artifacts/data")["content"].to_list() == [raw.encode()]
+        assert _rows(manager, "artifacts/csvs")["content"].to_list() == [raw.encode()]
     assert params["nested"]["supplied"] == raw
     manager.finalize()
 
@@ -187,16 +187,16 @@ def test_rejected_input_uri_is_safe_and_graph_references_are_exact(
     fs = Mock()
     fs.exists.return_value = False
     monkeypatch.setattr("artisan.schemas.execution.fs.resolve_fs", lambda *_: (fs, uri))
-    result = manager.run(IngestData, inputs=[uri], compact=False)
+    result = manager.run(IngestCSV, inputs=[uri], compact=False)
     assert result.status is StepStatus.FAILED
     assert "durable-uri-password" not in str(_rows(manager, TablePath.STEPS).to_dicts())
-    reference = OutputReference(source_step=2, role="data", artifact_type="data")
+    reference = OutputReference(source_step=2, role="data", artifact_type="csv")
     assert json.loads(_serialize_input_refs({"data": reference})) == {
         "data": {
             "type": "output_ref",
             "source_step": 2,
             "role": "data",
-            "artifact_type": "data",
+            "artifact_type": "csv",
         }
     }
     manager.finalize()

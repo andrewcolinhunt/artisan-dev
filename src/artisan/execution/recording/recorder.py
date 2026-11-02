@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections import deque
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -86,12 +87,24 @@ def _read_tool_output(log_path: str | None) -> str | None:
         return None
     try:
         with open(log_path, errors="replace") as f:
-            content = f.read()
+            chunks: deque[str] = deque()
+            retained = 0
+            truncated = False
+            while chunk := f.read(64 * 1024):
+                chunks.append(chunk)
+                retained += len(chunk)
+                while retained > _MAX_TOOL_OUTPUT_CHARS:
+                    excess = retained - _MAX_TOOL_OUTPUT_CHARS
+                    first = chunks.popleft()
+                    removed = min(excess, len(first))
+                    if removed < len(first):
+                        chunks.appendleft(first[removed:])
+                    retained -= removed
+                    truncated = True
     except OSError:
         return None
-    if len(content) > _MAX_TOOL_OUTPUT_CHARS:
-        return "[truncated]\n" + content[-_MAX_TOOL_OUTPUT_CHARS:]
-    return content
+    content = "".join(chunks)
+    return "[truncated]\n" + content if truncated else content
 
 
 def build_execution_edges(

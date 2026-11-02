@@ -3288,7 +3288,7 @@ class _DefaultHashOpV1(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "result": OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }
@@ -3323,7 +3323,7 @@ class _DefaultHashOpV2(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         "result": OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }

@@ -163,7 +163,7 @@ src/artisan/                # Framework (domain-agnostic)
 ├── provenance/             # Domain-agnostic provenance traversal (Polars BFS)
 ├── registry/               # Operation discovery and registration
 ├── schemas/                # All data models
-│   ├── artifact/           # Artifact base, registry, types, metric, file_ref, data, execution_config
+│   ├── artifact/           # Artifact base, registry, types, metric, file_ref, csv, execution_config
 │   ├── composites/         # CompositeRef dataclass (runtime results in composites/base/results.py)
 │   ├── execution/          # Execution context, record, results, runtime environment, storage config
 │   ├── operation_config/   # Command/resource/environment configuration schemas
@@ -178,7 +178,7 @@ src/artisan/                # Framework (domain-agnostic)
 ├── utils/                  # Hashing, paths, filenames, external tools, dotenv, logging
 ├── visualization/          # Provenance graphs and analytics
 │   ├── graph/              # Micro/macro provenance rendering (Graphviz) + interactive stepper
-│   ├── inspect.py          # Pipeline/step/metric/data/failure inspection readers
+│   ├── inspect.py          # Pipeline/step/metric/CSV/failure inspection readers
 │   └── timing.py           # Timing analytics
 ├── cli.py                  # Operation/deployment commands, inspection, replay + store repair
 └── errors.py               # ArtisanError base + domain exception hierarchy

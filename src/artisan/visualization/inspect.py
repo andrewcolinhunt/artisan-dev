@@ -8,7 +8,7 @@ Usage::
     inspect_pipeline(delta_root)          # one row per step
     inspect_step(delta_root, 0)           # one row per artifact at step 0
     inspect_metrics(delta_root, 2)        # parsed metric values at step 2
-    inspect_data(delta_root, name="d0")   # actual CSV content of a DataArtifact
+    inspect_csv(delta_root, name="d0")   # actual CSV content of a CSVArtifact
 """
 
 from __future__ import annotations
@@ -864,7 +864,7 @@ def inspect_metrics(
     return result.sort("step", "name")
 
 
-def inspect_data(
+def inspect_csv(
     delta_root: str,
     name: str | None = None,
     step_number: int | None = None,
@@ -874,14 +874,14 @@ def inspect_data(
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
 ) -> pl.DataFrame:
-    """Read DataArtifact CSV content as a Polars DataFrame.
+    """Read CSVArtifact CSV content as a Polars DataFrame.
 
     Args:
         delta_root: Path to Delta Lake root.
         name: Filter by original_name. Takes the first match.
         step_number: Origin step by default, or current logical step when a
             run is selected. None includes all steps in the selected scope.
-        pipeline_run_id: Exact run whose accepted data outputs may match.
+        pipeline_run_id: Exact run whose accepted CSV outputs may match.
             None selects artifacts across all runs by origin step.
         step_run_id: Exact attempt, including history. Must match any supplied
             run or step; omitted positions are inferred from this attempt.
@@ -892,7 +892,7 @@ def inspect_data(
         DataFrame with the actual CSV data content.
 
     Raises:
-        FileNotFoundError: If data table doesn't exist.
+        FileNotFoundError: If CSV table doesn't exist.
         ValueError: If no matching artifacts found, content is None, or an
             explicit attempt is unknown or conflicts with run/step.
     """
@@ -900,14 +900,14 @@ def inspect_data(
     _validate_attempt_selection(
         delta_root, fs, storage_options, step_run_id, pipeline_run_id, step_number
     )
-    table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("data"))
+    table_path = uri_join(delta_root, ArtifactTypeDef.get_table_path("csv"))
     if not fs.exists(table_path):
-        msg = f"Data table not found at {table_path}"
+        msg = f"CSV table not found at {table_path}"
         raise FileNotFoundError(msg)
 
     scanner = scan_committed(
         delta_root,
-        ArtifactTypeDef.get_table_path("data"),
+        ArtifactTypeDef.get_table_path("csv"),
         fs=fs,
         storage_options=storage_options,
     )
@@ -925,7 +925,7 @@ def inspect_data(
         )
         artifact_ids = [
             row["artifact_id"]
-            for row in outputs.filter(pl.col("artifact_type") == "data").iter_rows(
+            for row in outputs.filter(pl.col("artifact_type") == "csv").iter_rows(
                 named=True
             )
             if step_number is None or row["current_step_number"] == step_number
@@ -941,14 +941,14 @@ def inspect_data(
         all_names = (
             read_committed(
                 delta_root,
-                ArtifactTypeDef.get_table_path("data"),
+                ArtifactTypeDef.get_table_path("csv"),
                 fs=fs,
                 storage_options=storage_options,
             )
             .select("original_name")["original_name"]
             .to_list()
         )
-        msg = f"No matching data artifacts found. Available names: {all_names}"
+        msg = f"No matching CSV artifacts found. Available names: {all_names}"
         raise ValueError(msg)
 
     if name is not None:
@@ -994,7 +994,7 @@ def _format_size(size: int) -> str:
 
 def _build_details(artifact_type: str, row: dict[str, Any]) -> str:
     """Return a type-specific summary string for an artifact row."""
-    if artifact_type == "data":
+    if artifact_type == "csv":
         row_count = row.get("row_count")
         columns_json = row.get("columns")
         if row_count is not None and columns_json:

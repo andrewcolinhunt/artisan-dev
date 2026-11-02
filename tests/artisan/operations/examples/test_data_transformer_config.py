@@ -11,11 +11,11 @@ from artisan.schemas import (
     PostprocessInput,
     PreprocessInput,
 )
-from artisan.schemas.artifact.data import DataArtifact
+from artisan.schemas.artifact.csv import CSVArtifact
 
 
-def _mock_data_artifact(name: str = "dataset_00000.csv") -> DataArtifact:
-    return DataArtifact.draft(
+def _mock_data_artifact(name: str = "dataset_00000.csv") -> CSVArtifact:
+    return CSVArtifact.draft(
         content=b"id,x\n1,2.0\n",
         original_name=name,
         step_number=0,
@@ -27,7 +27,7 @@ def _run_config_op(operation, artifacts, output_dir: Path):
     execute_dir = output_dir / "execute"
     execute_dir.mkdir()
 
-    if isinstance(artifacts, DataArtifact):
+    if isinstance(artifacts, CSVArtifact):
         artifacts = [artifacts]
     input_artifacts = {"dataset": list(artifacts)}
 
@@ -150,7 +150,7 @@ class TestDataTransformerConfig:
         self, tmp_path: Path
     ):
         artifacts = [
-            DataArtifact.draft(
+            CSVArtifact.draft(
                 content=f"x\n{value}\n".encode(),
                 original_name="same.csv",
                 step_number=0,

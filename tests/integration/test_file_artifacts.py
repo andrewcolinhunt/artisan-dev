@@ -2,16 +2,18 @@
 
 from __future__ import annotations
 
+import os
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
 
 import pytest
+from fixtures.managed_file_ops import ManagedFileCommand, WholeBatchManagedFileCommand
 from fsspec import AbstractFileSystem
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.operations.curator import IngestFiles
-from artisan.operations.examples import FileGenerator
+from artisan.operations.examples import DataGeneratorWithMetrics, FileGenerator
 from artisan.orchestration import PipelineManager
 from artisan.orchestration.runners import Runner
 from artisan.schemas import FileRefArtifact, MetricArtifact
@@ -136,3 +138,93 @@ def test_generated_files_feed_directly_into_ingestion(
         )
         == expected_edges
     )
+
+
+@pytest.mark.parametrize(
+    "operation", [ManagedFileCommand, WholeBatchManagedFileCommand]
+)
+def test_command_files_survive_cleanup_and_feed_ingestion(
+    file_pipeline_env: dict[str, Any],
+    operation: type[ManagedFileCommand],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv(
+        "PYTHONPATH",
+        os.pathsep.join(
+            filter(
+                None,
+                [str(Path(__file__).parents[1]), os.environ.get("PYTHONPATH", "")],
+            )
+        ),
+    )
+    env = file_pipeline_env
+    pipeline = PipelineManager(
+        PipelineConfig(
+            name="command-file-ingestion",
+            delta_root=env["delta_root"],
+            staging_root=env["staging_root"],
+            working_root=env["working_root"],
+            files_root=env["files_root"],
+            storage=env["storage"],
+        ),
+        configure_logging=False,
+    )
+    source = pipeline.run(DataGeneratorWithMetrics, params={"count": 2, "seed": 42})
+    generated = pipeline.run(
+        operation,
+        inputs={"source": source.output("metrics")},
+        batch_strategy={"artifacts_per_unit": 2},
+    )
+    consumed = pipeline.run(
+        IngestFileMetrics, inputs={"file": generated.output("files")}
+    )
+    assert pipeline.finalize()["overall_success"]
+    assert not list(Path(env["working_root"]).rglob("output.bin"))
+    assert not list(Path(env["working_root"]).rglob("scratch.txt"))
+    assert not list(Path(env["working_root"]).rglob("managed-outputs.json"))
+
+    store = ArtifactStore(
+        env["delta_root"],
+        files_root=env["files_root"],
+        fs=env["fs"],
+        storage_options=env["storage"].delta_storage_options(),
+    )
+    source_ids = store.provenance.load_artifact_ids_by_type(
+        "metric", step_numbers=[source.step_number]
+    )
+    file_ids = store.provenance.load_artifact_ids_by_type(
+        "file_ref", step_numbers=[generated.step_number]
+    )
+    metric_ids = store.provenance.load_artifact_ids_by_type(
+        "metric", step_numbers=[consumed.step_number]
+    )
+    files = store.get_artifacts_by_type(list(file_ids), "file_ref")
+    metrics = store.get_artifacts_by_type(list(metric_ids), "metric")
+    assert len(source_ids) == len(files) == len(metrics) == 2
+    assert len({file_ref.path for file_ref in files.values()}) == 2
+    observed_sources = set()
+    for file_ref in files.values():
+        assert isinstance(file_ref, FileRefArtifact)
+        assert file_ref.path.startswith(env["files_root"] + "/")
+        assert Path(file_ref.path).name == "output.bin"
+        assert file_ref.original_name == "output"
+        assert file_ref.extension == ".bin"
+        content = file_ref.read_content(fs=env["fs"])
+        parent = content.decode()
+        observed_sources.add(parent)
+        assert parent in source_ids
+        assert store.provenance.get_direct_ancestors(file_ref.artifact_id) == [parent]
+        assert compute_content_digest(content) == file_ref.content_hash
+        assert len(content) == file_ref.size_bytes
+    assert observed_sources == source_ids
+    for metric in metrics.values():
+        file_ref = files[metric.values["source_id"]]
+        assert metric.values["content_hash"] == file_ref.content_hash
+        assert metric.values["size_bytes"] == file_ref.size_bytes
+        assert store.provenance.get_direct_ancestors(metric.artifact_id) == [
+            file_ref.artifact_id
+        ]
+    assert sorted(Path(path).name for path in env["fs"].find(env["files_root"])) == [
+        "output.bin",
+        "output.bin",
+    ]

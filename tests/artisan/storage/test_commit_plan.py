@@ -3,8 +3,6 @@
 from __future__ import annotations
 
 import json
-import weakref
-from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Barrier
@@ -22,18 +20,15 @@ from artisan.storage.core.table_schemas import (
 )
 from artisan.storage.io.commit_plan import (
     CommitPlan,
-    StagedPlanEvidence,
     _plan_digest,
     build_commit_plan,
     commit_plan_path,
-    prepare_commit_evidence,
-    prepare_commit_plan,
     publish_commit_plan,
     read_commit_plan,
+    read_plan_evidence,
     verify_plan_files,
 )
 from artisan.storage.io.staging import StagingManager
-from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 
 
 def _build_input_plan(tmp_path, *, index: pl.DataFrame | None = None):
@@ -92,32 +87,6 @@ def _changed_plan(plan: CommitPlan, **changes) -> CommitPlan:
     return CommitPlan(**payload, plan_digest=_plan_digest(payload))
 
 
-def _legacy_plan_bytes(
-    plan: CommitPlan, staging_root: str, fs: LocalFileSystem
-) -> bytes:
-    payload = plan.model_dump(mode="json", exclude={"plan_digest"})
-    for table in payload["tables"]:
-        table.pop("digest_version")
-        frames = []
-        for file in table["files"]:
-            with fs.open(f"{staging_root}/{file['relative_path']}", "rb") as stream:
-                frames.append(pl.read_parquet(stream))
-        frame = pl.concat(frames).sort(table["natural_key"])
-        if "origin_step_number" in frame:
-            frame = frame.drop("origin_step_number")
-        table["table_plan_key"] = compute_content_digest(
-            canonical_json_bytes(
-                {
-                    "logical_commit_id": plan.logical_commit_id,
-                    "table_path": table["table_path"],
-                    "rows": frame.to_dicts(),
-                }
-            )
-        )
-    payload["plan_digest"] = compute_content_digest(canonical_json_bytes(payload))
-    return canonical_json_bytes(payload)
-
-
 def _concurrent_publish(delta_root, fs, plans):
     barrier = Barrier(len(plans))
 
@@ -155,110 +124,6 @@ def test_commit_plan_is_stable_and_root_relative(tmp_path):
         for table in first.tables
         for planned in table.files
     )
-
-
-def test_new_commit_plans_publish_digest_version_two(tmp_path: Path) -> None:
-    fs, delta_root, _staging_root, _staged_path, plan = _build_input_plan(tmp_path)
-    payload = json.loads(
-        fs.cat(commit_plan_path(delta_root, plan.step_run_id, plan.commit_kind))
-    )
-
-    assert all(table.digest_version == 2 for table in plan.tables)
-    assert all(table["digest_version"] == 2 for table in payload["tables"])
-
-
-def test_legacy_commit_plan_roundtrip_preserves_original_bytes_and_digest(
-    tmp_path: Path,
-) -> None:
-    fs, delta_root, staging_root, _staged_path, plan = _build_input_plan(tmp_path)
-    encoded = _legacy_plan_bytes(plan, staging_root, fs)
-    path = commit_plan_path(delta_root, plan.step_run_id, plan.commit_kind)
-    fs.pipe(path, encoded)
-
-    legacy = read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
-
-    assert all(table.digest_version == 1 for table in legacy.tables)
-    assert legacy.plan_digest == json.loads(encoded)["plan_digest"]
-    assert canonical_json_bytes(legacy.model_dump(mode="json")) == encoded
-    assert all("digest_version" not in table for table in legacy.model_dump()["tables"])
-    assert publish_commit_plan(delta_root, fs, legacy) == legacy
-    assert fs.cat(path) == encoded
-    verified = verify_plan_files(legacy, staging_root, fs)
-    assert verified[TablePath.ARTIFACT_INDEX.value]["artifact_id"].to_list() == [
-        "a" * 32
-    ]
-
-
-@pytest.mark.parametrize(
-    "prepare",
-    [build_commit_plan, prepare_commit_plan, prepare_commit_evidence],
-    ids=["build", "plan", "evidence"],
-)
-def test_rebuilding_legacy_commit_plan_preserves_original_identity(
-    tmp_path: Path, prepare: Callable[..., CommitPlan | StagedPlanEvidence]
-) -> None:
-    fs, delta_root, staging_root, _staged_path, plan = _build_input_plan(tmp_path)
-    encoded = _legacy_plan_bytes(plan, staging_root, fs)
-    path = commit_plan_path(delta_root, plan.step_run_id, plan.commit_kind)
-    fs.pipe(path, encoded)
-    legacy = read_commit_plan(delta_root, fs, plan.step_run_id, plan.commit_kind)
-
-    result = prepare(
-        delta_root=delta_root,
-        staging_root=staging_root,
-        fs=fs,
-        commit_kind=legacy.commit_kind,
-        step_run_id=legacy.step_run_id,
-        step_number=legacy.step_number,
-        operation_name=legacy.operation_name,
-    )
-
-    retried = result.plan if isinstance(result, StagedPlanEvidence) else result
-    assert retried == legacy
-    assert fs.cat(path) == encoded
-    if isinstance(result, StagedPlanEvidence):
-        assert result.frames[TablePath.ARTIFACT_INDEX.value][
-            "artifact_id"
-        ].to_list() == ["a" * 32]
-
-
-@pytest.mark.parametrize(
-    "prepare",
-    [build_commit_plan, prepare_commit_plan, prepare_commit_evidence],
-    ids=["build", "plan", "evidence"],
-)
-@pytest.mark.parametrize("damage", ["changed", "unknown"])
-def test_rebuilding_legacy_commit_plan_revalidates_staging(
-    tmp_path: Path,
-    prepare: Callable[..., CommitPlan | StagedPlanEvidence],
-    damage: str,
-) -> None:
-    fs, delta_root, staging_root, staged_path, plan = _build_input_plan(tmp_path)
-    assert staged_path is not None
-    encoded = _legacy_plan_bytes(plan, staging_root, fs)
-    path = commit_plan_path(delta_root, plan.step_run_id, plan.commit_kind)
-    fs.pipe(path, encoded)
-    if damage == "changed":
-        with fs.open(staged_path, "rb") as stream:
-            changed = pl.read_parquet(stream).with_columns(
-                pl.lit('{"changed":true}').alias("metadata")
-            )
-        with fs.open(staged_path, "wb") as stream:
-            changed.write_parquet(stream)
-    else:
-        fs.touch(f"{staged_path.rsplit('/', 1)[0]}/unknown.txt")
-
-    with pytest.raises(StoreIntegrityError):
-        prepare(
-            delta_root=delta_root,
-            staging_root=staging_root,
-            fs=fs,
-            commit_kind=plan.commit_kind,
-            step_run_id=plan.step_run_id,
-            step_number=plan.step_number,
-            operation_name=plan.operation_name,
-        )
-    assert fs.cat(path) == encoded
 
 
 def test_commit_kinds_use_disjoint_staging_and_cleanup(tmp_path):
@@ -391,15 +256,15 @@ def test_commit_plan_collapses_identical_global_artifact_rows(tmp_path):
     assert table is not None
     assert table.row_count == 1
     assert table.files[0].row_count == 2
-    verified = verify_plan_files(plan, staging_root, fs)
-    assert verified[TablePath.ARTIFACT_INDEX.value].height == 1
+    with verify_plan_files(plan, staging_root, fs) as verified:
+        assert verified.tables[TablePath.ARTIFACT_INDEX.value].row_count == 1
 
 
 def test_commit_plan_rejects_conflicting_global_artifact_rows(tmp_path):
     conflicting_index = pl.DataFrame(
         {
             "artifact_id": ["a" * 32, "a" * 32],
-            "artifact_type": ["metric", "data"],
+            "artifact_type": ["metric", "csv"],
             "origin_step_number": [0, 0],
             "metadata": ["{}", "{}"],
         },
@@ -408,6 +273,71 @@ def test_commit_plan_rejects_conflicting_global_artifact_rows(tmp_path):
 
     with pytest.raises(StoreIntegrityError, match="Conflicting natural keys"):
         _build_input_plan(tmp_path, index=conflicting_index)
+
+
+def test_plan_evidence_keeps_private_snapshot_and_closes_scratch(tmp_path):
+    fs, _delta_root, staging_root, staged_path, plan = _build_input_plan(tmp_path)
+    with read_plan_evidence(plan, staging_root, fs) as evidence:
+        table = evidence.tables[TablePath.ARTIFACT_INDEX.value]
+        private_paths = [Path(path) for path in table.paths]
+        assert all(path.exists() for path in private_paths)
+        changed = pl.read_parquet(staged_path).with_columns(
+            pl.lit("changed").alias("metadata")
+        )
+        changed.write_parquet(staged_path)
+
+        assert table.get_row(("a" * 32,))["metadata"] == "{}"
+        assert (
+            table.canonical_key(plan.logical_commit_id) == plan.tables[0].table_plan_key
+        )
+        with pytest.raises(StoreIntegrityError, match="changed after planning"):
+            read_plan_evidence(plan, staging_root, fs)
+
+    assert all(not path.exists() for path in private_paths)
+    assert Path(staged_path).exists()
+
+
+def test_plan_evidence_finalizer_releases_discarded_capture(tmp_path):
+    import gc
+
+    fs, _delta_root, staging_root, _path, plan = _build_input_plan(tmp_path)
+    evidence = read_plan_evidence(plan, staging_root, fs)
+    paths = [Path(path) for table in evidence.tables.values() for path in table.paths]
+    del evidence
+    gc.collect()
+
+    assert all(not path.exists() for path in paths)
+
+
+def test_plan_preparation_failure_releases_private_capture(tmp_path, monkeypatch):
+    import artisan.storage.io.commit_plan as module
+
+    fs, _delta_root, staging_root, staged_path, plan = _build_input_plan(tmp_path)
+    changed = pl.read_parquet(staged_path).with_columns(
+        pl.lit(7, dtype=pl.Int32).alias("origin_step_number")
+    )
+    changed.write_parquet(staged_path)
+    directories = []
+    temporary_directory = module.TemporaryDirectory
+
+    def track_directory(*args, **kwargs):
+        directory = temporary_directory(*args, **kwargs)
+        directories.append(Path(directory.name))
+        return directory
+
+    monkeypatch.setattr(module, "TemporaryDirectory", track_directory)
+    with pytest.raises(StoreIntegrityError, match="step number mismatch"):
+        module.prepare_commit_evidence(
+            staging_root=staging_root,
+            fs=fs,
+            commit_kind=plan.commit_kind,
+            step_run_id=plan.step_run_id,
+            step_number=plan.step_number,
+            operation_name=plan.operation_name,
+        )
+
+    assert directories
+    assert all(not path.exists() for path in directories)
 
 
 def test_local_plan_publish_is_no_replace_and_cleans_temporary_files(tmp_path):
@@ -528,29 +458,8 @@ def test_recovery_plan_identity_and_effects_cover_sorted_exact_batch(tmp_path):
         ("c" * 32,),
         ("d" * 32,),
     )
-    assert first.frames[TablePath.EXECUTIONS.value].height == 2
+    assert first.tables[TablePath.EXECUTIONS.value].row_count == 2
     assert first.per_execution_artifact_ids == {"c" * 32: set(), "d" * 32: set()}
-
-
-def test_planning_releases_each_worker_payload_before_reading_the_campaign(
-    tmp_path, monkeypatch
-):
-    from artisan.storage.io import commit_plan
-
-    original = commit_plan.read_worker_files
-    captured = []
-
-    def read(directory, fs):
-        assert sum(reference() is not None for reference in captured) <= 1
-        files = original(directory, fs)
-        captured.extend(weakref.ref(frame) for _, frame in files.values())
-        return files
-
-    monkeypatch.setattr(commit_plan, "read_worker_files", read)
-    evidence = _recovery_evidence(tmp_path, [f"{number:032x}" for number in range(25)])
-    assert len(captured) == 25
-    assert all(reference() is None for reference in captured)
-    assert evidence.frames[TablePath.EXECUTIONS.value].height == 25
 
 
 @pytest.mark.parametrize("ids", [[], ["c" * 32, "c" * 32], ["invalid"]])

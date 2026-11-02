@@ -57,11 +57,14 @@ def compute_content_digest(content: bytes) -> str:
     return xxhash.xxh3_128(content).hexdigest()
 
 
-def compute_stream_digest(stream: BinaryIO) -> tuple[str, int]:
+def compute_stream_digest(
+    stream: BinaryIO, *, destination: BinaryIO | None = None
+) -> tuple[str, int]:
     """Hash a binary stream using bounded reads.
 
     Args:
         stream: Binary stream positioned at the first byte to hash.
+        destination: Optional stream receiving the exact bytes while hashing.
 
     Returns:
         Tuple of the 32-character digest and total byte count.
@@ -69,6 +72,8 @@ def compute_stream_digest(stream: BinaryIO) -> tuple[str, int]:
     hasher = xxhash.xxh3_128()
     size_bytes = 0
     while chunk := stream.read(STREAM_CHUNK_BYTES):
+        if destination is not None:
+            destination.write(chunk)
         hasher.update(chunk)
         size_bytes += len(chunk)
     return hasher.hexdigest(), size_bytes
@@ -89,15 +94,15 @@ def compute_artifact_id(
     Returns:
         32-character lowercase hexadecimal artifact identifier.
     """
-    preimage = bytearray(b"artifact-id-v1")
+    hasher = xxhash.xxh3_128(b"artifact-id-v1")
     for component in (
         artifact_type.encode("utf-8"),
         canonical_content,
         canonical_json_bytes(identity_metadata),
     ):
-        preimage.extend(len(component).to_bytes(8, "big"))
-        preimage.extend(component)
-    return compute_content_digest(bytes(preimage))
+        hasher.update(len(component).to_bytes(8, "big"))
+        hasher.update(component)
+    return hasher.hexdigest()
 
 
 def digest_utf8(s: str) -> str:

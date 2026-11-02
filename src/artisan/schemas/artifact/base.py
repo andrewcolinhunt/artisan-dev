@@ -13,7 +13,11 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.common import metadata_from_json, metadata_to_json
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.utils.hashing import canonical_json_bytes, compute_artifact_id
+from artisan.utils.hashing import (
+    canonical_json_bytes,
+    compute_artifact_id,
+    compute_content_digest,
+)
 
 
 class Artifact(BaseModel):
@@ -68,7 +72,7 @@ class Artifact(BaseModel):
         description="Temporary path where content was written for execution.",
     )
 
-    _identity_payload_snapshot: bytes | None = PrivateAttr(default=None)
+    _identity_payload_snapshot: tuple[int, str] | None = PrivateAttr(default=None)
     _protected_fields_snapshot: bytes | None = PrivateAttr(default=None)
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -246,20 +250,22 @@ class Artifact(BaseModel):
         return canonical_json_bytes(_snapshot_json_value(self._protected_state()))
 
     def _establish_identity_snapshot(self) -> None:
-        """Capture canonical content and durable semantic state."""
+        """Capture compact content evidence and durable semantic state."""
         payload = self._identity_payload()
         if payload is None:
             msg = "Cannot snapshot an unhydrated artifact"
             raise ValueError(msg)
-        self._identity_payload_snapshot = bytes(payload)
+        self._identity_payload_snapshot = _binary_snapshot(payload)
         self._protected_fields_snapshot = self._protected_state_bytes()
 
     def _assert_identity_intact(self) -> None:
         """Fail if nested durable state drifted after finalization."""
         if self.artifact_id is None or self._identity_payload_snapshot is None:
             return
+        payload = self._identity_payload()
         if (
-            self._identity_payload() != self._identity_payload_snapshot
+            payload is None
+            or _binary_snapshot(payload) != self._identity_payload_snapshot
             or self._protected_state_bytes() != self._protected_fields_snapshot
         ):
             msg = (
@@ -332,7 +338,7 @@ class Artifact(BaseModel):
 
     def _row_encoders(self) -> dict[str, Callable[[], Any]]:
         """``to_row`` encoders for columns whose stored form differs from the
-        raw field value. Subclasses extend via ``super()`` (e.g. DataArtifact
+        raw field value. Subclasses extend via ``super()`` (e.g. CSVArtifact
         adds its ``columns`` JSON encoding)."""
         return {"metadata": lambda: metadata_to_json(self.metadata)}
 
@@ -345,7 +351,7 @@ class Artifact(BaseModel):
 def _snapshot_json_value(value: Any) -> Any:
     """Convert model state to a deterministic JSON-safe representation."""
     if isinstance(value, bytes):
-        return {"$bytes": value.hex()}
+        return {"$bytes": _binary_snapshot(value)}
     if isinstance(value, dict):
         return {str(key): _snapshot_json_value(item) for key, item in value.items()}
     if isinstance(value, (list, tuple)):
@@ -357,3 +363,8 @@ def _snapshot_json_value(value: Any) -> Any:
     if isinstance(value, Enum):
         return value.value
     return value
+
+
+def _binary_snapshot(value: bytes) -> tuple[int, str]:
+    """Describe bytes without copying or retaining their content."""
+    return len(value), compute_content_digest(value)

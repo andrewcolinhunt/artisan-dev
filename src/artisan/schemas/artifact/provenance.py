@@ -57,12 +57,12 @@ class ArtifactProvenanceEdge(BaseModel):
     source_artifact_type: str = Field(
         ...,
         description="Artifact type of source (denormalized). Should match registered "
-        "artifact type keys (e.g. 'data', 'metric'); resolution must provide a known type.",
+        "artifact type keys (e.g. 'csv', 'metric'); resolution must provide a known type.",
     )
     target_artifact_type: str = Field(
         ...,
         description="Artifact type of target (denormalized). Should match registered "
-        "artifact type keys (e.g. 'data', 'metric'); resolution must provide a known type.",
+        "artifact type keys (e.g. 'csv', 'metric'); resolution must provide a known type.",
     )
     source_role: str = Field(
         ...,

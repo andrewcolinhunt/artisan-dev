@@ -37,7 +37,7 @@ class MockOperation(OperationDefinition):
 
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.files: InputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             required=False,
             description="Input files",
         ),
@@ -45,7 +45,7 @@ class MockOperation(OperationDefinition):
 
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             description="Output files",
             derives_from={"inputs": ["files"]},
         ),
@@ -79,19 +79,19 @@ class MultiInputOp(OperationDefinition):
     name: ClassVar[str] = "multi_input_op"
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.data: InputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             required=False,
             description="Data input",
         ),
         InputRole.config: InputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             required=False,
             description="Config input",
         ),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.result: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": ["data", "config"]},
         ),
     }
@@ -116,7 +116,7 @@ class GenerativeOp(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }
@@ -137,7 +137,7 @@ class UnionOp(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.merged: OutputSpec(
-            artifact_type=ArtifactTypes.DATA,
+            artifact_type=ArtifactTypes.CSV,
             derives_from={"inputs": []},
         ),
     }
