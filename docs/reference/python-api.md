@@ -15,7 +15,7 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Retain generated external files | `artisan.schemas` | `ExecuteInput`, `PostprocessInput`, `FileRefArtifact` |
 | Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
 | Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |
-| Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
+| Run a command inside an operation and handle nonzero exits | `artisan.utils` | `run_command`, `format_args`, `ExternalToolError` |
 | Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |
 | Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
 | Read stored artifacts | `artisan.storage` | `ArtifactStore` |
