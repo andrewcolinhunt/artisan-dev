@@ -1,46 +1,62 @@
 # Artisan
 
-A Python framework for composable, observable computational workflows.
+A Python framework for computational workflows that others can understand,
+reuse, and extend.
 
-Artisan grew out of computational protein design, where analyses combine many
-tools and use the history of individual results to guide further computation.
-It handles the tracking and matching that previously required custom code around
-existing workflow tools. Other fields can use the same framework with their own
-tools and data types.
+Artisan helps researchers and AI agents build analyses from reusable tools and
+previous computational work. It defines how tools exchange data, handles their
+execution, and records how individual results were produced.
 
-Artisan helps researchers and AI agents build new analyses from reusable tools
-and previous computational work. Wrap Python code and external tools in
-operations, combine them into workflows, and reuse useful combinations in other
-analyses. Tests and fixes stay with each integration, so improvements are
-available wherever it is used.
+The goal is for each investigation to contribute methods and evidence that
+later work can use. Tested integrations, reusable workflows, and inspectable
+results become available to another researcher or agent without having to
+reconstruct the original work.
 
-Operations declare the sources of each new result. Artisan records these
-relationships alongside the inputs, parameters, and execution history, forming
-a provenance graph of individual results across the analysis. The full graph is
-available both to inspect the work and to use its history in further computation.
+Artisan grew out of computational protein design. Other fields can use the
+same framework with their own tools and data types.
 
 ---
 
 ## Why Artisan?
 
-- **Compose tools into new analyses.** Bundle a transformation and its
-  evaluations into a reusable workflow, called a composite. Use it in different
-  pipelines or combine it with other operations. Each internal step remains
-  visible and can be inspected individually.
-- **Understand how each result was produced.** Trace an output back to its
-  inputs and the operations and parameters involved, even when those operations
-  processed many results in a batch. Query results, measurements, execution
-  records, and their relationships as dataframes.
-- **Automate decisions you can't make in advance.** Transform a collection of
-  inputs, evaluate the outputs several steps later, then select the original
-  inputs for further work using those evaluations. Artisan follows the recorded
-  relationships to find the relevant measurements and match results with their
-  sources.
-- **Build on work you've already done.** Each tested integration and reusable
-  workflow becomes available to future analyses. Stored results remain
-  queryable, so you can revisit intermediate work as your questions change.
-  Artisan can reuse cached results when an operation's inputs and configuration
-  match a previous computation.
+### Work with scientific concepts
+
+A package for a field gives its tools a shared vocabulary. In protein design,
+this includes structures, sequences, annotations, measurements, and named
+methods. Tool developers handle input preparation and output interpretation in
+reusable integrations. Researchers combine those tools using familiar
+scientific concepts and parameters.
+
+Each integration specifies the inputs it accepts, its settings, and the outputs
+it produces. Artisan checks inputs and outputs against those requirements,
+helping tools written by different people work together.
+
+### Use accumulated history in new computations
+
+Artisan preserves a queryable history of computational work. It connects each
+computation to its inputs and outputs, and each individual result to the data
+it was derived from. These relationships remain explicit even when a tool
+processes many inputs in a batch.
+
+Later steps and new analyses can use that history to compare methods, evaluate
+related results, revisit earlier inputs, and decide what to compute next. For
+example, compare protein designs from previous experiments, trace promising
+results to their original designs and settings, then select them for further
+evaluation.
+
+The recorded history remains available across analyses using the same storage,
+including intermediate results and how they were produced.
+
+### Build on earlier work
+
+A tested integration can serve many workflows. Tests and fixes stay with it,
+so improvements are available wherever it is used.
+
+Another researcher or agent can inspect how a result was produced, apply a new
+evaluation to stored data, or extend an existing workflow. Artisan can reuse
+cached results when the declared inputs and settings match a previous
+computation. Later investigations can build on both the methods and the
+evidence from earlier work.
 
 Artisan runs locally with worker processes. Optional runner providers and tool
 endpoints let you run the same operations in other compute environments.
