@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import shutil
+from copy import copy
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
@@ -105,6 +106,20 @@ def _inventory(root: Path) -> dict[str, str]:
 
 def _rows(store: ArtifactStore, table: TablePath) -> pl.DataFrame:
     return read_committed(store.base_path, table, fs=store.filesystem)
+
+
+@pytest.mark.parametrize("protocol", ["file", "local"])
+def test_export_publication_rejects_local_uri_source_overlap(
+    publication_source: PublicationSource, protocol: str
+) -> None:
+    source = copy(publication_source.store)
+    source.base_path = f"{protocol}://{source.base_path}"
+    destination = publication_source.root / "delta" / "publication-copy"
+    before = _inventory(publication_source.root)
+    with pytest.raises(ValueError, match="overlaps"):
+        export_publication(source, destination, redact=())
+    assert not destination.exists()
+    assert _inventory(publication_source.root) == before
 
 
 def test_export_publication_preserves_artifacts_lineage_and_source(

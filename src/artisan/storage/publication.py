@@ -160,9 +160,9 @@ def _destination(source: ArtifactStore, destination: str | Path) -> Path:
     path = path.resolve()
     roots = [source.base_path, source.files_root]
     for root in filter(None, roots):
-        if "://" in root:
+        if "://" in root and not root.startswith(("file://", "local://")):
             continue
-        original = Path(root).resolve()
+        original = Path(LocalFileSystem._strip_protocol(root)).resolve()
         if path.is_relative_to(original) or original.is_relative_to(path):
             msg = "Publication destination overlaps the source store"
             raise ValueError(msg)
