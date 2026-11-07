@@ -21,12 +21,13 @@ class PublicationPolicy:
     @classmethod
     def create(cls, values: Sequence[str]) -> PublicationPolicy:
         """Reject empty needles and ambiguous single-string policies."""
-        if isinstance(values, str) or any(
-            not isinstance(v, str) or not v for v in values
-        ):
-            msg = "redact must contain nonempty strings"
+        msg = "redact must contain nonempty strings"
+        if isinstance(values, str):
             raise ValueError(msg)
-        return cls(tuple(sorted(set(values), key=len, reverse=True)))
+        needles = tuple(values)
+        if any(not isinstance(value, str) or not value for value in needles):
+            raise ValueError(msg)
+        return cls(tuple(sorted(set(needles), key=len, reverse=True)))
 
     def matches(self, value: object) -> bool:
         """Check exact substrings, including binary scientific payloads."""

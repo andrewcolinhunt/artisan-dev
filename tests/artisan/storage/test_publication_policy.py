@@ -18,3 +18,13 @@ def test_protected_metadata_rejects_json_escaped_value(private_value: str) -> No
     row = {"metadata": json.dumps({"location": private_value})}
     with pytest.raises(ValueError, match="protected evidence"):
         policy.row(TablePath.ARTIFACT_INDEX, row, {})
+
+
+def test_redaction_values_are_captured_before_generator_validation() -> None:
+    policy = PublicationPolicy.create(iter(["example-workspace"]))
+    assert policy.text("/example-workspace/input.csv") == "/[redacted]/input.csv"
+
+
+def test_redaction_policy_rejects_a_single_string() -> None:
+    with pytest.raises(ValueError, match="nonempty strings"):
+        PublicationPolicy.create("example-workspace")
