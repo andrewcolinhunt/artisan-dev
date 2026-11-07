@@ -46,7 +46,10 @@ with TemporaryDirectory() as temporary:
     reopened = exported.open_store()
     types = original.provenance.load_type_map()
     assert reopened.provenance.load_type_map() == types
-    assert reopened.provenance.load_backward_map() == original.provenance.load_backward_map()
+    assert (
+        reopened.provenance.load_backward_map()
+        == original.provenance.load_backward_map()
+    )
 
     # Move the entire bundle, including delta/, files/ and staging/.
     moved = root / "moved-results"

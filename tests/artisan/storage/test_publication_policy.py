@@ -11,7 +11,7 @@ from artisan.storage._publication_policy import PublicationPolicy
 
 
 @pytest.mark.parametrize(
-    "private_value", [r"C:\Users\example", 'example "workspace"', "caf\u00e9-workspace"]
+    "private_value", [r"C:\Users\example", 'example "workspace"', "\u2603-workspace"]
 )
 def test_protected_metadata_rejects_json_escaped_value(private_value: str) -> None:
     policy = PublicationPolicy.create((private_value,))

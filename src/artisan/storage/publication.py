@@ -40,7 +40,7 @@ class _Manifest(BaseModel):
 class _PublicationFileSystem(AbstractFileSystem):  # type: ignore[misc]
     """Map published locators into one bundle without host-path fallback."""
 
-    cachable = False
+    cachable = False  # codespell:ignore cachable
     protocol = ("file", "local")
 
     def __init__(self, directory: Path, files: Sequence[_File]) -> None:
