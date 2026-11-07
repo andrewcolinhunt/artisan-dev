@@ -150,7 +150,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "ToolSpec",
         "get_compound_extension",
     ),
-    "artisan.storage": ("ArtifactStore",),
+    "artisan.storage": ("ArtifactStore", "PublicationExport", "export_publication"),
     "artisan.provenance": (
         "ProvenanceEdges",
         "provenance_edges",
