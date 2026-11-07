@@ -18,7 +18,7 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
 | Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |
 | Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
-| Read stored artifacts | `artisan.storage` | `ArtifactStore` |
+| Read stored artifacts and export inspection copies | `artisan.storage` | `ArtifactStore`, `PublicationExport`, `export_publication` |
 | Inspect results, failures, and timing | `artisan.visualization` | `inspect_pipeline`, `inspect_csv`, `inspect_failures`, `PipelineTimings` |
 | Discover and query bounded evidence | `artisan.inspection` | `list_inspections`, `describe_inspection`, `inspect_evidence` |
 | Read installed operating guidance | `artisan.inspection` | `list_operating_guides`, `read_operating_guide` |

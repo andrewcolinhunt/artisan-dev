@@ -27,6 +27,7 @@ from artisan.storage.core.committed_scan import (
 from artisan.storage.core.store_format import (
     assert_store_format,
     assert_store_manifest,
+    assert_writable_store,
     prepare_store_initialization,
     publish_store_manifest,
 )
@@ -103,6 +104,7 @@ class DeltaCommitter:
         evidence still requires the identical durable plan under this root.
         """
         assert_store_manifest(self.delta_base_path, self._fs)
+        assert_writable_store(self.delta_base_path, self._fs)
         staged = staged or read_plan_evidence(
             plan, self.staging_manager.staging_dir, self._fs
         )
@@ -208,6 +210,7 @@ class DeltaCommitter:
         plans are verified only when retained staging needs cleanup.
         """
         assert_store_manifest(self.delta_base_path, self._fs)
+        assert_writable_store(self.delta_base_path, self._fs)
         self._require_persisted_plan(plan)
         if prepared is not None:
             self._consume_prepared(plan, prepared)
@@ -680,6 +683,7 @@ class DeltaCommitter:
         """
         table_path = _normalize_table(table)
         assert_store_format(self.delta_base_path, self._fs, self._storage_options)
+        assert_writable_store(self.delta_base_path, self._fs)
         delta = DeltaTable(
             self._table_path(table_path),
             storage_options=self._storage_options,
