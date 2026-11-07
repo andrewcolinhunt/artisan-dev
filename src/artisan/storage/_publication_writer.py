@@ -49,7 +49,7 @@ from artisan.utils.path import shard_uri, step_dir_name, uri_join
 class _WriterFileSystem(LocalFileSystem):  # type: ignore[misc]
     """Private write adapter; only the export transaction receives this object."""
 
-    cachable = False
+    cachable = False  # codespell:ignore cachable
 
     def __init__(self, directory: Path, files: list[_File]) -> None:
         super().__init__()
