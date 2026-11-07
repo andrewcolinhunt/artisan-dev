@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Sequence
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.command_record import CommandRecording
@@ -24,10 +24,11 @@ class PublicationPolicy:
         msg = "redact must contain nonempty strings"
         if isinstance(values, str):
             raise ValueError(msg)
-        needles = tuple(values)
+        needles: tuple[object, ...] = tuple(values)
         if any(not isinstance(value, str) or not value for value in needles):
             raise ValueError(msg)
-        return cls(tuple(sorted(set(needles), key=len, reverse=True)))
+        validated = cast(tuple[str, ...], needles)
+        return cls(tuple(sorted(set(validated), key=len, reverse=True)))
 
     def matches(self, value: object) -> bool:
         """Check exact substrings, including binary scientific payloads."""
@@ -147,7 +148,10 @@ class PublicationPolicy:
             self.protected(key, "replay configuration key")
             child = pointer + "/" + str(key).replace("~", "~0").replace("/", "~1")
             if isinstance(item, str) and self.matches(item):
-                value[key] = None
+                if isinstance(value, dict):
+                    value[cast(str, key)] = None
+                else:
+                    value[cast(int, key)] = None
                 pointers.append(child)
             elif isinstance(item, (dict, list)):
                 pointers.extend(self._omit(item, child))

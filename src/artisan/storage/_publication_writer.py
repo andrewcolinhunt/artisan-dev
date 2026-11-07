@@ -6,14 +6,14 @@ import shutil
 from collections.abc import Iterator
 from pathlib import Path
 from tempfile import TemporaryDirectory
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 from deltalake import DeltaTable
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtifactIntegrityError, StoreIntegrityError
-from artisan.schemas import FileRefArtifact
+from artisan.schemas import Artifact, FileRefArtifact
 from artisan.schemas.artifact.external import copy_verified_file
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
@@ -45,7 +45,8 @@ from artisan.storage.publication import _File, _PublicationFileSystem
 from artisan.utils.path import shard_uri, step_dir_name, uri_join
 
 
-class _WriterFileSystem(LocalFileSystem):
+# Fsspec does not provide type stubs for its filesystem base classes.
+class _WriterFileSystem(LocalFileSystem):  # type: ignore[misc]
     """Private write adapter; only the export transaction receives this object."""
 
     cachable = False
@@ -58,10 +59,10 @@ class _WriterFileSystem(LocalFileSystem):
         return super().open(self.mapping._mapped(path), mode=mode, **kwargs)
 
     def exists(self, path: str, **kwargs: Any) -> bool:
-        return super().exists(self.mapping._mapped(path), **kwargs)
+        return cast(bool, super().exists(self.mapping._mapped(path), **kwargs))
 
     def info(self, path: str, **kwargs: Any) -> dict[str, Any]:
-        return super().info(self.mapping._mapped(path), **kwargs)
+        return cast(dict[str, Any], super().info(self.mapping._mapped(path), **kwargs))
 
 
 class _Source:
@@ -176,7 +177,8 @@ def _copy_files(
         storage_options=store._storage_options,
     )
     for definition in ArtifactTypeDef.get_all().values():
-        if not definition.model.EXTERNALLY_BACKED:
+        model = cast(type[Artifact], definition.model)
+        if not model.EXTERNALLY_BACKED:
             continue
         seen: set[str] = set()
         for frame in source.snapshots[definition.table_path].iter_frames():
@@ -185,10 +187,12 @@ def _copy_files(
                     msg = "Publication supports FileRef external artifacts only"
                     raise ValueError(msg)
                 policy.protected(row, definition.table_path)
-                reference = FileRefArtifact.from_row(row).finalize()
-                if reference.artifact_id in seen:
+                reference = FileRefArtifact.from_row(row)
+                reference.finalize()
+                artifact_id = cast(str, reference.artifact_id)
+                if artifact_id in seen:
                     continue
-                seen.add(reference.artifact_id)
+                seen.add(artifact_id)
                 candidates = locations.filter(
                     pl.col("artifact_id") == reference.artifact_id
                 )["uri"]
@@ -245,11 +249,11 @@ def _copy_reference(
             policy.protected(tail + chunk, "external artifact bytes")
             tail = (tail + chunk)[-overlap:] if overlap else b""
     return _File(
-        artifact_id=reference.artifact_id,
+        artifact_id=cast(str, reference.artifact_id),
         path=relative,
         uri=f"/publication/{relative}",
-        content_hash=reference.content_hash,
-        size_bytes=reference.size_bytes,
+        content_hash=cast(str, reference.content_hash),
+        size_bytes=cast(int, reference.size_bytes),
     )
 
 
@@ -270,14 +274,14 @@ def _effect_rows(
     policy: PublicationPolicy,
     locations: dict[str, str],
 ) -> Iterator[dict[str, Any]]:
-    definitions = {
-        definition.table_path: definition
+    models = {
+        definition.table_path: cast(type[Artifact], definition.model)
         for definition in ArtifactTypeDef.get_all().values()
     }
     for original in source.rows(plan, table):
         row = policy.row(table, original, locations)
-        if table in definitions:
-            definitions[table].model.from_row(row).finalize()
+        if table in models:
+            models[table].from_row(row).finalize()
         yield row
 
 
@@ -288,7 +292,7 @@ def _write_effects(
     policy: PublicationPolicy,
     locations: dict[str, str],
 ) -> dict[str, Path]:
-    paths = {}
+    paths: dict[str, Path] = {}
     for table in plan.tables:
         path = scratch / f"{len(paths)}.parquet"
         write_parquet_rows(
@@ -371,13 +375,15 @@ def _stage_worker(
             str(directory / f"{table.table_name}.parquet"), rows, get_schema(table)
         )
     if TablePath.ARTIFACT_INDEX in effects and directory != common:
-        rows = (
+        index_rows = (
             row
             for row in _rows(effects[TablePath.ARTIFACT_INDEX])
             if row["artifact_id"] in referenced
         )
         write_parquet_rows(
-            str(directory / "index.parquet"), rows, get_schema(TablePath.ARTIFACT_INDEX)
+            str(directory / "index.parquet"),
+            index_rows,
+            get_schema(TablePath.ARTIFACT_INDEX),
         )
     inventory = build_staging_inventory(str(directory), LocalFileSystem())
     write_parquet_rows(

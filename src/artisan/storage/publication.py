@@ -8,7 +8,7 @@ import shutil
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, BinaryIO
+from typing import Any, BinaryIO, cast
 
 from fsspec import AbstractFileSystem
 from fsspec.implementations.local import LocalFileSystem
@@ -36,7 +36,8 @@ class _Manifest(BaseModel):
     files: list[_File]
 
 
-class _PublicationFileSystem(AbstractFileSystem):
+# Fsspec does not provide type stubs for its filesystem base classes.
+class _PublicationFileSystem(AbstractFileSystem):  # type: ignore[misc]
     """Map published locators into one bundle without host-path fallback."""
 
     cachable = False
@@ -60,19 +61,21 @@ class _PublicationFileSystem(AbstractFileSystem):
         if mode != "rb":
             msg = "Publication files are read-only"
             raise PermissionError(msg)
-        return self.local.open(self._mapped(path), mode=mode, **kwargs)
+        return cast(BinaryIO, self.local.open(self._mapped(path), mode=mode, **kwargs))
 
     def exists(self, path: str, **kwargs: Any) -> bool:
-        return self.local.exists(self._mapped(path), **kwargs)
+        return cast(bool, self.local.exists(self._mapped(path), **kwargs))
 
     def info(self, path: str, **kwargs: Any) -> dict[str, Any]:
-        return self.local.info(self._mapped(path), **kwargs)
+        return cast(dict[str, Any], self.local.info(self._mapped(path), **kwargs))
 
     def isfile(self, path: str) -> bool:
-        return self.local.isfile(self._mapped(path))
+        return cast(bool, self.local.isfile(self._mapped(path)))
 
     def ls(self, path: str, detail: bool = True, **kwargs: Any) -> list[Any]:
-        return self.local.ls(self._mapped(path), detail=detail, **kwargs)
+        return cast(
+            list[Any], self.local.ls(self._mapped(path), detail=detail, **kwargs)
+        )
 
     def mkdir(self, path: str, create_parents: bool = True, **kwargs: Any) -> None:
         msg = "Publication files are read-only"
