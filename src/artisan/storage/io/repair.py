@@ -33,7 +33,7 @@ from artisan.storage.core.committed_scan import (
     verify_snapshot_effect,
 )
 from artisan.storage.core.run_scope import read_source_attempt_rows
-from artisan.storage.core.store_format import assert_store_format
+from artisan.storage.core.store_format import assert_store_format, assert_writable_store
 from artisan.storage.io.bounded_io import capture_parquet, iter_parquet_frames
 from artisan.storage.io.commit import DeltaCommitter, PreparedCommitEvidence
 from artisan.storage.io.commit_plan import (
@@ -135,6 +135,8 @@ def repair_store(
         StoreIntegrityError: If evidence cannot authorize the requested action.
     """
     _validate_action(apply=apply, abandon=abandon, reason=reason)
+    if apply or abandon is not None:
+        assert_writable_store(delta_root, fs)
     if recover_staging and abandon is not None:
         msg = "Recovery and abandonment are separate actions"
         raise ValueError(msg)

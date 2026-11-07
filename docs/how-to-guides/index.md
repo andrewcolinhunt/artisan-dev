@@ -37,6 +37,8 @@ Build operations, configure pipelines, and work with results.
   and inspect runs through Python or the CLI
 - [Export Complete Evidence](exporting-evidence.md) -- Save and verify complete
   assessments and comparisons
+- [Export a Sanitized Inspection Store](exporting-publication-stores.md) -- Share
+  scientific results with selected operational paths omitted
 - [Connect an MCP Client](connecting-mcp.md) -- Discover operations and inspect
   runs and failure logs through the read-only MCP server
 - [Inspecting Provenance](inspecting-provenance.md) -- Query lineage and trace
