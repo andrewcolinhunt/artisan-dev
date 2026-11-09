@@ -123,6 +123,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "CachePolicy",
         "ComputeProvider",
         "ComputeResources",
+        "CuratorInput",
         "CuratorResult",
         "DockerEnvironmentSpec",
         "EnvironmentSpec",
@@ -276,6 +277,7 @@ _SCHEMA_SUBPACKAGE_EXPORTS: dict[str, tuple[str, ...]] = {
     "artisan.schemas.orchestration": (),
     "artisan.schemas.provenance": ("LineageMapping",),
     "artisan.schemas.specs": (
+        "CuratorInput",
         "ExecuteInput",
         "InputSpec",
         "OutputSpec",

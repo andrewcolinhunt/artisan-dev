@@ -645,6 +645,7 @@ def execute_step(
             step_run_ids=step_run_ids,
             storage_options=config.storage.delta_storage_options(),
             files_root=config.files_root,
+            input_specs=operation.inputs,
         )
 
     # Cache-affecting config (environment, tool, compute_provider,

@@ -37,6 +37,7 @@ def scan_committed(
     *,
     fs: AbstractFileSystem,
     storage_options: dict[str, str] | None = None,
+    controls: pl.DataFrame | None = None,
 ) -> pl.LazyFrame:
     """Scan visible rows lazily, trusting durable logical completion records."""
     options = storage_options or {}
@@ -45,7 +46,8 @@ def scan_committed(
     if table_path == TablePath.LOGICAL_COMMITS.value:
         return read_logical_commits(delta_root, fs=fs, storage_options=options).lazy()
     physical = _scan_physical(delta_root, table_path, fs, options)
-    controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
+    if controls is None:
+        controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
     visible = physical.filter(_visibility_expression(table_path, controls))
     if "logical_commit_id" in physical.collect_schema().names():
         return visible.drop("logical_commit_id")
