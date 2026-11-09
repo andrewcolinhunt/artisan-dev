@@ -8,7 +8,7 @@ preparation for the artifact_index.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import cast
 
 import polars as pl
@@ -539,6 +539,49 @@ class ArtifactStore:
             return False
         root = self.files_root.rstrip("/")
         return uri == root or uri.startswith(f"{root}/")
+
+    def capture_associated(
+        self, requests: Mapping[str, tuple[str, ...]]
+    ) -> dict[tuple[str, str], tuple[str, ...]]:
+        """Freeze direct association IDs at one logical-commit visibility boundary.
+
+        Args:
+            requests: Primary artifact IDs mapped to declared associated types.
+
+        Returns:
+            Exact sorted membership for every requested primary/type pair,
+            including explicit empty tuples.
+        """
+        pairs = {
+            (primary, kind) for primary, kinds in requests.items() for kind in kinds
+        }
+        if not pairs:
+            return {}
+        controls = read_logical_commits(
+            self.base_path, fs=self._fs, storage_options=self._storage_options
+        )
+        edges = (
+            scan_committed(
+                self.base_path,
+                TablePath.ARTIFACT_EDGES,
+                fs=self._fs,
+                storage_options=self._storage_options,
+                controls=controls,
+            )
+            .filter(
+                pl.col("source_artifact_id").is_in(sorted(requests)),
+                pl.col("target_artifact_type").is_in(
+                    sorted({kind for _, kind in pairs})
+                ),
+            )
+            .select("source_artifact_id", "target_artifact_type", "target_artifact_id")
+            .collect()
+        )
+        captured: dict[tuple[str, str], set[str]] = {pair: set() for pair in pairs}
+        for primary, kind, target in edges.iter_rows():
+            if (primary, kind) in captured:
+                captured[(primary, kind)].add(target)
+        return {pair: tuple(sorted(captured[pair])) for pair in sorted(captured)}
 
     def get_associated(
         self,

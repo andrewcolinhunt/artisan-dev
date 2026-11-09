@@ -141,7 +141,6 @@ def test_replay_freezes_associations_before_new_descendants(tmp_path: Path) -> N
         current = manager.run(
             AssociatedMetricConsumer,
             inputs={"primary": generated.output("datasets")},
-            skip_cache=True,
             compact=False,
         )
         refreshed = _execution(runtime, current)

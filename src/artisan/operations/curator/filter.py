@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from collections import Counter
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, Any, ClassVar, Literal, cast
@@ -605,7 +606,7 @@ class Filter(OperationDefinition):
     # ---------- Lifecycle ----------
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:

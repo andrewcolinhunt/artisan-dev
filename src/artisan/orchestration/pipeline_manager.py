@@ -2199,6 +2199,7 @@ class PipelineManager:
                 storage_options=self._config.storage.delta_storage_options(),
                 files_root=self._config.files_root,
                 already_verified=already_verified,
+                input_specs=prepared_operation.inputs,
             )
             if prepared_inputs.inputs and all(
                 not artifact_ids for artifact_ids in prepared_inputs.inputs.values()

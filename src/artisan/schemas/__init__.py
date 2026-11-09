@@ -39,6 +39,7 @@ from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 from artisan.schemas.specs.input_models import (
+    CuratorInput,
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
@@ -60,6 +61,7 @@ __all__ = [
     "CachePolicy",
     "ComputeProvider",
     "ComputeResources",
+    "CuratorInput",
     "CuratorResult",
     "DockerEnvironmentSpec",
     "EnvironmentSpec",

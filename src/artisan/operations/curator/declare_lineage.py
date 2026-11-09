@@ -10,6 +10,7 @@ tuple — so re-running with the same inputs is a no-op.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar
 
@@ -136,7 +137,7 @@ class DeclareLineage(OperationDefinition):
     # ---------- Lifecycle ----------
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
@@ -233,7 +234,7 @@ class DeclareLineage(OperationDefinition):
         return [(m[_SOURCE_ROLE], m[_TARGET_ROLE]) for m in matched]
 
 
-def _extract_ids(inputs: dict[str, pl.DataFrame], *, role: str) -> list[str]:
+def _extract_ids(inputs: Mapping[str, pl.DataFrame], *, role: str) -> list[str]:
     """Return the artifact_id column for the named input role."""
     if role not in inputs:
         msg = f"DeclareLineage requires '{role}' input role; got: {list(inputs)}"

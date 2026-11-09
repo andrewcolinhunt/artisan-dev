@@ -17,6 +17,7 @@ import polars as pl
 
 from artisan.execution.context.builder import build_execution_context
 from artisan.execution.executors.curator_stream import handle_artifact_stream
+from artisan.execution.inputs.instantiation import hydrate_associated
 from artisan.execution.lineage.builder import build_edges
 from artisan.execution.lineage.enrich import (
     build_artifact_edges_from_types,
@@ -63,6 +64,7 @@ from artisan.schemas.execution.curator_result import (
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.specs.input_models import CuratorInput
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.utils.command_supervisor import (
     check_command_scope,
@@ -254,13 +256,25 @@ def _run_curator_flow(
             input_dfs = {
                 role: pl.DataFrame({"artifact_id": ids}) for role, ids in inputs.items()
             }
+            associated = hydrate_associated(
+                inputs,
+                artifact_store,
+                operation.inputs,
+                unit.replay_snapshot.associated
+                if unit.replay_snapshot and unit.replay_snapshot.associated_complete
+                else None,
+            )
+            curator_inputs = CuratorInput(
+                input_dfs,
+                {key: tuple(artifacts) for key, artifacts in associated.items()},
+            )
 
         # --- execute phase ---
         with phase_timer("execute", timings):
             try:
                 execute_start = time.perf_counter()
                 result = operation.execute_curator(
-                    inputs=input_dfs,
+                    inputs=curator_inputs,
                     step_number=unit.step_number,
                     artifact_store=artifact_store,
                 )

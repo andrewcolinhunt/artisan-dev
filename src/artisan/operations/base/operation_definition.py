@@ -16,8 +16,6 @@ from typing import (
 )
 
 if TYPE_CHECKING:
-    import polars as pl
-
     from artisan.registry.models import OperationMetadata, OperationSummary
     from artisan.storage.core.artifact_store import ArtifactStore
 
@@ -43,6 +41,7 @@ from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
+    CuratorInput,
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
@@ -401,7 +400,7 @@ class OperationDefinition(BaseModel):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> CuratorResult:
@@ -414,7 +413,8 @@ class OperationDefinition(BaseModel):
 
         Args:
             inputs: Role names mapped to DataFrames, each with an
-                ``artifact_id`` column.
+                ``artifact_id`` column, plus frozen declared associations
+                available through ``associated_artifacts()``.
             step_number: Current pipeline step number.
             artifact_store: Store for hydration and lineage lookups.
 
