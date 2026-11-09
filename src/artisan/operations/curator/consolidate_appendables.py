@@ -7,6 +7,7 @@ writes a single combined.jsonl in files_root.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -62,7 +63,7 @@ class ConsolidateAppendables(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> ArtifactResult:

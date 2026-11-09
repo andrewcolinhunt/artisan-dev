@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+from collections.abc import Mapping
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
@@ -71,7 +72,7 @@ class StructureAndMetricCurator(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> ArtifactResult:

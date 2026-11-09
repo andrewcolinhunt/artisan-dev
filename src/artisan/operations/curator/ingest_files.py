@@ -7,7 +7,7 @@ domain-specific artifacts (e.g. CSVArtifact).
 from __future__ import annotations
 
 from abc import abstractmethod
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar, cast
 
@@ -71,7 +71,7 @@ class IngestFiles(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> ArtifactResult | ArtifactStreamResult:

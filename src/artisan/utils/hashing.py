@@ -18,6 +18,14 @@ STREAM_CHUNK_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
+class AssociatedInputIdentity:
+    """Captured membership for one declared associated artifact type."""
+
+    artifact_type: str
+    artifact_ids: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class CacheInputIdentity:
     """One ordered, typed input occurrence in a cache preimage."""
 
@@ -26,6 +34,7 @@ class CacheInputIdentity:
     position: int
     artifact_type: str
     artifact_id: str
+    associated: tuple[AssociatedInputIdentity, ...] = ()
 
 
 class _CanonicalEncoder(json.JSONEncoder):
@@ -255,5 +264,8 @@ def _serialize_cache_inputs(
                     f"entry role {entry.role!r}"
                 )
                 raise ValueError(msg)
-            serialized.append(asdict(entry))
+            identity = asdict(entry)
+            if not entry.associated:
+                identity.pop("associated")
+            serialized.append(identity)
     return serialized

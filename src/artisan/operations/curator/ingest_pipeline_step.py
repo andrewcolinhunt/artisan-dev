@@ -6,6 +6,7 @@ current pipeline, with no cross-pipeline provenance edges.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from typing import ClassVar
 
 import polars as pl
@@ -94,7 +95,7 @@ class IngestPipelineStep(OperationDefinition):
     # ---------- Lifecycle ----------
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> ArtifactResult:

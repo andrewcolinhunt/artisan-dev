@@ -194,7 +194,7 @@ def prep_unit(
             default_hydrate,
             recorded_associated=(
                 unit.replay_snapshot.associated
-                if unit.replay_of_execution_run_id and unit.replay_snapshot
+                if unit.replay_snapshot and unit.replay_snapshot.associated_complete
                 else None
             ),
         )

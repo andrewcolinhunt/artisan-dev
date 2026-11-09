@@ -1,27 +1,39 @@
 """Input containers for operation lifecycle phases.
 
-Provides ``PreprocessInput``, ``ExecuteInput``, and
-``PostprocessInput`` -- structured containers passed to each phase
-of the preprocess/execute/postprocess lifecycle.
+Structured containers for creator lifecycle phases and curator execution.
 """
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any
 
+import polars as pl
+
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+
+
+def _immutable_associations(
+    associations: Mapping[tuple[str, str], Sequence[Artifact]],
+) -> Mapping[tuple[str, str], tuple[Artifact, ...]]:
+    """Copy captured membership so lifecycle phases cannot change each other's inputs."""
+    return MappingProxyType(
+        {key: tuple(values) for key, values in associations.items()}
+    )
 
 
 class _InputArtifactsMixin:
     """Shared methods for containers that hold input_artifacts and _associated."""
 
     input_artifacts: dict[str, list[Artifact]]
-    _associated: dict[tuple[str, str], list[Artifact]]
+    _associated: Mapping[tuple[str, str], Sequence[Artifact]]
     _references: dict[str, dict[str, Artifact]]
+
+    def __post_init__(self) -> None:
+        self._associated = _immutable_associations(self._associated)
 
     def referenced_artifacts(
         self, config: ExecutionConfigArtifact
@@ -57,7 +69,7 @@ class _InputArtifactsMixin:
         """
         if artifact.artifact_id is None:
             return []
-        return self._associated.get((artifact.artifact_id, assoc_type), [])
+        return list(self._associated.get((artifact.artifact_id, assoc_type), []))
 
     def grouped(self) -> Iterator[dict[str, Artifact]]:
         """Yield per-index snapshots across positionally-aligned input roles.
@@ -95,12 +107,64 @@ class PreprocessInput(_InputArtifactsMixin):
     preprocess_dir: str
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
-    _associated: dict[tuple[str, str], list[Artifact]] = field(
+    _associated: Mapping[tuple[str, str], Sequence[Artifact]] = field(
         default_factory=dict, repr=False
     )
     _references: dict[str, dict[str, Artifact]] = field(
         default_factory=dict, repr=False
     )
+
+
+@dataclass(frozen=True)
+class CuratorInput(Mapping[str, pl.DataFrame]):
+    """Role DataFrames and frozen associated inputs delivered to a curator."""
+
+    input_frames: Mapping[str, pl.DataFrame]
+    associations: Mapping[tuple[str, str], Sequence[Artifact]] = field(
+        default_factory=dict, repr=False
+    )
+
+    def __post_init__(self) -> None:
+        """Copy membership so callers cannot mutate the delivered snapshot."""
+        object.__setattr__(
+            self, "input_frames", MappingProxyType(dict(self.input_frames))
+        )
+        object.__setattr__(
+            self,
+            "associations",
+            _immutable_associations(self.associations),
+        )
+
+    def __getitem__(self, role: str) -> pl.DataFrame:
+        return self.input_frames[role]
+
+    def __iter__(self) -> Iterator[str]:
+        return iter(self.input_frames)
+
+    def __len__(self) -> int:
+        return len(self.input_frames)
+
+    def associated_artifacts(
+        self, artifact: Artifact | str, assoc_type: str
+    ) -> list[Artifact]:
+        """Return captured membership for a declared primary/type pair.
+
+        Args:
+            artifact: A primary input artifact or its exact artifact ID.
+            assoc_type: Associated artifact type declared by the input spec.
+
+        Returns:
+            A copy of the captured member list, including an empty list when
+            the declared pair had no associated artifacts at capture time.
+
+        Raises:
+            ValueError: If this primary/type pair was not captured.
+        """
+        artifact_id = artifact if isinstance(artifact, str) else artifact.artifact_id
+        if artifact_id is None or (artifact_id, assoc_type) not in self.associations:
+            msg = "Associated type was not captured for this curator input"
+            raise ValueError(msg)
+        return list(self.associations[(artifact_id, assoc_type)])
 
 
 @dataclass(frozen=True)
@@ -173,7 +237,7 @@ class PostprocessInput(_InputArtifactsMixin):
     memory_outputs: Any = None
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
-    _associated: dict[tuple[str, str], list[Artifact]] = field(
+    _associated: Mapping[tuple[str, str], Sequence[Artifact]] = field(
         default_factory=dict, repr=False
     )
     _references: dict[str, dict[str, Artifact]] = field(
