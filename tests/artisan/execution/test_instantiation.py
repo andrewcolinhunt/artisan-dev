@@ -6,9 +6,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from artisan.execution.inputs.instantiation import instantiate_inputs
+from artisan.execution.inputs.instantiation import (
+    hydrate_associated,
+    instantiate_inputs,
+)
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.replay import ReplayAssociation
 from artisan.schemas.specs.input_spec import InputSpec
 
 
@@ -30,6 +34,37 @@ def _make_metric(artifact_id: str) -> MetricArtifact:
         original_name="test_metric",
         extension=".json",
     )
+
+
+@pytest.mark.parametrize("recorded", [None, []])
+def test_associations_require_capture_even_when_no_artifacts_exist(recorded) -> None:
+    store = MagicMock()
+    with pytest.raises(ValueError, match="complete frozen"):
+        hydrate_associated(
+            {"primary": ["a" * 32]},
+            store,
+            {"primary": InputSpec(with_associated=("metric",))},
+            recorded,
+        )
+    store.get_associated.assert_not_called()
+    store.get_artifacts_by_type.assert_not_called()
+
+
+def test_missing_captured_association_fails_without_rediscovery() -> None:
+    store = MagicMock()
+    store.get_artifacts_by_type.return_value = {}
+    with pytest.raises(ValueError, match="missing"):
+        hydrate_associated(
+            {"primary": ["a" * 32]},
+            store,
+            {"primary": InputSpec(with_associated=("metric",))},
+            [
+                ReplayAssociation(
+                    primary_id="a" * 32, artifact_type="metric", artifact_ids=["b" * 32]
+                )
+            ],
+        )
+    store.get_associated.assert_not_called()
 
 
 class TestInstantiateInputs:
@@ -236,9 +271,10 @@ class TestInstantiateInputs:
         assert result["files"][0].artifact_id == f_id
         store.get_artifact.assert_not_called()
 
-    def test_with_associated_calls_get_associated(self):
-        """with_associated triggers get_associated() for each type."""
+    def test_with_associated_hydrates_exact_captured_ids(self):
+        """Associated membership comes from capture, never live discovery."""
         from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+        from artisan.schemas.execution.replay import ReplayAssociation
 
         s_id = "a" * 32
         assoc = ExecutionConfigArtifact.draft(
@@ -249,19 +285,30 @@ class TestInstantiateInputs:
 
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
-        store.get_artifacts_by_type.return_value = {s_id: _make_metric_alt(s_id)}
-        store.get_associated.return_value = {s_id: [assoc]}
+        store.get_artifacts_by_type.side_effect = [
+            {s_id: _make_metric_alt(s_id)},
+            {assoc.artifact_id: assoc},
+        ]
 
         spec = InputSpec(
             artifact_type="metric",
             with_associated=("config",),
         )
         result, associated = instantiate_inputs(
-            {"metric": [s_id]}, store, {"metric": spec}
+            {"metric": [s_id]},
+            store,
+            {"metric": spec},
+            recorded_associated=[
+                ReplayAssociation(
+                    primary_id=s_id,
+                    artifact_type="config",
+                    artifact_ids=[assoc.artifact_id],
+                )
+            ],
         )
 
         assert len(result["metric"]) == 1
-        store.get_associated.assert_called_once_with({s_id}, "config")
+        store.get_associated.assert_not_called()
         assert (s_id, "config") in associated
         assert associated[(s_id, "config")] == [assoc]
 

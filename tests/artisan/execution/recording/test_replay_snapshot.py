@@ -2,26 +2,71 @@
 
 from __future__ import annotations
 
+from typing import ClassVar
+
 import pytest
 from pydantic import SecretStr
 
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording.replay_snapshot import (
+    ReplayBuilder,
     _configuration,
     build_replay_snapshot,
 )
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_transformer import DataTransformer
+from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.specs.input_spec import InputSpec
 from artisan.utils.hashing import (
+    AssociatedInputIdentity,
     CacheInputIdentity,
     compute_execution_spec_id,
     effective_config_payload,
     serialize_params,
 )
+
+
+def test_replay_associations_must_match_the_cache_snapshot(tmp_path) -> None:
+    class AssociatedTransformer(DataTransformer):
+        name = "replay_associated_transformer"
+        inputs: ClassVar[dict[str, InputSpec]] = {
+            "dataset": InputSpec(with_associated=("metric",)),
+        }
+
+    operation = AssociatedTransformer()
+    occurrences = {
+        "dataset": [
+            CacheInputIdentity(
+                "dataset",
+                None,
+                0,
+                "csv",
+                "a" * 32,
+                (AssociatedInputIdentity("metric", ()),),
+            )
+        ]
+    }
+    unit = ExecutionUnit(
+        operation=operation,
+        inputs={"dataset": ["a" * 32]},
+        execution_spec_id=compute_execution_spec_id(
+            operation.name,
+            occurrences,
+            serialize_params(operation),
+            effective_config_payload(operation),
+        ),
+    )
+    snapshot = build_replay_snapshot(unit, _runtime(tmp_path), occurrences)
+    assert snapshot.associated_complete
+    assert snapshot.associated[0].artifact_ids == []
+    changed = snapshot.model_dump(mode="json")
+    changed["associated"][0]["artifact_ids"] = ["b" * 32]
+    with pytest.raises(ValueError, match="differ from the frozen cache inputs"):
+        ReplaySnapshot.model_validate(changed)
 
 
 def _runtime(tmp_path):
@@ -30,6 +75,20 @@ def _runtime(tmp_path):
         staging_root=str(tmp_path / "staging"),
         working_root=str(tmp_path / "work"),
     )
+
+
+def test_replay_association_owner_order_does_not_change_membership() -> None:
+    artifact = MetricArtifact.draft({"value": 1}, "metric.json", 0).finalize()
+    captured = {("a" * 32, "metric"): [], ("b" * 32, "metric"): [artifact]}
+    builder = ReplayBuilder(ReplaySnapshot.unavailable("fixture"))
+    builder.record_associated(captured)
+    snapshot = builder.snapshot
+    prior_order = snapshot.model_copy(
+        update={"associated": list(reversed(snapshot.associated))}
+    )
+    replay = ReplayBuilder(prior_order)
+    replay.record_associated(captured)
+    assert replay.snapshot.associated == snapshot.associated
 
 
 def test_capture_exact_duplicates_and_groups(tmp_path):
