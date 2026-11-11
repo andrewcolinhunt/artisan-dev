@@ -475,6 +475,7 @@ def replay_execution(
     )
     unit = ExecutionUnit(
         operation=operation,
+        associated_inputs=snapshot.associated,
         inputs={
             role: [entry.artifact_id for entry in entries]
             for role, entries in snapshot.inputs.items()

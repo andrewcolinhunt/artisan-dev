@@ -28,6 +28,7 @@ import polars as pl
 from artisan.operations.base import OperationDefinition
 from artisan.schemas import (
     ArtifactTypes,
+    CuratorInput,
     InputSpec,
     OutputSpec,
     PassthroughResult,
@@ -57,7 +58,7 @@ class SimpleMerge(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
@@ -338,7 +339,7 @@ class NameFilter(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
@@ -387,7 +388,7 @@ class TaggedMerge(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
