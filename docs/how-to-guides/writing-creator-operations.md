@@ -302,6 +302,13 @@ related artifacts. Preserve the same input order when preparing values for
 `PerArtifact`. See the [input model docstrings](../reference/python-api.md)
 for association access and grouping methods.
 
+The framework captures all declared associations together before checking either
+cache. Their types and exact IDs, including empty memberships, become cache inputs.
+Workers and diagnostic replay load those captured IDs: an association added after
+capture appears on the next run, without changing a run already prepared. Use this
+accessor for associations that affect an operation's result; a live store query is
+not part of its cache identity.
+
 ---
 
 ## Implement execute

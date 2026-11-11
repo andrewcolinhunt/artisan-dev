@@ -28,6 +28,7 @@ import polars as pl
 from artisan.operations.base import OperationDefinition
 from artisan.schemas import (
     ArtifactTypes,
+    CuratorInput,
     InputSpec,
     OutputSpec,
     PassthroughResult,
@@ -57,7 +58,7 @@ class SimpleMerge(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
@@ -254,18 +255,43 @@ For curator input and output validation:
 ### Method signature
 
 ```python
+from artisan.schemas import CuratorInput
+
 def execute_curator(
     self,
-    inputs: dict[str, pl.DataFrame],
+    inputs: CuratorInput,
     step_number: int,
     artifact_store: ArtifactStore,
 ) -> PassthroughResult | ArtifactResult | ArtifactStreamResult:
     ...
 ```
 
-`inputs` maps roles to Polars DataFrames with at least an `artifact_id` column.
+`inputs` is a read-only mapping from roles to Polars DataFrames with at least an
+`artifact_id` column. Existing indexing, iteration, and `.get()` calls work.
 Load content, metrics, or provenance through `artifact_store`. Use `step_number`
 when creating drafts.
+
+### Associated inputs
+
+Declare associated artifact types with `InputSpec.with_associated`, then read
+them from the supplied input context:
+
+```python
+inputs = {
+    "dataset": InputSpec(artifact_type="csv", with_associated=("metric",)),
+}
+
+# Inside execute_curator():
+for artifact_id in inputs["dataset"]["artifact_id"]:
+    metrics = inputs.associated_artifacts(artifact_id, "metric")
+```
+
+The framework captures all declared memberships before cache lookup. Types and
+exact IDs, including empty memberships, participate in both cache keys and are
+saved for diagnostic replay. The accessor loads that captured membership without
+discovering newer associations. Undeclared primary/type pairs raise `ValueError`.
+Use it instead of live association discovery when those artifacts affect the
+result.
 
 ---
 
@@ -313,7 +339,7 @@ class NameFilter(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
@@ -362,7 +388,7 @@ class TaggedMerge(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:

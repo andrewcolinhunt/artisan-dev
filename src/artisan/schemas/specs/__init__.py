@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from artisan.schemas.specs.input_models import (
+    CuratorInput,
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
@@ -11,6 +12,7 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
 __all__ = [
+    "CuratorInput",
     "ExecuteInput",
     "InputSpec",
     "OutputSpec",

@@ -12,7 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from artisan.execution.inputs._validation import is_hex_id
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.schemas.execution.replay import ReplayAssociation, ReplaySnapshot
 
 
 class ExecutionUnit(BaseModel):
@@ -25,6 +25,8 @@ class ExecutionUnit(BaseModel):
     Attributes:
         operation: Fully configured operation instance.
         inputs: Role-keyed lists of 32-character artifact IDs.
+        associated_inputs: Frozen memberships captured before cache lookup,
+            independent of diagnostic replay availability.
         execution_spec_id: Deterministic xxh3_128 hash for cache lookup.
         step_number: Pipeline step number for artifact metadata.
         group_ids: Per-index group IDs from framework pairing (optional).
@@ -34,6 +36,7 @@ class ExecutionUnit(BaseModel):
 
     operation: OperationDefinition
     inputs: dict[str, list[str]] = Field(default_factory=dict)
+    associated_inputs: list[ReplayAssociation] = Field(default_factory=list)
     execution_spec_id: str = Field(
         default="",
         description="Deterministic hash for caching (xxh3_128)",

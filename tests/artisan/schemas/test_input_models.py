@@ -6,12 +6,54 @@ import dataclasses
 from collections.abc import Callable
 from pathlib import Path
 
+import polars as pl
 import pytest
 
-from artisan.schemas import ExecuteInput, PostprocessInput, PreprocessInput
+from artisan.schemas import (
+    CuratorInput,
+    ExecuteInput,
+    PostprocessInput,
+    PreprocessInput,
+)
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
+
+
+def test_curator_association_membership_cannot_be_modified() -> None:
+    primary = "a" * 32
+    metric = MetricArtifact.draft({"value": 1}, "metric.json", 0).finalize()
+    members = [metric]
+    inputs = CuratorInput(
+        {"data": pl.DataFrame({"artifact_id": [primary]})},
+        {(primary, "metric"): members},
+    )
+    members.clear()
+    returned = inputs.associated_artifacts(primary, "metric")
+    returned.clear()
+    assert inputs.associated_artifacts(primary, "metric") == [metric]
+    with pytest.raises(TypeError):
+        inputs.associations[(primary, "metric")] = ()
+    with pytest.raises(ValueError, match="not captured"):
+        inputs.associated_artifacts(primary, "config")
+
+
+@pytest.mark.parametrize("phase", [PreprocessInput, PostprocessInput])
+def test_creator_association_membership_is_frozen(phase, tmp_path) -> None:
+    primary = MetricArtifact.draft({"value": 1}, "primary.json", 0).finalize()
+    annotation = MetricArtifact.draft({"value": 2}, "associated.json", 0).finalize()
+    members = [annotation]
+    kwargs = (
+        {"preprocess_dir": str(tmp_path)}
+        if phase is PreprocessInput
+        else {"postprocess_dir": str(tmp_path), "step_number": 2}
+    )
+    inputs = phase(**kwargs, _associated={(primary.artifact_id, "metric"): members})
+    members.clear()
+    inputs.associated_artifacts(primary, "metric").clear()
+    assert inputs.associated_artifacts(primary, "metric") == [annotation]
+    with pytest.raises(TypeError):
+        inputs._associated[(primary.artifact_id, "metric")] = ()
 
 
 @pytest.mark.parametrize("phase", [PreprocessInput, PostprocessInput])
@@ -157,7 +199,7 @@ class TestPostprocessInput:
         inp = PostprocessInput(
             0, str(tmp_path), [], None, {}, {}, associated, references
         )
-        assert inp._associated is associated
+        assert inp._associated == {("a" * 32, "metric"): ()}
         assert inp._references is references
         assert inp.files_dir is None
 

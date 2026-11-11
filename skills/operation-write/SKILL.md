@@ -192,10 +192,14 @@ from __future__ import annotations
 from enum import StrEnum, auto
 from typing import TYPE_CHECKING, ClassVar
 
-import polars as pl
-
 from artisan.operations.base import OperationDefinition
-from artisan.schemas import ArtifactTypes, InputSpec, OutputSpec, PassthroughResult
+from artisan.schemas import (
+    ArtifactTypes,
+    CuratorInput,
+    InputSpec,
+    OutputSpec,
+    PassthroughResult,
+)
 
 if TYPE_CHECKING:
     from artisan.storage import ArtifactStore
@@ -230,7 +234,7 @@ class MyCurator(OperationDefinition):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: CuratorInput,
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> PassthroughResult:
