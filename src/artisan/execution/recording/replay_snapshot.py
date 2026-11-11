@@ -416,6 +416,13 @@ def capture_replay(
             snapshot = build_replay_snapshot(unit, runtime, occurrences)
         except (KeyError, ValueError, OSError, ArtisanError):
             snapshot = ReplaySnapshot.unavailable("unverified_input_occurrences")
+    if snapshot.associated_complete and sorted(
+        unit.associated_inputs, key=lambda item: (item.primary_id, item.artifact_type)
+    ) != sorted(
+        snapshot.associated, key=lambda item: (item.primary_id, item.artifact_type)
+    ):
+        msg = "Runtime associations differ from the frozen replay snapshot"
+        raise ValueError(msg)
     builder = ReplayBuilder(snapshot)
     builder.record_remote(
         RemoteObservation(

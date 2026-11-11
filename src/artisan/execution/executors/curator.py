@@ -260,9 +260,7 @@ def _run_curator_flow(
                 inputs,
                 artifact_store,
                 operation.inputs,
-                unit.replay_snapshot.associated
-                if unit.replay_snapshot and unit.replay_snapshot.associated_complete
-                else None,
+                unit.associated_inputs,
             )
             curator_inputs = CuratorInput(
                 input_dfs,

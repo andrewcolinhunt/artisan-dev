@@ -12,11 +12,12 @@ from artisan.execution.recording.replay_snapshot import (
     ReplayBuilder,
     _configuration,
     build_replay_snapshot,
+    capture_replay,
 )
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_transformer import DataTransformer
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.schemas.execution.replay import ReplaySnapshot, captured_associations
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.operation_config.environments import Environments
@@ -67,6 +68,18 @@ def test_replay_associations_must_match_the_cache_snapshot(tmp_path) -> None:
     changed["associated"][0]["artifact_ids"] = ["b" * 32]
     with pytest.raises(ValueError, match="differ from the frozen cache inputs"):
         ReplaySnapshot.model_validate(changed)
+    unit.replay_snapshot = snapshot
+    unit.associated_inputs = captured_associations(occurrences)
+    with capture_replay(unit, _runtime(tmp_path)):
+        pass
+    unit.associated_inputs[0] = unit.associated_inputs[0].model_copy(
+        update={"artifact_ids": ["b" * 32]}
+    )
+    with (
+        pytest.raises(ValueError, match="Runtime associations differ"),
+        capture_replay(unit, _runtime(tmp_path)),
+    ):
+        pass
 
 
 def _runtime(tmp_path):

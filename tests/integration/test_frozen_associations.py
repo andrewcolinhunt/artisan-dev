@@ -4,22 +4,60 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import polars as pl
 import pytest
 from fixtures.frozen_association_ops import AssociationCountCurator
 
 from artisan.execution.inputs.instantiation import instantiate_inputs
 from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration.engine.inputs import prepare_inputs
-from artisan.schemas import InputSpec
+from artisan.schemas import CSVArtifact, InputSpec
 from artisan.schemas.execution.replay import ReplaySnapshot, captured_associations
 from artisan.schemas.orchestration.step_result import StepDisposition
 from artisan.storage import ArtifactStore
 from artisan.utils.hashing import compute_execution_spec_id, compute_step_spec_id
 
 from .test_multi_input import AssociatedMetricConsumer
-from .test_replay_inputs import _execution, _manager, _runtime
+from .test_replay_inputs import _execution, _manager, _outputs, _runtime
 
 pytestmark = pytest.mark.integration
+
+
+@pytest.mark.parametrize(
+    ("consumer", "count_column"),
+    [(AssociatedMetricConsumer, "assoc_count"), (AssociationCountCurator, "count")],
+)
+def test_frozen_associations_work_when_replay_configuration_is_unavailable(
+    tmp_path: Path, consumer: type, count_column: str
+) -> None:
+    runtime = _runtime(tmp_path)
+    secret = "synthetic-sensitive-config-key"
+    with _manager(tmp_path) as manager:
+        generated = manager.run(
+            DataGenerator, params={"count": 1, "seed": 97}, compact=False
+        )
+        manager.run(
+            MetricCalculator,
+            inputs={"dataset": generated.output("datasets")},
+            compact=False,
+        )
+        result = manager.run(
+            consumer,
+            inputs={"primary": generated.output("datasets")},
+            environment={
+                "active": "local",
+                "local": {"env": {"TOKEN": secret, secret: "value"}},
+            },
+            compact=False,
+        )
+        execution = _execution(runtime, result)
+        snapshot = ReplaySnapshot.model_validate_json(execution["replay_snapshot"])
+        assert snapshot.status == "unavailable"
+        assert secret not in execution["replay_snapshot"]
+        output_id = _outputs(runtime, execution["execution_run_id"])[0]
+        output = ArtifactStore(runtime.delta_root).get_artifact(output_id, "csv")
+        assert isinstance(output, CSVArtifact)
+        assert set(pl.read_csv(output.content)[count_column]) == {1}
 
 
 @pytest.mark.parametrize(

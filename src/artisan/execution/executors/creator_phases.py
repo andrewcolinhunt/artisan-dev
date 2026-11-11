@@ -192,11 +192,7 @@ def prep_unit(
             artifact_store,
             input_specs,
             default_hydrate,
-            recorded_associated=(
-                unit.replay_snapshot.associated
-                if unit.replay_snapshot and unit.replay_snapshot.associated_complete
-                else None
-            ),
+            recorded_associated=unit.associated_inputs,
         )
         if replay_builder is not None:
             replay_builder.record_associated(associated)
