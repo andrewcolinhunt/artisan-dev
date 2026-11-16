@@ -35,6 +35,7 @@ from artisan.schemas.execution.curator_admission import (
 from artisan.schemas.execution.replay import ReplayDiagnostic
 from artisan.schemas.execution.worker_ownership import OwnershipState, WorkerOwner
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.output_reference import StepSource
 from artisan.schemas.orchestration.step_lifecycle import (
     TERMINAL_STEP_STATUSES,
     CancellationAcknowledgement,
@@ -157,6 +158,10 @@ class RetainedCuratorExecution:
                 state.output_types,
                 self._future,
                 lambda: self.tracker.current_state(self.record.step_run_id).status,
+                source=StepSource(
+                    store=self.tracker.committer.store_identity,
+                    step_run_id=self.record.step_run_id,
+                ),
             )
 
     def run(self, pool: Executor) -> StepResult:

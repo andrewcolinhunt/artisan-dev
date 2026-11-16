@@ -233,7 +233,7 @@ def test_interactive_filter_output_reference(pipeline_env: dict[str, str]):
     step_result = filt.commit("interactive_filter")
     ref = step_result.output("passthrough")
 
-    assert ref.source_step == step_result.step_number
+    assert ref.source.step_run_id == step_result.step_run_id
     assert ref.role == "passthrough"
 
     # Verify the execution record has correct metadata

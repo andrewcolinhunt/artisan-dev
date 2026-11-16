@@ -63,14 +63,14 @@ def _frame(*, passthrough: bool = False, multiple: bool = False) -> pl.DataFrame
 @pytest.mark.parametrize(
     ("encoded", "expected"),
     [
-        (json.dumps({"data": [_ref(1, "data")]}), [(1, "data", "attempt-1")]),
+        (json.dumps({"data": [_ref(1, "data")]}), [("attempt-1", "data")]),
         (
             json.dumps({"data": [_ref(0, "file"), _ref(1, "data")]}),
-            [(0, "file", "attempt-0"), (1, "data", "attempt-1")],
+            [("attempt-0", "file"), ("attempt-1", "data")],
         ),
         (
             json.dumps({"data": [_ref(0, "file")], "config": ["artifact-id"]}),
-            [(0, "file", "attempt-0")],
+            [("attempt-0", "file")],
         ),
         (json.dumps({"paths": ["/data/input.csv"]}), []),
         ("null", []),
@@ -78,7 +78,7 @@ def _frame(*, passthrough: bool = False, multiple: bool = False) -> pl.DataFrame
     ],
 )
 def test_parse_input_refs_keeps_exact_attempts(
-    encoded: str, expected: list[tuple[int, str, str]]
+    encoded: str, expected: list[tuple[str, str]]
 ) -> None:
     assert _parse_input_refs(encoded) == expected
 
@@ -137,9 +137,9 @@ def test_prior_attempt_reference_never_points_to_current_output() -> None:
         .alias("step_run_id")
     )
     graph = _build_macro_graph(rows).source
-    assert '"data_0_attempt-0_file" -> exec_1' in graph
+    assert '"external_attempt-0_file" -> exec_1' in graph
     assert "data_0_file -> exec_1" not in graph
-    assert "file (prior attempt)" in graph
+    assert "file (source attempt attempt-)" in graph
 
 
 @pytest.mark.parametrize("format", ["svg", "png"])
@@ -188,7 +188,7 @@ def test_public_macro_selects_current_run_and_exact_prior_reference(
     assert "(0) new" in source
     assert "consumer" in source
     assert "unrelated" not in source
-    assert f"data_0_{first}_data -> exec_1" in source
+    assert f"external_{first}_data -> exec_1" in source
     assert "data_0_data -> exec_1" not in source
     assert "unrelated" in build_macro_graph(str(root)).source
 
@@ -209,3 +209,17 @@ def test_public_render_accepts_initialized_empty_store(tmp_path: Path) -> None:
     inspection_store(root)
     output = render_macro_graph(str(root), str(tmp_path / "graph"))
     assert Path(output).is_file()
+
+
+def test_source_bound_references_connect_by_attempt_without_step_numbers() -> None:
+    rows = _frame().to_dicts()
+    rows[1]["input_refs_json"] = json.dumps(
+        {"input": [{"step_run_id": "attempt-0", "role": "file", "store": {}}]}
+    )
+    rows[2]["input_refs_json"] = json.dumps(
+        {"input": [{"step_run_id": "foreign-attempt", "role": "data", "store": {}}]}
+    )
+    graph = _build_macro_graph(pl.DataFrame(rows)).source
+    assert "data_0_file -> exec_1" in graph
+    assert '"external_foreign-attempt_data" -> exec_2' in graph
+    assert "data_1_data -> exec_2" not in graph

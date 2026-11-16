@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fixtures.candidate_outputs import external_case, prepare_scientific
 from fixtures.curator_cache import STAMPS, DynamicCurator, stage_observed
-from fixtures.retained_acceptance import open_committer
+from fixtures.output_references import SYNTHETIC_STORE, output_reference
 from fixtures.retained_curators import admit_curator
 from fixtures.retained_results import retained_case
 
@@ -30,20 +30,22 @@ from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.retained_reader import AcceptedArtifact
 from artisan.storage.io.input_registration_plan import read_input_registration
 from artisan.storage.io.retained_commit import RetainedCommitter
+from artisan.storage.io.retained_store import create_retained_store
 from artisan.storage.io.step_result_plan import StepUnitFailure
 
 
 @pytest.fixture
 def committer(tmp_path: Path) -> RetainedCommitter:
     storage = StorageConfig()
-    return open_committer(
-        str(tmp_path / "store"), storage.filesystem(), storage, initialize=True
+    return create_retained_store(
+        str(tmp_path / "store"),
+        str(tmp_path / "store" / "files"),
+        fs=storage.filesystem(),
     )
 
 
@@ -84,14 +86,12 @@ def _source(
 
 
 def test_snapshot_binds_attempts_and_copies_all_caller_containers() -> None:
-    attempts = {7: "a" * 32}
-    reference = OutputReference(source_step=7, role="data", artifact_type="csv")
+    reference = output_reference("a" * 32, artifact_type="csv")
     members = [reference, reference]
     inputs = {"data": members, "empty": []}
-    frozen = normalize_pipeline_inputs(inputs, step_run_ids=attempts)
+    frozen = normalize_pipeline_inputs(inputs, store_identity=SYNTHETIC_STORE)
     members.clear()
     inputs.clear()
-    attempts[7] = "b" * 32
     assert frozen.dependency_step_run_ids == ("a" * 32,)
     assert len(frozen.roles[0].members) == 2
     assert frozen.roles[1].members == ()
@@ -99,7 +99,6 @@ def test_snapshot_binds_attempts_and_copies_all_caller_containers() -> None:
         frozen.diagnostic_data()["data"]
         == [
             {
-                "source_step": 7,
                 "step_run_id": "a" * 32,
                 "role": "data",
                 "artifact_type": "csv",
@@ -110,9 +109,9 @@ def test_snapshot_binds_attempts_and_copies_all_caller_containers() -> None:
 
 
 def test_explicit_empty_sequence_keeps_no_work_intent() -> None:
-    absent = normalize_pipeline_inputs(None, step_run_ids={})
-    assert normalize_pipeline_inputs({}, step_run_ids={}) == absent
-    empty = normalize_pipeline_inputs([], step_run_ids={})
+    absent = normalize_pipeline_inputs(None, store_identity=SYNTHETIC_STORE)
+    assert normalize_pipeline_inputs({}, store_identity=SYNTHETIC_STORE) == absent
+    empty = normalize_pipeline_inputs([], store_identity=SYNTHETIC_STORE)
     assert empty != absent
     assert empty.raw_paths == ()
     assert empty.diagnostic_data() == {"raw_paths": []}
@@ -122,7 +121,9 @@ def test_artifact_snapshot_and_diagnostics_never_include_content() -> None:
     artifact = MetricArtifact.draft(
         {"private_body": "do-not-record"}, "input.json"
     ).finalize()
-    frozen = normalize_pipeline_inputs({"data": [artifact]}, step_run_ids={})
+    frozen = normalize_pipeline_inputs(
+        {"data": [artifact]}, store_identity=SYNTHETIC_STORE
+    )
     artifact.materialized_path = "later-mutation"
     copied = frozen.roles[0].members[0]
     assert isinstance(copied, Artifact)
@@ -130,7 +131,8 @@ def test_artifact_snapshot_and_diagnostics_never_include_content() -> None:
     assert copied is not artifact
     assert "do-not-record" not in json.dumps(frozen.diagnostic_data())
     raw = normalize_pipeline_inputs(
-        ["https://example.invalid/input?token=private-token"], step_run_ids={}
+        ["https://example.invalid/input?token=private-token"],
+        store_identity=SYNTHETIC_STORE,
     )
     recorder = CommandRecorder()
     recorder.add_sensitive_data("private-token")
@@ -144,13 +146,15 @@ def test_artifact_snapshot_and_diagnostics_never_include_content() -> None:
 )
 def test_invalid_shapes_fail_without_storage_access(inputs: object) -> None:
     with pytest.raises(TypeError):
-        normalize_pipeline_inputs(inputs, step_run_ids={})  # type: ignore[arg-type]
+        normalize_pipeline_inputs(inputs, store_identity=SYNTHETIC_STORE)  # type: ignore[arg-type]
 
 
-def test_reference_without_attempt_binding_never_defers_to_latest() -> None:
-    with pytest.raises(ValueError, match="No submitted attempt"):
+def test_reference_to_another_store_never_rebinds_to_local_attempt() -> None:
+    other_store = SYNTHETIC_STORE.model_copy(update={"delta_root": "/other/delta"})
+    with pytest.raises(ValueError, match="store"):
         normalize_pipeline_inputs(
-            {"data": OutputReference(source_step=7, role="data")}, step_run_ids={}
+            {"data": output_reference("a" * 32, store=other_store)},
+            store_identity=SYNTHETIC_STORE,
         )
 
 
@@ -159,11 +163,10 @@ def test_exact_reference_expansion_preserves_duplicates_after_later_retry(
     tmp_path: Path,
 ) -> None:
     expected = _source(committer, tmp_path)
-    reference = OutputReference(source_step=7, role="data")
-    attempts = {7: "a" * 32}
+    reference = output_reference("a" * 32, store=committer.store_identity)
     frozen = normalize_pipeline_inputs(
         {"data": [reference, expected[0], reference], "empty": []},
-        step_run_ids=attempts,
+        store_identity=committer.store_identity,
     )
     newer, new_admission, _ = prepare_scientific(
         committer, retained_case(tmp_path, kind="alias"), step_run_id="b" * 32
@@ -171,7 +174,6 @@ def test_exact_reference_expansion_preserves_duplicates_after_later_retry(
     newer.finish(
         new_admission.step_run_id, failures={0: StepUnitFailure(error="failed retry")}
     )
-    attempts[7] = new_admission.step_run_id
     resolved = resolve_creator_inputs(
         frozen,
         record=_pending(committer),
@@ -195,8 +197,8 @@ def test_failed_selected_attempt_does_not_fall_back_to_old_success(
     )
     failed.finish(admission.step_run_id, failures={0: StepUnitFailure(error="failure")})
     frozen = normalize_pipeline_inputs(
-        [OutputReference(source_step=7, role="data")],
-        step_run_ids={7: admission.step_run_id},
+        [output_reference(admission.step_run_id, store=committer.store_identity)],
+        store_identity=committer.store_identity,
     )
     resolved = resolve_curator_inputs(
         frozen,
@@ -217,8 +219,12 @@ def test_exact_reference_rejects_wrong_role_or_type(
 ) -> None:
     _source(committer, tmp_path)
     frozen = normalize_pipeline_inputs(
-        {"data": OutputReference(source_step=7, role=role, artifact_type=kind)},
-        step_run_ids={7: "a" * 32},
+        {
+            "data": output_reference(
+                "a" * 32, role=role, artifact_type=kind, store=committer.store_identity
+            )
+        },
+        store_identity=committer.store_identity,
     )
     with pytest.raises((ValueError, StoreIntegrityError)):
         resolve_creator_inputs(
@@ -238,7 +244,8 @@ def test_registered_ids_remain_unscoped_while_typed_accepted_inputs_keep_produce
     artifact_id = accepted.artifact.artifact_id
     assert artifact_id is not None
     frozen = normalize_pipeline_inputs(
-        {"data": [artifact_id, accepted, artifact_id]}, step_run_ids={}
+        {"data": [artifact_id, accepted, artifact_id]},
+        store_identity=committer.store_identity,
     )
     record = _pending(committer)
     scientific = resolve_creator_inputs(
@@ -269,7 +276,9 @@ def test_curator_bare_artifacts_require_matching_existing_registration(
 ) -> None:
     accepted = _source(committer, tmp_path)[0]
     record = _pending(committer)
-    frozen = normalize_pipeline_inputs({"data": [accepted.artifact]}, step_run_ids={})
+    frozen = normalize_pipeline_inputs(
+        {"data": [accepted.artifact]}, store_identity=committer.store_identity
+    )
     assert resolve_curator_inputs(
         frozen,
         record=record,
@@ -282,14 +291,18 @@ def test_curator_bare_artifacts_require_matching_existing_registration(
     )
     with pytest.raises(StoreIntegrityError, match="registered content"):
         resolve_curator_inputs(
-            normalize_pipeline_inputs({"data": [changed]}, step_run_ids={}),
+            normalize_pipeline_inputs(
+                {"data": [changed]}, store_identity=committer.store_identity
+            ),
             record=record,
             committer=committer,
             storage=StorageConfig(),
             check_cancelled=_check,
         )
     absent = MetricArtifact.draft({"new": 1}, "new.json").finalize()
-    snapshot = normalize_pipeline_inputs({"data": [absent]}, step_run_ids={})
+    snapshot = normalize_pipeline_inputs(
+        {"data": [absent]}, store_identity=committer.store_identity
+    )
     with pytest.raises(StoreIntegrityError, match="registered content"):
         resolve_curator_inputs(
             snapshot,
@@ -317,7 +330,7 @@ def test_raw_paths_register_once_preserve_repeats_and_survive_source_deletion(
     path = tmp_path / "raw.csv"
     path.write_bytes(b"value\n1\n")
     paths = [str(path), str(path)]
-    frozen = normalize_pipeline_inputs(paths, step_run_ids={})
+    frozen = normalize_pipeline_inputs(paths, store_identity=committer.store_identity)
     paths.clear()
     record = _pending(committer)
 
@@ -352,7 +365,9 @@ def test_post_registration_cancellation_stops_before_input_admission(
 ) -> None:
     path = tmp_path / "raw.csv"
     path.write_bytes(b"x\n1\n")
-    frozen = normalize_pipeline_inputs([str(path)], step_run_ids={})
+    frozen = normalize_pipeline_inputs(
+        [str(path)], store_identity=committer.store_identity
+    )
     record = _pending(committer)
 
     def stop() -> None:
@@ -394,7 +409,9 @@ def test_resolution_requires_durable_pending_before_raw_file_access(
     )
     with pytest.raises(PersistenceIntegrityError, match="Unknown step"):
         resolve_creator_inputs(
-            normalize_pipeline_inputs(["missing.csv"], step_run_ids={}),
+            normalize_pipeline_inputs(
+                ["missing.csv"], store_identity=committer.store_identity
+            ),
             record=_record(),
             committer=committer,
             storage=StorageConfig(),
@@ -418,7 +435,9 @@ def test_registered_external_creator_input_checks_the_entire_selected_carrier(
     assert artifact_id is not None
     carrier = Path(accepted.artifact.external_path)
     carrier.write_bytes(carrier.read_bytes().replace(b'"value": 2', b'"value": 9'))
-    frozen = normalize_pipeline_inputs({"data": [artifact_id]}, step_run_ids={})
+    frozen = normalize_pipeline_inputs(
+        {"data": [artifact_id]}, store_identity=committer.store_identity
+    )
     record = _pending(committer)
     assert resolve_curator_inputs(
         frozen,
@@ -448,8 +467,12 @@ def test_successful_dynamic_empty_source_does_not_invent_a_missing_role(
     staged, terminal, _ = stage_observed(coordinator, admission, operation)
     coordinator.finish(reference, staged.execution_run_id, terminal)
     frozen = normalize_pipeline_inputs(
-        {"data": OutputReference(source_step=7, role="invented")},
-        step_run_ids={7: reference.step_run_id},
+        {
+            "data": output_reference(
+                reference.step_run_id, role="invented", store=committer.store_identity
+            )
+        },
+        store_identity=committer.store_identity,
     )
     with pytest.raises(ValueError, match="no output role"):
         resolve_curator_inputs(
@@ -461,7 +484,7 @@ def test_successful_dynamic_empty_source_does_not_invent_a_missing_role(
         )
 
 
-def test_repeated_attempt_references_each_check_their_logical_step(
+def test_repeated_attempt_references_each_check_their_declared_type(
     committer: RetainedCommitter,
     tmp_path: Path,
 ) -> None:
@@ -469,13 +492,15 @@ def test_repeated_attempt_references_each_check_their_logical_step(
     frozen = normalize_pipeline_inputs(
         {
             "data": [
-                OutputReference(source_step=7, role="data"),
-                OutputReference(source_step=6, role="data"),
+                output_reference("a" * 32, store=committer.store_identity),
+                output_reference(
+                    "a" * 32, artifact_type="metric", store=committer.store_identity
+                ),
             ]
         },
-        step_run_ids={7: "a" * 32, 6: "a" * 32},
+        store_identity=committer.store_identity,
     )
-    with pytest.raises(StoreIntegrityError, match="selected step attempt"):
+    with pytest.raises(StoreIntegrityError, match="type"):
         resolve_creator_inputs(
             frozen,
             record=_pending(committer),

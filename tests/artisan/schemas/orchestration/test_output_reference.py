@@ -1,54 +1,53 @@
-"""Tests for immutable output references."""
+"""Immutable output references retain their source across serialization and use."""
 
 from __future__ import annotations
 
 import pytest
+from fixtures.output_references import SYNTHETIC_STORE, output_reference
 from pydantic import ValidationError
 
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.orchestration.output_reference import OutputReference
 
 
-class TestOutputReference:
-    """Tests for OutputReference schema model."""
+def test_reference_serialization_preserves_exact_source() -> None:
+    reference = output_reference("a" * 32, role="scores", artifact_type="metric")
+    restored = OutputReference.model_validate_json(reference.model_dump_json())
+    assert restored == reference
+    assert restored.source.store == SYNTHETIC_STORE
+    assert restored.source.step_run_id == "a" * 32
+    assert restored.role == "scores"
+    assert restored.artifact_type == "metric"
 
-    def test_create_basic(self):
-        """Test basic OutputReference creation."""
-        ref = OutputReference(source_step=0, role="data")
-        assert ref.source_step == 0
-        assert ref.role == "data"
-        assert ref.artifact_type == ArtifactTypes.ANY
 
-    def test_create_with_artifact_type(self):
-        """Test OutputReference with artifact_type."""
-        ref = OutputReference(source_step=1, role="scores", artifact_type="metric")
-        assert ref.source_step == 1
-        assert ref.role == "scores"
-        assert ref.artifact_type == "metric"
+def test_reference_defaults_to_any_artifact_type() -> None:
+    reference = output_reference("a" * 32)
+    assert reference.artifact_type == ArtifactTypes.ANY
 
-    def test_immutable(self):
-        """Test that OutputReference is immutable (frozen schema)."""
-        ref = OutputReference(source_step=0, role="data")
-        with pytest.raises(ValidationError):
-            ref.source_step = 1
 
-    def test_hashable(self):
-        """Test that OutputReference is hashable."""
-        ref1 = OutputReference(source_step=0, role="data")
-        ref2 = OutputReference(source_step=0, role="data")
-        ref3 = OutputReference(source_step=1, role="data")
+def test_reference_and_nested_source_are_immutable() -> None:
+    reference = output_reference("a" * 32)
+    with pytest.raises(ValidationError, match="frozen"):
+        reference.role = "changed"
+    with pytest.raises(ValidationError, match="frozen"):
+        reference.source.step_run_id = "b" * 32
+    with pytest.raises(ValidationError, match="frozen"):
+        reference.source.store.files_root = "/another/files"
 
-        refs = {ref1, ref2, ref3}
-        assert len(refs) == 2  # ref1 and ref2 are equal
 
-        d = {ref1: "first", ref3: "second"}
-        assert d[ref2] == "first"  # ref2 == ref1
+def test_reference_hash_and_equality_include_store_attempt_and_role() -> None:
+    reference = output_reference("a" * 32)
+    equal = output_reference("a" * 32)
+    another_attempt = output_reference("b" * 32)
+    another_role = output_reference("a" * 32, role="metrics")
+    another_store = output_reference(
+        "a" * 32,
+        store=SYNTHETIC_STORE.model_copy(update={"steps_table_id": "another-table"}),
+    )
+    assert len({reference, equal, another_attempt, another_role, another_store}) == 4
+    assert {reference: "selected"}[equal] == "selected"
 
-    def test_equality(self):
-        """Test OutputReference equality."""
-        ref1 = OutputReference(source_step=0, role="data")
-        ref2 = OutputReference(source_step=0, role="data")
-        ref3 = OutputReference(source_step=0, role="metrics")
 
-        assert ref1 == ref2
-        assert ref1 != ref3
+def test_position_only_reference_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="source"):
+        OutputReference.model_validate({"source_step": 0, "role": "data"})

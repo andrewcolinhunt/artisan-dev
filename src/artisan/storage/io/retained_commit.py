@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import os
 import posixpath
 import threading
 from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from types import MappingProxyType
-from typing import Any
+from typing import Any, cast
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -23,6 +24,7 @@ from artisan.schemas.execution.retained_result import (
     RetainedResultSeal,
     RetainedTableFile,
 )
+from artisan.schemas.orchestration.output_reference import StoreIdentity
 from artisan.schemas.provenance.projection import (
     AcceptedCuratorOccurrence,
     AcceptedProducer,
@@ -74,6 +76,13 @@ from artisan.utils.hashing import compute_content_digest, compute_stream_digest
 from artisan.utils.path import uri_join
 
 
+def _identity_root(root: str, fs: AbstractFileSystem) -> str:
+    """Resolve local aliases without rewriting remote object-key prefixes."""
+    if isinstance(fs, LocalFileSystem):
+        return os.path.realpath(cast(str, fs._strip_protocol(root)))
+    return root.removesuffix("/")
+
+
 class RetainedCommitter:
     """Apply durable winners through the same exact effects as ordinary commits.
 
@@ -99,6 +108,16 @@ class RetainedCommitter:
         self.fs = fs
         self.storage_options = storage_options or {}
         self._lock = threading.RLock()
+        self._store_identity: StoreIdentity | None = None
+
+    @property
+    def store_identity(self) -> StoreIdentity:
+        """Return the source binding captured from validated lifecycle metadata."""
+        with self._lock:
+            if self._store_identity is None:
+                self._snapshot(TablePath.STEPS.value)
+            assert self._store_identity is not None
+            return self._store_identity
 
     def initialize(self) -> None:
         """Create unpartitioned candidate tables, preserving mixed original origins."""
@@ -521,6 +540,13 @@ class RetainedCommitter:
         if snapshot.partitions:
             msg = "Retained tables require unpartitioned protected origins"
             raise StoreIntegrityError(msg)
+        if table_path == TablePath.STEPS.value and self._store_identity is None:
+            self._store_identity = StoreIdentity(
+                delta_root=_identity_root(self.delta_root, self.fs),
+                files_root=_identity_root(self.files_root, self.fs),
+                # Delta metadata IDs are UUID strings; the upstream type says int.
+                steps_table_id=cast(str, snapshot.delta.metadata().id),
+            )
         return snapshot
 
     def _cleanup(self, plan: RetainedCommitPlan) -> None:

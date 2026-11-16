@@ -16,7 +16,10 @@ from artisan.orchestration.engine.retained_step_tracker import RetainedStepTrack
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.output_reference import (
+    OutputReference,
+    StoreIdentity,
+)
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.specs.input_spec import InputSpec
@@ -40,17 +43,7 @@ type PipelineInputs = (
 )
 
 
-@dataclass(frozen=True)
-class FrozenOutputInput:
-    """An upstream role bound to the exact attempt selected at submission."""
-
-    source_step: int
-    step_run_id: str
-    role: str
-    artifact_type: str
-
-
-type FrozenMember = FrozenOutputInput | str | Artifact | AcceptedArtifact
+type FrozenMember = OutputReference | str | Artifact | AcceptedArtifact
 type ResolvedMember = str | Artifact | AcceptedArtifact
 
 
@@ -72,10 +65,10 @@ class FrozenPipelineInputs:
         """Return ordered unique attempt IDs for predecessor waits."""
         return tuple(
             dict.fromkeys(
-                member.step_run_id
+                member.source.step_run_id
                 for group in self.roles
                 for member in group.members
-                if isinstance(member, FrozenOutputInput)
+                if isinstance(member, OutputReference)
             )
         )
 
@@ -90,9 +83,9 @@ class FrozenPipelineInputs:
 
 
 def normalize_pipeline_inputs(
-    inputs: PipelineInputs, *, step_run_ids: Mapping[int, str]
+    inputs: PipelineInputs, *, store_identity: StoreIdentity
 ) -> FrozenPipelineInputs:
-    """Snapshot shape and exact attempt bindings without querying or registering."""
+    """Copy input containers and preserve exact sources within the receiving store."""
     if inputs is None:
         return FrozenPipelineInputs()
     if isinstance(inputs, Mapping):
@@ -106,7 +99,7 @@ def normalize_pipeline_inputs(
             )
             roles.append(
                 FrozenInputRole(
-                    role, tuple(_freeze(item, step_run_ids) for item in values)
+                    role, tuple(_freeze(item, store_identity) for item in values)
                 )
             )
         return FrozenPipelineInputs(tuple(roles))
@@ -121,7 +114,8 @@ def normalize_pipeline_inputs(
     return FrozenPipelineInputs(
         (
             FrozenInputRole(
-                "_merged_streams", tuple(_freeze(item, step_run_ids) for item in values)
+                "_merged_streams",
+                tuple(_freeze(item, store_identity) for item in values),
             ),
         )
     )
@@ -159,7 +153,7 @@ def validate_pipeline_input_contract(
             value = member.artifact if isinstance(member, AcceptedArtifact) else member
             kind = (
                 value.artifact_type
-                if isinstance(value, (Artifact, FrozenOutputInput))
+                if isinstance(value, (Artifact, OutputReference))
                 else None
             )
             if (
@@ -219,15 +213,13 @@ def resolve_curator_inputs(
     return result
 
 
-def _freeze(value: object, attempts: Mapping[int, str]) -> FrozenMember:
+def _freeze(value: object, store_identity: StoreIdentity) -> FrozenMember:
     if isinstance(value, OutputReference):
-        attempt = attempts.get(value.source_step)
-        if attempt is None:
-            msg = f"No submitted attempt for source step {value.source_step}"
+        value = OutputReference.model_validate(value)
+        if value.source.store != store_identity:
+            msg = "Output reference belongs to a different store; import its data explicitly"
             raise ValueError(msg)
-        return FrozenOutputInput(
-            value.source_step, attempt, value.role, value.artifact_type
-        )
+        return value
     if isinstance(value, AcceptedArtifact):
         return AcceptedArtifact(
             value.reference.model_copy(deep=True), value.artifact.model_copy(deep=True)
@@ -283,19 +275,17 @@ def _resolve(
     for group in inputs.roles:
         members: list[ResolvedMember] = []
         for member in group.members:
-            if isinstance(member, FrozenOutputInput):
-                if member.step_run_id not in outputs:
-                    source = tracker.current_state(member.step_run_id)
-                    outputs[member.step_run_id] = CurrentStepOutputs(
-                        source, read_current_step_outputs(committer, member.step_run_id)
+            if isinstance(member, OutputReference):
+                attempt = member.source.step_run_id
+                if attempt not in outputs:
+                    source = tracker.current_state(attempt)
+                    outputs[attempt] = CurrentStepOutputs(
+                        source, read_current_step_outputs(committer, attempt)
                     )
-                if outputs[member.step_run_id].state.step_number != member.source_step:
-                    msg = "Output reference differs from its selected step attempt"
-                    raise StoreIntegrityError(msg)
                 members.extend(
                     _output_members(
                         member,
-                        outputs[member.step_run_id],
+                        outputs[attempt],
                         (input_specs or {}).get(group.role),
                     )
                 )
@@ -306,7 +296,7 @@ def _resolve(
 
 
 def _output_members(
-    reference: FrozenOutputInput,
+    reference: OutputReference,
     selected: CurrentStepOutputs,
     input_spec: InputSpec | None = None,
 ) -> tuple[AcceptedArtifact, ...]:
@@ -412,10 +402,10 @@ def _hydrate_external(content: RegisteredContent, ids: set[str]) -> None:
 
 
 def _diagnostic_member(member: FrozenMember) -> object:
-    if isinstance(member, FrozenOutputInput):
+    if isinstance(member, OutputReference):
+        # Lifecycle rows belong to this store; omit locators for portable publication.
         return {
-            "source_step": member.source_step,
-            "step_run_id": member.step_run_id,
+            "step_run_id": member.source.step_run_id,
             "role": member.role,
             "artifact_type": member.artifact_type,
         }
