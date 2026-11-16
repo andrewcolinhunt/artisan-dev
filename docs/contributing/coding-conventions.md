@@ -173,6 +173,13 @@ Markers distinguish pipeline integration from resource requirements. The
 which suites need Docker, object storage, or Modal credentials. Run the checks
 appropriate to the change and the repository's required pre-PR checks.
 
+CI runs core tests and tutorials in separate jobs so each tutorial executes once.
+The `large_deposit` marker identifies the over-1-GiB deposit memory qualification:
+the `bounded-storage` job owns it on supported Linux platforms, and the ordinary
+CI integration stage excludes it. Keep that marker limited to tests with an
+explicit CI owner. The local `test` and `test-integration` tasks still include it;
+its existing Linux-only requirement is unchanged.
+
 ### Qualify Docker commands
 
 Run the container cancellation and working-directory checks against a local

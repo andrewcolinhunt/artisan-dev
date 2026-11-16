@@ -7,6 +7,8 @@ Observe actual metadata requests instead of inferring them from storage latency.
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 import threading
 from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -18,6 +20,23 @@ from fixtures.retained_inspection import commit_inspection_attempt
 from artisan.schemas import MetricArtifact
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.io.retained_store import create_retained_store
+
+_DELTA_METADATA_CONTROL = """
+import sys
+
+import pytest
+from deltalake import DeltaTable
+
+with pytest.raises(OSError, match="latest/api/token"):
+    DeltaTable(
+        "s3://metadata-oracle-bucket/missing",
+        storage_options={
+            "AWS_ENDPOINT_URL": sys.argv[1],
+            "AWS_REGION": "us-east-1",
+            "AWS_ALLOW_HTTP": "true",
+        },
+    )
+"""
 
 
 @pytest.fixture(autouse=True)
@@ -91,17 +110,17 @@ def test_metadata_sentinel_observes_missing_credentials(
         with pytest.raises(NoCredentialsError):
             fs.ls("metadata-oracle-bucket")
     else:
-        from deltalake import DeltaTable
-
-        with pytest.raises(OSError, match="latest/api/token"):
-            DeltaTable(
-                "s3://metadata-oracle-bucket/missing",
-                storage_options={
-                    "AWS_ENDPOINT_URL": endpoint,
-                    "AWS_REGION": "us-east-1",
-                    "AWS_ALLOW_HTTP": "true",
-                },
-            )
+        # Delta S3 clients can populate the native environment outside os.environ.
+        # An explicit child environment keeps this control free of those credentials.
+        result = subprocess.run(
+            [sys.executable, "-c", _DELTA_METADATA_CONTROL, endpoint],
+            env=os.environ.copy(),
+            capture_output=True,
+            text=True,
+            timeout=30,
+            check=False,
+        )
+        assert result.returncode == 0, result.stderr
     assert ("PUT", "/latest/api/token") in requests
 
 

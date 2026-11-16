@@ -31,9 +31,9 @@ from artisan.storage.core.retained_reader import (
 
 @pytest.mark.parametrize("kind", ["file", "appendable", "alias", "empty"])
 def test_retained_reader_hydrates_public_support_and_empty_membership(
-    backend_fs: Backend, tmp_path: Path, kind: str
+    raw_backend_fs: Backend, tmp_path: Path, kind: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case, receipt = admit_case(committer, tmp_path / "worker", kind=kind)
     committer.accept(receipt)
@@ -63,9 +63,9 @@ def test_retained_reader_hydrates_public_support_and_empty_membership(
 
 
 def test_direct_associations_follow_exact_cross_assignment_alias_chains(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     artifact = boundary_artifact()
@@ -156,9 +156,9 @@ def test_direct_associations_follow_exact_cross_assignment_alias_chains(
 
 
 def test_collapsed_derivation_shortcuts_do_not_create_associations(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     graph = OccurrenceGraph()
     artifact = boundary_artifact()
@@ -217,9 +217,9 @@ def _optional_case(membership: str) -> tuple[RetainedCase, ExecutionRecipe]:
 
 @pytest.mark.parametrize("second", ["present", "empty", "omitted"])
 def test_step_outputs_use_declared_role_order_and_allow_unit_omissions(
-    backend_fs: Backend, second: str
+    raw_backend_fs: Backend, second: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     selections = []
@@ -245,9 +245,9 @@ def test_step_outputs_use_declared_role_order_and_allow_unit_omissions(
 
 
 def test_step_outputs_reject_different_admitted_output_contracts(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case, recipe = _optional_case("omitted")
     selections = []

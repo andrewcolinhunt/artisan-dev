@@ -146,9 +146,9 @@ def _committer(backend: Backend) -> RetainedCommitter:
 
 
 def test_whole_partial_step_reuse_preserves_failed_slots_and_original_outputs(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     source, admission, receipts = _prepare(committer, tmp_path / "source", count=3)
     committer.accept(receipts[0])
     committer.accept(receipts[2])
@@ -184,9 +184,9 @@ def test_whole_partial_step_reuse_preserves_failed_slots_and_original_outputs(
 
 @pytest.mark.parametrize("changed", ["failed_input", "successful_carrier"])
 def test_whole_step_rechecks_failed_input_and_successful_carrier_before_selection(
-    backend_fs: Backend, tmp_path: Path, changed: str
+    raw_backend_fs: Backend, tmp_path: Path, changed: str
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     source, original, receipts = _prepare(committer, tmp_path / "source", kind="file")
     accepted = committer.accept(receipts[0])
     source.finish(
@@ -230,9 +230,9 @@ def test_whole_step_rechecks_failed_input_and_successful_carrier_before_selectio
     ["noncacheable", "diagnostic_source", "diagnostic_current", "software"],
 )
 def test_whole_step_identity_excludes_unqualified_sources_and_current_work(
-    backend_fs: Backend, tmp_path: Path, ineligible: str
+    raw_backend_fs: Backend, tmp_path: Path, ineligible: str
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     source, original, receipts = _prepare(
         committer,
         tmp_path / "source",
@@ -259,9 +259,9 @@ def test_whole_step_identity_excludes_unqualified_sources_and_current_work(
 
 
 def test_completed_multi_output_plan_survives_process_hash_randomization(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(
         committer, tmp_path, count=1, roles=("structure", "metrics", "scores", "trace")
     )
@@ -285,7 +285,7 @@ print(json.dumps({"digest": plan.plan_digest, "roles": sorted(plan.result.output
         {
             "root": committer.delta_root,
             "step": admission.step_run_id,
-            "storage": backend_fs[1].model_dump(mode="json"),
+            "storage": raw_backend_fs[1].model_dump(mode="json"),
         }
     )
     for seed in ("0", "1", "42"):
@@ -305,9 +305,9 @@ print(json.dumps({"digest": plan.plan_digest, "roles": sorted(plan.result.output
 
 
 def test_completed_step_preserves_unit_and_duplicate_output_order(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path)
     for receipt in reversed(receipts):
         committer.accept(receipt)
@@ -330,9 +330,9 @@ def test_completed_step_preserves_unit_and_duplicate_output_order(
 
 @pytest.mark.parametrize("success", [False, True])
 def test_failed_units_are_fenced_before_terminal_visibility(
-    backend_fs: Backend, tmp_path: Path, success: bool
+    raw_backend_fs: Backend, tmp_path: Path, success: bool
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path)
     if success:
         committer.accept(receipts[0])
@@ -349,9 +349,9 @@ def test_failed_units_are_fenced_before_terminal_visibility(
 
 
 def test_reused_units_publish_current_membership_without_new_deliveries(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     _, _, sources = _prepare(committer, tmp_path, count=1)
     committer.accept(sources[0])
     results, admission, _ = _prepare(committer, tmp_path, step_run_id="b" * 32)
@@ -374,9 +374,9 @@ def test_reused_units_publish_current_membership_without_new_deliveries(
 
 @pytest.mark.parametrize("boundary", ["plan", "planned", "terminal", "complete"])
 def test_step_completion_recovers_exact_frozen_membership(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1)
     committer.accept(receipts[0])
 
@@ -404,9 +404,9 @@ def test_step_completion_recovers_exact_frozen_membership(
 
 
 def test_whole_step_chooses_newest_eligible_completion_and_flattens_reuse(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     older, old_admission, old_receipts = _prepare(committer, tmp_path / "old")
     for receipt in old_receipts:
         committer.accept(receipt)
@@ -446,9 +446,9 @@ def test_whole_step_chooses_newest_eligible_completion_and_flattens_reuse(
     "boundary", ["reuse_fenced", "plan", "planned", "terminal", "complete"]
 )
 def test_whole_step_process_death_preserves_only_published_selection(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     source, original, receipts = _prepare(committer, tmp_path / "source")
     committer.accept(receipts[0])
     source.finish(
@@ -460,7 +460,7 @@ def test_whole_step_process_death_preserves_only_published_selection(
     request = json.dumps(
         {
             "root": committer.delta_root,
-            "storage": backend_fs[1].model_dump(mode="json"),
+            "storage": raw_backend_fs[1].model_dump(mode="json"),
             "step": admission.step_run_id,
             "boundary": boundary,
         }
@@ -517,9 +517,9 @@ results.reuse(hit)
 
 @pytest.mark.parametrize("cancel_first", [False, True])
 def test_whole_step_selection_serializes_with_cancellation(
-    backend_fs: Backend, tmp_path: Path, cancel_first: bool
+    raw_backend_fs: Backend, tmp_path: Path, cancel_first: bool
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     source, original, receipts = _prepare(committer, tmp_path / "source")
     committer.accept(receipts[0])
     source.finish(
@@ -557,9 +557,9 @@ def test_whole_step_selection_serializes_with_cancellation(
 
 
 def test_step_cannot_finish_with_unresolved_work(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path)
     committer.accept(receipts[0])
     with pytest.raises(StoreIntegrityError, match="no accepted result"):
@@ -575,12 +575,12 @@ def test_step_cannot_finish_with_unresolved_work(
 )
 @pytest.mark.parametrize("all_accepted", [False, True])
 def test_cancelled_step_preserves_accepted_units_without_exposing_outputs(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     tmp_path: Path,
     cancellation: CancellationStatus,
     all_accepted: bool,
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path)
     committer.accept(receipts[0])
     if all_accepted:
@@ -626,9 +626,9 @@ def test_cancelled_step_preserves_accepted_units_without_exposing_outputs(
 
 @pytest.mark.parametrize("infrastructure", [False, True])
 def test_failure_policy_preserves_units_but_withholds_failed_step_outputs(
-    backend_fs: Backend, tmp_path: Path, infrastructure: bool
+    raw_backend_fs: Backend, tmp_path: Path, infrastructure: bool
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path)
     committer.accept(receipts[0])
     final = results.finish(
@@ -647,9 +647,9 @@ def test_failure_policy_preserves_units_but_withholds_failed_step_outputs(
 
 
 def test_requested_cancellation_cannot_publish_terminal_membership(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1)
     committer.accept(receipts[0])
     results.tracker.record_cancellation(
@@ -666,9 +666,9 @@ def test_requested_cancellation_cannot_publish_terminal_membership(
 
 
 def test_frozen_terminal_selection_wins_later_cancellation_after_controller_crash(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1)
     committer.accept(receipts[0])
 
@@ -694,9 +694,9 @@ def test_frozen_terminal_selection_wins_later_cancellation_after_controller_cras
 
 @pytest.mark.parametrize("membership", [("omitted", "present"), ("omitted", "empty")])
 def test_optional_output_aggregation_keeps_original_unit_membership(
-    backend_fs: Backend, tmp_path: Path, membership: tuple[str, ...]
+    raw_backend_fs: Backend, tmp_path: Path, membership: tuple[str, ...]
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, optional=membership)
     for receipt in receipts:
         committer.accept(receipt)
@@ -709,9 +709,9 @@ def test_optional_output_aggregation_keeps_original_unit_membership(
 
 
 def test_step_records_retry_attempt_without_changing_initial_finite_work(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, old = _prepare(committer, tmp_path, count=1)
     original = admission.assignments[0]
     case = retained_case(tmp_path, kind="alias")
@@ -757,12 +757,12 @@ def test_step_records_retry_attempt_without_changing_initial_finite_work(
     "boundary", ["terminal_file", "plan", "planned", "terminal", "complete"]
 )
 def test_controller_death_preserves_terminal_selection_and_visibility(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     _, admission, receipts = _prepare(committer, tmp_path, count=1)
     committer.accept(receipts[0])
-    fs, storage, _ = backend_fs
+    fs, storage, _ = raw_backend_fs
     request = {
         "root": committer.delta_root,
         "storage": storage.model_dump(mode="json"),
@@ -794,14 +794,14 @@ def test_controller_death_preserves_terminal_selection_and_visibility(
 
 
 def test_failed_delivery_source_requires_complete_terminal_and_exact_admission(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
     from artisan.storage.core.execution_source import (
         FailedScientificExecutionSource,
         read_execution_source,
     )
 
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1)
     delivery = DeliveryIdentity.new(admission.assignments[0].attempt)
     assert read_execution_source(committer, delivery.delivery_id) is None
@@ -833,11 +833,11 @@ def test_failed_delivery_source_requires_complete_terminal_and_exact_admission(
 
 
 def test_failed_delivery_cannot_replace_a_selected_winner(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
     from artisan.storage.core.execution_source import read_execution_source
 
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1)
     committer.accept(receipts[0])
     failure = DeliveryIdentity.new(admission.assignments[0].attempt)
@@ -855,14 +855,14 @@ def test_failed_delivery_cannot_replace_a_selected_winner(
 
 
 def test_failed_source_survives_whole_step_reuse_without_new_execution_identity(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
     from artisan.storage.core.execution_source import (
         FailedScientificExecutionSource,
         read_execution_source,
     )
 
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     original, admission, receipts = _prepare(committer, tmp_path / "original")
     committer.accept(receipts[0])
     failure = DeliveryIdentity.new(admission.assignments[1].attempt)
@@ -886,19 +886,19 @@ def test_failed_source_survives_whole_step_reuse_without_new_execution_identity(
 
 @pytest.mark.parametrize("boundary", ["plan", "terminal", "complete"])
 def test_failed_delivery_process_death_preserves_exact_source_selection(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
     from artisan.storage.core.execution_source import (
         FailedScientificExecutionSource,
         read_execution_source,
     )
 
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     _, admission, _ = _prepare(committer, tmp_path, count=1)
     delivery = DeliveryIdentity.new(admission.assignments[0].attempt)
     request = {
         "root": committer.delta_root,
-        "storage": backend_fs[1].model_dump(mode="json"),
+        "storage": raw_backend_fs[1].model_dump(mode="json"),
         "step_run_id": admission.step_run_id,
         "boundary": boundary,
         "failures": {
@@ -921,7 +921,7 @@ def test_failed_delivery_process_death_preserves_exact_source_selection(
         assert read_execution_source(committer, delivery.delivery_id) is None
     reopened = RetainedStepResults(
         RetainedStepTracker(
-            open_committer(committer.delta_root, backend_fs[0], backend_fs[1]),
+            open_committer(committer.delta_root, raw_backend_fs[0], raw_backend_fs[1]),
             "synthetic-pipeline",
         )
     )
@@ -933,11 +933,11 @@ def test_failed_delivery_process_death_preserves_exact_source_selection(
 
 
 def test_failed_delivery_rejects_foreign_attempt_and_duplicate_identity(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
     from artisan.storage.io.step_result_plan import StepUnitResolution
 
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     _, admission, receipts = _prepare(committer, tmp_path)
     delivery = DeliveryIdentity.new(admission.assignments[0].attempt)
     with pytest.raises(ValueError, match="exact fenced"):
@@ -987,13 +987,13 @@ def test_failed_delivery_rejects_foreign_attempt_and_duplicate_identity(
 
 @pytest.mark.parametrize("evidence", ["terminal", "fence", "finite_admission"])
 def test_failed_source_rejects_changed_required_authority(
-    backend_fs: Backend, tmp_path: Path, evidence: str
+    raw_backend_fs: Backend, tmp_path: Path, evidence: str
 ) -> None:
     from artisan.schemas.enums import TablePath
     from artisan.storage.core.assignment_schema import ASSIGNMENT_DECISIONS_PATH
     from artisan.storage.core.execution_source import read_execution_source
 
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, _ = _prepare(committer, tmp_path, count=1)
     delivery = DeliveryIdentity.new(admission.assignments[0].attempt)
     results.finish(
@@ -1023,9 +1023,9 @@ def test_failed_source_rejects_changed_required_authority(
 
 
 def test_stale_failed_delivery_does_not_fence_current_admission(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, _ = _prepare(committer, tmp_path, count=1)
     attempt = admission.assignments[0].attempt
     wrong = DeliveryIdentity.new(attempt.model_copy(update={"attempt": 9}))
@@ -1044,11 +1044,11 @@ def test_stale_failed_delivery_does_not_fence_current_admission(
 
 
 def test_failed_source_duplicate_identity_across_completed_owners_rejects(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
     from artisan.storage.core.execution_source import read_execution_source
 
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     first, admitted, _ = _prepare(committer, tmp_path / "first", count=1)
     delivery = DeliveryIdentity.new(admitted.assignments[0].attempt)
     first.finish(

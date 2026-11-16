@@ -22,12 +22,13 @@ from artisan.visualization.graph import (
 )
 
 
-@pytest.fixture
-def delta_root_with_data(tmp_path: Path) -> Path:
+@pytest.fixture(scope="module")
+def delta_root_with_data(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Persist two real outer deliveries with an original direct lineage chain."""
-    root = tmp_path / "delta"
+    workspace = tmp_path_factory.mktemp("micro-graph-inputs")
+    root = workspace / "delta"
     payload = b"sample bytes"
-    source = tmp_path / "sample.csv"
+    source = workspace / "sample.csv"
     source.write_bytes(payload)
     external = FileRefArtifact.draft(
         str(source),
@@ -55,10 +56,10 @@ def delta_root_with_data(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.fixture
-def empty_delta_root(tmp_path: Path) -> Path:
+@pytest.fixture(scope="module")
+def empty_delta_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Create an initialized store with no accepted executions or artifacts."""
-    root = tmp_path / "delta_empty"
+    root = tmp_path_factory.mktemp("micro-graph-empty") / "delta"
     inspection_store(root)
     return root
 
@@ -66,10 +67,26 @@ def empty_delta_root(tmp_path: Path) -> Path:
 class TestBuildMicroGraph:
     """Tests for build_micro_graph function."""
 
-    def test_returns_graphviz_digraph(self, delta_root_with_data: Path) -> None:
-        """Function returns a graphviz.Digraph object."""
+    def test_default_graph_has_labeled_nodes_and_styles(
+        self, delta_root_with_data: Path
+    ) -> None:
+        """Default graph layout and styling distinguish executions and artifacts."""
         graph = build_micro_graph(delta_root_with_data)
         assert isinstance(graph, graphviz.Digraph)
+        source = graph.source
+        assert "(1) data_parser" in source
+        assert "(2) metric_calc" in source
+        assert "parsed_result" in source
+        assert "sample" in source
+        assert "energy" in source
+        assert "rankdir=LR" in source
+        assert "_anchor_exec_" in source or "_anchor_art_" in source
+        assert "style=invis" in source
+        assert "->" in source
+        assert "color=orange" in source
+        assert "shape=box" in source
+        assert "fillcolor=lightgray" in source
+        assert '"#' in source
 
     def test_empty_delta_root_returns_empty_graph(self, empty_delta_root: Path) -> None:
         """Empty delta root produces a graph with no nodes/edges."""
@@ -77,80 +94,6 @@ class TestBuildMicroGraph:
         assert isinstance(graph, graphviz.Digraph)
         source = graph.source
         assert "digraph" in source
-
-    def test_graph_has_execution_nodes(self, delta_root_with_data: Path) -> None:
-        """Graph contains execution nodes with step numbers and names."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-
-        # Execution nodes should have step numbers and operation names as labels
-        assert "(1) data_parser" in source
-        assert "(2) metric_calc" in source
-
-    def test_graph_has_artifact_nodes(self, delta_root_with_data: Path) -> None:
-        """Graph contains artifact nodes with appropriate labels."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-
-        # Intermediate metric should use original_name
-        assert "parsed_result" in source
-        # External file should use basename without extension
-        assert "sample" in source
-        # Final metric should use original_name
-        assert "energy" in source
-
-    def test_graph_has_left_to_right_layout(self, delta_root_with_data: Path) -> None:
-        """Graph uses left-to-right layout direction."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-        assert "rankdir=LR" in source
-
-    def test_graph_has_strict_column_ordering(self, delta_root_with_data: Path) -> None:
-        """Graph uses anchor nodes with invisible edges for strict column order."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-
-        # Should have invisible anchor nodes for enforcing column order
-        assert "_anchor_exec_" in source or "_anchor_art_" in source
-
-        # Should have invisible edges between anchors
-        assert "style=invis" in source
-
-    def test_graph_has_execution_edges(self, delta_root_with_data: Path) -> None:
-        """Graph contains edges between artifacts and executions."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-
-        assert "->" in source
-
-    def test_graph_has_lineage_edges_in_orange(
-        self, delta_root_with_data: Path
-    ) -> None:
-        """Artifact-to-artifact lineage edges are colored orange."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-
-        # Lineage edges should have orange color
-        assert "color=orange" in source
-
-    def test_all_nodes_are_boxes(self, delta_root_with_data: Path) -> None:
-        """All nodes use box shape."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-        assert "shape=box" in source
-
-    def test_execution_nodes_are_grey(self, delta_root_with_data: Path) -> None:
-        """Execution nodes use grey fill color."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-        assert "fillcolor=lightgray" in source
-
-    def test_artifact_nodes_are_blue_shades(self, delta_root_with_data: Path) -> None:
-        """Artifact nodes use blue shades from the registry-driven palette."""
-        graph = build_micro_graph(delta_root_with_data)
-        source = graph.source
-        # All artifact nodes should get a blue shade from the palette
-        assert '"#' in source  # At least one hex color present
 
     def test_accepts_path_or_string(self, delta_root_with_data: Path) -> None:
         """Function accepts both Path and string delta_root."""

@@ -32,8 +32,8 @@ from artisan.storage.io.retained_store import create_retained_store
 
 
 @pytest.fixture
-def committer(backend_fs) -> RetainedCommitter:
-    fs, storage, root = backend_fs
+def committer(raw_backend_fs) -> RetainedCommitter:
+    fs, storage, root = raw_backend_fs
     return create_retained_store(
         f"{root}/store",
         f"{root}/store/files",
@@ -217,14 +217,14 @@ def test_repair_finishes_exact_selected_step_terminal(
 
 @pytest.mark.parametrize("preserve", [False, True])
 def test_repair_finishes_curator_selection_using_original_staged_evidence(
-    committer: RetainedCommitter, backend_fs, preserve: bool
+    committer: RetainedCommitter, raw_backend_fs, preserve: bool
 ) -> None:
     operation = DynamicCurator()
     results, admission, reference = admit_curator(
         committer, operation, {}, step_run_id="a" * 32, **STAMPS
     )
     staged, terminal, _ = stage_observed(
-        results, admission, operation, storage=backend_fs[1]
+        results, admission, operation, storage=raw_backend_fs[1]
     )
 
     def checkpoint(event: str) -> None:
