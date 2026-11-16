@@ -336,7 +336,16 @@ def test_owner_natural_exit_closes_child_holding_stdout_without_grace(
 
 def test_owner_cancel_is_independent_of_blocked_output_reader(proof: Proof) -> None:
     launched = proof.launch(
-        "import os, signal; signal.alarm(30); os.write(2, b'ready\\n');\nwhile True: os.write(1, b'x' * 65536)"
+        "import os, signal\n"
+        "signal.alarm(30)\n"
+        "os.set_blocking(1, False)\n"
+        "try:\n"
+        "    while True: os.write(1, b'x' * 65536)\n"
+        "except BlockingIOError:\n"
+        "    pass\n"
+        "os.set_blocking(1, True)\n"
+        "os.write(2, b'ready\\n')\n"
+        "while True: os.write(1, b'x' * 65536)"
     )
     assert read_until(launched.stderr, newline=True) == b"ready\n"
     proof.control("cancel", deadline=time.monotonic() + 5)
