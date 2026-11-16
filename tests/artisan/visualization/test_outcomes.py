@@ -10,24 +10,25 @@ import arro3.core as ac
 import polars as pl
 import pytest
 from deltalake import write_deltalake
-from fixtures.outcome_store import append_metric_attempt
+from fixtures.outcome_store import append_metric_attempt, metric_execution
+from fixtures.retained_inspection import inspection_store
 from pydantic import ValidationError
 
 from artisan.errors import (
     ArtifactIntegrityError,
     AssessmentSpecError,
     OutcomeSelectionError,
+    StoreIntegrityError,
 )
-from artisan.orchestration.engine.step_tracker import StepTracker
-from artisan.schemas import CSVArtifact, MetricArtifact, TablePath
+from artisan.orchestration.engine.retained_step_tracker import RetainedStepTracker
+from artisan.schemas import CSVArtifact, MetricArtifact
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
     StepStatus,
 )
 from artisan.schemas.orchestration.step_result import StepResult
-from artisan.utils.hashing import digest_utf8
-from artisan.visualization import outcomes
+from artisan.visualization import retained_outcomes
 from artisan.visualization.outcomes import (
     AssessmentCheck,
     AssessmentSpec,
@@ -167,8 +168,8 @@ def test_unavailable_attempts_do_not_validate_cleared_or_dynamic_roles(
 ) -> None:
     selection = append_metric_attempt(tmp_path / "store", [], status=status)
     monkeypatch.setattr(
-        outcomes,
-        "load_accepted_outputs",
+        retained_outcomes,
+        "_step_exports",
         lambda *args, **kwargs: pytest.fail(
             "Unavailable attempts must not scan membership"
         ),
@@ -264,7 +265,7 @@ def test_cached_membership_keeps_current_and_origin_distinct(tmp_path) -> None:
         [],
         pipeline_run_id="current",
         step_number=5,
-        reuse_execution_ids=[digest_utf8(f"{source.step_run_id}:execution")],
+        reuse_execution_ids=[metric_execution(root, source)],
     )
     report = assess_outcomes(str(root), current, _spec())
     assert report.selection.disposition.value == "cache_hit"
@@ -277,12 +278,8 @@ def test_cached_membership_keeps_current_and_origin_distinct(tmp_path) -> None:
 
 def test_repeated_output_edges_count_one_artifact_membership(tmp_path) -> None:
     root = tmp_path / "store"
-    selection = append_metric_attempt(root, [_metric({"score": 1})])
-    table = root / TablePath.EXECUTION_EDGES.value
-    rows = pl.read_delta(str(table))
-    write_deltalake(
-        str(table), ac.Table.from_arrow(pl.concat([rows, rows])), mode="overwrite"
-    )
+    metric = _metric({"score": 1})
+    selection = append_metric_attempt(root, [metric, metric])
     report = assess_outcomes(str(root), selection, _spec(expected_count=1))
     assert report.observation_count == 1
     assert report.counting_basis == "unique_attempt_role_artifact"
@@ -291,12 +288,7 @@ def test_repeated_output_edges_count_one_artifact_membership(tmp_path) -> None:
 
 def test_diagnostic_attempt_is_excluded(tmp_path) -> None:
     root = tmp_path / "store"
-    selection = append_metric_attempt(root, [], status="running")
-    table = root / TablePath.STEPS.value
-    rows = pl.read_delta(str(table)).with_columns(
-        pl.lit("a" * 32).alias("replay_of_execution_run_id")
-    )
-    write_deltalake(str(table), ac.Table.from_arrow(rows), mode="overwrite")
+    selection = append_metric_attempt(root, [], status="running", replay_of="a" * 32)
     with pytest.raises(OutcomeSelectionError, match="Diagnostic"):
         assess_outcomes(str(root), selection, _spec())
 
@@ -364,7 +356,7 @@ def test_persisted_artifact_inconsistency_is_not_a_quality_verdict(
         ),
     }
     _rewrite_metrics(root, transforms[mutation])
-    with pytest.raises(ArtifactIntegrityError):
+    with pytest.raises((ArtifactIntegrityError, StoreIntegrityError)):
         assess_outcomes(str(root), selection, _spec())
 
 
@@ -410,7 +402,8 @@ def test_criteria_reject_lossy_or_unbounded_inputs(change) -> None:
 
 def test_invalid_specs_and_projection_fail_before_io(monkeypatch) -> None:
     monkeypatch.setattr(
-        outcomes, "StepTracker", lambda *args, **kwargs: pytest.fail("I/O")
+        "artisan.storage.io.retained_store.open_configured_store",
+        lambda *args, **kwargs: pytest.fail("I/O"),
     )
     selection = OutcomeSelection(
         pipeline_run_id="run", step_name="score", role="metrics"
@@ -463,7 +456,7 @@ def test_evidence_identity_binds_projection_but_not_check_criteria(tmp_path) -> 
 def test_unknown_cancellation_is_not_cancelled_and_changes_evidence(tmp_path) -> None:
     root = tmp_path / "store"
     selection = append_metric_attempt(root, [], status="running")
-    tracker = StepTracker(str(root))
+    tracker = RetainedStepTracker(inspection_store(root), "run")
     before = read_metric_observations(str(root), selection, [])
     tracker.record_cancellation(
         selection.step_run_id,
@@ -500,7 +493,7 @@ def test_unknown_cancellation_is_not_cancelled_and_changes_evidence(tmp_path) ->
 def test_rejected_cancellation_remains_running_unavailable(tmp_path) -> None:
     root = tmp_path / "store"
     selection = append_metric_attempt(root, [], status="running")
-    tracker = StepTracker(str(root))
+    tracker = RetainedStepTracker(inspection_store(root), "run")
     for status in (CancellationStatus.REQUESTED, CancellationStatus.REJECTED):
         tracker.record_cancellation(
             selection.step_run_id,

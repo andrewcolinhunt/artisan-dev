@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_serializer, model_validator
 
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.orchestration.output_reference import OutputReference
@@ -55,6 +55,11 @@ class StepResult(BaseModel):
         default=None,
         description="Unique ID for this step execution attempt.",
     )
+
+    @field_serializer("output_roles", when_used="json")
+    def _serialize_output_roles(self, roles: frozenset[str]) -> list[str]:
+        """Keep durable result identity independent of Python's randomized set order."""
+        return sorted(roles)
 
     def output(self, role: str) -> OutputReference:
         """Return a lazy reference to outputs for the given role.

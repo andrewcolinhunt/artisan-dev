@@ -17,6 +17,8 @@ class LineageMapping(BaseModel):
         source_role: Input or sibling-output role containing the parent.
         source_artifact_id: Exact input artifact ID in ``source_role``.
         source_output_index: Position in the sibling output role's list.
+        source_input_index: Exact position in the input role's ordered list.
+        source_invocation: Consuming invocation owning that input position.
     """
 
     model_config = ConfigDict(extra="forbid", frozen=True)
@@ -25,11 +27,19 @@ class LineageMapping(BaseModel):
     source_role: str = Field(min_length=1)
     source_artifact_id: str | None = Field(default=None, pattern=r"^[0-9a-fA-F]{32}$")
     source_output_index: int | None = Field(default=None, ge=0, strict=True)
+    source_input_index: int | None = Field(default=None, ge=0, strict=True)
+    source_invocation: str | None = Field(default=None, min_length=1, strict=True)
 
     @model_validator(mode="after")
     def _require_one_source_ref(self) -> LineageMapping:
         """Require exactly one input ID or sibling-output index."""
         if (self.source_artifact_id is None) == (self.source_output_index is None):
             msg = "Provide exactly one of source_artifact_id or source_output_index"
+            raise ValueError(msg)
+        if (self.source_input_index is None) != (self.source_invocation is None):
+            msg = "Precise input lineage requires both position and invocation"
+            raise ValueError(msg)
+        if self.source_input_index is not None and self.source_artifact_id is None:
+            msg = "Precise input lineage requires an expected input artifact ID"
             raise ValueError(msg)
         return self

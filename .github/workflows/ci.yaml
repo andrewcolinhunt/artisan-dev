@@ -4,7 +4,6 @@ on:
   push:
     branches: [main]
   pull_request:
-    branches: [main]
   workflow_dispatch:
 
 concurrency:
@@ -75,6 +74,13 @@ jobs:
 
       - name: Run tests
         run: ~/.pixi/bin/pixi run --locked -e dev test
+
+      - name: Run offline Modal provider tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}/packages/artisan-modal/src
+        run: >-
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest
+          packages/artisan-modal/tests -m 'not modal'
 
   test-notebooks:
     runs-on: ubuntu-latest
@@ -232,19 +238,37 @@ jobs:
             tests/artisan/utils/test_docker_command_ownership.py \
             tests/artisan/utils/test_external_tools.py \
             tests/artisan/execution/test_command_ownership.py \
-            tests/artisan/execution/tool_endpoint/test_request_ownership.py \
             tests/artisan/execution/recording/test_commands.py \
             tests/artisan/orchestration/runners/test_local.py \
-            tests/artisan/orchestration/runners/test_local_process_exit.py \
-            tests/artisan/orchestration/runners/test_lifecycle_router_cancel.py \
-            tests/artisan/orchestration/engine/test_lifecycle_router.py \
-            tests/artisan/orchestration/engine/test_curator_cancellation.py \
-            tests/artisan/orchestration/test_cancellation_persistence.py \
-            tests/integration/test_cancellation.py \
-            tests/integration/test_managed_command_cancellation.py \
+            tests/artisan/execution/test_local_worker.py \
+            tests/artisan/execution/test_local_packing.py \
+            tests/artisan/execution/test_local_pack_ownership.py \
+            tests/artisan/orchestration/test_retained_executor.py \
+            tests/artisan/orchestration/test_retained_curator_executor.py \
+            -k "not test_constructor_is_declaration_only_and_resource_rejection_precedes_lookup" \
             -q -ra --junitxml="$PROOF_RESULTS/production-junit.xml" \
             --basetemp="$PROOF_RESULTS/production-traces" \
             2>&1 | tee "$PROOF_RESULTS/production-pytest.log"
+
+      - name: Verify Linux worker cancellation
+        if: matrix.system == 'Linux'
+        timeout-minutes: 10
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
+            tests/integration/test_cancellation.py \
+            -q -ra --junitxml="$PROOF_RESULTS/worker-cancellation-junit.xml" \
+            --basetemp="$PROOF_RESULTS/worker-cancellation-traces" \
+            2>&1 | tee "$PROOF_RESULTS/worker-cancellation-pytest.log"
+
+      - name: Verify native GPU request rejection
+        if: matrix.platform == 'linux-64'
+        timeout-minutes: 5
+        run: |
+          ~/.pixi/bin/pixi run --locked -e dev python -m pytest \
+            tests/artisan/orchestration/runners/test_local.py::test_constructor_is_declaration_only_and_resource_rejection_precedes_lookup \
+            -q -ra --junitxml="$PROOF_RESULTS/gpu-request-junit.xml" \
+            --basetemp="$PROOF_RESULTS/gpu-request-traces" \
+            2>&1 | tee "$PROOF_RESULTS/gpu-request-pytest.log"
 
       - name: Preserve native proof evidence
         if: always()

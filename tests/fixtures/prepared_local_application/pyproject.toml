@@ -1,0 +1,12 @@
+[build-system]
+requires = ["hatchling>=1.27,<1.32"]
+build-backend = "hatchling.build"
+
+[project]
+name = "prepared-local-application"
+version = "1.0.0"
+requires-python = ">=3.12"
+dependencies = ["dexterity-artisan==0.2.0.dev0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/prepared_local_application"]

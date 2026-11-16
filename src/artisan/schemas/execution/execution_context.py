@@ -10,6 +10,7 @@ from fsspec import AbstractFileSystem
 
 if TYPE_CHECKING:
     from artisan.operations.base.operation_definition import OperationDefinition
+    from artisan.schemas.execution.curator_cache import CuratorCacheProof
     from artisan.storage.core.artifact_store import ArtifactStore
 
 
@@ -33,6 +34,8 @@ class ExecutionContext:
         compute_backend: Resolved step-runner name recorded for provenance.
         step_run_id: Step run ID linking this execution to a specific
             step attempt. None when not associated with a step.
+        curator_cache_proof: Completed authored-read evidence for a successful
+            store-bound curator, attached before its execution seal is written.
     """
 
     execution_run_id: str
@@ -47,3 +50,4 @@ class ExecutionContext:
     operation: OperationDefinition
     compute_backend: str = "local"
     step_run_id: str | None = None
+    curator_cache_proof: CuratorCacheProof | None = None

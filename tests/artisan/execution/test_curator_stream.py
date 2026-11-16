@@ -8,7 +8,7 @@ import weakref
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
-from typing import ClassVar
+from typing import Any, ClassVar
 from unittest.mock import Mock
 
 import polars as pl
@@ -34,7 +34,9 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.storage.io.publication import is_publication_temporary
+from artisan.storage.io.retained_store import create_retained_store
 from artisan.utils.path import shard_uri
 
 
@@ -122,6 +124,22 @@ def execute(tmp_path, monkeypatch):
         )
     )
     return run
+
+
+@pytest.mark.parametrize("origin", [None, 99])
+def test_stream_assigns_outer_origin_before_persisting(
+    execute: Any, origin: int | None
+) -> None:
+    artifact = CSVArtifact.draft(b"value\n1\n", "source.csv", step_number=origin)
+    result = execute(
+        iter([ArtifactEmission(role="csv", artifact=artifact, sources={})])
+    )
+    assert result.success
+    assert artifact.origin_step_number == execute.context.step_number
+    for filename in ("csvs.parquet", "index.parquet"):
+        assert pl.read_parquet(execute.path / filename)[
+            "origin_step_number"
+        ].to_list() == [execute.context.step_number]
 
 
 def test_stream_releases_artifacts_and_snapshots_nested_metadata(execute):
@@ -399,6 +417,18 @@ def test_writer_failure_retains_temps_and_records_failure_only(execute, monkeypa
     assert Path(calls[0]).read_bytes() == b"partial temporary payload"
 
 
+def _runtime(tmp_path: Path) -> RuntimeEnvironment:
+    root = tmp_path / "stream-store"
+    files = tmp_path / "files"
+    create_retained_store(str(root), str(files), fs=LocalFileSystem())
+    return RuntimeEnvironment(
+        delta_root=str(root),
+        files_root=str(files),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "work"),
+    )
+
+
 def test_unexpected_outer_stream_error_never_calls_eager_failure_fallback(
     tmp_path, monkeypatch
 ):
@@ -406,7 +436,6 @@ def test_unexpected_outer_stream_error_never_calls_eager_failure_fallback(
     from artisan.execution.models.execution_unit import ExecutionUnit
     from artisan.execution.recording.commands import capture_commands
     from artisan.execution.recording.replay_snapshot import capture_replay
-    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 
     monkeypatch.setattr(
         StreamTestOp,
@@ -422,10 +451,8 @@ def test_unexpected_outer_stream_error_never_calls_eager_failure_fallback(
     fallback = Mock(side_effect=AssertionError("eager failure fallback must not run"))
     monkeypatch.setattr(curator, "record_execution_failure", fallback)
     unit = ExecutionUnit(operation=StreamTestOp(), inputs={}, step_number=1)
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"), staging_root=str(tmp_path / "staging")
-    )
-    with capture_commands(unit.operation), capture_replay(unit, runtime):
+    runtime = _runtime(tmp_path)
+    with capture_commands(unit.operation), capture_replay(unit):
         result = curator._run_curator_flow(unit, runtime)
     assert not result.success
     assert result.execution_run_id is None
@@ -436,14 +463,14 @@ def test_unexpected_outer_stream_error_never_calls_eager_failure_fallback(
 def test_stream_commands_execute_before_scope_closes(tmp_path, monkeypatch, fails):
     import sys
 
+    from fixtures.commands import IdentityCommandEnvironment
+
     from artisan.execution.executors.curator import run_curator_flow
     from artisan.execution.models.execution_unit import ExecutionUnit
-    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
     from artisan.utils.external_tools import run_command
 
     def items():
-        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
         yield _emission()
         if fails:
             msg = "conversion after command failed"
@@ -454,9 +481,7 @@ def test_stream_commands_execute_before_scope_closes(tmp_path, monkeypatch, fail
         "execute_curator",
         lambda self, **kwargs: ArtifactStreamResult(items=items()),
     )
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"), staging_root=str(tmp_path / "staging")
-    )
+    runtime = _runtime(tmp_path)
     result = run_curator_flow(
         ExecutionUnit(operation=StreamTestOp(), inputs={}, step_number=1), runtime
     )

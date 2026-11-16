@@ -14,12 +14,14 @@ from typing import TYPE_CHECKING
 from pydantic import BaseModel
 
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
-from artisan.storage.core.store_format import assert_store_format
 
 if TYPE_CHECKING:
+    from collections.abc import Mapping
+
     from fsspec import AbstractFileSystem
 
     from artisan.schemas.execution.storage_config import StorageConfig
+    from artisan.schemas.orchestration.step_state import StepState
 
 
 class RunStepStatus(BaseModel):
@@ -67,10 +69,32 @@ class RunStatus(BaseModel):
     steps: list[RunStepStatus]
 
 
+def _step_status(state: StepState, counts: Mapping[str, int]) -> RunStepStatus:
+    """Format authoritative lifecycle and unique-content counts for inspection."""
+    produced, duration = "-", "-"
+    if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}:
+        if "Filter" in (state.operation_class or "") or "filter" in state.step_name:
+            produced = f"{state.succeeded_count or 0} passed"
+        elif counts:
+            produced = ", ".join(
+                f"{count} {kind}" for kind, count in sorted(counts.items())
+            )
+        if state.duration_seconds is not None:
+            duration = f"{state.duration_seconds:.1f}s"
+    return RunStepStatus(
+        step_number=state.step_number,
+        name=state.step_name,
+        status=state.status,
+        produced=produced,
+        duration=duration,
+    )
+
+
 def run_status(
     delta_root: str,
     pipeline_run_id: str,
     *,
+    files_root: str | None = None,
     storage: StorageConfig | None = None,
 ) -> RunStatus:
     """Assemble the current status of one pipeline run.
@@ -78,6 +102,7 @@ def run_status(
     Args:
         delta_root: Root path for Delta Lake tables.
         pipeline_run_id: The run to describe.
+        files_root: Managed carrier root. Required for nonlocal/custom storage.
         storage: Storage configuration for cloud backends. Defaults to
             local filesystem.
 
@@ -86,57 +111,14 @@ def run_status(
         fields (the steps table itself must exist).
 
     Raises:
-        FileNotFoundError: If the steps table does not exist.
+        StoreIntegrityError: The store or selected lifecycle evidence is incomplete.
     """
-    import polars as pl
+    from artisan.orchestration.engine.retained_run_status import retained_run_status
+    from artisan.storage.io.retained_store import open_configured_store
 
-    from artisan.orchestration.run_history import list_runs
-    from artisan.schemas.execution.storage_config import StorageConfig
-    from artisan.visualization.inspect import inspect_pipeline
-
-    storage = storage or StorageConfig()
-    assert_store_format(
-        delta_root,
-        storage.filesystem(),
-        storage.delta_storage_options(),
-    )
-    steps_df = inspect_pipeline(
-        delta_root,
-        pipeline_run_id=pipeline_run_id,
-        storage_options=storage.delta_storage_options(),
-        fs=storage.filesystem(),
-    )
-    steps = [
-        RunStepStatus(
-            step_number=row["step"],
-            name=row["operation"],
-            status=row["status"],
-            produced=row["produced"],
-            duration=row["duration"],
-        )
-        for row in steps_df.iter_rows(named=True)
-    ]
-
-    rollup = list_runs(delta_root, storage=storage).filter(
-        pl.col("pipeline_run_id") == pipeline_run_id
-    )
-    if rollup.is_empty():
-        return RunStatus(
-            pipeline_run_id=pipeline_run_id,
-            last_status=None,
-            step_count=0,
-            started_at=None,
-            ended_at=None,
-            steps=steps,
-        )
-    row = rollup.row(0, named=True)
-    return RunStatus(
-        pipeline_run_id=pipeline_run_id,
-        last_status=row["last_status"],
-        step_count=int(row["step_count"]),
-        started_at=_iso(row["started_at"]),
-        ended_at=_iso(row["ended_at"]),
-        steps=steps,
+    return retained_run_status(
+        open_configured_store(delta_root, files_root=files_root, storage=storage),
+        pipeline_run_id,
     )
 
 
@@ -145,6 +127,7 @@ def resolve_step_number(
     pipeline_run_id: str,
     step_name: str,
     *,
+    files_root: str | None = None,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
 ) -> int | None:
@@ -154,31 +137,28 @@ def resolve_step_number(
         delta_root: Root path for Delta Lake tables.
         pipeline_run_id: The run the step belongs to.
         step_name: The step name to resolve.
+        files_root: Managed carrier root. Required for nonlocal/custom storage.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks. Local if None.
 
     Returns:
-        The step number, or None when no such step exists in a supported store,
-        including a store with no steps table.
+        The step number, or None when no such step exists in a supported store.
 
     Raises:
         IncompatibleStoreError: If the store manifest or schema is unsupported.
     """
-    from artisan.orchestration.engine.step_tracker import StepTracker
-    from artisan.storage.core.store_format import assert_store_format
+    from artisan.orchestration.engine.retained_run_status import (
+        resolve_retained_step_number,
+    )
+    from artisan.storage.io.retained_store import open_configured_store
 
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
-    assert_store_format(delta_root, fs, storage_options)
-    states = StepTracker(
-        delta_root,
-        storage_options=storage_options,
-        fs=fs,
-    ).load_current_states(pipeline_run_id)
-    match = next((state for state in states if state.step_name == step_name), None)
-    return match.step_number if match is not None else None
+    return resolve_retained_step_number(
+        open_configured_store(
+            delta_root, files_root=files_root, storage_options=storage_options, fs=fs
+        ),
+        pipeline_run_id,
+        step_name,
+    )
 
 
 def _iso(value: date | datetime | None) -> str | None:

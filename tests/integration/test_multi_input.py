@@ -18,8 +18,6 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
-from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -35,6 +33,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from .conftest import (
     count_artifacts_by_step,
     count_executions_by_step,
+    create_native_pipeline,
     declared_file_result,
     get_execution_outputs,
     load_artifact_edges,
@@ -194,7 +193,7 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
     """LINEAGE grouping: match by shared ancestry."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_lineage",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -205,7 +204,6 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     step1 = pipeline.run(
         DataTransformer,
@@ -216,12 +214,10 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
     step2 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        step_runner=Runner.LOCAL,
     )
 
     # LINEAGE matches: B1↔M1 (share ancestor A1), B2↔M2 (share ancestor A2)
@@ -231,7 +227,6 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
             "primary": step1.output("dataset"),
             "secondary": step2.output("metrics"),
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -245,7 +240,7 @@ def test_with_associated(pipeline_env: dict[str, str]):
     """with_associated resolves associated metrics for each input artifact."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_associated",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -255,19 +250,16 @@ def test_with_associated(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     # MetricCalc creates artifact_edges: D1→M1, D2→M2
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         AssociatedMetricConsumer,
         inputs={"primary": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -369,7 +361,7 @@ def test_lineage_grouping_sibling_collision_deterministic(
     """
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_lineage_sibling_collision",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -379,7 +371,6 @@ def test_lineage_grouping_sibling_collision_deterministic(
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 1, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     # noise_amplitude > 0 so each variant produces distinct content
     # (and therefore a distinct content-addressed artifact_id).
@@ -392,7 +383,6 @@ def test_lineage_grouping_sibling_collision_deterministic(
             "variants": 3,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
     step2 = pipeline.run(
         DataTransformer,
@@ -403,7 +393,6 @@ def test_lineage_grouping_sibling_collision_deterministic(
             "variants": 3,
             "seed": 200,
         },
-        step_runner=Runner.LOCAL,
     )
     pipeline.run(
         DualInputDataLineage,
@@ -412,7 +401,6 @@ def test_lineage_grouping_sibling_collision_deterministic(
             "secondary": step2.output("dataset"),
         },
         group_by=GroupByStrategy.LINEAGE,
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -559,7 +547,7 @@ def _build_one_by_three_pipeline(pipeline_env: dict[str, str], name: str):
     ``.step_primary``, ``.step_metrics`` for the downstream dispatch.
     """
     delta_root = pipeline_env["delta_root"]
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name=name,
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -568,17 +556,14 @@ def _build_one_by_three_pipeline(pipeline_env: dict[str, str], name: str):
     step_primary = pipeline.run(
         DataGenerator,
         params={"count": 1, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     step_secondary = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 100},
-        step_runner=Runner.LOCAL,
     )
     step_metrics = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step_secondary.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
     pipeline.step_primary = step_primary  # type: ignore[attr-defined]
     pipeline.step_metrics = step_metrics  # type: ignore[attr-defined]
@@ -594,7 +579,7 @@ def _assert_cross_product_provenance(delta_root: str, op_step_number: int) -> No
         collision floor — bytes-depend-on-both-inputs guard).
       - Lineage builds 2 incoming edges per output (one primary, one
         secondary), 6 total.
-      - Per-pair edges share a group_id; the 3 pair group_ids are
+      - Per-pair edges share an execution ID; the 3 pair execution IDs are
         distinct.
     """
     assert count_artifacts_by_step(delta_root, op_step_number) == 3
@@ -621,7 +606,7 @@ def _assert_cross_product_provenance(delta_root: str, op_step_number: int) -> No
         by_output.setdefault(row["target_artifact_id"], []).append(row)
     assert len(by_output) == 3
 
-    pair_group_ids: set[str] = set()
+    pair_execution_ids: set[str] = set()
     for tid, in_edges in by_output.items():
         sources = {e["source_artifact_id"] for e in in_edges}
         assert sources & primary_ids, f"output {tid} missing primary edge"
@@ -633,13 +618,13 @@ def _assert_cross_product_provenance(delta_root: str, op_step_number: int) -> No
         secondary_edge = next(
             e for e in in_edges if e["source_artifact_id"] in secondary_ids
         )
-        # Both edges in a pair must share a group_id.
-        assert primary_edge["group_id"] is not None
-        assert primary_edge["group_id"] == secondary_edge["group_id"]
-        pair_group_ids.add(primary_edge["group_id"])
+        # Both declared parents belong to the same selected scientific unit.
+        assert primary_edge["execution_run_id"] is not None
+        assert primary_edge["execution_run_id"] == secondary_edge["execution_run_id"]
+        pair_execution_ids.add(primary_edge["execution_run_id"])
 
-    assert len(pair_group_ids) == 3, (
-        "CROSS_PRODUCT pairs should have distinct group_ids"
+    assert len(pair_execution_ids) == 3, (
+        "CROSS_PRODUCT pairs should have distinct execution IDs"
     )
 
 
@@ -647,7 +632,7 @@ def test_cross_product_grouping(pipeline_env: dict[str, str]):
     """1x3 CROSS_PRODUCT via per-step ``group_by`` override.
 
     Asserts artifact count, distinct artifact_ids, correct co-input
-    edges with shared group_ids, and distinct group_ids across pairs.
+    edges with shared execution IDs, and distinct execution IDs across pairs.
     """
     delta_root = pipeline_env["delta_root"]
     pipeline = _build_one_by_three_pipeline(pipeline_env, "test_cross_product")
@@ -659,7 +644,6 @@ def test_cross_product_grouping(pipeline_env: dict[str, str]):
             "secondary": pipeline.step_metrics.output("metrics"),
         },
         group_by=GroupByStrategy.CROSS_PRODUCT,
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -687,7 +671,6 @@ def test_cross_product_default_preserves_classvar_behavior(
             "primary": pipeline.step_primary.output("datasets"),
             "secondary": pipeline.step_metrics.output("metrics"),
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -781,7 +764,7 @@ def test_name_grouping_creates_co_input_edges(pipeline_env: dict[str, str]):
     framework records that declared set with its own deterministic group ID.
     """
     delta_root = pipeline_env["delta_root"]
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_name_grouping",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -791,12 +774,10 @@ def test_name_grouping_creates_co_input_edges(pipeline_env: dict[str, str]):
     step_a = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     step_b = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 99},
-        step_runner=Runner.LOCAL,
     )
     pipeline.run(
         DualInputName,
@@ -804,7 +785,6 @@ def test_name_grouping_creates_co_input_edges(pipeline_env: dict[str, str]):
             "from_a": step_a.output("datasets"),
             "from_b": step_b.output("datasets"),
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -835,19 +815,19 @@ def test_name_grouping_creates_co_input_edges(pipeline_env: dict[str, str]):
         by_output.setdefault(row["target_artifact_id"], []).append(row)
     assert len(by_output) == 2
 
-    pair_group_ids: set[str] = set()
+    pair_execution_ids: set[str] = set()
     for tid, in_edges in by_output.items():
         sources = {e["source_artifact_id"] for e in in_edges}
         assert sources & a_ids, f"output {tid} missing from_a edge"
         assert sources & b_ids, f"output {tid} missing from_b edge"
 
-        gids = {e["group_id"] for e in in_edges}
+        gids = {e["execution_run_id"] for e in in_edges}
         assert len(gids) == 1, (
-            f"Edges for output {tid} must share a single group_id, got {gids}"
+            f"Edges for output {tid} must share a single execution ID, got {gids}"
         )
-        assert None not in gids, f"output {tid} has a null group_id"
-        pair_group_ids.update(gids)
+        assert None not in gids, f"output {tid} has a null execution ID"
+        pair_execution_ids.update(gids)
 
-    assert len(pair_group_ids) == 2, (
-        f"Each pair must have a distinct group_id, got {pair_group_ids}"
+    assert len(pair_execution_ids) == 2, (
+        f"Each pair must have a distinct group_id, got {pair_execution_ids}"
     )

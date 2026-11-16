@@ -15,18 +15,18 @@ def test_public_surface_end_to_end(pipeline_env: dict[str, str]) -> None:
     from artisan.orchestration import (
         PipelineConfig,
         PipelineManager,
-        Runner,
-        RunnerBase,
         list_runs,
     )
+    from artisan.orchestration.runners import LocalRunner
 
+    runner = LocalRunner()
     pipeline = PipelineManager.create(
         name="public_smoke",
-        default_step_runner=Runner.LOCAL,
+        default_step_runner=runner,
         **pipeline_env,
     )
     assert isinstance(pipeline.config, PipelineConfig)
-    assert isinstance(Runner.LOCAL, RunnerBase)
+    assert pipeline.runner is runner
 
     pipeline.run(DataGenerator, params={"count": 1, "seed": 0})
     summary = pipeline.finalize()

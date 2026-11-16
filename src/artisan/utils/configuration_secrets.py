@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
+import ipaddress
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from typing import Any
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit
+
+import httpx
 
 COMMAND_ATTACHMENT_ENV = (
     "_ARTISAN_COMMAND_SOCKET",
@@ -86,3 +90,74 @@ def sensitive_environment(
     """Select conservative env sensitivity; known redactor values remain intact."""
     validate_public_env(env, public_env)
     return {name: value for name, value in env.items() if name not in public_env}
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+_MAX_SAFE_URI_DISPLAY = 256
+
+
+def _normalize_host(host: str | None) -> str:
+    """Normalize a DNS name or literal IP for exact-origin comparisons."""
+    if not host:
+        return ""
+    if "%" in host or any(char.isspace() for char in host):
+        msg = "URI host contains invalid characters"
+        raise ValueError(msg)
+    value = host
+    try:
+        return ipaddress.ip_address(value).compressed.lower()
+    except ValueError:
+        try:
+            normalized = (
+                httpx.URL(f"http://{_format_authority(value, None)}")
+                .raw_host.decode("ascii")
+                .lower()
+            )
+        except (UnicodeError, httpx.InvalidURL) as exc:
+            msg = "URI host is invalid"
+            raise ValueError(msg) from exc
+    if normalized.endswith("."):
+        normalized = normalized[:-1]
+    if not normalized or normalized.endswith("."):
+        msg = "URI host is invalid"
+        raise ValueError(msg)
+    return normalized
+
+
+def _format_authority(host: str, port: int | None) -> str:
+    """Format a normalized host and optional port as a URL authority."""
+    display_host = f"[{host}]" if ":" in host else host
+    return display_host if port is None else f"{display_host}:{port}"
+
+
+def safe_uri_display(uri: object) -> str:
+    """Remove credentials, query data, and fragments from a URI diagnostic."""
+    if not isinstance(uri, str):
+        return "<invalid URI>"
+    raw = uri.split("#", 1)[0].split("?", 1)[0]
+    if _has_control(raw):
+        return "<invalid URI>"
+    try:
+        parts = urlsplit(raw)
+        scheme = parts.scheme.lower()
+        host = _normalize_host(parts.hostname)
+        port = parts.port
+    except (TypeError, ValueError):
+        return "<invalid URI>"
+    if not scheme:
+        return "<invalid URI>"
+    normalized_port = None if port == _DEFAULT_PORTS.get(scheme) else port
+    authority = _format_authority(host, normalized_port) if host else "<invalid>"
+    return _bounded_display(urlunsplit((scheme, authority, parts.path, "", "")))
+
+
+def _bounded_display(value: str) -> str:
+    """Bound one already-sanitized URI display for returned diagnostics."""
+    if len(value) <= _MAX_SAFE_URI_DISPLAY:
+        return value
+    return f"{value[: _MAX_SAFE_URI_DISPLAY - 3]}..."
+
+
+def _has_control(value: str) -> bool:
+    """Return whether a URI component contains a control character."""
+    return any(unicodedata.category(char) in {"Cc", "Cf"} for char in value)

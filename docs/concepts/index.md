@@ -11,7 +11,7 @@ component's behavior and limits.
 - [Operations Model](operations-model.md) -- Why Creators and Curators, the
   three-phase execution model, and the spec system
 - [Composites and Composition](composites-and-composition.md) -- Reusable
-  compositions of operations that expand into real pipeline steps
+  creator compositions with one outer persistence and cache boundary
 - [Artifacts and Content Addressing](artifacts-and-content-addressing.md) --
   Immutable artifacts and hash-based identity
 - [Pipeline Configuration](pipeline-configuration.md) -- Orchestrator-level

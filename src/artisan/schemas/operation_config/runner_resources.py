@@ -2,8 +2,7 @@
 
 Each step runner translates these to its native format. The ``extra`` dict is
 an escape hatch for provider-specific settings such as a queue or accelerator
-constraint. For Modal compute, see
-``ComputeResources`` in ``compute_resources.py``.
+constraint. Providers reject options they cannot apply.
 """
 
 from __future__ import annotations
@@ -17,8 +16,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 class RunnerResources(BaseModel):
     """Portable hardware resource requirements for the step runner.
 
-    Read by the active runner at dispatch time. Modal has its own hardware-spec
-    schema (``ComputeResources``).
+    Read by the selected placement runner when resolving and launching work.
 
     Attributes:
         cpus: Number of CPU cores per task.

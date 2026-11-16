@@ -22,6 +22,7 @@ from polars.datatypes import DataType, DataTypeClass
 
 from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.schemas.enums import TablePath
+from artisan.storage.core.projection_schemas import PROJECTION_TABLES_BY_PATH
 
 # Lightweight execution log with success/error/timestamps. Stores
 # execution metadata only; input/output edges live in the
@@ -266,6 +267,8 @@ def get_physical_schema_for_path(table: str | TablePath) -> dict[str, Any]:
     try:
         return get_physical_schema(TablePath(table))
     except ValueError:
+        if candidate := PROJECTION_TABLES_BY_PATH.get(table):
+            return {**candidate.schema, "logical_commit_id": pl.String}
         from artisan.schemas.artifact.registry import ArtifactTypeDef
 
         for definition in ArtifactTypeDef.get_all().values():
@@ -289,6 +292,8 @@ def get_natural_key(table: str | TablePath) -> tuple[str, ...]:
         try:
             table = TablePath(table)
         except ValueError:
+            if candidate := PROJECTION_TABLES_BY_PATH.get(table):
+                return candidate.natural_key
             return ("artifact_id",)
     return NATURAL_KEYS[table]
 

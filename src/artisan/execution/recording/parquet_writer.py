@@ -26,6 +26,14 @@ from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.curator_cache import (
+    CURATOR_CACHE_PROOF_KEY,
+    CuratorCacheProof,
+)
+from artisan.schemas.execution.curator_carriers import (
+    CURATOR_CARRIER_INVENTORY_KEY,
+    CuratorCarrierInventory,
+)
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.orchestration.step_lifecycle import CancellationAcknowledgement
 from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
@@ -149,6 +157,8 @@ def _stage_execution(
     step_run_id: str | None = None,
     error_envelope: dict[str, Any] | None = None,
     operation: Any = None,
+    curator_cache_proof: CuratorCacheProof | None = None,
+    curator_carriers: CuratorCarrierInventory | None = None,
 ) -> None:
     """Stage edges, flush local payloads, and publish the execution seal last."""
     ensure_unsealed(staging_path, fs)
@@ -177,6 +187,8 @@ def _stage_execution(
         step_run_id=step_run_id,
         error_envelope=error_envelope,
         operation=operation,
+        curator_cache_proof=curator_cache_proof,
+        curator_carriers=curator_carriers,
     )
 
 
@@ -328,6 +340,8 @@ def _write_execution_record(
     step_run_id: str | None = None,
     error_envelope: dict[str, Any] | None = None,
     operation: Any = None,
+    curator_cache_proof: CuratorCacheProof | None = None,
+    curator_carriers: CuratorCarrierInventory | None = None,
 ) -> None:
     """Serialize one execution record row to ``executions.parquet``."""
     from artisan.execution.recording.durable import (
@@ -337,10 +351,30 @@ def _write_execution_record(
         sanitize_replay_snapshot,
     )
 
+    if {CURATOR_CACHE_PROOF_KEY, CURATOR_CARRIER_INVENTORY_KEY}.intersection(
+        result_metadata or {}
+    ):
+        msg = "Curator evidence is reserved framework execution metadata"
+        raise ValueError(msg)
+    if (
+        curator_cache_proof is not None or curator_carriers is not None
+    ) and not success:
+        msg = "Only successful executions may seal curator result evidence"
+        raise ValueError(msg)
     redactor = configuration_recorder(operation, params=user_overrides)
     redactor._learn_json(params)
     redactor._learn_json(error_envelope)
     result_metadata = sanitize_metadata(redactor, result_metadata)
+    if curator_cache_proof is not None:
+        result_metadata[CURATOR_CACHE_PROOF_KEY] = CuratorCacheProof.model_validate(
+            curator_cache_proof
+        ).model_dump(mode="json")
+    if curator_carriers is not None:
+        result_metadata[CURATOR_CARRIER_INVENTORY_KEY] = (
+            CuratorCarrierInventory.model_validate(curator_carriers).model_dump(
+                mode="json"
+            )
+        )
     params = redactor.sanitize_json(params)
     user_overrides = redactor.sanitize_json(user_overrides)
     error = redactor.sanitize_data(error)

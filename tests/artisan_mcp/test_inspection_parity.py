@@ -277,7 +277,7 @@ def test_changed_evidence_rejects_portable_cursor_everywhere(
         }
         for run_id in ("first", "second")
     ]
-    monkeypatch.setattr(reader, "list_runs", lambda root: pl.DataFrame(rows))
+    monkeypatch.setattr(reader, "list_runs", lambda root, **kwargs: pl.DataFrame(rows))
     first = inspect_evidence("list_runs", {"limit": 1}, delta_root=str(tmp_path))
     arguments = first.follow_up.arguments
     rows[1]["last_status"] = "failed"

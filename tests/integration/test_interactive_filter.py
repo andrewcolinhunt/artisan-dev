@@ -17,7 +17,7 @@ from artisan.operations.curator.interactive_filter import (
 )
 from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
+from artisan.orchestration.runners import LocalRunner
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 from .conftest import (
@@ -43,13 +43,13 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 4, "seed": 42},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     result = pipeline.finalize()
@@ -93,7 +93,7 @@ def test_interactive_filter_end_to_end(pipeline_env: dict[str, str]):
     # Commit
     step_result = filt.commit("interactive_filter")
     assert step_result.status is StepStatus.SUCCEEDED
-    assert step_result.succeeded_count == 4
+    assert step_result.succeeded_count == 1
     assert step_result.step_number == 2
 
     # Verify committed step visible in steps table
@@ -127,13 +127,13 @@ def test_interactive_filter_selective_criteria(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 99},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     result = pipeline.finalize()
@@ -157,7 +157,7 @@ def test_interactive_filter_selective_criteria(pipeline_env: dict[str, str]):
     if len(filtered) > 0:
         step_result = filt.commit("selective_filter")
         assert step_result.status is StepStatus.SUCCEEDED
-        assert step_result.succeeded_count == len(filtered)
+        assert step_result.succeeded_count == 1
 
         outputs = get_execution_outputs(delta_root, 2, "passthrough")
         assert set(outputs) == set(filtered)
@@ -177,13 +177,13 @@ def test_interactive_filter_load_with_step_numbers(pipeline_env: dict[str, str])
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     result = pipeline.finalize()
@@ -214,13 +214,13 @@ def test_interactive_filter_output_reference(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
+        step_runner=LocalRunner(),
     )
 
     result = pipeline.finalize()

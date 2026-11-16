@@ -2,8 +2,8 @@
 
 ``ArtisanError`` + ``ErrorCode`` is the single source of truth for error
 *identity*; ``ArtisanErrorEnvelope`` is its *serialization*, consumed at
-machine-readable boundaries including CLI/MCP responses, the tool-endpoint
-wire, and persisted failure records. The envelope is not a field bolted onto
+machine-readable boundaries including CLI/MCP responses, curator failure
+records, and optional scientific delivery diagnostics. The envelope is not a field bolted onto
 every string-carrying result: a new ``ErrorCode`` or envelope field ships only
 together with a raise site **and** a reader that consumes it.
 """
@@ -164,7 +164,6 @@ class ErrorCode:
     UNKNOWN_OPERATION = "unknown_operation"
     OP_PARAMS_UNDOCUMENTED = "op_params_undocumented"
     OP_EXECUTE_FAILED = "op_execute_failed"
-    TOOL_ENDPOINT_MISCONFIGURED = "tool_endpoint_misconfigured"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
     # validation — bounded inspection and declared outcome criteria

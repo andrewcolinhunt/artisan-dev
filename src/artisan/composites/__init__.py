@@ -1,16 +1,9 @@
-"""Composites: reusable compositions of operations with declared I/O."""
+"""Reusable scientific compositions and immutable wiring references."""
 
 from __future__ import annotations
 
 from artisan.composites.base.composite_context import CompositeContext
 from artisan.composites.base.composite_definition import CompositeDefinition
-from artisan.composites.base.results import CompositeResult, CompositeStepHandle
-from artisan.schemas.composites.composite_ref import CompositeRef
+from artisan.schemas.composites.composite_ref import CompositeCall, CompositeRef
 
-__all__ = [
-    "CompositeContext",
-    "CompositeDefinition",
-    "CompositeRef",
-    "CompositeResult",
-    "CompositeStepHandle",
-]
+__all__ = ["CompositeCall", "CompositeContext", "CompositeDefinition", "CompositeRef"]

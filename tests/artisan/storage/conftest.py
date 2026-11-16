@@ -13,6 +13,9 @@ from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.storage.io.retained_commit import RetainedCommitter
+from artisan.storage.io.retained_store import open_retained_store
+from artisan.utils.path import uri_join, uri_parent
 
 
 @pytest.fixture(
@@ -44,3 +47,15 @@ def backend_fs(request, tmp_path):
     fs, storage, root = result
     publish_test_store(root, fs, storage.delta_storage_options())
     return result
+
+
+@pytest.fixture
+def backend_committer(backend_fs) -> RetainedCommitter:
+    """Use the exact filesystem and managed-root binding of the initialized backend."""
+    fs, storage, root = backend_fs
+    return open_retained_store(
+        root,
+        uri_join(uri_parent(root), "files"),
+        fs=fs,
+        storage_options=storage.delta_storage_options(),
+    )

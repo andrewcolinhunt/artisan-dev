@@ -1,4 +1,4 @@
-"""A storage-only RSS ceiling covering large deposits, retry, audit, and recovery."""
+"""Bounded publication/retry/audit of streamed inline payloads larger than RAM cap."""
 
 from __future__ import annotations
 
@@ -9,362 +9,219 @@ import random
 import subprocess
 import sys
 import time
-from datetime import UTC, datetime
+from collections.abc import Iterator, Mapping
+from enum import StrEnum
 from pathlib import Path
+from typing import ClassVar
 
 import polars as pl
-import pyarrow.parquet as pq
 import pytest
-from deltalake import DeltaTable
 from fixtures.memory import peak_rss_bytes
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.retained_acceptance import open_committer
+from fixtures.retained_curators import admit_curator, stage_curator
+from pydantic import BaseModel, Field
 
-from artisan.errors import CommitError
-from artisan.orchestration.engine.step_tracker import StepTracker
-from artisan.schemas.artifact.csv import CSVArtifact
-from artisan.schemas.artifact.metric import MetricArtifact
+from artisan.operations.base import OperationDefinition
+from artisan.orchestration.engine.retained_curator import CuratorResults
+from artisan.orchestration.engine.retained_step_tracker import RetainedStepTracker
+from artisan.schemas import (
+    ArtifactEmission,
+    ArtifactStreamResult,
+    CSVArtifact,
+    MetricArtifact,
+    OutputSpec,
+)
 from artisan.schemas.enums import TablePath
-from artisan.schemas.execution.command_record import CommandRecording
-from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.schemas.execution.curator_admission import CuratorAdmissionReference
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
-from artisan.schemas.orchestration.step_start_record import StepStartRecord
-from artisan.storage.core.committed_scan import read_logical_commits, scan_committed
-from artisan.storage.core.table_schemas import (
-    ARTIFACT_INDEX_SCHEMA,
-    EXECUTION_EDGES_SCHEMA,
-    EXECUTIONS_SCHEMA,
-)
-from artisan.storage.io.bounded_io import iter_parquet_frames, write_parquet_rows
-from artisan.storage.io.commit import DeltaCommitter
-from artisan.storage.io.commit_plan import prepare_commit_evidence, publish_commit_plan
+from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.core.curator_view import CuratorView, capture_curator_view
 from artisan.storage.io.repair import repair_store
-from artisan.storage.io.staging import StagingManager
-from artisan.storage.io.worker_seal import (
-    STAGING_INVENTORY_KEY,
-    build_staging_inventory,
-)
-from artisan.utils.path import shard_uri
+from artisan.storage.io.retained_commit import RetainedCommitter
 
 pytestmark = pytest.mark.integration
-
 _MIB = 1024 * 1024
 _RSS_LIMIT = 768 * _MIB
 _ROWS_PER_TYPE = 192
-_RECOVERY_ROWS = 16
-_STEP_IDS = {"bulk": "a" * 32, "small": "b" * 32}
 
 
-def _committer(root):
-    fs = LocalFileSystem()
-    return DeltaCommitter(
-        str(root / "delta"), StagingManager(str(root / "staging"), fs), fs=fs
-    )
+class StreamPayloads(OperationDefinition):
+    """Generate bounded drafts; publication never retains the entire stream."""
 
+    name = "memory_payloads"
 
-def _artifact(kind, seed, size, step, compressible):
-    if compressible:
-        value = b"A" * size
-    else:
-        value = base64.b64encode(random.Random(seed).randbytes(size * 3 // 4))
-    if kind == "csv":
-        content = (
-            b"value\n"
-            + b"\n".join(
-                value[index : index + 65536] for index in range(0, len(value), 65536)
-            )
-            + b"\n"
-        )
-        artifact = CSVArtifact.draft(content, f"csv-{seed}.csv", step)
-    else:
-        artifact = MetricArtifact.draft(
-            {"value": value.decode()}, f"metric-{seed}.json", step
-        )
-    return artifact.finalize()
+    class OutputRole(StrEnum):
+        csv = "csv"
+        metric = "metric"
 
-
-def _write_fixture_rows(path, rows, schema):
-    """Use uncompressed source files so staged bytes themselves exceed the limit."""
-    arrow_schema = pl.DataFrame(schema=schema).to_arrow().schema
-    with pq.ParquetWriter(
-        path,
-        arrow_schema,
-        compression=None,
-        use_dictionary=False,
-        data_page_size=65536,
-        write_batch_size=1,
-    ) as writer:
-        for row in rows:
-            writer.write_table(
-                pl.DataFrame([row], schema=schema).to_arrow(), row_group_size=1
-            )
-
-
-def _index_row(artifact):
-    return {
-        "artifact_id": artifact.artifact_id,
-        "artifact_type": str(artifact.artifact_type),
-        "origin_step_number": artifact.origin_step_number,
-        "metadata": "{}",
+    inputs: ClassVar[dict] = {}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        kind: OutputSpec(artifact_type=kind, derives_from={"inputs": []})
+        for kind in ("csv", "metric")
     }
 
+    class Params(BaseModel):
+        """Synthetic payload count and size, not execution software configuration."""
 
-def _registration_fixture(root, phase, step, definitions):
-    directory = (
-        root
-        / "staging"
-        / f"{step}_memory"
-        / "_orchestrator"
-        / _STEP_IDS[phase]
-        / "input_registration"
-    )
-    directory.mkdir(parents=True)
-    index = []
-    payload_bytes = 0
-    for kind, records in definitions.items():
-        model = CSVArtifact if kind == "csv" else MetricArtifact
+        count: int = Field(description="Rows per type.")
+        size: int = Field(description="Decoded payload bytes per row.")
+        offset: int = Field(default=0, description="Distinct synthetic content seeds.")
 
-        def rows(records=records, kind=kind):
-            nonlocal payload_bytes
-            for seed, size, compressible in records:
-                artifact = _artifact(kind, seed, size, step, compressible)
-                payload_bytes += len(artifact.content)
-                index.append(_index_row(artifact))
-                yield artifact.to_row()
+    params: Params
 
-        name = "csvs.parquet" if kind == "csv" else "metrics.parquet"
-        _write_fixture_rows(directory / name, rows(), model.POLARS_SCHEMA)
-    write_parquet_rows(str(directory / "index.parquet"), index, ARTIFACT_INDEX_SCHEMA)
-    return payload_bytes, sum(path.stat().st_size for path in directory.iterdir())
-
-
-def _recovery_fixture(root, step, kind, source=None):
-    fs = LocalFileSystem()
-    tracker = StepTracker(str(root / "delta"), "memory-recovery", fs=fs)
-    step_id = f"{step:032x}"
-    tracker.create_attempt(
-        StepStartRecord(
-            step_run_id=step_id,
-            step_spec_id=f"{step + 10:032x}",
-            step_number=step,
-            step_name="memory-worker",
-            operation_class="tests.MemoryWorker",
-            params_json="{}",
-            input_refs_json="{}",
-            compute_backend="local",
-            compute_options_json="{}",
-            output_roles_json='["output"]',
-            output_types_json=json.dumps({"output": kind}),
-        )
-    )
-    tracker.transition(step_id, StepStatus.PENDING, StepStatus.RUNNING)
-    tracker.transition(
-        step_id,
-        StepStatus.RUNNING,
-        StepStatus.FAILED,
-        result=StepResult(
-            step_name="memory-worker",
-            step_number=step,
-            step_run_id=step_id,
-            status=StepStatus.FAILED,
-            error="fixture worker interrupted",
-        ),
-    )
-    execution_id = f"{step + 20:032x}"
-    directory = Path(
-        shard_uri(
-            str(root / "staging"),
-            execution_id,
-            step_number=step,
-            operation_name="memory_worker",
-        )
-    )
-    directory.mkdir(parents=True)
-    index = []
-    payload_bytes = 0
-
-    def rows():
-        nonlocal payload_bytes
-        if source is None:
-            for number in range(_RECOVERY_ROWS):
-                artifact = _artifact(
-                    "csv", 20000 + number, 2 * _MIB, step, number % 2 == 0
-                )
-                payload_bytes += len(artifact.content)
-                index.append(_index_row(artifact))
-                yield artifact.to_row()
-        else:
-            for frame in iter_parquet_frames(str(source)):
-                for row in frame.iter_rows(named=True):
-                    row["origin_step_number"] = step
-                    payload_bytes += len(row["content"])
-                    index.append(
-                        {
-                            "artifact_id": row["artifact_id"],
-                            "artifact_type": kind,
-                            "origin_step_number": step,
-                            "metadata": "{}",
-                        }
+    def execute_curator(
+        self,
+        inputs: Mapping[str, pl.DataFrame],
+        step_number: int,
+        artifact_store: ArtifactStore,
+    ) -> ArtifactStreamResult:
+        def emit() -> Iterator[ArtifactEmission]:
+            for kind in ("csv", "metric"):
+                for index in range(self.params.count):
+                    seed = self.params.offset + index
+                    value = base64.b64encode(
+                        random.Random(seed).randbytes(self.params.size * 3 // 4)
                     )
-                    yield row
+                    artifact = (
+                        CSVArtifact.draft(
+                            b"value\n"
+                            + b"\n".join(
+                                value[offset : offset + 64 * 1024]
+                                for offset in range(0, len(value), 64 * 1024)
+                            )
+                            + b"\n",
+                            f"csv-{seed}.csv",
+                            step_number,
+                        )
+                        if kind == "csv"
+                        else MetricArtifact.draft(
+                            {"value": value.decode()},
+                            f"metric-{seed}.json",
+                            step_number,
+                        )
+                    )
+                    yield ArtifactEmission(role=kind, artifact=artifact, sources={})
 
-    model = CSVArtifact if kind == "csv" else MetricArtifact
-    filename = "csvs.parquet" if kind == "csv" else "metrics.parquet"
-    write_parquet_rows(str(directory / filename), rows(), model.POLARS_SCHEMA)
-    write_parquet_rows(str(directory / "index.parquet"), index, ARTIFACT_INDEX_SCHEMA)
-    edges = (
-        {
-            "execution_run_id": execution_id,
-            "direction": "output",
-            "role": "output",
-            "artifact_id": row["artifact_id"],
-        }
-        for row in index
-    )
-    write_parquet_rows(
-        str(directory / "execution_edges.parquet"), edges, EXECUTION_EDGES_SCHEMA
-    )
-    record = dict.fromkeys(EXECUTIONS_SCHEMA)
-    record.update(
-        execution_run_id=execution_id,
-        execution_spec_id=f"{step + 30:032x}",
-        step_run_id=step_id,
-        origin_step_number=step,
-        operation_name="memory_worker",
-        success=True,
-        timestamp_start=datetime.now(UTC),
-        timestamp_end=datetime.now(UTC),
-        command_recording=CommandRecording.empty().model_dump_json(),
-        replay_snapshot=ReplaySnapshot.unavailable("memory fixture").model_dump_json(),
-    )
-    write_parquet_rows(
-        str(directory / "executions.parquet"),
-        [record],
-        EXECUTIONS_SCHEMA,
-        metadata={
-            STAGING_INVENTORY_KEY.encode(): build_staging_inventory(str(directory), fs),
-        },
-    )
-    return payload_bytes, sum(path.stat().st_size for path in directory.iterdir())
+        return ArtifactStreamResult(items=emit())
 
 
-def _fixtures(root):
+def _committer(root: Path) -> RetainedCommitter:
+    storage = StorageConfig()
+    return open_committer(
+        str(root / "delta"), storage.filesystem(), storage, initialize=True
+    )
+
+
+def _coordinator(committer: RetainedCommitter) -> CuratorResults:
+    return CuratorResults(
+        RetainedStepTracker(committer, "synthetic-pipeline"),
+        f"{committer.delta_root}/curator-staging",
+    )
+
+
+def _fixtures(root: Path, count: int = _ROWS_PER_TYPE, size: int = 3 * _MIB) -> None:
     root.mkdir(parents=True)
-    _committer(root).initialize_tables()
-    bulk = {
-        kind: [
-            (offset + number, (2 + 2 * (number % 2)) * _MIB, (number // 2) % 2 == 0)
-            for number in range(_ROWS_PER_TYPE)
-        ]
-        for kind, offset in (("csv", 0), ("metric", 1000))
-    }
-    payload, staged = _registration_fixture(root, "bulk", 0, bulk)
-    _registration_fixture(
-        root,
-        "small",
-        1,
-        {
-            "csv": [(0, 2 * _MIB, True), (10000, _MIB // 8, False)],
-            "metric": [(10001, _MIB // 4, False)],
-        },
-    )
-    bulk_directory = (
-        root
-        / "staging/0_memory/_orchestrator"
-        / _STEP_IDS["bulk"]
-        / "input_registration"
-    )
-    recovery_sources = [
-        _recovery_fixture(root, 2, "csv", bulk_directory / "csvs.parquet"),
-        _recovery_fixture(root, 3, "metric", bulk_directory / "metrics.parquet"),
-        _recovery_fixture(root, 4, "csv"),
-    ]
+    committer = _committer(root)
+    requests = {}
+    staged_bytes = {}
+    for number, (phase, rows, offset) in enumerate(
+        (("bulk", count, 0), ("small", 2, count - 1), ("recovery", count, 0))
+    ):
+        operation = StreamPayloads(
+            params={"count": rows, "size": size, "offset": offset}
+        )
+        coordinator, admission, reference = admit_curator(
+            committer,
+            operation,
+            {},
+            step_run_id=f"{number + 1:032x}",
+            step_number=number,
+        )
+        staged, result = stage_curator(coordinator, admission, operation)
+        assert staged.success, staged.error
+        requests[phase] = {
+            "reference": reference.model_dump(mode="json"),
+            "execution_run_id": staged.execution_run_id,
+            "result": result.model_dump(mode="json"),
+        }
+        staged_bytes[phase] = sum(
+            Path(path).stat().st_size
+            for path in committer.fs.find(coordinator.staging.staging_dir)
+            if str(staged.execution_run_id) in path
+        )
+    (root / "requests.json").write_text(json.dumps(requests))
     (root / "fixture.json").write_text(
         json.dumps(
             {
-                "payload_bytes": payload,
-                "staged_bytes": staged,
-                "recovery_payload_bytes": sum(item[0] for item in recovery_sources),
-                "recovery_staged_bytes": sum(item[1] for item in recovery_sources),
-                "recovery_source_attempts": len(recovery_sources),
+                "rows_per_type": count,
+                "payload_bytes": 2 * count * size,
+                "staged_bytes": staged_bytes,
             }
         )
     )
 
 
-def _deposit(root, phase):
-    committer = _committer(root)
-    try:
-        evidence = prepare_commit_evidence(
-            staging_root=str(root / "staging"),
-            fs=LocalFileSystem(),
-            commit_kind="input_registration",
-            step_run_id=_STEP_IDS[phase],
-            step_number=0 if phase == "bulk" else 1,
-            operation_name="memory",
-        )
-        plan = evidence.plan
-        prepared = committer.prepare_logical(plan, staged=evidence)
-        publish_commit_plan(str(root / "delta"), LocalFileSystem(), plan)
-        if phase == "bulk":
-
-            def interrupt(boundary, _plan, table):
-                if boundary == "table" and table == "artifacts/csvs":
-                    msg = "injected post-table interruption"
-                    raise RuntimeError(msg)
-
-            committer._checkpoint = interrupt
-            with pytest.raises(CommitError):
-                committer.commit_logical(plan, prepared=prepared)
-            del committer._checkpoint
-            committer.commit_logical(plan)
-            assert DeltaTable(str(root / "delta/artifacts/csvs")).version() == 1
-            assert DeltaTable(str(root / "delta/artifacts/metrics")).version() == 1
-        else:
-            committer.commit_logical(plan, prepared=prepared)
-        committer.commit_logical(plan)
-    finally:
-        committer.close()
+def _finish(coordinator: CuratorResults, request: dict) -> StepResult:
+    return coordinator.finish(
+        CuratorAdmissionReference.model_validate(request["reference"]),
+        request["execution_run_id"],
+        StepResult.model_validate(request["result"]),
+    )
 
 
-def _measure(root, phase):
+def _measure(root: Path, phase: str) -> None:
     started = time.monotonic()
-    if phase in {"bulk", "small"}:
-        _deposit(root, phase)
+    committer = _committer(root)
+    coordinator = _coordinator(committer)
+    requests = json.loads((root / "requests.json").read_text())
+    if phase in {"bulk", "small", "recovery"}:
+        if phase != "small":
+            boundary = "table:artifacts/csvs" if phase == "bulk" else "plan"
+
+            def interrupt(event: str) -> None:
+                if event == boundary:
+                    raise InterruptedError(boundary)
+
+            coordinator._checkpoint = interrupt
+            with pytest.raises(InterruptedError, match=boundary):
+                _finish(coordinator, requests[phase])
+            coordinator._checkpoint = lambda _event: None
+        if phase == "recovery":
+            report = repair_store(
+                delta_root=committer.delta_root,
+                staging_root=coordinator.staging.staging_dir,
+                files_root=committer.files_root,
+                fs=committer.fs,
+                apply=True,
+            )
+            assert not report.blocking, report
+        else:
+            assert _finish(coordinator, requests[phase]).status == StepStatus.SUCCEEDED
+        assert _finish(coordinator, requests[phase]).status == StepStatus.SUCCEEDED
     else:
         report = repair_store(
-            delta_root=str(root / "delta"),
-            staging_root=str(root / "staging"),
-            fs=LocalFileSystem(),
-            apply=phase == "recovery",
-            recover_staging=phase == "recovery",
+            delta_root=committer.delta_root,
+            staging_root=coordinator.staging.staging_dir,
+            files_root=committer.files_root,
+            fs=committer.fs,
         )
         assert not report.blocking, report
-    expected = 2 * _ROWS_PER_TYPE + (0 if phase == "bulk" else 2)
-    if phase == "recovery":
-        expected += _RECOVERY_ROWS
-    ids = (
-        scan_committed(
-            str(root / "delta"), TablePath.ARTIFACT_INDEX, fs=LocalFileSystem()
-        )
+    count = json.loads((root / "fixture.json").read_text())["rows_per_type"]
+    expected = 2 * count + (0 if phase == "bulk" else 2)
+    frame = (
+        CuratorView(committer, capture_curator_view(committer))
+        .scan(TablePath.ARTIFACT_INDEX.value)
         .select("artifact_id", "origin_step_number")
         .collect()
     )
-    assert ids.height == ids["artifact_id"].n_unique() == expected
-    controls = read_logical_commits(str(root / "delta"), fs=LocalFileSystem())
-    assert set(controls["state"]) == {"complete"}
-    assert ids.filter(pl.col("origin_step_number") == 0).height == 2 * _ROWS_PER_TYPE
-    if phase == "recovery":
-        recovered = controls.filter(pl.col("commit_kind") == "execution_recovery")
-        assert recovered.height == 3
-        assert ids.filter(pl.col("origin_step_number") == 4).height == _RECOVERY_ROWS
-        assert DeltaTable(str(root / "delta/artifacts/csvs")).version() == 3
-        assert DeltaTable(str(root / "delta/artifacts/metrics")).version() == 2
-    peak_bytes = peak_rss_bytes()
+    assert frame.height == frame["artifact_id"].n_unique() == expected
+    assert frame.filter(pl.col("origin_step_number") == 0).height == 2 * count
     (root / f"{phase}.json").write_text(
         json.dumps(
             {
-                "peak_bytes": peak_bytes,
+                "peak_bytes": peak_rss_bytes(),
                 "visible_artifacts": expected,
                 "elapsed_seconds": time.monotonic() - started,
             }
@@ -433,18 +290,18 @@ def _run_phase(root, phase, *, monitor):
 
 
 @pytest.mark.skipif(
-    not (sys.platform.startswith("linux") or sys.platform == "darwin"),
-    reason="RSS gate supports the project's Linux and macOS targets",
+    not sys.platform.startswith("linux"),
+    reason="RSS qualification uses Linux process accounting",
 )
 def test_deposits_larger_than_rss_ceiling_survive_retry_audit_and_recovery(
-    tmp_path, request
-):
+    tmp_path: Path, request: pytest.FixtureRequest
+) -> None:
     root = tmp_path / "store"
     _run_phase(root, "fixtures", monitor=False)
     fixture = json.loads((root / "fixture.json").read_text())
     assert fixture["payload_bytes"] > 1024 * _MIB
-    assert fixture["staged_bytes"] > _RSS_LIMIT
-    assert fixture["recovery_payload_bytes"] > 1024 * _MIB
+    assert fixture["staged_bytes"]["bulk"] > _RSS_LIMIT
+    assert fixture["staged_bytes"]["recovery"] > _RSS_LIMIT
     request.node.user_properties.append(
         ("deposit_fixture_json", json.dumps(fixture, sort_keys=True))
     )
@@ -457,6 +314,15 @@ def test_deposits_larger_than_rss_ceiling_survive_retry_audit_and_recovery(
     (tmp_path / "rss-measurements.json").write_text(
         json.dumps({"fixture": fixture, "phases": measurements}, indent=2)
     )
+
+
+def test_small_fixture_uses_selected_publication_and_keeps_original_origin(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "small-proof"
+    _fixtures(root, count=3, size=1024)
+    for phase in ("bulk", "small", "audit", "recovery"):
+        _measure(root, phase)
 
 
 if __name__ == "__main__":

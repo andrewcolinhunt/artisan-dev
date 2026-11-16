@@ -174,11 +174,12 @@ class TestPassthroughResultArtifactIds:
 def test_curator_command_evidence_survives_every_result(tmp_path, monkeypatch, failure):
     import sys
 
-    from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+    from fixtures.commands import IdentityCommandEnvironment
+
     from artisan.utils.external_tools import run_command
 
     def execute(self, **kwargs):
-        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
         if failure == "exception":
             msg = "after command"
             raise RuntimeError(msg)

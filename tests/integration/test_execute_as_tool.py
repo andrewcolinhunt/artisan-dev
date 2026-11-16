@@ -14,12 +14,11 @@ import pytest
 pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import CsvHead, DataGenerator
-from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 
 from .conftest import (
     count_artifacts_by_step,
     count_executions_by_step,
+    create_native_pipeline,
     load_artifact_edges,
     read_table,
 )
@@ -30,7 +29,7 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
     produces committed artifacts with correct content and lineage."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_execute_as_tool",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -40,13 +39,11 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "rows_per_file": 10, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     pipeline.run(
         operation=CsvHead,
         inputs={"dataset": step0.output("datasets")},
         params={"rows": 3},
-        step_runner=Runner.LOCAL,
     )
     result = pipeline.finalize()
 
@@ -76,11 +73,36 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
     assert set(edges["target_artifact_id"].to_list()) == head_ids
     assert set(edges["source_artifact_id"].to_list()) == source_ids
 
-    # both subprocess executions recorded as successes, each with its
-    # captured stdout persisted to the executions table
-    executions = read_table(delta_root, "orchestration/executions")
-    step1 = executions.filter(pl.col("origin_step_number") == 1)
-    assert step1.height == 2
-    assert step1["success"].all()
-    for tool_output in step1["tool_output"].to_list():
-        assert "csv_head: wrote" in tool_output
+    from artisan.execution.recording.delivery_diagnostics import (
+        read_delivery_diagnostics,
+    )
+    from artisan.orchestration.engine.retained_execution_query import (
+        read_retained_execution_membership,
+    )
+    from artisan.storage.core.execution_source import ScientificExecutionSource
+
+    selected = [
+        member.source
+        for member in read_retained_execution_membership(
+            pipeline.committer, pipeline_run_id=pipeline.config.pipeline_run_id
+        )
+        if member.state.step_number == 1
+    ]
+    assert len(selected) == 2
+    for source in selected:
+        assert isinstance(source, ScientificExecutionSource)
+        receipt = source.plan.receipt
+        observed = read_delivery_diagnostics(
+            receipt.delivery,
+            delta_root=pipeline.committer.delta_root,
+            fs=pipeline.committer.fs,
+            expected_seal_digest=receipt.seal_digest,
+        )
+        assert observed is not None
+        assert observed.cleanup == "closed"
+        assert len(observed.invocations) == 1
+        invocation = observed.invocations[0]
+        assert invocation.succeeded
+        assert "csv_head: wrote" in (invocation.tool_output or "")
+        assert len(invocation.command_recording.commands) == 1
+        assert invocation.command_recording.commands[0].outcome == "succeeded"

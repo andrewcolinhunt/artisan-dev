@@ -6,38 +6,23 @@ import json
 import logging
 import threading
 from collections.abc import Iterator
-from contextlib import contextmanager, suppress
+from contextlib import contextmanager
 from contextvars import ContextVar
-from importlib.metadata import version
 from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, SecretBytes, SecretStr
 
 from artisan.errors import ArtisanError, ErrorCode
 from artisan.execution.recording.commands import CommandRecorder
-from artisan.execution.recording.durable import configuration_recorder
-from artisan.registry.resolve import operation_identity, resolve_operation
+from artisan.registry.resolve import operation_identity
 from artisan.schemas.execution.replay import (
-    RemoteObservation,
     ReplayAssociation,
-    ReplayOperation,
     ReplayReplacement,
     ReplaySnapshot,
-    ReplaySource,
-    captured_associations,
 )
-from artisan.schemas.operation_config.compute import ModalComputeConfig
-from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
 from artisan.utils.configuration_secrets import (
     credential_name,
     credential_url,
-    sensitive_environment,
-)
-from artisan.utils.hashing import (
-    CacheInputIdentity,
-    compute_execution_spec_id,
-    effective_config_payload,
-    serialize_params,
 )
 
 if TYPE_CHECKING:
@@ -99,6 +84,22 @@ def set_pointer(payload: dict[str, Any], pointer: str, value: Any) -> None:
     target[int(key) if isinstance(target, list) else key] = value
 
 
+def same_configuration_structure(current: Any, recorded: Any) -> bool:
+    """Reject new nested defaults and removed fields during reconstruction."""
+    if isinstance(current, dict) and isinstance(recorded, dict):
+        return current.keys() == recorded.keys() and all(
+            same_configuration_structure(current[key], recorded[key]) for key in current
+        )
+    if isinstance(current, list) and isinstance(recorded, list):
+        return len(current) == len(recorded) and all(
+            same_configuration_structure(a, b)
+            for a, b in zip(current, recorded, strict=True)
+        )
+    return not isinstance(current, (dict, list)) and not isinstance(
+        recorded, (dict, list)
+    )
+
+
 def _configuration(
     operation: OperationDefinition,
     sensitive_values: tuple[str, ...] = (),
@@ -110,60 +111,22 @@ def _configuration(
         value: Any,
         path: str,
         key: str = "",
-        environment: bool = False,
-        provider_reference: bool = False,
     ) -> None:
         secret = isinstance(value, (SecretStr, SecretBytes))
         raw = value.get_secret_value() if secret else value
         if (
             path
             and raw is not None
-            and (
-                secret
-                or environment
-                or (credential_name(key) and not provider_reference)
-                or credential_url(raw)
-            )
+            and (secret or credential_name(key) or credential_url(raw))
         ):
-            slots.append(
-                ReplayReplacement(
-                    pointer=path, suggested_environment=key if environment else None
-                )
-            )
+            slots.append(ReplayReplacement(pointer=path))
             values[path] = raw.decode() if isinstance(raw, bytes) else raw
         elif isinstance(value, BaseModel):
-            env_owner = (
-                value
-                if isinstance(value, (EnvironmentSpec, ModalComputeConfig))
-                else None
-            )
-            sensitive_env = (
-                sensitive_environment(env_owner.env, env_owner.public_env)
-                if env_owner is not None
-                else {}
-            )
             for name in type(value).model_fields:
-                child_path = _pointer(path, name)
-                if env_owner is not None and name == "env":
-                    for env_name, item in env_owner.env.items():
-                        visit(
-                            item,
-                            _pointer(child_path, env_name),
-                            env_name,
-                            env_name in sensitive_env,
-                        )
-                else:
-                    visit(
-                        getattr(value, name),
-                        child_path,
-                        name,
-                        provider_reference=isinstance(value, ModalComputeConfig)
-                        and path == "/compute_provider/modal"
-                        and name in {"auth_secret", "secrets", "image_registry_secret"},
-                    )
+                visit(getattr(value, name), _pointer(path, name), name)
         elif isinstance(value, dict):
             for name, item in value.items():
-                visit(item, _pointer(path, name), str(name), key == "env")
+                visit(item, _pointer(path, name), str(name))
         elif isinstance(value, (list, tuple)):
             for index, item in enumerate(value):
                 visit(item, _pointer(path, index))
@@ -173,7 +136,7 @@ def _configuration(
     restored = json.loads(json.dumps(payload, allow_nan=False))
     for pointer, value in values.items():
         set_pointer(restored, pointer, value)
-    if type(operation).model_validate(restored) != operation:
+    if type(operation).model_validate(restored, by_name=True) != operation:
         msg = "Concrete operation does not roundtrip through JSON"
         raise ValueError(msg)
     redactor = CommandRecorder(operation)
@@ -202,70 +165,6 @@ def _configuration(
     for slot in slots:
         set_pointer(payload, slot.pointer, None)
     return payload, slots
-
-
-def build_replay_snapshot(
-    unit: ExecutionUnit,
-    runtime: RuntimeEnvironment,
-    cache_inputs: dict[str, list[CacheInputIdentity]],
-) -> ReplaySnapshot:
-    """Verify the actual hash preimage and capture the concrete operation safely."""
-    try:
-        if set(cache_inputs) != set(unit.inputs) or any(
-            [entry.artifact_id for entry in cache_inputs[role]] != ids
-            for role, ids in unit.inputs.items()
-        ):
-            msg = "Input occurrences do not match the unit"
-            raise ValueError(msg)
-        computed = compute_execution_spec_id(
-            unit.operation.name,
-            cache_inputs,
-            serialize_params(unit.operation),
-            effective_config_payload(unit.operation),
-        )
-        if computed != unit.execution_spec_id:
-            msg = "Unverified execution cache preimage"
-            raise ValueError(msg)
-        redactor = configuration_recorder(unit.operation, params=unit.user_overrides)
-        redactor.add_sensitive_data(unit.replay_sensitive_values)
-        configuration, replacements = _configuration(
-            unit.operation, redactor.sensitive_values
-        )
-        identity = operation_identity(type(unit.operation))
-        importable = False
-        with suppress(ImportError, AttributeError, ValueError, TypeError):
-            importable = resolve_operation(
-                f"{identity.module}:{identity.qualname}"
-            ) is type(unit.operation)
-        return ReplaySnapshot(
-            status="ready" if importable else "requires_operation_class",
-            unavailable_reason=None,
-            operation=ReplayOperation(
-                identity=identity,
-                configuration=configuration,
-                behavior=operation_behavior(unit.operation),
-                artisan_version=version("dexterity-artisan"),
-            ),
-            inputs=cache_inputs,
-            group_ids=unit.group_ids,
-            associated=captured_associations(cache_inputs),
-            associated_complete=True,
-            source=ReplaySource(
-                step_number=unit.step_number,
-                step_run_id=unit.step_run_id,
-                runner=runtime.compute_backend_name,
-                application_modules=runtime.application_modules,
-                execution_spec_id=unit.execution_spec_id,
-                roots=redactor.sanitize_data(runtime_roots(runtime)),
-            ),
-            required_replacements=replacements,
-            remote_identity=[],
-            diagnostic=None,
-        )
-    except (TypeError, ValueError, OverflowError) as exc:
-        return ReplaySnapshot.unavailable(
-            f"configuration_or_occurrence_unavailable:{type(exc).__name__}"
-        )
 
 
 class ReplayBuilder:
@@ -316,45 +215,6 @@ class ReplayBuilder:
                 )
                 self._snapshot = self._snapshot.model_copy(update={"source": source})
 
-    def record_remote(self, observation: RemoteObservation) -> None:
-        """Retain actual worker identity and diagnostic delivery separately."""
-        from artisan.execution.recording.commands import sanitize_diagnostic
-
-        observation = observation.model_copy(
-            update={
-                "diagnostic_error": sanitize_diagnostic(observation.diagnostic_error),
-            }
-        )
-        with self._lock:
-            slots = {
-                item.dispatch_index: item for item in self._snapshot.remote_identity
-            }
-            slots[observation.dispatch_index] = observation
-            diagnostic = self._snapshot.diagnostic
-            if diagnostic is not None and observation.diagnostic_status in {
-                "incomplete",
-                "unavailable",
-            }:
-                diagnostic = diagnostic.model_copy(
-                    update={
-                        "status": "incomplete",
-                        "errors": [
-                            *diagnostic.errors,
-                            *(
-                                [observation.diagnostic_error]
-                                if observation.diagnostic_error
-                                else []
-                            ),
-                        ],
-                    }
-                )
-            self._snapshot = self._snapshot.model_copy(
-                update={
-                    "remote_identity": [slots[i] for i in sorted(slots)],
-                    "diagnostic": diagnostic,
-                }
-            )
-
 
 def current_replay_builder() -> ReplayBuilder | None:
     """Return the builder propagated through the current lifecycle context."""
@@ -382,40 +242,11 @@ def replay_recording_fields() -> dict[str, Any]:
 
 
 @contextmanager
-def capture_replay(
-    unit: ExecutionUnit, runtime: RuntimeEnvironment
-) -> Iterator[ReplayBuilder]:
-    """Install one builder; direct facade calls must verify their hash preimage."""
-    snapshot = unit.replay_snapshot
-    if snapshot is None:
-        from artisan.storage.core.artifact_store import ArtifactStore
-
-        try:
-            store = ArtifactStore(
-                runtime.delta_root,
-                fs=runtime.storage.filesystem(),
-                storage_options=runtime.storage.delta_storage_options(),
-                files_root=runtime.files_root,
-            )
-            types = store.provenance.load_type_map(
-                [aid for ids in unit.inputs.values() for aid in ids]
-            )
-            occurrences = {
-                role: [
-                    CacheInputIdentity(
-                        role,
-                        unit.group_ids[i] if unit.group_ids else None,
-                        i,
-                        types[aid],
-                        aid,
-                    )
-                    for i, aid in enumerate(ids)
-                ]
-                for role, ids in unit.inputs.items()
-            }
-            snapshot = build_replay_snapshot(unit, runtime, occurrences)
-        except (KeyError, ValueError, OSError, ArtisanError):
-            snapshot = ReplaySnapshot.unavailable("unverified_input_occurrences")
+def capture_replay(unit: ExecutionUnit) -> Iterator[ReplayBuilder]:
+    """Record only evidence already captured against a required curator admission."""
+    snapshot = unit.replay_snapshot or ReplaySnapshot.unavailable(
+        "required_admission_unavailable"
+    )
     if snapshot.associated_complete and sorted(
         unit.associated_inputs, key=lambda item: (item.primary_id, item.artifact_type)
     ) != sorted(
@@ -424,14 +255,6 @@ def capture_replay(
         msg = "Runtime associations differ from the frozen replay snapshot"
         raise ValueError(msg)
     builder = ReplayBuilder(snapshot)
-    builder.record_remote(
-        RemoteObservation(
-            dispatch_index=0,
-            status="not_applicable"
-            if unit.operation.compute_provider.active == "local"
-            else "not_started",
-        )
-    )
     token = _current.set(builder)
     try:
         yield builder

@@ -48,16 +48,16 @@ commit. There is no separate lineage reconstruction step.
 
 ## Dual identity for executions
 
-Each execution has a deterministic cache key and a separate attempt ID:
+Computation identity is separate from the identity of an attempt:
 
 | Identity | Purpose | Computed from |
 |----------|---------|---------------|
-| `execution_spec_id` | Cache key (deterministic) | operation config + ordered role/group/position/type/ID input occurrences |
-| `execution_run_id` | Provenance tracking (unique per attempt) | spec_id + timestamp + worker_id |
+| Cache identity | Eligible computation reuse | Compiled recipe, resolved software, exact input semantics, and frozen dependencies |
+| Attempt and delivery identities | Ownership and provenance | Fresh IDs for the admitted unit and its worker delivery |
 
-Matching `spec_id` values identify the same declared invocation. Reuse still
-depends on cache policy and accepted prior results. Distinct `run_id` values
-retain separate execution history when the same computation runs again.
+Matching computation identity permits lookup; reuse still requires qualified
+software and a verified accepted result. Re-executing the same computation
+creates fresh ownership. Reusing it preserves the original accepted producer.
 
 ---
 
@@ -82,7 +82,9 @@ the same for creators and artifact-producing curators.
 
 The result addresses outputs by their exact index within a role's list.
 A `LineageMapping` supplies a target `draft_index`, a `source_role`, and either
-an input `source_artifact_id` or a sibling `source_output_index`. Duplicate
+an exact input reference, an unambiguous input `source_artifact_id`, or a sibling
+`source_output_index`. An input reference includes its role-local index, expected
+ID, and owner so repeated equal-content inputs remain distinguishable. Duplicate
 human names are legal; names never resolve a declaration. List positions must
 remain stable until finalization.
 
@@ -131,8 +133,11 @@ parent set as well as the resolved dependencies. See
 [Read typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies)
 for phase retention and portable preparation.
 
-`IngestPipelineStep` deliberately imports artifacts as new roots, including
-configs. That import boundary does not preserve foreign ancestry.
+`IngestPipelineStep` imports artifacts as new roots with new semantic IDs. It
+preserves their content and does not rewrite embedded references. A config whose
+required references still name artifacts in the source store cannot be accepted
+unless those exact referents are available in the destination. Importing a
+re-drafted copy of the referenced artifact does not preserve its original ID.
 
 ### Optional filename matching
 
@@ -188,9 +193,10 @@ correct parents. That responsibility belongs to the operation and its tests.
 
 ## Edge types
 
-All artifact provenance relationships are stored as directed
-`ArtifactProvenanceEdge` records. In Artisan's stored edges, source is the
-parent and target is the derived artifact.
+Artifact provenance has directed parent-to-derived relations. Retained creator
+results address exact occurrences; public content-level graph views can project
+those relations onto artifact IDs. Curator evidence also uses
+`ArtifactProvenanceEdge` records.
 
 Four edge patterns appear in practice:
 
@@ -225,14 +231,10 @@ finalize to the same artifact ID. Authors do not supply a grouping hash.
 | Aggregate({d1, d2, d3}) | Requires all inputs | Co-input |
 | Join(left_table, right_table) | Requires both tables | Co-input |
 
-Co-input edges share a `group_id` -- a deterministic hash computed from the
-role, concrete type, and artifact ID of each unique declared parent.
-One unique parent has no group ID. Several parents share the hash of their
-sorted tuples, so declaration order does not change the label. Equivalent
-finalized sibling parents collapse before this choice. Multiple
-`ArtifactProvenanceEdge` records with the same
-`group_id` and `target_artifact_id` represent a single joint derivation. Queries
-can retrieve its complete parent set without an intermediate aggregate artifact.
+All exact parents of an output occurrence belong to that derivation. Equal
+content from separate producers does not erase producer attribution. Content-level
+edge views may assign a `group_id` to joint parents for graph display; that
+display label is not the identity of the original occurrences.
 
 ### How multi-input pairing works
 
@@ -247,34 +249,40 @@ retain distinct derivations even when P has the same semantic artifact ID.
 
 ## Composite provenance
 
-A composite expands into ordinary pipeline steps with ordinary provenance
-edges. The step-name prefix (`composite_name.operation`) groups its children;
-queries traverse their artifacts and executions like any other steps.
+A composite declares ordinary operation lineage and selects its retained outputs
+with `ctx.output`. Its children do not become separate pipeline steps. Artisan
+keeps the selected outputs and any required support artifacts, preserving exact
+relationships among them and collapsing paths through discarded intermediates.
+
+For prediction followed by measurement, exporting both preserves
+`inputs → structure → metric`. In an iterative search, exporting only the final
+structure and a metric keeps the overall input-to-output ancestry without storing
+every intermediate structure. A metric containing iteration history remains an
+ordinary metric; its content and declared parents belong to the operation.
+
+Collapsed ancestry does not invent a direct association. Only actual retained
+direct relations and frozen dependency context supply associated inputs.
 
 ---
 
 ## Storage layout
 
-Provenance data lives in three Delta Lake tables:
+Provenance and result ownership span several evidence tables:
 
 | Table | Path | Contents |
 |-------|------|----------|
 | Artifact edges | `provenance/artifact_edges` | Artifact-to-artifact derivation edges (`ArtifactProvenanceEdge` records) |
 | Execution edges | `provenance/execution_edges` | Artifact-to-execution consumption/production edges (`ExecutionEdge` records) |
 | Executions | `orchestration/executions` | Execution records with dual identity, timing, parameters, and status |
-
-Artifact types are denormalized onto edge records (both `source_artifact_type`
-and `target_artifact_type` appear on each `ArtifactProvenanceEdge`). This
-avoids joins when filtering provenance queries by type -- a common pattern when
-you want "all metric descendants of artifact X" without scanning the full
-artifact index.
+| Retained occurrences and relations | `provenance/retained_*` | Ordered role membership, exact producer attribution, direct relations, collapsed ancestry, and frozen context |
+| Assignment decisions | `provenance/assignment_decisions` | Admission, winning delivery, cancellation, and selected cache sources |
 
 All provenance data is written through the
 [staging-commit pattern](storage-and-delta-lake.md#the-staging-commit-pattern):
 workers stage Parquet files, and the orchestrator includes them in a logical
-commit with the artifacts and terminal step snapshot. Supported readers expose
-these rows only after logical completion. Full verification of historical
-table effects requires an explicit store audit.
+commit with its artifacts. Supported readers validate selected ownership,
+membership, and completion. Auditing unrelated historical evidence requires an
+explicit store audit.
 Raw Delta reads bypass that boundary and can show incomplete physical writes.
 
 ---

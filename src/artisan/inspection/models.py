@@ -5,7 +5,14 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, JsonValue, TypeAdapter
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    JsonValue,
+    TypeAdapter,
+    model_validator,
+)
 
 from artisan.inspection._boundary import CommitErrorPayload, ErrorPayload
 from artisan.operations.base.operation_example import OperationExample
@@ -19,6 +26,7 @@ from artisan.registry.models import (
     OperationSummary,
     OutputSpecMetadata,
 )
+from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.visualization.comparison import (
     ComparisonCoverage,
@@ -266,11 +274,11 @@ class FailureIdentity(Projection):
     step: int
     operation: str
     execution_run_id: str
-    timestamp_start: datetime
+    timestamp_start: datetime | None
     code: str | None
     recovery_hint: str | None
     field: str | None
-    log: str
+    log: str | None
 
 
 class FailureRow(FailureIdentity):
@@ -278,6 +286,71 @@ class FailureRow(FailureIdentity):
 
     suggestions: list[str] | None
     error: str | None
+
+
+class InvocationCommands(Projection):
+    """One observed invocation's unchanged command indices and coverage."""
+
+    invocation_id: str = Field(min_length=1, strict=True)
+    call_path: tuple[str, ...]
+    operation_name: str = Field(min_length=1, strict=True)
+    operation_version: str = Field(min_length=1, strict=True)
+    recording: CommandRecording
+
+
+class ExecutionCommands(Projection):
+    """Command observations under one original execution, without new child nodes.
+
+    A direct curator recording and grouped scientific observations are exclusive.
+    A null omission count denotes absent diagnostics. A present zero count keeps
+    an observed empty invocation collection distinct from unavailable evidence.
+    """
+
+    execution_run_id: str = Field(min_length=1, strict=True)
+    status: Literal["complete", "partial", "unavailable"]
+    recording: CommandRecording | None
+    invocations: tuple[InvocationCommands, ...]
+    omitted_invocations: int | None = Field(strict=True, ge=0)
+
+    @model_validator(mode="after")
+    def _validate_coverage(self) -> ExecutionCommands:
+        if self.recording is not None and (
+            self.invocations or self.omitted_invocations != 0
+        ):
+            msg = "Direct command evidence cannot coexist with invocation groups"
+            raise ValueError(msg)
+        if self.omitted_invocations is None and self.invocations:
+            msg = "Absent diagnostics cannot contain invocation observations"
+            raise ValueError(msg)
+        ids = [item.invocation_id for item in self.invocations]
+        if len(ids) != len(set(ids)):
+            msg = "Command observations repeat an invocation identity"
+            raise ValueError(msg)
+        if self.status != _command_coverage(
+            self.recording, self.invocations, self.omitted_invocations
+        ):
+            msg = "Command coverage differs from its available observations"
+            raise ValueError(msg)
+        return self
+
+
+def _command_coverage(
+    recording: CommandRecording | None,
+    invocations: tuple[InvocationCommands, ...],
+    omitted: int | None,
+) -> Literal["complete", "partial", "unavailable"]:
+    if recording is not None:
+        return recording.status
+    if omitted is None:
+        return "unavailable"
+    statuses = [item.recording.status for item in invocations]
+    if omitted == 0 and all(status == "complete" for status in statuses):
+        return "complete"
+    return (
+        "partial"
+        if any(status != "unavailable" for status in statuses)
+        else "unavailable"
+    )
 
 
 class DiagnosisHeader(Response):

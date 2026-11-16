@@ -20,7 +20,6 @@ from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -74,9 +73,6 @@ class AppendableGenerator(OperationDefinition):
     params: Params = Params()
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
     batch_strategy: BatchStrategy = BatchStrategy(job_name="appendable_generator")  # type: ignore[call-arg]  # pydantic defaults
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
-    )
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write JSONL file(s) with random records to files_dir."""

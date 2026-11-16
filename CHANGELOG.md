@@ -7,6 +7,39 @@ User-facing changes are recorded here using
 
 ### Changed
 
+- Prepared environments are reusable across operations and pipelines. Each
+  submission resolves shared environments once; repeated preparation reuses
+  completed installations and compatible Modal deployments. Normal execution
+  trusts the prepared installation and checks availability and runtime metadata
+  without hashing installed packages or entire Apptainer images. Change declared
+  inputs and prepare again instead of editing installed files. Old preparation
+  records require explicit preparation with matched core/provider versions;
+  this does not change the retained-results store format.
+- **Breaking: independent software and worker placement.** Command operations
+  declare `environment = Environment.from_pixi(...)`. Configured runners prepare
+  worker and tool software explicitly, then execute without installing or
+  deploying. Local, Modal, and Slurm place the complete Python lifecycle;
+  commands use their prepared Pixi, OCI, or Apptainer environment. Execute-only
+  endpoints and the former environment selectors and receipts are removed. See
+  [execute environments](docs/how-to-guides/execute-environments.md).
+- **Breaking: composites are one retained boundary.** `compose(ctx)` declares
+  creator calls with `ctx.call` and selects exports with `ctx.output`. Children
+  share one worker per unit and do not create separate persisted steps or cache
+  checkpoints. `ExecutionSession.run` invokes the same lifecycle without pipeline
+  persistence. Output occurrences preserve order, repetition, and exact producer
+  attribution even when content deduplicates. See
+  [composition](docs/concepts/composites-and-composition.md).
+- **Breaking: retained store domain.** New stores use
+  `{"domain":"artisan.retained-store","schema_version":1}`. Acceptance and
+  recovery require the recorded owner and complete verified result. Historical
+  formats reject without mutation; start fresh Delta and staging roots and use
+  the matching release to inspect older stores. Publication exports are portable
+  read-only inspection bundles without writer or replay authority.
+- Persistent cache reuse requires explicitly prepared, qualified worker software.
+  The default `LocalRunner()` can execute in the current Python installation but
+  does not claim a locked dependency closure. Replay requires an explicitly
+  imported root definition and preserves the outer operation or composite boundary.
+
 - Package versions now use the static `[project].version` in `pyproject.toml`,
   starting at `0.2.0.dev0`, and stay unchanged across development commits and
   worktrees. `artisan.__version__` reports the installed distribution version.
@@ -15,14 +48,12 @@ User-facing changes are recorded here using
 - Development environments now require Pixi 0.83.0. Comments and task-only
   manifest edits no longer require lockfile refreshes. Existing source checkouts
   should follow the [upgrade instructions](docs/getting-started/installation.md#before-upgrading).
-- **Breaking: explicit CSV artifact contract and store format 8.** Replace
+- **Breaking: explicit CSV artifact contract.** Replace
   `DataArtifact`, `IngestData`, and `inspect_data` with `CSVArtifact`, `IngestCSV`,
   and `inspect_csv`. The registered type and built-in ingestion output role are
   now `csv`; CSV content lives in `artifacts/csvs`. The old names have no aliases.
-  Start fresh Delta and staging roots; older stores and staging cannot be reused
-  with format 8. Keep them with their matching Artisan version to inspect or
-  export their contents before re-ingesting into a new store. CSV parsing
-  behavior is unchanged.
+  Keep earlier stores with their matching Artisan version to inspect or export
+  their contents before re-ingesting into a new store. CSV parsing is unchanged.
 - `IngestFiles` now returns an explicit `ArtifactStreamResult`, and `IngestCSV`
   converts and stages files incrementally within one execution. A failed import
   exposes no converted prefix. Each individual CSV must still fit in memory.

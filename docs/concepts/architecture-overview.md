@@ -66,7 +66,7 @@ files; the orchestrator owns shared store writes.
 ```
  Orchestrator                            Workers
 ┌─────────────────┐                     ┌──────────────────────┐
-│ Resolve inputs  │   ExecutionUnit     │ Materialize inputs   │
+│ Resolve inputs  │   Admitted unit     │ Materialize inputs   │
 │ Check cache     │ ──────────────────► │ Run operation phases │
 │ Batch + dispatch│   (what to run)     │ Capture lineage      │
 │                 │                     │ Stage results        │
@@ -75,32 +75,33 @@ files; the orchestrator owns shared store writes.
 └─────────────────┘   files
 ```
 
-`ExecutionUnit` carries **what** to execute: the operation instance, input
-artifact IDs, parameters, and cache key. `RuntimeEnvironment` specifies
-**where**: the Delta root, working root, staging root, and step-runner traits.
+An admitted scientific unit binds the compiled operation or composite, exact
+input occurrences, parameters, and selected software. Dispatch configuration
+supplies storage and working locations. A curator has its own admitted
+store-bound request. Both use the same controller acceptance rules.
 
-Incomplete worker output is not accepted as a successful result. Verified,
-sealed output can be recovered after interruption. The orchestrator writes the
+Incomplete worker output is not accepted as a successful result. Recovery can
+finish verified output only after the controller has recorded its acceptance claim. The orchestrator writes the
 tables and marks each logical commit complete; supported Artisan readers expose
 its rows only after completion. See
 [crash recovery](storage-and-delta-lake.md#storage-crash-recovery).
 
 ### Step runners
 
-A step runner defines dispatch, worker behavior (filesystem sharing and worker
-IDs), and post-dispatch verification (NFS attribute caching and staging timeouts).
+A runner places a worker and retains ownership of its transport and processes.
+Core supplies `LocalRunner`; external packages implement software resolution and
+worker launch using the contracts exported by `artisan.orchestration.runner_api`.
 
-Core ships one step runner. External packages can implement the same public
-`RunnerBase` and `LifecycleRouter` contract:
+| Runner | Worker placement |
+| --- | --- |
+| Local | Owned processes on the controller's host |
+| Modal provider | Prepared worker image on Modal |
+| Slurm provider | Scheduled cluster allocation |
 
-| Step runner | Dispatch mechanism | Filesystem | Use case |
-|-------------|-------------------|------------|----------|
-| Local | ProcessPool on the orchestrator machine | Local (no sharing) | Development, small jobs |
-| `artisan-submitit` (optional) | SLURM arrays or srun via Submitit | Shared NFS | HPC clusters and existing allocations |
-
-Runners receive `ExecutionUnit` objects and return ordered `UnitResult` records.
-The native lifecycle router handles dispatch, polling, collection, and cancellation;
-the local runner uses Python's `ProcessPoolExecutor`.
+Each execution unit has its own result handle. A worker may run several compatible
+units sequentially, and its owner remains active until shared resources close.
+Result delivery and worker closure are separate facts. The worker uses the shared
+Artisan lifecycle; providers do not implement their own persistence rules.
 
 Confirmed cancellation requires evidence that work never started, or that
 workers and managed commands stopped.
@@ -134,13 +135,11 @@ Each Delta table write is atomic; Artisan's completion filter coordinates
 visibility across tables. Raw Delta reads bypass that filter.
 See [Execution Flow](execution-flow.md) for each phase.
 
-The execution layer also routes where an operation's computation runs. A plain
-`execute_function` runs in the lifecycle worker. A local command operation or
-`execute_as_tool` operation runs as a managed subprocess in its selected
-environment. Remote compute routing invokes a deployed tool endpoint. The
-**operation-as-tool endpoint** exposes a single operation as a standalone
-service or container CLI, so an external harness can run it without the
-surrounding pipeline. See
+The runner places the complete worker lifecycle. A plain `execute_function`,
+preprocess, and postprocess use the worker's Python environment. A command or
+`execute_as_tool` operation uses a managed subprocess in its prepared tool
+environment. The same locked Pixi definition can supply native, OCI, and
+Apptainer targets; provider preparation happens before submission. See
 [Configure Execution](../how-to-guides/configuring-execution.md) and
 [Op Container Images](../how-to-guides/op-container-images.md).
 
@@ -167,7 +166,7 @@ The framework provides two types:
 - **Creators** run computation through `preprocess`, an execute phase, and
   `postprocess`, with a working directory for each phase.
 - **Curators** filter, merge, or ingest artifacts through `execute_curator` in
-  an isolated local subprocess.
+  a provider-placed worker with an admitted store view.
 
 See [Operations Model](operations-model.md) for their contracts and lifecycle.
 
@@ -194,10 +193,11 @@ commit visibility, and recovery, see
 
 ### Composites: reusable compositions of operations
 
-A **composite** declares reusable wiring, such as transform-then-score, in a
-`CompositeDefinition.compose()` method. It expands into ordinary pipeline
-steps, each with its own caching, persistence, and provenance.
-See [Composites and Composition](composites-and-composition.md) for overrides and
+A **composite** declares reusable creator wiring, such as transform-then-score,
+in a `CompositeDefinition.compose()` method. Its children run in one worker per
+input unit, under one persistence and cache boundary. It selects the outputs to
+retain; Artisan derives their lineage from the children's ordinary declarations.
+See [Composites and Composition](composites-and-composition.md) for boundaries and
 [Writing Composite Operations](../how-to-guides/writing-composite-operations.md)
 for a complete example.
 

@@ -185,15 +185,20 @@ def uri_join(base: str, *parts: str) -> str:
     return posixpath.join(base, *parts)
 
 
-def uri_parent(uri: str) -> str:
+def uri_parent(uri: str | os.PathLike[str]) -> str:
     """Parent directory of a URI/path. Works for local paths and cloud URIs.
 
     Args:
-        uri: URI or path string.
+        uri: URI string or filesystem path.
 
     Returns:
-        Parent directory URI string.
+        Parent directory URI string, retaining the authority at a URI root.
     """
+    uri = os.fspath(uri)
+    protocol, separator, path = uri.partition("://")
+    if separator:
+        parent = posixpath.dirname(path)
+        return f"{protocol}{separator}{parent or path}"
     return posixpath.dirname(uri)
 
 

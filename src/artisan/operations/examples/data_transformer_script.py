@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import os
+from collections import defaultdict, deque
 from enum import StrEnum, auto
-from pathlib import Path
 from typing import Any, ClassVar, cast
 
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -15,24 +15,15 @@ from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
-from artisan.schemas.operation_config.environment_spec import (
-    DockerEnvironmentSpec,
-    LocalEnvironmentSpec,
-)
-from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
-    ExecuteInput,
     PostprocessInput,
     PreprocessInput,
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.external_tools import format_args, run_command
-
-SCRIPT_PATH = Path(__file__).parent / "scripts" / "transform_data.py"
+from artisan.utils.external_tools import format_args
 
 
 class DataTransformerScript(OperationDefinition):
@@ -76,12 +67,7 @@ class DataTransformerScript(OperationDefinition):
 
     group_by: GroupByStrategy | None = GroupByStrategy.LINEAGE
 
-    tool: ToolSpec = ToolSpec(executable=str(SCRIPT_PATH), interpreter="python")
-
-    environments: Environments = Environments(
-        local=LocalEnvironmentSpec(),
-        docker=DockerEnvironmentSpec(image="my-registry/transformer:latest"),
-    )
+    tool: ToolSpec = ToolSpec(executable="python", subcommand="-m")
 
     runner_resources: RunnerResources = RunnerResources(  # type: ignore[call-arg]  # pydantic defaults
         cpus=1,
@@ -90,10 +76,6 @@ class DataTransformerScript(OperationDefinition):
     )
 
     batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
-
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
-    )
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized config paths from paired inputs."""
@@ -110,54 +92,39 @@ class DataTransformerScript(OperationDefinition):
 
         return {"items": PerArtifact(prepared_inputs)}
 
-    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Invoke transform_data.py for each config in the batch."""
-        execute_dir = inputs.execute_dir
-        env = self.environments.current()
-        outputs = []
-
-        for item in inputs.inputs["items"]:
-            config_path = item["config_path"]
-            design_name = item["design_name"]
-            output_basename = item["source_artifact_id"]
-
-            args = format_args(
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        """Run the script for one paired config under selected command software."""
+        item = inputs["items"]
+        return [
+            *self.tool.parts(),
+            "artisan.operations.examples.scripts.transform_data",
+            *format_args(
                 {
-                    "config": config_path,
-                    "output-dir": execute_dir,
-                    "output-basename": output_basename,
+                    "config": item["config_path"],
+                    "output-dir": ".",
+                    "output-basename": item["source_artifact_id"],
                 }
-            )
-            run_command(
-                env,
-                [*self.tool.parts(), *args],
-                cwd=execute_dir,
-            )
-            outputs.append(
-                {
-                    "path": os.path.join(
-                        execute_dir, f"{output_basename}_variant_0.csv"
-                    ),
-                    "original_name": f"{design_name}_variant_0.csv",
-                    "source_artifact_id": item["source_artifact_id"],
-                }
-            )
-
-        return {"outputs": outputs}
+            ),
+        ]
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        """Build CSVArtifact drafts from script-produced CSV files."""
+        """Match script files to their exact config inputs and declare lineage."""
         result = ArtifactResult(artifacts={"dataset": []}, lineage={"dataset": []})
-        for output in inputs.memory_outputs["outputs"]:
-            with open(output["path"], "rb") as fh:
-                content = fh.read()
-            draft = CSVArtifact.draft(
-                content=content,
-                original_name=output["original_name"],
-                step_number=inputs.step_number,
-            )
+        files: dict[str, deque[str]] = defaultdict(deque)
+        for path in inputs.file_outputs:
+            files[os.path.basename(path)].append(path)
+        configs = cast(list[ExecutionConfigArtifact], inputs.input_artifacts["config"])
+        for index, config in enumerate(configs):
+            path = files[f"{config.artifact_id}_variant_0.csv"].popleft()
+            with open(path, "rb") as stream:
+                draft = CSVArtifact.draft(
+                    content=stream.read(),
+                    original_name=f"{config.original_name}_variant_0.csv",
+                    step_number=inputs.step_number,
+                )
             result.add_artifact(
-                "dataset", draft, sources={"config": [output["source_artifact_id"]]}
+                "dataset",
+                draft,
+                sources={"config": [inputs.ref("config", index=index)]},
             )
-
         return result

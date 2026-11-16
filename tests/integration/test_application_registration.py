@@ -12,14 +12,26 @@ from textwrap import dedent
 import pytest
 
 pytestmark = pytest.mark.integration
-APPLICATION = "fixtures.registration_application"
+APPLICATION = "integration_registration_application"
 
 
 def _run(source: str, root: Path, *, ambient: str = "") -> str:
     repo = Path(__file__).resolve().parents[2]
+    site = root / "application-site"
+    package = site / APPLICATION
+    package.mkdir(parents=True, exist_ok=True)
+    (package / "__init__.py").write_bytes(
+        (repo / "tests/fixtures/registration_application.py").read_bytes()
+    )
+    metadata = site / f"{APPLICATION}-1.0.dist-info"
+    metadata.mkdir(exist_ok=True)
+    (metadata / "METADATA").write_text(f"Name: {APPLICATION}\nVersion: 1.0\n")
+    (metadata / "RECORD").write_text(f"{APPLICATION}/__init__.py,,\n")
     environment = {
         **os.environ,
-        "PYTHONPATH": os.pathsep.join([str(repo / "src"), str(repo / "tests")]),
+        "PYTHONPATH": os.pathsep.join(
+            [str(site), str(repo / "src"), str(repo / "tests")]
+        ),
         "ARTISAN_LOAD_MODULES": ambient,
         "POLARS_MAX_THREADS": "2",
         "RAYON_NUM_THREADS": "2",
@@ -37,51 +49,22 @@ def _run(source: str, root: Path, *, ambient: str = "") -> str:
     return result.stdout
 
 
-@pytest.mark.parametrize("kind", ["creator", "curator"])
-def test_lifecycle_bootstraps_before_recording_in_fresh_process(
-    tmp_path: Path, kind: str
-) -> None:
-    assert APPLICATION not in sys.modules
-    _run(
-        f"""
-        import importlib
-        import sys
-        from artisan.operations.examples import DataGenerator
-        from artisan.execution.models.execution_unit import ExecutionUnit
-        from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-        from artisan.schemas.artifact.registry import ArtifactTypeDef
-        from artisan.utils.process_call import execute_process_call, serialize_process_call
-        assert {APPLICATION!r} not in sys.modules
-        lifecycle = importlib.import_module("artisan.execution.executors.{kind}")
-        def check(*args):
-            assert ArtifactTypeDef.get("application_note").key == "application_note"
-            assert "malicious_child_environment" not in sys.modules
-            return "loaded"
-        lifecycle._run_{kind}_flow = check
-        unit = ExecutionUnit(operation=DataGenerator(), inputs={{}}, step_number=0, execution_spec_id="x")
-        runtime = RuntimeEnvironment(delta_root="/unused", staging_root="/unused", application_modules=({APPLICATION!r},))
-        call = serialize_process_call(lifecycle.run_{kind}_flow, unit, runtime)
-        assert execute_process_call(call) == "loaded"
-    """,
-        tmp_path,
-        ambient="malicious_child_environment",
-    )
-
-
 def test_generic_curator_ingest_resume_and_standalone_repair(tmp_path: Path) -> None:
     assert APPLICATION not in sys.modules
     source = _run(
         f"""
         import json, sys
         from pathlib import Path
-        from artisan.orchestration import PipelineManager
+        from integration.conftest import create_native_pipeline
         from artisan.registry import bootstrap_applications
         from artisan.schemas.orchestration.step_lifecycle import StepStatus
         root = Path(sys.argv[1]) / "source"
         bootstrap_applications(({APPLICATION!r},))
-        from fixtures.registration_application import ApplicationNoteGenerator
-        with PipelineManager.create("source", delta_root=str(root / "delta"), staging_root=str(root / "staging"), working_root=str(root / "work"), application_modules=({APPLICATION!r},)) as manager:
-            step = manager.run(ApplicationNoteGenerator, params={{"count": 1, "seed": 7}}, compact=False)
+        from integration_registration_application import ApplicationNoteGenerator
+        with create_native_pipeline(name="source", delta_root=str(root / "delta"), staging_root=str(root / "staging"), working_root=str(root / "work"), application_modules=({APPLICATION!r},)) as manager:
+            __import__("os").environ["ARTISAN_LOAD_MODULES"] = "malicious_child_environment"
+            step = manager.run(ApplicationNoteGenerator, params={{"count": 1, "seed": 7}})
+            assert "malicious_child_environment" not in sys.modules
             assert step.status == StepStatus.SUCCEEDED, step
             print(json.dumps({{"run": manager.config.pipeline_run_id}}))
     """,
@@ -96,13 +79,16 @@ def test_generic_curator_ingest_resume_and_standalone_repair(tmp_path: Path) -> 
         from pathlib import Path
         from artisan.operations.curator import IngestPipelineStep
         from artisan.orchestration import PipelineManager
+        from artisan.storage.io.retained_store import open_configured_store
+        from integration.conftest import create_native_pipeline, _SerialNativePipelineRunner
         from artisan.schemas.orchestration.step_lifecycle import StepStatus
         assert {APPLICATION!r} not in sys.modules
         root = Path(sys.argv[1])
-        with PipelineManager.create("destination", delta_root=str(root / "destination" / "delta"), staging_root=str(root / "destination" / "staging"), working_root=str(root / "destination" / "work"), application_modules=({APPLICATION!r},)) as manager:
-            step = manager.run(IngestPipelineStep, params={{"source_delta_root": str(root / "source" / "delta"), "source_run_id": {source_run!r}, "source_step": 0}}, compact=False)
+        with create_native_pipeline(name="destination", delta_root=str(root / "destination" / "delta"), staging_root=str(root / "destination" / "staging"), working_root=str(root / "destination" / "work"), application_modules=({APPLICATION!r},)) as manager:
+            step = manager.run(IngestPipelineStep, params={{"source_delta_root": str(root / "source" / "delta"), "source_run_id": {source_run!r}, "source_step": 0}})
             assert step.status == StepStatus.SUCCEEDED, step
-        with PipelineManager.resume(delta_root=str(root / "source" / "delta"), staging_root=str(root / "source" / "staging"), application_modules=({APPLICATION!r},)) as manager:
+        source = open_configured_store(str(root / "source" / "delta"))
+        with PipelineManager.resume(delta_root=str(root / "source" / "delta"), staging_root=str(root / "source" / "staging"), default_step_runner=_SerialNativePipelineRunner(source), application_modules=({APPLICATION!r},)) as manager:
             assert manager.config.application_modules == ({APPLICATION!r},)
     """,
         tmp_path,
@@ -125,22 +111,29 @@ def test_cached_attempt_records_current_application_selection(tmp_path: Path) ->
         """
         import json, sys
         from pathlib import Path
-        from artisan.orchestration import PipelineManager, StepDisposition
+        import polars as pl
+        from integration.conftest import create_native_pipeline
+        from artisan.orchestration import StepDisposition
         from artisan.operations.examples import DataGenerator
-        from artisan.schemas.enums import TablePath
-        from artisan.storage.core.committed_scan import read_committed
         root = Path(sys.argv[1])
         kwargs = dict(delta_root=str(root / "delta"), staging_root=str(root / "staging"), working_root=str(root / "work"))
-        with PipelineManager.create("source", **kwargs) as manager:
-            first = manager.run(DataGenerator, params={"count": 1, "seed": 9}, compact=False)
-        with PipelineManager.create("cached", **kwargs, application_modules=("json",)) as manager:
-            second = manager.run(DataGenerator, params={"count": 1, "seed": 9}, compact=False)
+        with create_native_pipeline(name="source", **kwargs) as manager:
+            first = manager.run(DataGenerator, params={"count": 1, "seed": 9})
+            assert first.disposition == StepDisposition.EXECUTED, first
+        with create_native_pipeline(name="changed-apps", **kwargs, application_modules=("json",)) as manager:
+            changed = manager.run(DataGenerator, params={"count": 1, "seed": 9})
+            assert changed.disposition == StepDisposition.EXECUTED, changed
+        with create_native_pipeline(name="cached", **kwargs, application_modules=("json",)) as manager:
+            second = manager.run(DataGenerator, params={"count": 1, "seed": 9})
             assert second.disposition == StepDisposition.CACHE_HIT, second
-            rows = read_committed(manager.config.delta_root, TablePath.STEPS, fs=manager.config.storage.filesystem())
-            selected = rows.filter(__import__("polars").col("step_run_id") == second.step_run_id)
+            with manager.committer._read_snapshot() as read:
+                rows, states = manager.tracker._read_lifecycle(read)
+            selected = rows.filter(pl.col("step_run_id") == second.step_run_id)
             assert all(json.loads(value)["application_modules"] == ["json"] for value in selected["compute_options_json"])
-            original = rows.filter(__import__("polars").col("step_run_id") == first.step_run_id)
-            assert original["step_spec_id"].drop_nulls().unique().to_list() == selected["step_spec_id"].drop_nulls().unique().to_list()
+            original = rows.filter(pl.col("step_run_id") == first.step_run_id)
+            assert all(json.loads(value)["application_modules"] == [] for value in original["compute_options_json"])
+            assert first.step_run_id != changed.step_run_id != second.step_run_id
+            assert manager.executions[0].handles == ()
     """,
         tmp_path,
     )

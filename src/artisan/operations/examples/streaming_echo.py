@@ -1,4 +1,4 @@
-"""Generative operation that echoes numbered lines via run_command for streaming demos."""
+"""Generative operation that echoes numbered lines through selected command software."""
 
 from __future__ import annotations
 
@@ -12,30 +12,20 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.csv import CSVArtifact
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
-from artisan.schemas.operation_config.environments import Environments
 from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
+from artisan.schemas.specs.input_models import PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
-from artisan.utils.external_tools import run_command
 
 
 class StreamingEcho(OperationDefinition):
-    """Echo numbered lines via ``run_command(stream_output=True)``.
+    """Echo numbered progress lines and write a marker through selected software.
 
-    Demonstrates local Python execution that wraps an external CLI tool.
-    Each child stdout line reaches the parent terminal or Jupyter cell as
-    it is emitted. This Python operation does not support Modal dispatch;
-    use command operations such as WaitTool or CsvHead for remote execution.
-
-    Bash avoids child-side stdout buffering when piped. Each line is also
-    written to ``log_path`` and captured in the execution's ``tool_output``.
+    Bash writes each progress line to the captured command output before waiting.
     """
 
     name = "streaming_echo"
     version: ClassVar[str] = "2"
-    description = "Echo numbered lines via run_command for streaming demos"
+    description = "Echo numbered lines through selected command software"
 
     inputs: ClassVar[dict[str, Any]] = {}
 
@@ -63,33 +53,17 @@ class StreamingEcho(OperationDefinition):
 
     tool: ToolSpec = ToolSpec(executable="bash", interpreter=None)
 
-    environments: Environments = Environments(local=LocalEnvironmentSpec())
-
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(local_python_sources=["artisan"])
-    )
-
-    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
-        """Run a bash echo loop, streaming each line to the parent's stdout."""
-        env = self.environments.current()
-        run_command(
-            env,
-            [
-                *self.tool.parts(),
-                "-c",
-                f"for i in $(seq 1 {self.params.seconds}); do "
-                f'echo "streaming_echo line $i / {self.params.seconds}"; sleep 1; done',
-            ],
-            cwd=inputs.execute_dir,
-            stream_output=True,
-            log_path=inputs.log_path,
-        )
-
-        marker = os.path.join(inputs.execute_dir, "streaming_echo_marker.csv")
-        with open(marker, "w") as f:
-            f.write(f"lines\n{self.params.seconds}\n")
-
-        return {"lines": self.params.seconds}
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        """Write numbered progress lines and one marker using selected software."""
+        return [
+            "bash",
+            "-c",
+            'for i in $(seq 1 "$1"); do '
+            'echo "streaming_echo line $i / $1"; sleep 1; done; '
+            'printf "lines\\n%s\\n" "$1" > streaming_echo_marker.csv',
+            "streaming-echo",
+            str(self.params.seconds),
+        ]
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build a CSVArtifact from the marker file."""
@@ -111,6 +85,6 @@ class StreamingEcho(OperationDefinition):
             lineage={"output": []},
             metadata={
                 "operation": "streaming_echo",
-                "lines": inputs.memory_outputs.get("lines"),
+                "lines": self.params.seconds,
             },
         )

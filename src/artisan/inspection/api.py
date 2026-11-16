@@ -22,6 +22,7 @@ from artisan.inspection._boundary import (
 )
 from artisan.inspection.catalog import definition
 from artisan.registry.models import DiscoveryReport
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.visualization.outcomes import OutcomeSelection
 
 
@@ -96,6 +97,8 @@ def inspect_evidence(
     arguments: Mapping[str, Any],
     *,
     delta_root: str | None = None,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
     discovery: DiscoveryReport | None = None,
 ) -> BaseModel:
     """Return the validated bounded response for one installed capability.
@@ -104,6 +107,8 @@ def inspect_evidence(
         capability: Exact installed name returned by ``list_inspections``.
         arguments: JSON-valued fields matching its advertised request schema.
         delta_root: Explicit store root for capabilities requiring a store.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
+        storage: Filesystem and credentials for store reads.
         discovery: Caller-supplied startup report for ``capabilities``.
 
     Raises:
@@ -119,6 +124,8 @@ def inspect_evidence(
         kwargs["discovery"] = discovery
     if item.requires_store:
         kwargs["root"] = require_delta_root(delta_root)
+        kwargs["files_root"] = files_root
+        kwargs["storage"] = storage
         try:
             payload = item.handler(**kwargs)
         except FileNotFoundError as exc:

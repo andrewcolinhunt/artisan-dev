@@ -14,8 +14,6 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel
 
-from artisan.storage.core.store_format import assert_store_manifest
-
 if TYPE_CHECKING:
     from artisan.schemas.execution.storage_config import StorageConfig
 
@@ -51,6 +49,7 @@ def query_artifacts(
     artifact_type: str | None = None,
     pipeline_run_id: str | None = None,
     storage: StorageConfig | None = None,
+    files_root: str | None = None,
 ) -> list[ArtifactRef]:
     """Scan ``artifact_index`` for artifact references, optionally filtered.
 
@@ -64,90 +63,42 @@ def query_artifacts(
             run's steps.
         storage: Storage configuration for cloud backends. Defaults to
             local filesystem.
+        files_root: Managed carrier root. Required for nonlocal/custom storage.
 
     Returns:
         Artifact references ordered by (step number, artifact id).
 
     Raises:
-        FileNotFoundError: If the artifact index table does not exist.
+        StoreIntegrityError: The store or selected metadata is incomplete.
     """
-    import polars as pl
-
+    from artisan.orchestration.engine.retained_artifact_query import (
+        query_retained_artifacts,
+    )
     from artisan.schemas.enums import TablePath
-    from artisan.schemas.execution.storage_config import StorageConfig
-    from artisan.storage.core.committed_scan import read_committed, scan_committed
-    from artisan.utils.path import uri_join
+    from artisan.storage.core.store_read_scope import RetainedStoreReadScope
+    from artisan.storage.io.retained_store import open_configured_store
 
-    storage = storage or StorageConfig()
-    opts = storage.delta_storage_options()
-    fs = storage.filesystem()
-    assert_store_manifest(delta_root, fs)
-
-    index_path = uri_join(delta_root, TablePath.ARTIFACT_INDEX)
-    if not fs.exists(index_path):
-        msg = f"Artifact index table not found at {index_path}"
-        raise FileNotFoundError(msg)
-
+    committer = open_configured_store(
+        delta_root, files_root=files_root, storage=storage
+    )
     if pipeline_run_id is not None:
-        from artisan.storage.core.run_scope import load_accepted_outputs
-
-        membership = load_accepted_outputs(
-            delta_root,
-            fs=fs,
-            storage_options=opts,
-            pipeline_run_id=pipeline_run_id,
-        ).select("artifact_id", "current_step_number")
+        return query_retained_artifacts(
+            committer, pipeline_run_id=pipeline_run_id, artifact_type=artifact_type
+        )
+    scope = RetainedStoreReadScope(committer)
+    with scope.activate():
+        assert scope.view is not None
+        query = scope.view.scan(TablePath.ARTIFACT_INDEX)
         if artifact_type is not None:
-            membership = membership.join(
-                scan_committed(
-                    delta_root,
-                    TablePath.ARTIFACT_INDEX,
-                    fs=fs,
-                    storage_options=opts,
-                )
-                .filter(pl.col("artifact_type") == artifact_type)
-                .select("artifact_id")
-                .collect(),
-                on="artifact_id",
-                how="inner",
-            )
-        rows = (
-            membership.unique(
-                subset=["current_step_number", "artifact_id"], maintain_order=True
-            )
-            .join(
-                read_committed(
-                    delta_root,
-                    TablePath.ARTIFACT_INDEX,
-                    fs=fs,
-                    storage_options=opts,
-                ),
-                on="artifact_id",
-                how="inner",
-            )
-            .sort("current_step_number", "artifact_id")
-        )
-    else:
-        scanner = scan_committed(
-            delta_root,
-            TablePath.ARTIFACT_INDEX,
-            fs=fs,
-            storage_options=opts,
-        )
-        if artifact_type is not None:
-            scanner = scanner.filter(pl.col("artifact_type") == artifact_type)
-        rows = scanner.sort("origin_step_number", "artifact_id").collect()
-        rows = rows.with_columns(
-            pl.lit(None, dtype=pl.Int32).alias("current_step_number")
-        )
+            import polars as pl
 
+            query = query.filter(pl.col("artifact_type") == artifact_type)
+        rows = query.sort("origin_step_number", "artifact_id").collect()
     return [
         ArtifactRef(
             artifact_id=row["artifact_id"],
             artifact_type=row["artifact_type"],
             origin_step_number=row["origin_step_number"],
-            current_step_number=row["current_step_number"],
-            pipeline_run_id=pipeline_run_id,
             metadata=_parse_metadata(row["metadata"]),
         )
         for row in rows.iter_rows(named=True)

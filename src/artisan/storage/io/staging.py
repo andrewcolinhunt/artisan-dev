@@ -22,7 +22,7 @@ from artisan.utils.hashing import compute_stream_digest
 from artisan.utils.path import step_dir_name
 
 if TYPE_CHECKING:
-    from artisan.storage.io.commit_plan import PlannedFile
+    from artisan.storage.io.plan_evidence import PlannedFile
 
 logger = logging.getLogger(__name__)
 

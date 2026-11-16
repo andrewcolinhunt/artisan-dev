@@ -1,473 +1,212 @@
-"""Tests for submit-time validation of overrides.
-
-Verifies that unknown keys in params, runner resources, batching, tool configuration,
-and input roles are caught immediately at submit() time with helpful
-error messages.
-"""
+"""Known configuration and input-contract errors are rejected before work."""
 
 from __future__ import annotations
 
-from enum import StrEnum, auto
-from typing import Any, ClassVar
-from unittest.mock import MagicMock
+from pathlib import Path
+from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from fixtures.composition_operations import PredictMeasure, Transform
+from fixtures.retained_pipeline import NativePipelineRunner
 
-from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration.pipeline_manager import (
-    _validate_environment,
-    _validate_execution,
-    _validate_input_roles,
-    _validate_input_types,
-    _validate_params,
-    _validate_required_inputs,
-    _validate_resources,
-    _validate_tool,
+from artisan.composites import CompositeContext, CompositeDefinition
+from artisan.operations.curator import Merge
+from artisan.operations.examples import WaitTool
+from artisan.orchestration import OutputReference, PipelineManager
+from artisan.orchestration.engine.pipeline_inputs import (
+    normalize_pipeline_inputs,
+    validate_pipeline_input_contract,
 )
-from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.operation_config.environment_spec import (
-    ApptainerEnvironmentSpec,
-    DockerEnvironmentSpec,
-)
-from artisan.schemas.operation_config.environments import Environments
-from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.orchestration.output_reference import OutputReference
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.orchestration.engine.pipeline_submission import freeze_submission
+from artisan.schemas import GroupByStrategy, InputSpec
 
 
-@pytest.mark.parametrize(
-    "method", ["run", "submit", "run_composite", "submit_composite"]
-)
+def _pipeline(tmp_path: Path) -> PipelineManager:
+    return PipelineManager.create(
+        "validation", str(tmp_path / "validation-store"), str(tmp_path / "staging")
+    )
+
+
+@pytest.mark.parametrize("method", ["run", "submit"])
 @pytest.mark.parametrize("policy", ["step_completed", 1, False])
-def test_invalid_cache_policy_allocates_no_work(tmp_path, method, policy) -> None:
-    from artisan.composites import CompositeContext, CompositeDefinition
-    from artisan.orchestration import PipelineManager
-
-    composed = MagicMock()
+@pytest.mark.parametrize("composite", [False, True])
+def test_invalid_cache_policy_allocates_no_work(
+    tmp_path: Path, method: str, policy: object, composite: bool
+) -> None:
+    composed = []
 
     class EmptyComposite(CompositeDefinition):
         name = "empty_cache_policy_validation"
 
         def compose(self, ctx: CompositeContext) -> None:
-            composed()
+            composed.append(True)
 
-    pipeline = PipelineManager.create(
-        name="validation",
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "staging"),
+    with _pipeline(tmp_path) as pipeline:
+        target = EmptyComposite if composite else Transform
+        with pytest.raises(TypeError, match="cache_policy"):
+            getattr(pipeline, method)(target, cache_policy=policy)
+        assert pipeline.current_step == 0
+        assert not pipeline.executions
+        assert not pipeline.tracker.load_current_states(pipeline.config.pipeline_run_id)
+        assert not composed
+
+
+@pytest.mark.parametrize(
+    "arguments",
+    [
+        {"params": {"bogus": True}},
+        {"params": {"add": "invalid"}},
+        {"runner_resources": {"mem_Gb": 3}},
+        {"runner_resources": {"cpus": 0}},
+        {"batch_strategy": {"batch_size": 2}},
+        {"batch_strategy": {"max_workers": 0}},
+        {"group_by": "zip"},
+        {"tool": {"executable": "unexpected"}},
+        {"environment": "local"},
+        {"prepared_environment": "receipt"},
+        {"compute_resources": {"local": {"cpus": 2}}},
+        {"compact": False},
+    ],
+)
+def test_invalid_or_removed_submission_options_create_no_attempt(
+    tmp_path: Path, arguments: dict[str, Any]
+) -> None:
+    with _pipeline(tmp_path) as pipeline:
+        with pytest.raises((TypeError, ValueError)):
+            pipeline.submit(Transform, **arguments)
+        assert pipeline.current_step == 0
+        assert not pipeline.executions
+        assert not pipeline.tracker.load_current_states(pipeline.config.pipeline_run_id)
+
+
+def test_valid_scientific_and_operational_patches_remain_separate() -> None:
+    submission = freeze_submission(
+        Transform,
+        params={"add": 5},
+        runner_resources={"cpus": 4, "memory_gb": 32},
+        batch_strategy={"artifacts_per_unit": 10, "max_workers": 8},
+        group_by=GroupByStrategy.ZIP,
     )
-    target = EmptyComposite if "composite" in method else MockOpWithParams
-    with pytest.raises(TypeError, match="cache_policy"):
-        getattr(pipeline, method)(target, cache_policy=policy)
-    assert pipeline.current_step == 0
-    assert pipeline._step_start_records == {}
-    assert pipeline._active_futures == {}
-    assert (
-        pipeline._step_tracker.load_current_states(pipeline.config.pipeline_run_id)
-        == []
+    assert submission.instantiate().params.add == 5
+    assert submission.resources.cpus == 4
+    assert submission.batch_strategy.max_workers == 8
+    assert submission.compile().recipe.policy.artifacts_per_unit == 10
+    assert "max_workers" not in submission.compile().recipe.policy.model_dump()
+    assert freeze_submission(Merge, params={}).is_curator
+    with pytest.raises(ValueError):
+        freeze_submission(Merge, params={"flavor": "vanilla"})
+
+
+def test_tool_overrides_validate_against_declared_command_contract() -> None:
+    submission = freeze_submission(WaitTool, tool={"executable": "replacement"})
+    assert submission.compile().recipe.execution.tool.executable == "replacement"
+    with pytest.raises(ValueError, match="bogus"):
+        freeze_submission(WaitTool, tool={"bogus": True})
+    with pytest.raises(ValueError):
+        freeze_submission(Merge, tool={})
+
+
+@pytest.mark.parametrize("inputs", [{}, {"bogus": []}])
+def test_missing_or_unknown_input_roles_fail_before_software_resolution(
+    tmp_path: Path, inputs: dict[str, list[str]]
+) -> None:
+    with _pipeline(tmp_path) as pipeline:
+        runner = NativePipelineRunner(pipeline.committer)
+        with pytest.raises(ValueError, match="missing required or undeclared roles"):
+            pipeline.run(Transform, inputs=inputs, step_runner=runner)
+        assert runner.resolutions == 0
+        assert pipeline.current_step == 0
+        assert not pipeline.executions
+        assert not pipeline.tracker.load_current_states(pipeline.config.pipeline_run_id)
+
+
+@pytest.mark.parametrize("artifact_type", ["csv", "any"])
+def test_matching_or_unspecified_reference_type_preserves_declared_wiring(
+    artifact_type: str,
+) -> None:
+    frozen = normalize_pipeline_inputs(
+        {
+            "data": OutputReference(
+                source_step=0, role="value", artifact_type=artifact_type
+            )
+        },
+        step_run_ids={0: "a" * 32},
     )
-    composed.assert_not_called()
-    pipeline.finalize()
-
-
-class MockOpWithParams(OperationDefinition):
-    """Operation with a params sub-model."""
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_with_params"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    class Params(BaseModel):
-        """Mock parameters.
-
-        Attributes:
-            count: Mock counter.
-            seed: Mock RNG seed.
-        """
-
-        count: int = 1
-        seed: int = 42
-
-    params: Params = Params()
-
-    def execute_curator(self, execute_input: Any) -> Any:
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-class MockCreatorOp(OperationDefinition):
-    """Creator op with tool and environments (for override tests)."""
-
-    class InputRole(StrEnum):
-        data = auto()
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_creator_cmd"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(
-            artifact_type=ArtifactTypes.CSV,
-            derives_from={"inputs": ["data"]},
-        ),
-    }
-
-    tool: ToolSpec = ToolSpec(executable="/opt/run.sh")
-    environments: Environments = Environments(
-        apptainer=ApptainerEnvironmentSpec(image="/opt/image.sif"),
-        docker=DockerEnvironmentSpec(image="img:latest"),
+    validate_pipeline_input_contract(
+        frozen, {"data": InputSpec(artifact_type="csv")}, runtime_defined_inputs=False
     )
 
-    def preprocess(self, inputs: Any) -> dict:
-        return {}
 
-    def execute_function(self, inputs: Any) -> Any:
-        return None
-
-
-class MockCuratorOp(OperationDefinition):
-    """Curator operation without a tool specification."""
-
-    class InputRole(StrEnum):
-        data = auto()
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_curator_no_cmd"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    def execute_curator(self, execute_input: Any) -> Any:
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-class MockRuntimeInputsOp(OperationDefinition):
-    """Curator op with runtime_defined_inputs=True."""
-
-    class OutputRole(StrEnum):
-        merged = auto()
-
-    name: ClassVar[str] = "mock_runtime_inputs"
-    runtime_defined_inputs: ClassVar[bool] = True
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.merged: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    def execute_curator(self, execute_input: Any) -> Any:
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-class MockOpWithOptionalInput(OperationDefinition):
-    """Operation with both required and optional inputs."""
-
-    class InputRole(StrEnum):
-        dataset = auto()
-        reference = auto()
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_with_optional"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.dataset: InputSpec(artifact_type=ArtifactTypes.CSV, required=True),
-        InputRole.reference: InputSpec(artifact_type=ArtifactTypes.CSV, required=False),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    def execute_curator(self, execute_input: Any) -> Any:
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-class MockOpWithAnyInput(OperationDefinition):
-    """Operation that accepts ANY artifact type."""
-
-    class InputRole(StrEnum):
-        data = auto()
-
-    class OutputRole(StrEnum):
-        output = auto()
-
-    name: ClassVar[str] = "mock_any_input"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.ANY, required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.output: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    def execute_curator(self, execute_input: Any) -> Any:
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-class TestValidateParams:
-    """Tests for param validation."""
-
-    def test_valid_params_with_sub_model(self):
-        """Valid keys for a params sub-model should not raise."""
-        _validate_params(MockOpWithParams, {"count": 5, "seed": 99})
-
-    def test_unknown_param_with_sub_model_raises(self):
-        """Unknown key in params sub-model should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown params.*bogus"):
-            _validate_params(MockOpWithParams, {"count": 5, "bogus": True})
-
-    def test_parameter_less_op_accepts_empty_dict(self):
-        """Ops without a ``params`` field have no valid keys; ``{}`` passes."""
-        from artisan.operations.curator.merge import Merge
-
-        _validate_params(Merge, {})
-
-    def test_parameter_less_op_rejects_any_key(self):
-        """Ops without a ``params`` field reject any provided key."""
-        from artisan.operations.curator.merge import Merge
-
-        with pytest.raises(ValueError, match="Unknown params.*flavor"):
-            _validate_params(Merge, {"flavor": "vanilla"})
-
-    def test_valid_params_accepted(self):
-        _validate_params(MockOpWithParams, {"count": 5})
-
-    def test_unknown_param_raises(self):
-        with pytest.raises(ValueError, match="Unknown params.*gamma"):
-            _validate_params(MockOpWithParams, {"gamma": 99})
-
-
-class TestValidateResources:
-    """Tests for resource validation."""
-
-    def test_valid_resources(self):
-        """Valid resource keys should not raise."""
-        _validate_resources({"cpus": 4, "memory_gb": 32, "gpus": 1})
-
-    def test_unknown_resource_raises(self):
-        """Unknown resource key should raise with valid keys listed."""
-        with pytest.raises(ValueError, match="Unknown resource keys.*mem_Gb"):
-            _validate_resources({"mem_Gb": 32})
-
-    def test_error_lists_valid_keys(self):
-        """Error message should list valid keys."""
-        with pytest.raises(ValueError, match="Valid keys:.*memory_gb"):
-            _validate_resources({"bogus": True})
-
-
-class TestValidateExecution:
-    """Tests for execution validation."""
-
-    def test_valid_execution(self):
-        """Valid execution keys should not raise."""
-        _validate_execution({"artifacts_per_unit": 10, "max_workers": 8})
-
-    def test_unknown_execution_raises(self):
-        """Unknown execution key should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown execution keys.*batch_size"):
-            _validate_execution({"batch_size": 10})
-
-
-class TestValidateEnvironment:
-    """Tests for environment validation."""
-
-    def test_valid_string_environment(self):
-        """Valid environment string should not raise."""
-        _validate_environment(MockCreatorOp, "local")
-
-    def test_unknown_string_environment_raises(self):
-        """Unknown environment string should raise ValueError."""
-        with pytest.raises(ValueError, match="not configured"):
-            _validate_environment(MockCreatorOp, "pixi")
-
-    def test_valid_dict_environment(self):
-        """Valid environment dict should not raise."""
-        _validate_environment(MockCreatorOp, {"active": "docker"})
-
-    def test_unknown_environment_key_raises(self):
-        """Unknown environment key should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown environment keys.*bogus"):
-            _validate_environment(MockCreatorOp, {"bogus": True})
-
-    def test_unknown_nested_key_raises(self):
-        """Unknown key in nested environment spec should raise."""
-        with pytest.raises(ValueError, match="Unknown keys for docker.*bogus"):
-            _validate_environment(MockCreatorOp, {"docker": {"bogus": True}})
-
-    def test_empty_dict_accepted(self):
-        """Empty dict should not raise."""
-        _validate_environment(MockCreatorOp, {})
-
-
-class TestValidateTool:
-    """Tests for tool validation."""
-
-    def test_valid_tool_override(self):
-        """Valid tool keys should not raise."""
-        _validate_tool(MockCreatorOp, {"executable": "/new/path"})
-
-    def test_unknown_tool_key_raises(self):
-        """Unknown tool key should raise ValueError."""
-        with pytest.raises(ValueError, match="Unknown tool keys.*bogus"):
-            _validate_tool(MockCreatorOp, {"bogus": True})
-
-    def test_no_tool_raises(self):
-        """Operation without tool should raise on tool override."""
-        with pytest.raises(ValueError, match="has no tool to override"):
-            _validate_tool(MockCuratorOp, {"executable": "/new"})
-
-    def test_empty_tool_accepted(self):
-        """Empty tool dict should not raise."""
-        _validate_tool(MockCreatorOp, {})
-
-
-class TestValidateInputRoles:
-    """Tests for input role validation."""
-
-    def test_valid_input_roles(self):
-        """Valid input role names should not raise."""
-        ref = MagicMock()
-        _validate_input_roles(MockCuratorOp, {"data": ref})
-
-    def test_unknown_input_role_raises(self):
-        """Unknown input role should raise ValueError."""
-        ref = MagicMock()
-        with pytest.raises(ValueError, match="Unknown input roles.*bogus"):
-            _validate_input_roles(MockCuratorOp, {"bogus": ref})
-
-    def test_runtime_defined_inputs_skips_validation(self):
-        """runtime_defined_inputs=True should skip input role validation."""
-        ref = MagicMock()
-        # This should NOT raise even though "anything" is not a declared role
-        _validate_input_roles(MockRuntimeInputsOp, {"anything": ref})
-
-    def test_non_dict_inputs_skips_validation(self):
-        """Non-dict inputs (list, None) should skip role validation."""
-        _validate_input_roles(MockCuratorOp, None)
-        _validate_input_roles(MockCuratorOp, [MagicMock()])
-
-
-class TestNoOverrides:
-    """Tests for the no-overrides case."""
-
-    def test_all_none_overrides_uses_defaults(self):
-        """All None overrides should use operation defaults without error."""
-        from artisan.orchestration.engine.step_executor import (
-            instantiate_operation,
+def test_mismatched_reference_type_rejects_but_any_input_accepts() -> None:
+    frozen = normalize_pipeline_inputs(
+        {"data": OutputReference(source_step=0, role="value", artifact_type="metric")},
+        step_run_ids={0: "a" * 32},
+    )
+    with pytest.raises(ValueError, match="type"):
+        validate_pipeline_input_contract(
+            frozen,
+            {"data": InputSpec(artifact_type="csv")},
+            runtime_defined_inputs=False,
         )
-        from artisan.schemas.orchestration.step_overrides import StepOverrides
-
-        instance = instantiate_operation(
-            MockOpWithParams,
-            StepOverrides.from_user(),
-        )
-        assert instance.params.count == 1
-        assert instance.runner_resources.cpus == 1
-        assert instance.batch_strategy.artifacts_per_unit == 1
+    validate_pipeline_input_contract(
+        frozen, {"data": InputSpec(artifact_type="any")}, runtime_defined_inputs=False
+    )
+    validate_pipeline_input_contract(frozen, {}, runtime_defined_inputs=True)
 
 
-class TestValidateRequiredInputs:
-    """Tests for required input validation."""
-
-    def test_missing_required_role_raises(self):
-        """Missing a required role should raise ValueError."""
-        with pytest.raises(ValueError, match="Missing required input.*data"):
-            _validate_required_inputs(MockCuratorOp, {})
-
-    def test_all_required_provided(self):
-        """All required roles provided should not raise."""
-        ref = MagicMock()
-        _validate_required_inputs(MockCuratorOp, {"data": ref})
-
-    def test_optional_missing_no_error(self):
-        """Missing optional role should not raise."""
-        ref = MagicMock()
-        _validate_required_inputs(MockOpWithOptionalInput, {"dataset": ref})
-
-    def test_runtime_defined_inputs_skips(self):
-        """runtime_defined_inputs=True should skip validation."""
-        _validate_required_inputs(MockRuntimeInputsOp, {})
-
-    def test_generative_op_no_error(self):
-        """Generative op (empty inputs ClassVar) should not raise."""
-        _validate_required_inputs(MockOpWithParams, None)
-
-    def test_non_dict_inputs_skips(self):
-        """Non-dict inputs (list, None) should skip validation."""
-        _validate_required_inputs(MockCuratorOp, None)
-        _validate_required_inputs(MockCuratorOp, [MagicMock()])
-
-    def test_missing_required_raises(self):
-        with pytest.raises(ValueError, match="Missing required input.*dataset"):
-            _validate_required_inputs(MockOpWithOptionalInput, {"reference": "val"})
+def test_optional_and_generative_inputs_need_no_manufactured_roles() -> None:
+    empty = normalize_pipeline_inputs(None, step_run_ids={})
+    validate_pipeline_input_contract(empty, {}, runtime_defined_inputs=False)
+    validate_pipeline_input_contract(
+        empty,
+        {"optional": InputSpec(artifact_type="csv", required=False)},
+        runtime_defined_inputs=False,
+    )
+    assert freeze_submission(PredictMeasure).instantiate().name == PredictMeasure.name
 
 
-class TestValidateInputTypes:
-    """Tests for input type validation."""
+@pytest.mark.parametrize("composite", [False, True])
+def test_required_command_parameters_survive_direct_and_composite_submission(
+    composite: bool,
+) -> None:
+    from pydantic import BaseModel
 
-    def test_type_mismatch_raises(self):
-        """Wiring metric output into data input should raise ValueError."""
-        ref = OutputReference(
-            source_step=0, role="metrics", artifact_type=ArtifactTypes.METRIC
-        )
-        with pytest.raises(ValueError, match="Type mismatch.*data"):
-            _validate_input_types(MockCuratorOp, {"data": ref})
+    from artisan.operations.base import OperationDefinition
+    from artisan.schemas import ExecuteInput, ToolSpec
 
-    def test_type_match_no_error(self):
-        """Matching types should not raise."""
-        ref = OutputReference(
-            source_step=0, role="output", artifact_type=ArtifactTypes.CSV
-        )
-        _validate_input_types(MockCuratorOp, {"data": ref})
+    class RequiredCommand(OperationDefinition):
+        name = "required_params_command"
+        tool: ToolSpec = ToolSpec(executable="tool")
 
-    def test_any_downstream_spec_no_error(self):
-        """ANY downstream spec should accept any upstream type."""
-        ref = OutputReference(
-            source_step=0, role="output", artifact_type=ArtifactTypes.CSV
-        )
-        _validate_input_types(MockOpWithAnyInput, {"data": ref})
+        class Params(BaseModel):
+            """Command parameters.
 
-    def test_any_upstream_ref_skips(self):
-        """ANY upstream ref should skip type check."""
-        ref = OutputReference(
-            source_step=0, role="output", artifact_type=ArtifactTypes.ANY
-        )
-        _validate_input_types(MockCuratorOp, {"data": ref})
+            Attributes:
+                count: Number of requested items.
+            """
 
-    def test_non_output_reference_skips(self):
-        """Non-OutputReference values (raw lists) should skip type check."""
-        _validate_input_types(MockCuratorOp, {"data": ["artifact-id-1"]})
+            count: int
 
-    def test_non_dict_inputs_skips(self):
-        """Non-dict inputs should skip type check."""
-        _validate_input_types(MockCuratorOp, None)
-        _validate_input_types(MockCuratorOp, [MagicMock()])
+        params: Params
 
-    def test_runtime_defined_role_skips(self):
-        """Role not in operation.inputs (runtime-defined) should skip."""
-        ref = OutputReference(
-            source_step=0, role="output", artifact_type=ArtifactTypes.METRIC
-        )
-        _validate_input_types(MockRuntimeInputsOp, {"custom_role": ref})
+        def execute_command(self, inputs: ExecuteInput) -> list[str]:
+            return ["tool", str(self.params.count)]
+
+    class RequiredComposite(CompositeDefinition):
+        name = "required_params_composite"
+
+        class Params(BaseModel):
+            count: int
+
+        params: Params
+
+        def compose(self, ctx: CompositeContext) -> None:
+            ctx.call(RequiredCommand, params={"count": self.params.count})
+
+    submission = freeze_submission(
+        RequiredComposite if composite else RequiredCommand, params={"count": 3}
+    )
+    plan = submission.compile()
+    command = plan.calls[0].plan if composite else plan
+    assert command.recipe.params_json == '{"count":3}'
+    assert command.instantiate().params.count == 3

@@ -15,10 +15,8 @@ from fsspec.implementations.local import LocalFileSystem
 from artisan.operations.curator import IngestFiles
 from artisan.operations.examples import DataGeneratorWithMetrics, FileGenerator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 from artisan.schemas import FileRefArtifact, MetricArtifact
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.utils.hashing import compute_content_digest
@@ -75,38 +73,53 @@ def file_pipeline_env(request: pytest.FixtureRequest, tmp_path: Path) -> dict[st
     }
 
 
+def _pipeline(env: dict[str, Any], monkeypatch: pytest.MonkeyPatch) -> PipelineManager:
+    from fixtures import retained_execution
+    from fixtures.commands import command_router
+    from fixtures.retained_pipeline import NativePipelineRunner
+
+    from artisan.storage.io.retained_store import create_retained_store
+
+    monkeypatch.setattr(retained_execution, "LocalExecuteRouter", command_router)
+    committer = create_retained_store(
+        env["delta_root"],
+        env["files_root"],
+        fs=env["fs"],
+        storage_options=env["storage"].delta_storage_options(),
+    )
+    return PipelineManager.create(
+        "file-ingestion",
+        env["delta_root"],
+        env["staging_root"],
+        working_root=env["working_root"],
+        files_root=env["files_root"],
+        storage=env["storage"],
+        default_step_runner=NativePipelineRunner(committer),
+    )
+
+
 def test_generated_files_feed_directly_into_ingestion(
     file_pipeline_env: dict[str, Any],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     env = file_pipeline_env
-    pipeline = PipelineManager(
-        PipelineConfig(
-            name="generated-file-ingestion",
-            delta_root=env["delta_root"],
-            staging_root=env["staging_root"],
-            working_root=env["working_root"],
-            files_root=env["files_root"],
-            storage=env["storage"],
-        ),
-        configure_logging=False,
-    )
+    pipeline = _pipeline(env, monkeypatch)
     generated = pipeline.run(
         FileGenerator,
         params={"count": 2, "file_size_bytes": 128, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     pipeline.run(
         IngestFileMetrics,
         inputs={"file": generated.output("files")},
-        step_runner=Runner.LOCAL,
     )
     assert pipeline.finalize()["overall_success"]
 
     readers = {
         "fs": env["fs"],
         "storage_options": env["storage"].delta_storage_options(),
+        "files_root": env["files_root"],
     }
-    store = ArtifactStore(env["delta_root"], files_root=env["files_root"], **readers)
+    store = ArtifactStore(env["delta_root"], **readers)
     file_ids = get_execution_outputs(env["delta_root"], 0, "files", **readers)
     metric_ids = get_execution_outputs(env["delta_root"], 1, "metrics", **readers)
     files = store.get_artifacts_by_type(file_ids, "file_ref")
@@ -158,22 +171,12 @@ def test_command_files_survive_cleanup_and_feed_ingestion(
         ),
     )
     env = file_pipeline_env
-    pipeline = PipelineManager(
-        PipelineConfig(
-            name="command-file-ingestion",
-            delta_root=env["delta_root"],
-            staging_root=env["staging_root"],
-            working_root=env["working_root"],
-            files_root=env["files_root"],
-            storage=env["storage"],
-        ),
-        configure_logging=False,
-    )
+    pipeline = _pipeline(env, monkeypatch)
     source = pipeline.run(DataGeneratorWithMetrics, params={"count": 2, "seed": 42})
     generated = pipeline.run(
         operation,
         inputs={"source": source.output("metrics")},
-        batch_strategy={"artifacts_per_unit": 2},
+        batch_strategy={"artifacts_per_unit": 2, "max_workers": 1},
     )
     consumed = pipeline.run(
         IngestFileMetrics, inputs={"file": generated.output("files")}
@@ -206,7 +209,7 @@ def test_command_files_survive_cleanup_and_feed_ingestion(
     for file_ref in files.values():
         assert isinstance(file_ref, FileRefArtifact)
         assert file_ref.path.startswith(env["files_root"] + "/")
-        assert Path(file_ref.path).name == "output.bin"
+        assert Path(file_ref.path).suffix == ".bin"
         assert file_ref.original_name == "output"
         assert file_ref.extension == ".bin"
         content = file_ref.read_content(fs=env["fs"])
@@ -224,7 +227,6 @@ def test_command_files_survive_cleanup_and_feed_ingestion(
         assert store.provenance.get_direct_ancestors(metric.artifact_id) == [
             file_ref.artifact_id
         ]
-    assert sorted(Path(path).name for path in env["fs"].find(env["files_root"])) == [
-        "output.bin",
-        "output.bin",
-    ]
+    assert {
+        env["fs"]._strip_protocol(path) for path in env["fs"].find(env["files_root"])
+    } == {env["fs"]._strip_protocol(file_ref.path) for file_ref in files.values()}

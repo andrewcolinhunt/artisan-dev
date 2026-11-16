@@ -5,25 +5,26 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from unittest.mock import Mock
+from uuid import uuid4
 
 import pytest
+from fixtures.composition_operations import Transform
 
 from artisan.errors import ApplicationRegistrationError
 from artisan.orchestration import PipelineConfig, PipelineManager
-from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.orchestration import pipeline_manager as module
 
 
-def test_constructor_rejects_missing_application_before_store_creation(
+def test_factory_rejects_missing_application_before_store_creation(
     tmp_path: Path,
 ) -> None:
-    config = PipelineConfig(
-        name="test",
-        delta_root=str(tmp_path / "new_delta"),
-        staging_root=str(tmp_path / "new_staging"),
-        application_modules=("missing_manager_application",),
-    )
     with pytest.raises(ApplicationRegistrationError):
-        PipelineManager(config)
+        PipelineManager.create(
+            name="test",
+            delta_root=str(tmp_path / "new_delta"),
+            staging_root=str(tmp_path / "new_staging"),
+            application_modules=("missing_manager_application",),
+        )
     assert not (tmp_path / "new_delta").exists()
     assert not (tmp_path / "new_staging").exists()
 
@@ -31,13 +32,22 @@ def test_constructor_rejects_missing_application_before_store_creation(
 def test_direct_configuration_does_not_merge_environment(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    with PipelineManager.create(
+        "test", str(tmp_path / "delta"), str(tmp_path / "staging")
+    ) as original:
+        pass
     monkeypatch.setenv("ARTISAN_LOAD_MODULES", "missing_ambient_application")
     config = PipelineConfig(
         name="test",
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "staging"),
+        delta_root=original.config.delta_root,
+        staging_root=original.config.staging_root,
     )
-    with PipelineManager(config) as manager:
+    assert config.application_modules == ()
+    with PipelineManager(
+        original.committer,
+        original.dispatch,
+        pipeline_run_id="explicit-dispatch",
+    ) as manager:
         assert manager.config.application_modules == ()
 
 
@@ -53,30 +63,27 @@ def test_resume_checks_all_attempt_requirements_before_recovery(
         "source", delta_root=delta, staging_root=staging
     ) as manager:
         run = manager.config.pipeline_run_id
-        for number, modules in enumerate((recorded, [])):
-            manager._step_tracker.create_attempt(
-                StepStartRecord(
-                    step_run_id=str(number) * 32,
-                    step_number=0,
-                    step_name="attempt",
-                    operation_class="artisan.operations.examples.DataGenerator",
-                    params_json="{}",
-                    input_refs_json="{}",
-                    compute_backend="local",
-                    output_roles_json="[]",
-                    output_types_json="{}",
-                    compute_options_json=json.dumps(
-                        {
-                            "application_modules": modules,
-                            "pipeline_default_step_runner": "local",
-                        }
+        manager.run(Transform, inputs={"structure": []})
+        record = manager.executions[0].record
+        options = json.loads(record.compute_options_json)
+        for modules in (recorded, []):
+            copied = record.model_copy(
+                update={
+                    "step_run_id": uuid4().hex,
+                    "compute_options_json": json.dumps(
+                        {**options, "application_modules": modules}
                     ),
-                )
+                }
             )
-    repair = Mock(side_effect=AssertionError("recovery before requirement check"))
-    monkeypatch.setattr("artisan.storage.io.repair.repair_store", repair)
+            manager.tracker.create_attempt(copied)
+            manager.tracker.skip_pending(copied.step_run_id, reason="pipeline_stopped")
+    recover = Mock(side_effect=AssertionError("recovery before requirement check"))
+    bootstrap = Mock(wraps=module.bootstrap_applications)
+    monkeypatch.setattr(module, "recover_pipeline_results", recover)
+    monkeypatch.setattr(module, "bootstrap_applications", bootstrap)
     with pytest.raises(ApplicationRegistrationError):
         PipelineManager.resume(
             delta_root=delta, staging_root=staging, pipeline_run_id=run
         )
-    repair.assert_not_called()
+    recover.assert_not_called()
+    bootstrap.assert_called_once_with((), purpose="pipeline resume")

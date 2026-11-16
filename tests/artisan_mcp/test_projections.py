@@ -22,7 +22,7 @@ def test_resource_continuation_is_usable_by_tool(
         }
         for index in range(27)
     ]
-    monkeypatch.setattr(module, "list_runs", lambda _root: pl.DataFrame(rows))
+    monkeypatch.setattr(module, "list_runs", lambda _root, **kwargs: pl.DataFrame(rows))
     app = make_app(delta_root=tmp_path)
     first = json.loads(read_resource(app, "artisan://runs").text)
     follow = first["follow_up"]

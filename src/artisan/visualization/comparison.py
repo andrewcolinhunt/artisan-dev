@@ -32,7 +32,6 @@ from artisan.visualization.outcomes import (
     _evaluate_observations,
     _spec_fingerprint,
     _validate_spec_size,
-    read_metric_observations,
 )
 
 COMPARISON_EVALUATOR_VERSION = "1"
@@ -246,6 +245,7 @@ def compare_runs(
     spec: ComparisonSpec,
     *,
     storage: StorageConfig | None = None,
+    files_root: str | None = None,
 ) -> RunComparison:
     """Compare declared paired measurements from two selected metric roles.
 
@@ -255,6 +255,7 @@ def compare_runs(
         candidate: Explicit candidate run, step and role, optionally an exact attempt.
         spec: Matching rule, measurement declarations and optional assessment.
         storage: Store access configuration.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
 
     Returns:
         Complete paired evidence and coverage, with no automatic overall winner.
@@ -273,19 +274,15 @@ def compare_runs(
     except ValidationError as exc:
         msg = "Invalid comparison population selection"
         raise OutcomeSelectionError(msg) from exc
-    paths = [metric.metric_path for metric in spec.metrics]
-    if spec.assessment is not None:
-        paths.extend(check.metric_path for check in spec.assessment.checks)
-    metadata_keys = (
-        [spec.matching.key] if isinstance(spec.matching, MetadataKeyMatch) else []
+    from artisan.storage.io.retained_store import open_configured_store
+    from artisan.visualization.retained_outcomes import compare_retained_runs
+
+    return compare_retained_runs(
+        open_configured_store(delta_root, files_root=files_root, storage=storage),
+        selections[0],
+        selections[1],
+        spec,
     )
-    sides = [
-        read_metric_observations(
-            delta_root, selection, paths, metadata_keys=metadata_keys, storage=storage
-        )
-        for selection in selections
-    ]
-    return _compare_observations(sides[0], sides[1], spec)
 
 
 def _validated_spec(spec: ComparisonSpec) -> ComparisonSpec:

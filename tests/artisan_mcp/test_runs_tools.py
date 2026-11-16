@@ -57,7 +57,7 @@ class TestDiagnoseRun:
             "artisan_diagnose_run",
             {"pipeline_run_id": seeded_run.run_id, "view": "failures"},
         )
-        assert [s["operation"] for s in failures["items"]] == ["transform"]
+        assert [s["operation"] for s in failures["items"]] == ["observed_dynamic"]
         assert failures["items"][0]["code"] == "op_execute_failed"
         assert diag["suggested_actions"]
 
@@ -90,7 +90,9 @@ class TestRunResources:
             "started_at": [datetime(2026, 1, 1, tzinfo=UTC)] * 101,
             "ended_at": [datetime(2026, 1, 1, tzinfo=UTC)] * 101,
         }
-        monkeypatch.setattr(run_history, "list_runs", lambda _root: pl.DataFrame(rows))
+        monkeypatch.setattr(
+            run_history, "list_runs", lambda _root, **kwargs: pl.DataFrame(rows)
+        )
 
         content = read_resource(make_app(delta_root=tmp_path), "artisan://runs")
         data = json.loads(content.text)
@@ -138,7 +140,7 @@ class TestRunResources:
         monkeypatch.setattr(
             module,
             "run_status",
-            lambda _root, _run_id: RunStatus.model_validate(payload),
+            lambda _root, _run_id, **kwargs: RunStatus.model_validate(payload),
         )
 
         content = read_resource(

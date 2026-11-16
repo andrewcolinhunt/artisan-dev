@@ -5,10 +5,12 @@ from __future__ import annotations
 import errno
 import json
 import os
+import random
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, date, datetime
 from pathlib import Path
 from threading import Event
+from typing import Any
 
 import polars as pl
 import pyarrow as pa
@@ -16,7 +18,10 @@ import pyarrow.parquet as pq
 import pytest
 from arro3.core import Table
 from deltalake import DeltaTable
+from fixtures.retained_readers import Backend
+from fsspec.caching import BlockCache
 from fsspec.implementations.local import LocalFileSystem
+from fsspec.spec import AbstractBufferedFile
 
 from artisan.errors import StoreIntegrityError
 from artisan.storage.io import delta_files
@@ -62,6 +67,27 @@ def test_snapshot_reads_arrow_table_actions(tmp_path, monkeypatch):
 
     assert len(current.files) == 1
     assert pl.concat(current.iter_frames()).equals(pl.concat(_frames(2)))
+
+
+def test_snapshot_can_reopen_exact_historical_version(backend_fs: Backend) -> None:
+    fs, storage, root = backend_fs
+    options = storage.delta_storage_options()
+    empty = _table(root, fs, options)
+    append_table_files(empty, _frames(2), step_number=7, statistics_columns=["id"])
+    first = DeltaSnapshot(empty.path, SCHEMA, fs=fs, storage_options=options)
+    append_table_files(first, _frames(1), step_number=7, statistics_columns=["id"])
+    historical = DeltaSnapshot(
+        empty.path,
+        SCHEMA,
+        fs=fs,
+        storage_options=options,
+        version=first.delta.version(),
+    )
+    current = DeltaSnapshot(empty.path, SCHEMA, fs=fs, storage_options=options)
+    assert historical.delta.version() == 1
+    assert pl.concat(historical.iter_frames()).equals(pl.concat(_frames(2)))
+    assert current.delta.version() == 2
+    assert pl.concat(current.iter_frames()).height == 3
 
 
 @pytest.mark.parametrize("partitioned", [False, True])
@@ -520,3 +546,140 @@ def test_nested_and_temporal_values_round_trip_with_delta_statistics(
         "day": "2024-01-02",
     }
     assert stats["nullCount"]["payload"] == 1
+
+
+class _CountingFile(AbstractBufferedFile):
+    """Count actual range fetches through the installed fsspec cache."""
+
+    def __init__(self, path: str, **options: Any) -> None:
+        self.content = Path(path).read_bytes()
+        self.ranges: list[tuple[int, int]] = []
+        self.peak_blocks = 0
+        self.peak_cached_bytes = 0
+        super().__init__(None, path, mode="rb", size=len(self.content), **options)
+
+    def _fetch_range(self, start: int, end: int) -> bytes:
+        end = min(end, len(self.content))
+        self.ranges.append((start, end))
+        return self.content[start:end]
+
+    def read(self, length: int = -1) -> bytes:
+        result = super().read(length)
+        if isinstance(self.cache, BlockCache):
+            blocks = self.cache.cache_info().currsize
+            self.peak_blocks = max(self.peak_blocks, blocks)
+            self.peak_cached_bytes = max(
+                self.peak_cached_bytes, blocks * self.cache.blocksize
+            )
+        return result
+
+
+class _CountingFileSystem(LocalFileSystem):
+    def __init__(self, *, uncached: bool = False) -> None:
+        super().__init__()
+        self.uncached = uncached
+        self.handles: list[_CountingFile] = []
+
+    def _open(self, path: str, mode: str = "rb", **options: Any) -> _CountingFile:
+        assert mode == "rb"
+        if self.uncached:
+            options.update(cache_type="none", cache_options={})
+        stream = _CountingFile(path, **options)
+        self.handles.append(stream)
+        return stream
+
+
+def _counted_snapshot(
+    root: Path, frame: pl.DataFrame
+) -> tuple[DeltaSnapshot, _CountingFileSystem]:
+    DeltaTable.create(str(root), delta_files._arrow_schema(dict(frame.schema)))
+    empty = DeltaSnapshot(str(root), dict(frame.schema), fs=LocalFileSystem())
+    append_table_files(empty, [frame], step_number=7, statistics_columns=[])
+    fs = _CountingFileSystem(skip_instance_cache=True)
+    return DeltaSnapshot(str(root), dict(frame.schema), fs=fs), fs
+
+
+def _small_multicolumn_frame() -> pl.DataFrame:
+    return pl.DataFrame(
+        {
+            f"column_{column}": [f"value-{column}-{row}" for row in range(64)]
+            for column in range(18)
+        }
+    )
+
+
+def test_small_file_read_coalesces_ranges_in_one_bounded_handle(tmp_path: Path) -> None:
+    expected = _small_multicolumn_frame()
+    snapshot, fs = _counted_snapshot(tmp_path, expected)
+    uncached_fs = _CountingFileSystem(uncached=True, skip_instance_cache=True)
+    baseline = DeltaSnapshot(snapshot.path, snapshot.schema, fs=uncached_fs)
+
+    assert pl.concat(baseline.iter_frames()).equals(expected)
+    assert pl.concat(snapshot.iter_frames()).equals(expected)
+    (plain,), (cached,) = uncached_fs.handles, fs.handles
+    assert 0 < len(cached.content) <= STREAM_CHUNK_BYTES
+    assert len(plain.ranges) > 1
+    assert cached.ranges == [(0, len(cached.content))]
+    assert cached.peak_blocks == 1
+    assert 0 < cached.peak_cached_bytes <= STREAM_CHUNK_BYTES
+    assert cached.cache is None  # Closing the handle releases its cached blocks.
+    assert plain.closed
+    assert cached.closed
+
+
+def test_large_projection_preserves_uncached_ranges_and_bytes(tmp_path: Path) -> None:
+    rng = random.Random(2718)
+    frame = pl.DataFrame(
+        {
+            "id": range(2048),
+            "group": [row % 11 for row in range(2048)],
+            "payload": [rng.randbytes(2048) for _ in range(2048)],
+        }
+    )
+    snapshot, fs = _counted_snapshot(tmp_path, frame)
+    uncached_fs = _CountingFileSystem(uncached=True, skip_instance_cache=True)
+    baseline = DeltaSnapshot(snapshot.path, snapshot.schema, fs=uncached_fs)
+    columns = ["id", "group"]
+
+    assert pl.concat(baseline.iter_frames(columns)).equals(frame.select(columns))
+    assert pl.concat(snapshot.iter_frames(columns)).equals(frame.select(columns))
+    (plain,), (actual,) = uncached_fs.handles, fs.handles
+    assert len(actual.content) > STREAM_CHUNK_BYTES
+    assert actual.ranges == plain.ranges
+    assert sum(end - start for start, end in actual.ranges) < len(actual.content) / 4
+    assert actual.peak_blocks == 0
+    assert plain.closed
+    assert actual.closed
+
+
+@pytest.mark.parametrize("change", ["values", "schema", "footer"])
+def test_small_file_read_reopens_same_snapshot_after_physical_change(
+    tmp_path: Path, change: str
+) -> None:
+    original = _small_multicolumn_frame()
+    snapshot, fs = _counted_snapshot(tmp_path, original)
+    assert pl.concat(snapshot.iter_frames()).equals(original)
+    assert fs.handles[0].closed
+    (active,) = snapshot.files
+    physical = tmp_path / active.path
+    changed = original.with_columns(pl.lit("changed").alias("column_0"))
+    if change == "footer":
+        physical.write_bytes(b"bad footer")
+    else:
+        table = changed.to_arrow().cast(snapshot.arrow_schema)
+        pq.write_table(
+            table.select(["column_0"]) if change == "schema" else table, physical
+        )
+
+    if change == "values":
+        assert pl.concat(snapshot.iter_frames()).equals(changed)
+    else:
+        with pytest.raises(
+            StoreIntegrityError,
+            match="unexpected physical schema|Unreadable Delta data file",
+        ):
+            list(snapshot.iter_frames())
+    assert len(fs.handles) == 2
+    assert all(stream.closed for stream in fs.handles)
+    assert all(stream.peak_blocks <= 1 for stream in fs.handles)
+    assert fs.handles[0].content != fs.handles[1].content

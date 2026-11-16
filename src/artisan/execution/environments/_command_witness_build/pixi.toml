@@ -1,0 +1,9 @@
+[workspace]
+name = "artisan-command-witness-builder"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+requires-pixi = "==0.83.0"
+
+[dependencies]
+gcc_linux-64 = "==14.3.0"
+sysroot_linux-64 = "==2.17"

@@ -8,135 +8,17 @@ from dataclasses import dataclass
 from typing import Any
 
 import polars as pl
-from fsspec import AbstractFileSystem
 
 from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.store_format import assert_store_manifest
 from artisan.storage.core.table_schemas import (
-    get_physical_schema_for_path,
     is_global_artifact_table,
 )
 from artisan.storage.io.bounded_evidence import DiskTable
 from artisan.storage.io.bounded_io import write_parquet_rows
-from artisan.storage.io.commit_plan import (
-    CommitPlan,
-    PlannedTable,
-    canonical_table_plan_key,
-    logical_commit_identity,
-)
+from artisan.storage.io.commit_contract import LogicalEffect, TableEffect
 from artisan.storage.io.delta_files import DeltaSnapshot
-from artisan.utils.path import uri_join
-
-_CONTROL_STATES = frozenset({"planned", "complete", "abandoned"})
-
-
-def scan_committed(
-    delta_root: str,
-    table: str | TablePath,
-    *,
-    fs: AbstractFileSystem,
-    storage_options: dict[str, str] | None = None,
-    controls: pl.DataFrame | None = None,
-) -> pl.LazyFrame:
-    """Scan visible rows lazily, trusting durable logical completion records."""
-    options = storage_options or {}
-    assert_store_manifest(delta_root, fs)
-    table_path = table.value if isinstance(table, TablePath) else table
-    if table_path == TablePath.LOGICAL_COMMITS.value:
-        return read_logical_commits(delta_root, fs=fs, storage_options=options).lazy()
-    physical = _scan_physical(delta_root, table_path, fs, options)
-    if controls is None:
-        controls = read_logical_commits(delta_root, fs=fs, storage_options=options)
-    visible = physical.filter(_visibility_expression(table_path, controls))
-    if "logical_commit_id" in physical.collect_schema().names():
-        return visible.drop("logical_commit_id")
-    return visible
-
-
-def read_committed(
-    delta_root: str,
-    table: str | TablePath,
-    *,
-    fs: AbstractFileSystem,
-    storage_options: dict[str, str] | None = None,
-) -> pl.DataFrame:
-    """Collect the shared visibility scan without auditing historical payloads."""
-    return scan_committed(
-        delta_root, table, fs=fs, storage_options=storage_options
-    ).collect()
-
-
-def _scan_physical(
-    delta_root: str,
-    table_path: str,
-    fs: AbstractFileSystem,
-    storage_options: dict[str, str],
-) -> pl.LazyFrame:
-    expected_schema = get_physical_schema_for_path(table_path)
-    path = uri_join(delta_root, table_path)
-    if not fs.exists(path):
-        msg = f"Missing required table {table_path!r}"
-        raise StoreIntegrityError(msg)
-    try:
-        scan = pl.scan_delta(path, storage_options=storage_options)
-        schema = dict(scan.collect_schema())
-    except Exception as exc:
-        msg = f"Unreadable Delta table {table_path!r}"
-        raise StoreIntegrityError(msg) from exc
-    if schema != expected_schema:
-        msg = f"Delta table {table_path!r} has an unexpected schema"
-        raise StoreIntegrityError(msg)
-    return scan
-
-
-def read_logical_commits(
-    delta_root: str,
-    *,
-    fs: AbstractFileSystem,
-    storage_options: dict[str, str] | None = None,
-) -> pl.DataFrame:
-    """Read and validate the logical-commit control table directly."""
-    assert_store_manifest(delta_root, fs)
-    controls = _scan_physical(
-        delta_root, TablePath.LOGICAL_COMMITS.value, fs, storage_options or {}
-    ).collect()
-    if controls.is_empty():
-        return controls
-    required = [
-        "logical_commit_id",
-        "commit_kind",
-        "step_run_id",
-        "state",
-        "plan_digest",
-        "created_at",
-    ]
-    invalid = controls.filter(
-        ~pl.col("state").is_in(_CONTROL_STATES)
-        | pl.any_horizontal(pl.col(name).is_null() for name in required)
-    )
-    duplicates = controls.group_by("logical_commit_id").len().filter(pl.col("len") != 1)
-    malformed = controls.filter(
-        ((pl.col("state") == "complete") & pl.col("completed_at").is_null())
-        | ((pl.col("state") != "complete") & pl.col("completed_at").is_not_null())
-        | ((pl.col("state") == "abandoned") & pl.col("abandon_reason").is_null())
-        | ((pl.col("state") != "abandoned") & pl.col("abandon_reason").is_not_null())
-    )
-    if not invalid.is_empty() or not duplicates.is_empty() or not malformed.is_empty():
-        msg = "Logical commit control rows are inconsistent"
-        raise StoreIntegrityError(msg)
-    for row in controls.iter_rows(named=True):
-        try:
-            expected_id = logical_commit_identity(
-                row["commit_kind"], row["step_run_id"], row["recovery_batch_id"]
-            )
-        except ValueError as exc:
-            msg = "Logical commit ownership is invalid"
-            raise StoreIntegrityError(msg) from exc
-        if row["logical_commit_id"] != expected_id:
-            msg = "Logical commit ID does not match its owner"
-            raise StoreIntegrityError(msg)
-    return controls
+from artisan.storage.io.plan_evidence import canonical_table_plan_key
 
 
 def _visibility_expression(table_path: str, controls: pl.DataFrame) -> pl.Expr:
@@ -208,7 +90,7 @@ def audit_table_owners(
 
 
 def verify_plan_effect(
-    plan: CommitPlan,
+    plan: LogicalEffect,
     table_path: str,
     physical: pl.DataFrame,
     controls: pl.DataFrame,
@@ -237,15 +119,22 @@ def verify_plan_effect(
             f"Complete commit {plan.logical_commit_id} owns unplanned {table_path} rows"
         )
         raise StoreIntegrityError(msg)
-    if (
-        "origin_step_number" in owned
-        and not owned.filter(
-            pl.col("origin_step_number").is_null()
-            | (pl.col("origin_step_number") != plan.step_number)
-        ).is_empty()
-    ):
-        msg = f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
-        raise StoreIntegrityError(msg)
+    if "origin_step_number" in owned:
+        origins = expected.with_columns(
+            pl.Series(
+                "expected_origin",
+                [plan.expected_origin(table_path, key) for key in table.row_keys],
+                dtype=pl.Int64,
+            )
+        )
+        joined = owned.join(origins, on=keys, how="left", nulls_equal=True)
+        if joined.filter(
+            ~pl.col("origin_step_number").eq_missing(pl.col("expected_origin"))
+        ).height:
+            msg = (
+                f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
+            )
+            raise StoreIntegrityError(msg)
     rows = owned
     if is_global_artifact_table(table_path):
         rows = physical.filter(
@@ -269,7 +158,7 @@ def verify_plan_effect(
 
 
 def _owned_rows(
-    plan: CommitPlan, table_path: str, physical: pl.DataFrame
+    plan: LogicalEffect, table_path: str, physical: pl.DataFrame
 ) -> pl.DataFrame:
     if table_path == TablePath.CACHE_REUSE.value:
         if plan.commit_kind != "step_result":
@@ -288,8 +177,8 @@ class EffectKeys:
 
 
 def scan_plan_keys(
-    plan: CommitPlan,
-    table: PlannedTable,
+    plan: LogicalEffect,
+    table: TableEffect,
     snapshot: DeltaSnapshot,
     controls: pl.DataFrame,
 ) -> EffectKeys:
@@ -312,10 +201,9 @@ def scan_plan_keys(
                 if key not in wanted:
                     msg = f"Commit {plan.logical_commit_id} owns unplanned {table.table_path} rows"
                     raise StoreIntegrityError(msg)
-                if (
-                    "origin_step_number" in row
-                    and row["origin_step_number"] != plan.step_number
-                ):
+                if "origin_step_number" in row and row[
+                    "origin_step_number"
+                ] != plan.expected_origin(table.table_path, key):
                     msg = f"Artifact origin disagrees with owning commit {plan.logical_commit_id}"
                     raise StoreIntegrityError(msg)
             if key not in wanted:
@@ -337,7 +225,7 @@ def scan_plan_keys(
 
 
 def verify_snapshot_effect(
-    plan: CommitPlan,
+    plan: LogicalEffect,
     table_path: str,
     snapshot: DeltaSnapshot,
     controls: pl.DataFrame,

@@ -9,6 +9,7 @@ from pydantic import StrictInt
 from artisan.inspection._boundary import validate_int_range
 from artisan.inspection._evidence import MAX_PAYLOAD_BYTES, json_ready
 from artisan.inspection._pagination import paginate
+from artisan.schemas.execution.storage_config import StorageConfig
 
 MAX_PROVENANCE_DEPTH = 10
 
@@ -22,6 +23,8 @@ def provenance_payload(
     cursor: str | None = None,
     *,
     budget: int = MAX_PAYLOAD_BYTES,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
 ) -> dict[str, Any]:
     """Page the exact selected edge set, keeping its depth boundary visible."""
     from artisan.provenance import provenance_edges
@@ -29,7 +32,14 @@ def provenance_payload(
     validate_int_range(limit, field="limit", minimum=1, maximum=100)
     validate_int_range(depth, field="depth", minimum=1, maximum=MAX_PROVENANCE_DEPTH)
     result = json_ready(
-        provenance_edges(root, artifact_id, direction=direction, depth=depth)
+        provenance_edges(
+            root,
+            artifact_id,
+            direction=direction,
+            depth=depth,
+            files_root=files_root,
+            storage=storage,
+        )
     )
     edges = sorted(
         result.pop("edges"),

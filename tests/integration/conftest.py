@@ -3,8 +3,15 @@
 from __future__ import annotations
 
 import csv
+import hashlib
+import importlib.metadata
+import json
 import os
 import re
+import threading
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
+from dataclasses import replace
 from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
@@ -12,15 +19,38 @@ from typing import Any, ClassVar
 import polars as pl
 import pytest
 from fixtures.csv import make_csv
+from fixtures.retained_execution import NativeSoftware
+from fixtures.retained_pipeline import NativeCuratorSoftware, NativePipelineRunner
 from fsspec import AbstractFileSystem
 from pydantic import BaseModel, Field
 
+from artisan.composites.base.compiled import CompiledPlan
+from artisan.execution.admitted_worker import execute_admitted_assignment
+from artisan.execution.assignment import Assignment
+from artisan.execution.assignment_transport import (
+    AdmittedAssignment,
+    AssignmentDispatch,
+)
+from artisan.execution.composition import ExecuteAdapter
+from artisan.execution.runtime_compatibility import capture_runtime_compatibility
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
+from artisan.orchestration import PipelineManager
+from artisan.orchestration.engine.retained_artifact_query import _step_exports
+from artisan.orchestration.engine.retained_execution_query import _execution_membership
+from artisan.orchestration.engine.retained_step_tracker import RetainedStepTracker
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.csv import CSVArtifact
+from artisan.schemas.enums import FailurePolicy, TablePath
+from artisan.schemas.execution.assignment import SealedDelivery
 from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_transport import (
+    TRANSPORT_PACKAGES,
+    RuntimeCompatibility,
+)
 from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.orchestration.step_state import StepState
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -28,6 +58,10 @@ from artisan.schemas.specs.input_models import (
 )
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.storage.core.curator_view import CuratorView, capture_curator_view
+from artisan.storage.core.execution_source import CuratorExecutionSource
+from artisan.storage.io.retained_read import RetainedReadSnapshot
+from artisan.storage.io.retained_store import open_configured_store
 
 
 @pytest.fixture
@@ -212,35 +246,46 @@ def count_artifacts_by_type(
     return df_index.filter(pl.col("artifact_type") == artifact_type).height
 
 
+@contextmanager
+def _step_read(
+    delta_root: str,
+    step_number: int,
+    *,
+    fs: AbstractFileSystem | None,
+    storage_options: dict | None,
+    files_root: str | None,
+) -> Iterator[tuple[RetainedReadSnapshot, list[StepState]]]:
+    """Select the latest fixture run's exact current attempt without hydration."""
+    committer = open_configured_store(
+        delta_root, files_root=files_root, fs=fs, storage_options=storage_options
+    )
+    with committer._read_snapshot() as read:
+        tracker = RetainedStepTracker(committer, "")
+        _, attempts = tracker._read_lifecycle(read)
+        states = tracker._select_current_states(attempts)
+        yield read, [state for state in states if state.step_number == step_number]
+
+
 def load_artifact_edges(
     delta_root: str,
-    target_ids: list[str] | set[str],
+    target_ids: list[str] | set[str] | None,
     *,
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
+    files_root: str | None = None,
 ) -> pl.DataFrame:
-    """Load artifact_edges rows whose target_artifact_id is in target_ids.
-
-    Args:
-        delta_root: Root directory or URI for Delta Lake tables.
-        target_ids: Target artifact IDs to filter on.
-        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
-        storage_options: Delta-rs storage options.
-
-    Returns:
-        Polars DataFrame with columns from the artifact_edges table
-        (source_artifact_id, target_artifact_id, group_id, etc.).
-        Empty DataFrame if the table doesn't exist or no matches.
-    """
-    df = read_table(
-        delta_root,
-        "provenance/artifact_edges",
-        fs=fs,
-        storage_options=storage_options,
+    """Read declared ancestry from accepted projections and curator effects."""
+    committer = open_configured_store(
+        delta_root, files_root=files_root, fs=fs, storage_options=storage_options
     )
-    if df.is_empty():
-        return df
-    return df.filter(pl.col("target_artifact_id").is_in(list(target_ids)))
+    with committer._read_snapshot() as read:
+        view = CuratorView(
+            committer, capture_curator_view(committer, _read=read), _read=read
+        )
+        edges = view.scan(TablePath.ARTIFACT_EDGES)
+        if target_ids is not None:
+            edges = edges.filter(pl.col("target_artifact_id").is_in(list(target_ids)))
+        return edges.collect()
 
 
 def get_execution_outputs(
@@ -250,11 +295,21 @@ def get_execution_outputs(
     *,
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
+    files_root: str | None = None,
 ) -> list[str]:
-    """Read output occurrences by origin step/role across the fixture store."""
-    return _execution_artifact_ids(
-        delta_root, step_number, role, "output", fs=fs, storage_options=storage_options
-    )
+    """Read ordered current exports, including repeated and cached occurrences."""
+    with _step_read(
+        delta_root,
+        step_number,
+        fs=fs,
+        storage_options=storage_options,
+        files_root=files_root,
+    ) as (read, states):
+        return [
+            item.artifact_id
+            for state in states
+            for item in _step_exports(read, state, role=role)
+        ]
 
 
 def get_execution_inputs(
@@ -264,45 +319,35 @@ def get_execution_inputs(
     *,
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
+    files_root: str | None = None,
 ) -> list[str]:
-    """Read input occurrences by origin step/role across the fixture store."""
-    return _execution_artifact_ids(
-        delta_root, step_number, role, "input", fs=fs, storage_options=storage_options
-    )
-
-
-def _execution_artifact_ids(
-    delta_root: str,
-    step_number: int,
-    role: str,
-    direction: str,
-    *,
-    fs: AbstractFileSystem | None,
-    storage_options: dict | None,
-) -> list[str]:
-    """Preserve repeated occurrences without restricting accepted run membership."""
-    df_exec = read_table(
-        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
-    )
-    df_prov = read_table(
+    """Read exact frozen input occurrences of current selected executions."""
+    with _step_read(
         delta_root,
-        "provenance/execution_edges",
+        step_number,
         fs=fs,
         storage_options=storage_options,
-    )
-
-    if df_exec.is_empty() or df_prov.is_empty():
-        return []
-
-    exec_ids = df_exec.filter(pl.col("origin_step_number") == step_number)[
-        "execution_run_id"
-    ].to_list()
-
-    return df_prov.filter(
-        pl.col("execution_run_id").is_in(exec_ids)
-        & (pl.col("direction") == direction)
-        & (pl.col("role") == role)
-    )["artifact_id"].to_list()
+        files_root=files_root,
+    ) as (read, states):
+        ids = []
+        for member in _execution_membership(read, states):
+            if isinstance(member.source, CuratorExecutionSource):
+                ids.extend(
+                    item.artifact_id
+                    for group in member.source.admission.inputs
+                    if group.role == role
+                    for item in group.members
+                )
+                continue
+            boundary = member.source.admission.boundary
+            inventory = {item.address: item for item in boundary.occurrences}
+            ids.extend(
+                inventory[address].artifact_id
+                for group in boundary.boundary_inputs
+                if group.role == role
+                for address in group.occurrences
+            )
+        return ids
 
 
 def count_executions_by_step(
@@ -311,27 +356,19 @@ def count_executions_by_step(
     *,
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
+    files_root: str | None = None,
 ) -> int:
-    """Count execution records for a specific step.
-
-    Queries: executions WHERE origin_step_number = step_number
-    Used for batch processing validation.
-
-    Args:
-        delta_root: Root directory for Delta Lake tables.
-        step_number: Step number to count executions for.
-        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
-        storage_options: Delta-rs storage options.
-
-    Returns:
-        Number of execution records for the step.
-    """
-    df_exec = read_table(
-        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
-    )
-    if df_exec.is_empty():
-        return 0
-    return df_exec.filter(pl.col("origin_step_number") == step_number).height
+    """Count actual selected outer deliveries, excluding current cache reuse."""
+    with _step_read(
+        delta_root,
+        step_number,
+        fs=fs,
+        storage_options=storage_options,
+        files_root=files_root,
+    ) as (read, states):
+        return sum(
+            not member.cache_hit for member in _execution_membership(read, states)
+        )
 
 
 def get_artifact_edges(
@@ -340,29 +377,23 @@ def get_artifact_edges(
     *,
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
+    files_root: str | None = None,
 ) -> list[str]:
-    """Get target artifact IDs linked from a source artifact.
-
-    Args:
-        delta_root: Root directory for Delta Lake tables.
-        source_id: Source artifact ID.
-        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
-        storage_options: Delta-rs storage options.
-
-    Returns:
-        List of target artifact IDs.
-    """
-    df = read_table(
-        delta_root,
-        "provenance/artifact_edges",
-        fs=fs,
-        storage_options=storage_options,
+    """Read accepted content-level descendants without manufacturing physical rows."""
+    committer = open_configured_store(
+        delta_root, files_root=files_root, fs=fs, storage_options=storage_options
     )
-    if df.is_empty():
-        return []
-    return df.filter(pl.col("source_artifact_id") == source_id)[
-        "target_artifact_id"
-    ].to_list()
+    with committer._read_snapshot() as read:
+        view = CuratorView(
+            committer, capture_curator_view(committer, _read=read), _read=read
+        )
+        return (
+            view.scan(TablePath.ARTIFACT_EDGES)
+            .filter(pl.col("source_artifact_id") == source_id)
+            .select("target_artifact_id")
+            .collect()["target_artifact_id"]
+            .to_list()
+        )
 
 
 def get_step_status(
@@ -402,26 +433,17 @@ def get_failed_executions(
     *,
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
+    files_root: str | None = None,
 ) -> int:
-    """Count failed executions for a step.
-
-    Args:
-        delta_root: Root directory for Delta Lake tables.
-        step_number: Step number to query.
-        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
-        storage_options: Delta-rs storage options.
-
-    Returns:
-        Number of failed executions.
-    """
-    df_exec = read_table(
-        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
-    )
-    if df_exec.is_empty():
-        return 0
-    return df_exec.filter(
-        (pl.col("origin_step_number") == step_number) & (pl.col("success") == False)  # noqa: E712
-    ).height
+    """Count failed terminal units; absence of worker diagnostics creates no source."""
+    with _step_read(
+        delta_root,
+        step_number,
+        fs=fs,
+        storage_options=storage_options,
+        files_root=files_root,
+    ) as (_, states):
+        return sum(state.failed_count for state in states)
 
 
 def get_successful_executions(
@@ -430,26 +452,17 @@ def get_successful_executions(
     *,
     fs: AbstractFileSystem | None = None,
     storage_options: dict | None = None,
+    files_root: str | None = None,
 ) -> int:
-    """Count successful executions for a step.
-
-    Args:
-        delta_root: Root directory for Delta Lake tables.
-        step_number: Step number to query.
-        fs: fsspec filesystem. Required when ``delta_root`` is a URI.
-        storage_options: Delta-rs storage options.
-
-    Returns:
-        Number of successful executions.
-    """
-    df_exec = read_table(
-        delta_root, "orchestration/executions", fs=fs, storage_options=storage_options
-    )
-    if df_exec.is_empty():
-        return 0
-    return df_exec.filter(
-        (pl.col("origin_step_number") == step_number) & (pl.col("success") == True)  # noqa: E712
-    ).height
+    """Count successful selected units through their validated terminal results."""
+    with _step_read(
+        delta_root,
+        step_number,
+        fs=fs,
+        storage_options=storage_options,
+        files_root=files_root,
+    ) as (_, states):
+        return sum(state.succeeded_count for state in states)
 
 
 @pytest.fixture
@@ -641,3 +654,177 @@ class FailingTransformer(OperationDefinition):
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         """Build CSVArtifact drafts from output CSV files."""
         return declared_file_result(inputs, "dataset")
+
+
+class _DirectNativeSoftware(NativeSoftware):
+    """Exercise the admitted worker without claiming installed software qualification."""
+
+    @property
+    def compatibility(self) -> RuntimeCompatibility:
+        return _application_compatibility(self.application_modules)
+
+    def verify(self, plan: CompiledPlan) -> None:
+        plan.instantiate()
+
+    def create_adapter(
+        self,
+        assignment: Assignment,
+        *,
+        working_root: Path,
+        runtime_env: Mapping[str, str],
+    ) -> ExecuteAdapter:
+        from fixtures.commands import command_router
+
+        return lambda _operation, _path: command_router()
+
+
+class _DirectNativeCuratorSoftware(NativeCuratorSoftware):
+    @property
+    def compatibility(self) -> RuntimeCompatibility:
+        return _application_compatibility(self.application_modules)
+
+
+class _SerialNativePipelineRunner(NativePipelineRunner):
+    """Keep the test process's command environment isolated across worker packs."""
+
+    _science_lock = threading.Lock()
+
+    def resolve(
+        self,
+        plan: CompiledPlan,
+        runner_resources: RunnerResources,
+        *,
+        application_modules: tuple[str, ...] = (),
+    ) -> NativeSoftware:
+        software = super().resolve(plan, runner_resources)
+        return replace(
+            software,
+            software_digest=_native_software_digest(application_modules),
+            application_modules=application_modules,
+        )
+
+    def resolve_curator(
+        self,
+        operation: OperationDefinition,
+        runner_resources: RunnerResources,
+        *,
+        application_modules: tuple[str, ...] = (),
+    ) -> NativeCuratorSoftware:
+        super().resolve_curator(operation, runner_resources)
+        return _DirectNativeCuratorSoftware(
+            software_digest=_native_software_digest(application_modules),
+            application_modules=application_modules,
+        )
+
+    def _invoke(
+        self, assignment: AdmittedAssignment, dispatch: AssignmentDispatch
+    ) -> SealedDelivery:
+        with self._science_lock:
+            return execute_admitted_assignment(
+                assignment,
+                _DirectNativeSoftware(
+                    software_digest=_native_software_digest(
+                        dispatch.application_modules
+                    ),
+                    application_modules=dispatch.application_modules,
+                ),
+                dispatch,
+                working_root=Path(dispatch.working_root),
+            )
+
+
+def _application_compatibility(
+    application_modules: tuple[str, ...],
+) -> RuntimeCompatibility:
+    owners = importlib.metadata.packages_distributions()
+    names = {
+        owner
+        for module in application_modules
+        for owner in owners.get(module.partition(".")[0], ())
+    }
+    selected = tuple(sorted(names | set(TRANSPORT_PACKAGES)))
+    return capture_runtime_compatibility(selected)
+
+
+def _native_software_digest(application_modules: tuple[str, ...]) -> str:
+    if not application_modules:
+        return "c" * 64
+    measured = _application_compatibility(application_modules).model_dump_json()
+    payload = json.dumps([application_modules, measured]).encode()
+    return hashlib.sha256(payload).hexdigest()
+
+
+def create_native_pipeline(
+    *,
+    name: str,
+    delta_root: str | Path,
+    staging_root: str | Path,
+    working_root: str | Path,
+    failure_policy: FailurePolicy = FailurePolicy.CONTINUE,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
+    application_modules: tuple[str, ...] = (),
+) -> PipelineManager:
+    """Use the real public controller with explicit synthetic in-process software.
+
+    Inline topology definitions exercise admission, grouping and publication here;
+    installed worker and software qualification have separate real-run gates.
+    """
+    from artisan.orchestration import PipelineManager
+    from artisan.schemas.execution.storage_config import StorageConfig
+    from artisan.storage.io.retained_store import create_retained_store
+
+    root = str(delta_root)
+    files = files_root if files_root is not None else str(Path(root).parent / "files")
+    selected_storage = storage if storage is not None else StorageConfig()
+    committer = create_retained_store(
+        root,
+        files,
+        fs=selected_storage.filesystem(),
+        storage_options=selected_storage.delta_storage_options(),
+    )
+    return PipelineManager.create(
+        name,
+        root,
+        str(staging_root),
+        working_root=str(working_root),
+        files_root=files,
+        default_step_runner=_SerialNativePipelineRunner(committer),
+        failure_policy=failure_policy,
+        storage=selected_storage,
+        application_modules=application_modules,
+    )
+
+
+@pytest.fixture
+def native_pipeline(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
+    """Create real store/controller pipelines with synthetic in-process software.
+
+    This fixture verifies admission/publication behavior, not installed worker
+    qualification. Packs use one process-global command scope at a time.
+    """
+    from fixtures import retained_execution
+    from fixtures.commands import command_router
+    from fixtures.retained_pipeline import NativePipelineRunner
+
+    from artisan.orchestration import PipelineManager
+    from artisan.schemas.execution.storage_config import StorageConfig
+    from artisan.storage.io.retained_store import create_retained_store
+
+    monkeypatch.setattr(retained_execution, "LocalExecuteRouter", command_router)
+
+    def create(name: str = "pipeline") -> PipelineManager:
+        root = tmp_path / name
+        committer = create_retained_store(
+            str(root / "delta"), str(root / "files"), fs=StorageConfig().filesystem()
+        )
+        return PipelineManager.create(
+            name,
+            committer.delta_root,
+            str(root / "staging"),
+            files_root=committer.files_root,
+            working_root=str(root / "working"),
+            default_step_runner=NativePipelineRunner(committer),
+        )
+
+    return create

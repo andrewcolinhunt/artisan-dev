@@ -24,9 +24,7 @@ from artisan.errors import (
     AssessmentSpecError,
     OutcomeSelectionError,
 )
-from artisan.orchestration.engine.step_tracker import StepTracker
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationStatus,
@@ -34,8 +32,6 @@ from artisan.schemas.orchestration.step_lifecycle import (
     StepStatus,
 )
 from artisan.schemas.orchestration.step_state import StepState
-from artisan.storage.core.committed_scan import scan_committed
-from artisan.storage.core.run_scope import load_accepted_outputs
 from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 
 
@@ -287,13 +283,8 @@ class _Projection(StrictModel):
 
 
 def _resolve_selection(
-    tracker: StepTracker, selection: OutcomeSelection
+    states: list[StepState], selection: OutcomeSelection
 ) -> tuple[StepState, ResolvedOutcomeSelection]:
-    states = (
-        tracker.load_all_current_states()
-        if selection.step_run_id is not None
-        else tracker.load_current_states(selection.pipeline_run_id)
-    )
     matches = [
         state
         for state in states
@@ -453,37 +444,13 @@ def _reference(
     }
 
 
-def _read_observations(
-    delta_root: str,
+def _observations_from_rows(
+    rows: pl.DataFrame,
+    origins: dict[str, int],
     selection: ResolvedOutcomeSelection,
     projection: _Projection,
-    storage: StorageConfig,
 ) -> list[MetricObservation]:
-    fs, options = storage.filesystem(), storage.delta_storage_options()
-    membership = load_accepted_outputs(
-        delta_root,
-        fs=fs,
-        storage_options=options,
-        pipeline_run_id=selection.pipeline_run_id,
-        step_run_id=selection.step_run_id,
-        role=selection.role,
-    )
-    if membership.is_empty():
-        return []
-    if membership.filter(pl.col("artifact_type") != "metric").height:
-        msg = "Every artifact in the selected role must be a metric"
-        raise OutcomeSelectionError(msg)
-    origins = dict(membership.select("artifact_id", "origin_step_number").iter_rows())
-    rows = (
-        scan_committed(
-            delta_root,
-            ArtifactTypeDef.get_table_path("metric"),
-            fs=fs,
-            storage_options=options,
-        )
-        .filter(pl.col("artifact_id").is_in(list(origins)))
-        .collect()
-    )
+    """Project verified selected rows without changing numeric or metadata values."""
     counts = rows.group_by("artifact_id").len()
     if (
         set(counts["artifact_id"]) != set(origins)
@@ -523,6 +490,7 @@ def read_metric_observations(
     *,
     metadata_keys: list[str] | None = None,
     storage: StorageConfig | None = None,
+    files_root: str | None = None,
 ) -> MetricObservationSet:
     """Read precise accepted metric evidence from one exact step attempt.
 
@@ -532,6 +500,7 @@ def read_metric_observations(
         metric_paths: At most 40 distinct literal object-key paths.
         metadata_keys: At most 20 explicit top-level artifact metadata keys.
         storage: Filesystem and storage options; local by default.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
 
     Returns:
         Complete observations or an unavailable population with lifecycle evidence.
@@ -549,28 +518,40 @@ def read_metric_observations(
     except ValidationError as exc:
         msg = "Invalid observation selection or projection"
         raise OutcomeSelectionError(msg) from exc
-    storage = storage or StorageConfig()
-    tracker = StepTracker(
-        delta_root,
-        fs=storage.filesystem(),
-        storage_options=storage.delta_storage_options(),
+    from artisan.storage.io.retained_store import open_configured_store
+    from artisan.visualization.retained_outcomes import (
+        read_retained_metric_observations,
     )
-    state, resolved = _resolve_selection(tracker, selection)
-    population, role_validation, reason = _population_state(state, selection.role)
-    observations = (
-        _read_observations(delta_root, resolved, projection, storage)
-        if population == "available"
-        else []
+
+    return read_retained_metric_observations(
+        open_configured_store(delta_root, files_root=files_root, storage=storage),
+        selection,
+        projection.metric_paths,
+        metadata_keys=projection.metadata_keys,
     )
+
+
+def _observation_set(
+    resolved: ResolvedOutcomeSelection,
+    projection: _Projection,
+    observations: list[MetricObservation],
+    *,
+    population_status: str,
+    role_validation: str,
+    reason: str | None,
+) -> MetricObservationSet:
+    """Bind the unchanged observation contract to its exact evidence fingerprint."""
     payload = {
         "selection": resolved.model_dump(mode="json"),
-        "population_status": population,
+        "population_status": population_status,
         "role_validation": role_validation,
         "reason": reason,
         "reader_version": "1",
         **projection.model_dump(),
         "counting_basis": "unique_attempt_role_artifact",
-        "observation_count": len(observations) if population == "available" else None,
+        "observation_count": len(observations)
+        if population_status == "available"
+        else None,
         "observations": [
             observation.model_dump(mode="json") for observation in observations
         ],
@@ -725,6 +706,7 @@ def assess_outcomes(
     spec: AssessmentSpec,
     *,
     storage: StorageConfig | None = None,
+    files_root: str | None = None,
 ) -> OutcomeAssessment:
     """Assess the complete selected metric role under explicit numeric criteria.
 
@@ -733,6 +715,7 @@ def assess_outcomes(
         selection: Run, step and output role; exact history is optional.
         spec: Bounded numeric checks and optional expected observation count.
         storage: Filesystem and storage options; local by default.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
 
     Returns:
         Exact criterion results with population coverage and execution state.
@@ -752,5 +735,6 @@ def assess_outcomes(
         selection,
         [check.metric_path for check in spec.checks],
         storage=storage,
+        files_root=files_root,
     )
     return _evaluate_observations(source, spec)
