@@ -2,9 +2,9 @@
 
 Co-located with the notebooks themselves so the marker hook only loads
 when pytest collects under ``docs/tutorials/``. nbval discovers .ipynb
-files via ``--nbval-lax`` (passed by the ``test-notebook`` pixi task).
+files via ``--nbval-lax`` (passed by the ``test`` and ``test-notebook`` tasks).
 
-Two responsibilities:
+Three responsibilities:
 
 1. Auto-apply the ``notebook`` marker to every nbval-collected item, so
    ``pytest -m notebook`` selects them and ``pytest -m 'not notebook'``
@@ -15,6 +15,9 @@ Two responsibilities:
    ``-m 'notebook and not modal'``; the opt-in ``test-notebook-modal``
    task selects them where the infrastructure exists. Listed by path relative
    to this conftest's directory so the mapping is auditable.
+
+3. Keep each notebook's cells together when the combined suite uses xdist's
+   ``loadgroup`` scheduler.
 """
 
 from __future__ import annotations
@@ -51,11 +54,12 @@ def _relative_to_tutorials(item: pytest.Item) -> str | None:
         return None
 
 
+@pytest.hookimpl(tryfirst=True)
 def pytest_collection_modifyitems(
     config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
-    """Apply notebook and infrastructure markers and skip broken notebooks."""
+    """Mark and group tutorial cells before xdist assigns worker groups."""
     del config
     skip_broken = pytest.mark.skip(
         reason="Notebook has pre-existing runtime bugs; tracked separately"
@@ -67,6 +71,7 @@ def pytest_collection_modifyitems(
         if rel is None:
             continue
         item.add_marker(notebook_marker)
+        item.add_marker(pytest.mark.xdist_group(name=f"notebook:{rel}"))
         if rel in SKIP_NOTEBOOKS_BROKEN:
             item.add_marker(skip_broken)
             continue

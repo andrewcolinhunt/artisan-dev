@@ -28,9 +28,9 @@ from artisan.storage.io.retained_seal import capture_retained_delivery
 
 @pytest.mark.parametrize("cancel_first", [False, True])
 def test_reuse_and_cancellation_preserve_their_durable_order(
-    backend_fs: Backend, tmp_path: Path, cancel_first: bool
+    raw_backend_fs: Backend, tmp_path: Path, cancel_first: bool
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="empty")
     _, source = admit_read_case(committer, case, step_run_id="a" * 32)
@@ -64,9 +64,9 @@ def test_reuse_and_cancellation_preserve_their_durable_order(
 
 
 def test_reused_source_can_serve_independent_units_but_each_unit_selects_once(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="empty")
     _, source = admit_read_case(committer, case, step_run_id="a" * 32)
@@ -98,9 +98,9 @@ def test_reused_source_can_serve_independent_units_but_each_unit_selects_once(
 
 
 def test_claimed_current_unit_cannot_select_a_cache_source(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="empty")
     _, source = admit_read_case(committer, case, step_run_id="a" * 32)
@@ -121,9 +121,9 @@ def test_claimed_current_unit_cannot_select_a_cache_source(
 
 @pytest.mark.parametrize("change", ["cancel", "supersede", "admission"])
 def test_reuse_rechecks_current_admission_after_source_verification(
-    backend_fs: Backend, tmp_path: Path, change: str
+    raw_backend_fs: Backend, tmp_path: Path, change: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="empty")
     _, source = admit_read_case(committer, case, step_run_id="a" * 32)
@@ -162,9 +162,9 @@ def test_reuse_rechecks_current_admission_after_source_verification(
     ],
 )
 def test_exact_source_verifier_rejects_ineligible_science_without_substitution(
-    backend_fs: Backend, tmp_path: Path, change: str
+    raw_backend_fs: Backend, tmp_path: Path, change: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="empty")
     _, good = admit_read_case(committer, case, step_run_id="a" * 32)
@@ -203,9 +203,9 @@ def test_exact_source_verifier_rejects_ineligible_science_without_substitution(
 
 @pytest.mark.parametrize("corruption", ["source-owner", "source-seal", "wrong-action"])
 def test_reuse_journal_rejects_partial_or_misplaced_source_evidence(
-    backend_fs: Backend, tmp_path: Path, corruption: str
+    raw_backend_fs: Backend, tmp_path: Path, corruption: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="empty")
     _, source = admit_read_case(committer, case, step_run_id="a" * 32)
@@ -238,9 +238,9 @@ def test_reuse_journal_rejects_partial_or_misplaced_source_evidence(
 
 
 def test_selected_cache_source_survives_controller_death_before_step_publication(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="empty")
     _, source = admit_read_case(committer, case, step_run_id="a" * 32)

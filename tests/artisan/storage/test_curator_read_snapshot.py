@@ -55,9 +55,9 @@ def _completed(
 
 @pytest.mark.parametrize("reused", [False, True])
 def test_curator_read_shares_one_control_proof_and_fixed_snapshots(
-    backend_fs: Backend, monkeypatch: pytest.MonkeyPatch, reused: bool
+    raw_backend_fs: Backend, monkeypatch: pytest.MonkeyPatch, reused: bool
 ) -> None:
-    committer, plan = _completed(backend_fs, reused=reused)
+    committer, plan = _completed(raw_backend_fs, reused=reused)
     reader = CuratorReader(committer)
     expected = reader.read_result(plan.step_run_id, plan.plan_digest)
     proofs = 0
@@ -105,9 +105,9 @@ def test_curator_read_shares_one_control_proof_and_fixed_snapshots(
 
 
 def test_curator_read_keeps_captured_content_version_then_rechecks_latest(
-    backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    committer, plan = _completed(backend_fs)
+    committer, plan = _completed(raw_backend_fs)
     reader = CuratorReader(committer)
     expected = reader.read_result(plan.step_run_id, plan.plan_digest)
     snapshot = committer._snapshot
@@ -137,9 +137,9 @@ def test_curator_read_keeps_captured_content_version_then_rechecks_latest(
 
 @pytest.mark.parametrize("change", ["content", "origin", "duplicate"])
 def test_curator_metadata_does_not_authorize_changed_full_content(
-    backend_fs: Backend, change: str
+    raw_backend_fs: Backend, change: str
 ) -> None:
-    committer, plan = _completed(backend_fs)
+    committer, plan = _completed(raw_backend_fs)
     reader = CuratorReader(committer)
     assert reader.metadata(plan.step_run_id, plan.plan_digest) == plan
     path = uri_join(committer.delta_root, ArtifactTypeDef.get_table_path("csv"))
@@ -159,9 +159,9 @@ def test_curator_metadata_does_not_authorize_changed_full_content(
 
 
 def test_historical_effect_failure_is_not_reused_or_hidden_by_latest_repair(
-    backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    committer, plan = _completed(backend_fs)
+    committer, plan = _completed(raw_backend_fs)
     path = uri_join(committer.delta_root, ArtifactTypeDef.get_table_path("csv"))
     original = pl.read_delta(path, storage_options=committer.storage_options)
     original.with_columns(pl.col("origin_step_number") + 1).write_delta(
@@ -211,10 +211,10 @@ def test_historical_effect_failure_is_not_reused_or_hidden_by_latest_repair(
 
 
 def test_curator_view_private_proof_requires_the_same_store_binding(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    committer, _ = _completed(backend_fs)
-    fs, storage, _ = backend_fs
+    committer, _ = _completed(raw_backend_fs)
+    fs, storage, _ = raw_backend_fs
     other = open_committer(committer.delta_root, fs, storage)
     with committer._read_snapshot() as read:
         captured = capture_curator_view(committer, _read=read)

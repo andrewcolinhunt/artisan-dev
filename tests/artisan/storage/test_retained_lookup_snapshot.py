@@ -77,15 +77,15 @@ def _consuming(producer: AcceptedArtifact) -> RetainedCase:
 
 @pytest.mark.parametrize("producer_kind", ["scientific", "curator"])
 def test_cache_lookup_shares_one_proof_for_current_and_selected_input_producers(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     producer_kind: str,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
-    case = _consuming(_producer(committer, backend_fs, tmp_path, producer_kind))
+    case = _consuming(_producer(committer, raw_backend_fs, tmp_path, producer_kind))
     _, source = admit_read_case(committer, case, step_run_id="b" * 32)
     committer.accept(source)
     current = tuple(
@@ -136,9 +136,9 @@ def _plain(value: int) -> RetainedCase:
 
 @pytest.mark.parametrize("change", ["content", "origin", "duplicate"])
 def test_candidate_discovery_never_marks_unread_payloads_verified(
-    backend_fs: Backend, change: str
+    raw_backend_fs: Backend, change: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     first_case, other_case = _plain(1), _plain(2)
@@ -182,11 +182,11 @@ def test_candidate_discovery_never_marks_unread_payloads_verified(
 
 @pytest.mark.parametrize("producer_kind", ["scientific", "curator"])
 def test_shared_producer_proof_keeps_exact_reference_and_store_binding(
-    backend_fs: Backend, tmp_path: Path, producer_kind: str
+    raw_backend_fs: Backend, tmp_path: Path, producer_kind: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
-    producer = _producer(committer, backend_fs, tmp_path, producer_kind)
+    producer = _producer(committer, raw_backend_fs, tmp_path, producer_kind)
     assert producer.artifact.artifact_id is not None
     boundary = ProjectedOccurrence(
         address=producer.reference.address,
@@ -215,9 +215,9 @@ def test_shared_producer_proof_keeps_exact_reference_and_store_binding(
 
 
 def test_lookup_rechecks_current_cancellation_after_a_successful_hit(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     case = _plain(1)
@@ -231,9 +231,9 @@ def test_lookup_rechecks_current_cancellation_after_a_successful_hit(
 
 
 def test_lookup_discovers_new_completion_after_an_earlier_miss(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     case = _plain(1)

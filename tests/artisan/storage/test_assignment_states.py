@@ -50,9 +50,9 @@ def _attempt(index: int) -> AssignmentAttempt:
 
 
 def test_states_scans_once_and_never_reuses_an_earlier_snapshot(
-    backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    journal = _journal(backend_fs)
+    journal = _journal(raw_backend_fs)
     first, second, missing = (_attempt(index) for index in range(3))
     journal.admit(first, admission_digest="e" * 32)
     journal.admit(second, admission_digest="f" * 32)
@@ -90,9 +90,9 @@ def test_states_scans_once_and_never_reuses_an_earlier_snapshot(
     "corruption", ["duplicate", "gap", "null", "owner", "invalid-claim"]
 )
 def test_states_and_state_reject_the_same_malformed_queried_history(
-    backend_fs: Backend, corruption: str
+    raw_backend_fs: Backend, corruption: str
 ) -> None:
-    journal = _journal(backend_fs)
+    journal = _journal(raw_backend_fs)
     first, other = _attempt(0), _attempt(1)
     journal.admit(first, admission_digest="e" * 32)
     journal.admit(other, admission_digest="e" * 32)
@@ -156,10 +156,12 @@ def _claim(
 
 
 def test_require_winners_batches_histories_and_global_uuid_proof(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    journal = _journal(backend_fs)
-    first, second = (_claim(journal, backend_fs, tmp_path, index) for index in range(2))
+    journal = _journal(raw_backend_fs)
+    first, second = (
+        _claim(journal, raw_backend_fs, tmp_path, index) for index in range(2)
+    )
     expected = {receipt: journal.require_winner(receipt) for receipt in (first, second)}
     scans = []
     original = DeltaSnapshot.iter_located
@@ -185,10 +187,10 @@ def test_require_winners_batches_histories_and_global_uuid_proof(
 
 
 def test_batched_winner_proof_rejects_foreign_global_delivery_collision(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    journal = _journal(backend_fs)
-    receipt = _claim(journal, backend_fs, tmp_path, 0)
+    journal = _journal(raw_backend_fs)
+    receipt = _claim(journal, raw_backend_fs, tmp_path, 0)
     snapshot = journal._snapshot()
     rows = pl.concat([frame for _, _, frame in snapshot.iter_located()])
     row = rows.filter(pl.col("action") == "claim").row(0, named=True)

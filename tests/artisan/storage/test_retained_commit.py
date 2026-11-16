@@ -35,9 +35,9 @@ from artisan.utils.hashing import canonical_json_bytes
 
 @pytest.mark.parametrize("kind", ["file", "appendable", "alias", "empty"])
 def test_retained_commit_survives_worker_and_staging_removal(
-    backend_fs, tmp_path: Path, kind: str
+    raw_backend_fs, tmp_path: Path, kind: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     scratch = tmp_path / "worker"
     case, receipt = admit_case(committer, scratch, kind=kind)
@@ -62,9 +62,9 @@ def test_retained_commit_survives_worker_and_staging_removal(
 
 @pytest.mark.parametrize("claim_first", [False, True])
 def test_retained_commit_uses_same_winner_eligibility_for_cancelled_recovery(
-    backend_fs, tmp_path: Path, claim_first: bool, monkeypatch
+    raw_backend_fs, tmp_path: Path, claim_first: bool, monkeypatch
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case, receipt = admit_case(committer, tmp_path / "worker")
     if claim_first:
@@ -90,9 +90,9 @@ def test_retained_commit_uses_same_winner_eligibility_for_cancelled_recovery(
 
 
 def test_retained_commit_rejects_redelivery_and_preserves_independent_units(
-    backend_fs, tmp_path: Path
+    raw_backend_fs, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case, receipt = admit_case(committer, tmp_path / "first")
     other_case, independent = admit_case(committer, tmp_path / "second", unit_index=1)
@@ -119,9 +119,9 @@ def test_retained_commit_rejects_redelivery_and_preserves_independent_units(
 
 
 def test_retained_commit_rejects_obsolete_delivery_before_replacement_acceptance(
-    backend_fs, tmp_path: Path
+    raw_backend_fs, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case, obsolete = admit_case(committer, tmp_path / "worker")
     replacement = admit_prepared_case(committer, case, generation=1)
@@ -134,9 +134,9 @@ def test_retained_commit_rejects_obsolete_delivery_before_replacement_acceptance
 
 
 def test_recovery_rejects_self_consistent_replacement_of_unapplied_plan(
-    backend_fs, tmp_path: Path, monkeypatch
+    raw_backend_fs, tmp_path: Path, monkeypatch
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path / "worker")
 
@@ -169,9 +169,9 @@ def test_recovery_rejects_self_consistent_replacement_of_unapplied_plan(
 
 @pytest.mark.parametrize("mutation", ["carrier", "origin", "files-root"])
 def test_accepted_retained_projection_rejects_changed_managed_evidence(
-    backend_fs, tmp_path: Path, mutation: str
+    raw_backend_fs, tmp_path: Path, mutation: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path / "worker")
     plan = committer.accept(receipt)
@@ -195,9 +195,9 @@ def test_accepted_retained_projection_rejects_changed_managed_evidence(
 
 
 def test_retained_acceptance_preserves_order_and_exact_previous_equal_content_producers(
-    backend_fs, tmp_path: Path
+    raw_backend_fs, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     artifact = boundary_artifact()
     graph = OccurrenceGraph()
@@ -247,9 +247,9 @@ def test_retained_acceptance_preserves_order_and_exact_previous_equal_content_pr
 
 
 def test_selected_producer_uses_fresh_controls_with_stale_directory_listing(
-    backend_fs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     writer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, first = admit_case(writer, tmp_path / "first", kind="alias")
     writer.accept(first)
@@ -280,9 +280,9 @@ def test_selected_producer_uses_fresh_controls_with_stale_directory_listing(
 
 @pytest.mark.parametrize("mutation", ["missing", "tampered"])
 def test_selected_producer_rejects_changed_controller_plan(
-    backend_fs, tmp_path: Path, mutation: str
+    raw_backend_fs, tmp_path: Path, mutation: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case, receipt = admit_case(committer, tmp_path / "worker", kind="alias")
     committer.accept(receipt)
@@ -329,9 +329,9 @@ _CRASHES = [
 
 @pytest.mark.parametrize(("boundary", "table_path"), _CRASHES)
 def test_controller_process_death_recovers_only_claimed_exact_effects(
-    backend_fs, tmp_path: Path, boundary: str, table_path: str | None
+    raw_backend_fs, tmp_path: Path, boundary: str, table_path: str | None
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     scratch = tmp_path / "worker"
     case, receipt = admit_case(committer, scratch)

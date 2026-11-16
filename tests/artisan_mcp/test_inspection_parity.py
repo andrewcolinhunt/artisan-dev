@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pytest
 from fastmcp import Client
 from fixtures.outcome_store import append_metric_attempt
+from mcp.types import TextContent
 
 from artisan.cli import main
 from artisan.errors import ArtisanError, CommitError
@@ -17,12 +21,24 @@ from artisan.inspection.api import inspect_evidence
 from artisan.registry import bootstrap_applications, discover
 from artisan.schemas import MetricArtifact
 
+if TYPE_CHECKING:
+    from fastmcp import FastMCP
+
+
+type CliPayload = Callable[
+    [str, dict[str, Any], Path | str | None], tuple[int, dict[str, Any]]
+]
+
 
 @pytest.fixture
-def cli_payload(tmp_path, capfd):
+def cli_payload(tmp_path: Path, capfd: pytest.CaptureFixture[str]) -> CliPayload:
     """Call the actual CLI command handler and capture its one JSON object."""
 
-    def call(capability, arguments, root=None):
+    def call(
+        capability: str,
+        arguments: dict[str, Any],
+        root: Path | str | None = None,
+    ) -> tuple[int, dict[str, Any]]:
         request = tmp_path / "inspection-request.json"
         request.write_text(json.dumps(arguments), encoding="utf-8")
         args = ["inspect", "run", capability, "--request", str(request), "--json"]
@@ -43,6 +59,20 @@ def cli_payload(tmp_path, capfd):
         ("capabilities", {}),
         ("list_operations", {"detail": "identity", "limit": 2}),
         ("describe_operation", {"name": "data_generator", "section": "params"}),
+    ],
+)
+def test_catalogue_views_agree_without_store(
+    capability: str,
+    arguments: dict[str, Any],
+    make_app: Callable[..., FastMCP],
+    cli_payload: CliPayload,
+) -> None:
+    _assert_views_agree(capability, arguments, app=make_app(), cli_payload=cli_payload)
+
+
+@pytest.mark.parametrize(
+    ("capability", "arguments"),
+    [
         ("list_runs", {}),
         ("get_run_status", {"pipeline_run_id": "run-1", "limit": 1}),
         ("diagnose_run", {"pipeline_run_id": "run-1"}),
@@ -58,29 +88,50 @@ def cli_payload(tmp_path, capfd):
         ("get_provenance_graph", {"artifact_id": "a" * 32}),
     ],
 )
-def test_all_catalogue_and_store_views_agree(
-    capability, arguments, make_app, seeded_run, cli_payload
-):
-    app = make_app(delta_root=seeded_run.delta_root)
+def test_store_views_agree(
+    capability: str,
+    arguments: dict[str, Any],
+    make_app: Callable[..., FastMCP],
+    read_only_seeded_root: Path,
+    cli_payload: CliPayload,
+) -> None:
+    _assert_views_agree(
+        capability,
+        arguments,
+        app=make_app(delta_root=read_only_seeded_root),
+        cli_payload=cli_payload,
+        delta_root=read_only_seeded_root,
+    )
+
+
+def _assert_views_agree(
+    capability: str,
+    arguments: dict[str, Any],
+    *,
+    app: FastMCP,
+    cli_payload: CliPayload,
+    delta_root: Path | None = None,
+) -> None:
     bootstrap_applications(["artisan.operations.examples"])
     discovery = discover(["artisan.operations.examples"], include_environment=False)
     expected = json_ready(
         inspect_evidence(
             capability,
             arguments,
-            delta_root=str(seeded_run.delta_root),
+            delta_root=str(delta_root) if delta_root is not None else None,
             discovery=discovery,
         )
     )
-    status, actual = cli_payload(capability, arguments, seeded_run.delta_root)
+    status, actual = cli_payload(capability, arguments, delta_root)
     assert status == 0
     assert actual == expected
 
-    async def check():
+    async def check() -> None:
         async with Client(app) as client:
             result = await client.call_tool("artisan_" + capability, arguments)
             assert not result.is_error
             assert result.structured_content == expected
+            assert isinstance(result.content[0], TextContent)
             assert json.loads(result.content[0].text) == expected
 
     asyncio.run(check())

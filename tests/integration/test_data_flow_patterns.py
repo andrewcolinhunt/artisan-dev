@@ -32,6 +32,7 @@ from .conftest import (
     get_execution_inputs,
     get_execution_outputs,
     load_artifact_edges,
+    read_table,
 )
 
 # =============================================================================
@@ -545,9 +546,9 @@ def test_batch_processing(pipeline_env: dict[str, str]):
 
 def comprehensive_pipeline(
     source_files: list[Path],
-    delta_root: Path,
-    staging_root: Path,
-    working_root: Path,
+    delta_root: str | Path,
+    staging_root: str | Path,
+    working_root: str | Path,
 ) -> dict:
     """Pipeline for Test 8: Comprehensive.
 
@@ -567,16 +568,16 @@ def comprehensive_pipeline(
     )
 
     # Stage 1: Sources
-    # Step 0: Ingest 3 external CSV files as CSV artifacts
+    # Step 0: Ingest one external CSV file
     step0 = pipeline.run(
         operation=IngestCSV,
         inputs=[str(f) for f in source_files],
     )
 
-    # Step 1: Generate 2 additional datasets
+    # Step 1: Generate one distinct dataset
     step1 = pipeline.run(
         operation=DataGenerator,
-        params={"count": 2, "seed": 9999},
+        params={"count": 1, "rows_per_file": 1, "seed": 1},
     )
 
     # Step 2: Merge ingest + generated
@@ -594,8 +595,8 @@ def comprehensive_pipeline(
         operation=DataTransformer,
         inputs={"dataset": step2.output("merged")},
         params={
-            "scale_factor": 1.5,
-            "noise_amplitude": 0.1,
+            "scale_factor": 0.1,
+            "noise_amplitude": 0.0,
             "variants": 1,
             "seed": 100,
             "output_prefix": "A",
@@ -608,7 +609,7 @@ def comprehensive_pipeline(
         inputs={"dataset": step2.output("merged")},
         params={
             "scale_factor": 2.0,
-            "noise_amplitude": 0.2,
+            "noise_amplitude": 0.0,
             "variants": 1,
             "seed": 200,
             "output_prefix": "B",
@@ -664,51 +665,37 @@ def comprehensive_pipeline(
     return pipeline.finalize()
 
 
-def test_comprehensive(pipeline_env: dict[str, str], sample_csv_files: list[Path]):
-    """Test 8: Comprehensive multi-pattern pipeline.
-
-    Verifies:
-    - All patterns work together
-    - Correct artifact counts at each stage
-    - Data integrity through complex flow
-    """
+def test_comprehensive(pipeline_env: dict[str, str], tmp_path: Path) -> None:
+    """Combine two source kinds, branches, filtering, and nonempty fan-out."""
     delta_root = pipeline_env["delta_root"]
+    source = tmp_path / "source.csv"
+    source.write_text("id,x,y,z,score\n0,1.0,2.0,3.0,0.8\n")
 
     result = comprehensive_pipeline(
-        source_files=sample_csv_files,
+        source_files=[source],
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
         working_root=pipeline_env["working_root"],
     )
-
     assert result["overall_success"], "Pipeline should complete successfully"
 
-    # Stage 1
-    # Ingest: 3 csv artifacts + 3 file_refs = 6 artifacts
-    assert count_artifacts_by_step(delta_root, 0) == 6
-    assert count_artifacts_by_step(delta_root, 1) == 2  # Generator
-    merged_step2 = get_execution_outputs(delta_root, 2, "merged")
-    assert len(merged_step2) == 5  # 3 ingest + 2 generated
+    artifacts = read_table(delta_root, "artifacts/index")
+    by_step = dict(artifacts.group_by("origin_step_number").len().iter_rows())
+    assert by_step == {0: 2, 1: 1, 3: 2, 4: 2, 6: 4, 8: 4}
+    by_type = dict(artifacts.group_by("artifact_type").len().iter_rows())
+    assert by_type == {"file_ref": 1, "csv": 10, "metric": 4}
 
-    # Stage 2
-    assert count_artifacts_by_step(delta_root, 3) == 5  # Branch A
-    assert count_artifacts_by_step(delta_root, 4) == 5  # Branch B
-    merged_step5 = get_execution_outputs(delta_root, 5, "merged")
-    assert len(merged_step5) == 10  # 5 + 5
+    merged_sources = get_execution_outputs(delta_root, 2, "merged")
+    branch_a = get_execution_outputs(delta_root, 3, "dataset")
+    branch_b = get_execution_outputs(delta_root, 4, "dataset")
+    merged_branches = get_execution_outputs(delta_root, 5, "merged")
+    assert len(merged_sources) == len(branch_a) == len(branch_b) == 2
+    assert set(merged_branches) == set(branch_a) | set(branch_b)
+    assert len(merged_branches) == 4
 
-    # Stage 3 (no Group step — Filter is direct-input)
-    assert count_artifacts_by_step(delta_root, 6) == 10  # Metrics
-    passthrough_ids = get_execution_outputs(delta_root, 7, "passthrough")
-    n_passed = len(passthrough_ids)
-    assert 0 <= n_passed <= 10  # Some may be filtered out
-
-    # Stage 4: Final fan-out with variants=2
-    assert count_artifacts_by_step(delta_root, 8) == n_passed * 2
-
-    # Integrity checks
-    assert count_artifacts_by_type(delta_root, "file_ref") == 3
-    assert count_artifacts_by_type(delta_root, "metric") == 10
-
-    # Total CSV artifacts: 3 (ingest) + 2 (gen) + 5 (A) + 5 (B) + n_passed*2 (final)
-    expected_data = 3 + 2 + 5 + 5 + n_passed * 2
-    assert count_artifacts_by_type(delta_root, "csv") == expected_data
+    # Zero noise keeps every A score below the threshold and every B score above it.
+    passthrough = get_execution_outputs(delta_root, 7, "passthrough")
+    assert set(passthrough) == set(branch_b)
+    assert len(passthrough) == 2
+    assert set(passthrough).isdisjoint(branch_a)
+    assert len(get_execution_outputs(delta_root, 8, "dataset")) == 4

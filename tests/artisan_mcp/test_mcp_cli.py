@@ -40,6 +40,7 @@ class TestCLI:
         result = runner.invoke(
             app,
             ["--delta-root", "/tmp/example", "--load", "example.ops", "--print-config"],
+            env={"ARTISAN_DELTA_ROOT": None, "ARTISAN_LOAD_MODULES": None},
         )
 
         assert result.exit_code == 0

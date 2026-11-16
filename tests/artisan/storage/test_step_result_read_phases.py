@@ -26,11 +26,11 @@ from .test_step_results import _committer, _prepare
 
 
 def test_terminal_helpers_reject_a_proof_from_another_binding(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, _ = _prepare(committer, tmp_path, count=1)
-    fs, storage, _ = backend_fs
+    fs, storage, _ = raw_backend_fs
     other = open_committer(committer.delta_root, fs, storage)
     with other._read_snapshot() as read:
         with pytest.raises(StoreIntegrityError, match="another store binding"):
@@ -46,12 +46,12 @@ def test_terminal_helpers_reject_a_proof_from_another_binding(
 
 @pytest.mark.parametrize("complete", [False, True])
 def test_terminal_reads_share_proof_until_the_next_write(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     complete: bool,
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=2)
     for receipt in receipts:
         committer.accept(receipt)
@@ -79,9 +79,9 @@ def test_terminal_reads_share_proof_until_the_next_write(
 
 @pytest.mark.parametrize("boundary", ["plan", "planned", "terminal"])
 def test_publication_rechecks_whole_carriers_after_each_write(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(
         committer, tmp_path, count=1, kind="appendable"
     )
@@ -110,9 +110,9 @@ def test_publication_rechecks_whole_carriers_after_each_write(
 
 
 def test_complete_control_requires_a_fresh_terminal_read(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1)
     committer.accept(receipts[0])
     complete = retained_step_results.complete_control
@@ -145,9 +145,9 @@ def test_complete_control_requires_a_fresh_terminal_read(
 
 @pytest.mark.parametrize("change", ["origin", "winner"])
 def test_terminal_write_cannot_hide_changed_source_authority(
-    backend_fs: Backend, tmp_path: Path, change: str
+    raw_backend_fs: Backend, tmp_path: Path, change: str
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1)
     accepted = committer.accept(receipts[0])
 
@@ -202,9 +202,9 @@ def test_terminal_write_cannot_hide_changed_source_authority(
 
 
 def test_complete_recovery_does_not_retain_positive_carrier_proof(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, receipts = _prepare(committer, tmp_path, count=1, kind="file")
     accepted = committer.accept(receipts[0])
     expected = results.finish(admission.step_run_id)
@@ -219,9 +219,9 @@ def test_complete_recovery_does_not_retain_positive_carrier_proof(
 
 
 def test_lifecycle_uses_one_fixed_steps_version_and_next_read_is_fresh(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    committer = _committer(backend_fs)
+    committer = _committer(raw_backend_fs)
     results, admission, _ = _prepare(committer, tmp_path, count=1)
     expected = results.tracker.current_state(admission.step_run_id)
     snapshot = committer._snapshot

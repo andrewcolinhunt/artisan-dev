@@ -12,9 +12,9 @@ from artisan.storage.core.store_format import (
 
 
 def test_retained_domain_requires_explicit_idempotent_initialization(
-    backend_fs,
+    raw_backend_fs,
 ) -> None:
-    fs, _, root = backend_fs
+    fs, _, root = raw_backend_fs
     candidate = f"{root}/candidate"
     with pytest.raises(IncompatibleStoreError, match="no domain manifest"):
         assert_retained_store(candidate, fs)
@@ -24,8 +24,8 @@ def test_retained_domain_requires_explicit_idempotent_initialization(
     assert_retained_store(candidate, fs)
 
 
-def test_retained_domain_rejects_legacy_and_unlabeled_roots(backend_fs) -> None:
-    fs, _, root = backend_fs
+def test_retained_domain_rejects_legacy_and_unlabeled_roots(raw_backend_fs) -> None:
+    fs, _, root = raw_backend_fs
     legacy = f"{root}/legacy"
     fs.makedirs(f"{legacy}/_artisan", exist_ok=True)
     with fs.open(f"{legacy}/_artisan/store.json", "wb") as stream:

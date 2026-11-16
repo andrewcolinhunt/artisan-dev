@@ -65,9 +65,9 @@ from artisan.utils.hashing import compute_content_digest
 
 
 def test_curator_ingest_stream_publishes_own_completed_content_authority(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="file")
     committer.accept(receipt)
@@ -120,9 +120,9 @@ def test_curator_ingest_stream_publishes_own_completed_content_authority(
 
 
 def test_curator_merge_deduplicates_content_and_keeps_all_supplied_sources(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -146,9 +146,9 @@ def test_curator_merge_deduplicates_content_and_keeps_all_supplied_sources(
 
 
 def test_curator_appendable_carrier_tamper_blocks_downstream_admission(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="appendable")
     committer.accept(receipt)
@@ -192,9 +192,9 @@ def test_curator_appendable_carrier_tamper_blocks_downstream_admission(
 
 
 def test_curator_rejects_detached_cache_proof(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -225,9 +225,9 @@ def test_curator_rejects_detached_cache_proof(
 
 
 def test_curator_rejects_seal_for_another_admission_spec(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -245,7 +245,7 @@ def test_curator_rejects_seal_for_another_admission_spec(
 
 @pytest.mark.parametrize("kind", ["alias", "file"])
 def test_failed_curator_seal_cannot_publish_output_or_artifact_effects(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, kind: str
 ) -> None:
     from artisan.execution.executors import curator_stream
     from artisan.execution.recording import parquet_writer
@@ -264,7 +264,7 @@ def test_failed_curator_seal_cannot_publish_output_or_artifact_effects(
 
     monkeypatch.setattr(parquet_writer, "_write_execution_record", failed_record)
     monkeypatch.setattr(curator_stream, "_write_execution_record", failed_record)
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind=kind)
     committer.accept(receipt)
@@ -299,9 +299,9 @@ def test_failed_curator_seal_cannot_publish_output_or_artifact_effects(
 
 
 def test_diagnostic_curator_edges_are_excluded_from_ordinary_discovery(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="file")
     committer.accept(receipt)
@@ -356,10 +356,10 @@ def test_diagnostic_curator_edges_are_excluded_from_ordinary_discovery(
 
 @pytest.mark.parametrize("diagnostic", [False, True])
 def test_curator_preserves_required_sibling_reference_without_parent_edge(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     diagnostic: bool,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     graph = OccurrenceGraph()
     source = graph.add_input("data", boundary_artifact())
@@ -400,7 +400,7 @@ def test_curator_preserves_required_sibling_reference_without_parent_edge(
 
 
 def test_curator_ambiguous_content_reference_policy_rejects_arbitrary_source(
-    backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     def policy(
         _artifact: Artifact, context: ReferenceContext
@@ -420,7 +420,7 @@ def test_curator_ambiguous_content_reference_policy_rejects_arbitrary_source(
     monkeypatch.setattr(
         ArtifactTypeDef.get("metric"), "required_references", staticmethod(policy)
     )
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     inputs = {}
     for owner, value in (("a", 1), ("b", 2)):
@@ -451,9 +451,9 @@ def test_curator_ambiguous_content_reference_policy_rejects_arbitrary_source(
 
 @pytest.mark.parametrize("table_kind", ["index", "content"])
 def test_curator_read_rejects_changed_reused_content_origin(
-    backend_fs: Backend, tmp_path: Path, table_kind: str
+    raw_backend_fs: Backend, tmp_path: Path, table_kind: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -510,9 +510,9 @@ def _measured(
 
 
 def test_curator_explicit_diagnostic_input_does_not_expand_ordinary_queries(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     diagnostic = _measured(committer, "a", "debug_score", replay_of="f" * 32)
     coordinator, admission, reference = admit_curator(
@@ -536,9 +536,9 @@ def test_curator_explicit_diagnostic_input_does_not_expand_ordinary_queries(
 
 @pytest.mark.parametrize("operation_name", ["merge", "filter"])
 def test_curator_source_sets_do_not_invent_global_query_derivation(
-    backend_fs: Backend, operation_name: str
+    raw_backend_fs: Backend, operation_name: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     first, second = (
         _measured(committer, "a", "score_a"),
@@ -585,9 +585,9 @@ def test_curator_source_sets_do_not_invent_global_query_derivation(
 
 
 def test_curator_frozen_plan_wins_against_later_cancellation(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -636,9 +636,9 @@ def test_curator_frozen_plan_wins_against_later_cancellation(
     ],
 )
 def test_curator_recovers_after_controller_process_death(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -677,9 +677,9 @@ def test_curator_recovers_after_controller_process_death(
 
 
 def test_curator_cancel_before_selection_rejects_late_seal(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -718,9 +718,9 @@ def test_curator_cancel_before_selection_rejects_late_seal(
 
 @pytest.mark.parametrize("acknowledgement", [None, CancellationStatus.UNKNOWN])
 def test_curator_unselected_infrastructure_failure_has_no_execution(
-    backend_fs: Backend, acknowledgement: CancellationStatus | None
+    raw_backend_fs: Backend, acknowledgement: CancellationStatus | None
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     coordinator, _, reference = admit_curator(
         committer, Merge(), {}, step_run_id="a" * 32
@@ -742,9 +742,9 @@ def test_curator_unselected_infrastructure_failure_has_no_execution(
 
 
 def test_curator_empty_optional_output_has_complete_result_authority(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     first = _measured(committer, "a", "score")
     operation = Filter(
@@ -784,9 +784,9 @@ class _FailingIngest(IngestCSV):
 
 
 def test_curator_failed_stream_does_not_publish_converted_prefix(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="file")
     committer.accept(receipt)
@@ -811,9 +811,9 @@ def test_curator_failed_stream_does_not_publish_converted_prefix(
 
 
 def test_curator_admission_rejects_source_accepted_after_frozen_view(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     original = _measured(committer, "a", "first")
     _, admission, _ = admit_curator(
@@ -836,9 +836,9 @@ def test_curator_admission_rejects_source_accepted_after_frozen_view(
 
 
 def test_curator_reader_rejects_unplanned_owned_rows(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     committer.accept(receipt)
@@ -903,9 +903,9 @@ class _DynamicData(OperationDefinition):
 
 
 def test_dynamic_diagnostic_curator_keeps_exact_terminal_result_evidence(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     operation = _DynamicData()
     coordinator, initial, _ = admit_curator(
@@ -961,10 +961,10 @@ class _ExternalCurator(OperationDefinition):
 
 
 def test_curator_external_output_has_verified_managed_carrier_after_source_deletion(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     tmp_path: Path,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     payload = b"external curator output\n"
     path = tmp_path / "worker-output.bin"
@@ -1025,9 +1025,9 @@ class _AppendableCurator(_ExternalCurator):
 
 
 def test_curator_selects_valid_alternate_carrier_for_same_appendable_record(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     record = b'{"record_id":"selected","value":1}'
     plans = []
@@ -1072,9 +1072,9 @@ def test_curator_selects_valid_alternate_carrier_for_same_appendable_record(
 
 @pytest.mark.parametrize("phase", ["staging", "managed"])
 def test_curator_created_appendable_binds_nonselected_records(
-    backend_fs: Backend, tmp_path: Path, phase: str
+    raw_backend_fs: Backend, tmp_path: Path, phase: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     record = b'{"record_id":"selected","value":1}'
     payload = record + b'\n{"record_id":"other","value":2}\n'
@@ -1117,9 +1117,9 @@ def test_curator_created_appendable_binds_nonselected_records(
     "boundary", ["plan", "carriers", f"table:{TablePath.ARTIFACT_LOCATIONS.value}"]
 )
 def test_curator_carriers_recover_after_controller_death_and_source_removal(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     payload = b"worker-owned complete bytes\n"
     source = tmp_path / "worker.bin"
@@ -1173,9 +1173,9 @@ def test_curator_carriers_recover_after_controller_death_and_source_removal(
 
 
 def test_dynamic_empty_curator_uses_candidate_result_validation(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     operation = _DynamicEmpty()
     coordinator, admission, reference = admit_curator(

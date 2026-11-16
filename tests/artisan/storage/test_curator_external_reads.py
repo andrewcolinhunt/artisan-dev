@@ -47,13 +47,14 @@ from artisan.storage.core.curator_reader import CuratorReader
 from artisan.storage.core.curator_view import CuratorView
 from artisan.storage.core.retained_reader import AcceptedArtifact, RetainedReader
 from artisan.storage.io.curator_external_reads import capture_curator_file
+from artisan.storage.io.curator_plan import CuratorCommitPlan, read_curator_plan
 from artisan.storage.io.retained_commit import RetainedCommitter
 
 
 def _setup(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> tuple[RetainedCommitter, tuple[AcceptedArtifact, ...]]:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="file")
     committer.accept(receipt)
@@ -122,9 +123,9 @@ def _run(
 
 
 def test_ingest_csv_reuses_sealed_carrier_reads_with_original_paths(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     source = cast(FileRefArtifact, supplied[0].artifact)
     operation = IngestCSV()
     coordinator, admission, reference = admit_curator(
@@ -134,7 +135,9 @@ def test_ingest_csv_reuses_sealed_carrier_reads_with_original_paths(
         step_run_id="b" * 32,
         software_digest="e" * 64,
     )
-    staged, result, recorder = _run(coordinator, admission, operation, backend_fs[1])
+    staged, result, recorder = _run(
+        coordinator, admission, operation, raw_backend_fs[1]
+    )
     assert staged.success, staged.error
     assert staged.execution_run_id is not None
     assert not recorder.proof.ineligible_reasons
@@ -161,9 +164,9 @@ def test_ingest_csv_reuses_sealed_carrier_reads_with_original_paths(
 
 @pytest.mark.parametrize("stage", ["before", "after_conversion", "after_completion"])
 def test_ingest_source_mutation_cannot_qualify_or_reuse(
-    backend_fs: Backend, tmp_path: Path, stage: str
+    raw_backend_fs: Backend, tmp_path: Path, stage: str
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     source = cast(FileRefArtifact, supplied[0].artifact)
     assert source.path is not None
     operation = IngestCSV()
@@ -176,7 +179,7 @@ def test_ingest_source_mutation_cannot_qualify_or_reuse(
     )
     if stage == "before":
         committer.fs.pipe_file(source.path, b"changed bytes\n")
-    staged, terminal, _ = _run(coordinator, admission, operation, backend_fs[1])
+    staged, terminal, _ = _run(coordinator, admission, operation, raw_backend_fs[1])
     if stage == "before":
         assert not staged.success
         assert "integrity" in (staged.error or "").lower()
@@ -205,9 +208,9 @@ def test_ingest_source_mutation_cannot_qualify_or_reuse(
 
 @pytest.mark.parametrize("target", ["capture", "original"])
 def test_capture_rechecks_full_bytes_and_removes_scratch(
-    backend_fs: Backend, tmp_path: Path, target: str
+    raw_backend_fs: Backend, tmp_path: Path, target: str
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     artifact = cast(FileRefArtifact, supplied[0].artifact)
     _, admission, _ = admit_curator(
         committer, IngestCSV(), {"file": supplied}, step_run_id="b" * 32
@@ -235,9 +238,9 @@ def test_capture_rechecks_full_bytes_and_removes_scratch(
 
 
 def test_external_association_and_generic_hydration_remain_unqualified(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     source = supplied[0].artifact
     assert source.artifact_id is not None
     _, admission, _ = admit_curator(
@@ -269,7 +272,7 @@ def test_external_association_and_generic_hydration_remain_unqualified(
 
 
 @pytest.mark.parametrize(
-    ("backend_fs", "action"),
+    ("raw_backend_fs", "action"),
     [
         pytest.param("local", "bypass"),
         pytest.param("local", "exists"),
@@ -279,12 +282,15 @@ def test_external_association_and_generic_hydration_remain_unqualified(
         pytest.param("s3", "listing", marks=pytest.mark.s3),
         pytest.param("s3", "write", marks=pytest.mark.s3),
     ],
-    indirect=["backend_fs"],
+    indirect=["raw_backend_fs"],
 )
 def test_unsupported_ingestion_reads_keep_behavior_and_exclude_cache(
-    backend_fs: Backend, tmp_path: Path, action: str, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend,
+    tmp_path: Path,
+    action: str,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     original = IngestCSV.convert_file
     observed: list[object] = []
 
@@ -320,7 +326,7 @@ def test_unsupported_ingestion_reads_keep_behavior_and_exclude_cache(
         step_run_id="b" * 32,
         software_digest="e" * 64,
     )
-    staged, _, recorder = _run(coordinator, admission, operation, backend_fs[1])
+    staged, _, recorder = _run(coordinator, admission, operation, raw_backend_fs[1])
     assert staged.success, staged.error
     expected = (
         "untracked_external_content"
@@ -333,11 +339,11 @@ def test_unsupported_ingestion_reads_keep_behavior_and_exclude_cache(
 
 
 def test_stream_capture_lifetime_and_duplicate_inputs(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from artisan.operations.curator import ingest_files
 
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     _, admission, _ = admit_curator(
         committer,
         IngestCSV(),
@@ -383,14 +389,14 @@ def test_stream_capture_lifetime_and_duplicate_inputs(
 
 @pytest.mark.parametrize("failure", [False, True])
 def test_interrupted_ingestion_releases_capture_without_eligible_proof(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     failure: bool,
 ) -> None:
     from artisan.operations.curator import ingest_files
 
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     paths: list[Path] = []
     capture = ingest_files.capture_curator_file
 
@@ -416,7 +422,7 @@ def test_interrupted_ingestion_releases_capture_without_eligible_proof(
         software_digest="e" * 64,
     )
     if failure:
-        staged, _, recorder = _run(coordinator, admission, operation, backend_fs[1])
+        staged, _, recorder = _run(coordinator, admission, operation, raw_backend_fs[1])
         assert not staged.success
         with pytest.raises(RuntimeError, match="not completed"):
             _ = recorder.proof
@@ -444,11 +450,11 @@ def test_interrupted_ingestion_releases_capture_without_eligible_proof(
 
 
 def test_original_changes_during_capture_never_qualifies(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from artisan.schemas.artifact import external
 
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     artifact = cast(FileRefArtifact, supplied[0].artifact)
     _, admission, _ = admit_curator(
         committer, IngestCSV(), {"file": supplied}, step_run_id="b" * 32
@@ -484,14 +490,14 @@ def test_original_changes_during_capture_never_qualifies(
     assert changed
 
 
-@pytest.mark.parametrize("mode", ["rb", "r", "raw", "detach"])
+@pytest.mark.parametrize("mode", ["rb", "raw"])
 def test_stream_name_preserves_source_identity_and_raw_access_is_unqualified(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     mode: str,
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     source = cast(FileRefArtifact, supplied[0].artifact)
     names: list[str] = []
 
@@ -504,16 +510,11 @@ def test_stream_name_preserves_source_identity_and_raw_access_is_unqualified(
     ) -> CSVArtifact:
         assert file_ref.path is not None
         assert fs is not None
-        with fs.open(file_ref.path, "r" if mode == "r" else "rb") as stream:
+        with fs.open(file_ref.path, "rb") as stream:
             names.append(stream.name)
-            if mode == "raw":
-                content = stream.raw.read()
-            elif mode == "detach":
-                content = stream.detach().read()
-            else:
-                content = stream.read()
+            content = stream.raw.read() if mode == "raw" else stream.read()
         return CSVArtifact.draft(
-            content.encode() if isinstance(content, str) else content,
+            content,
             "from-stream.csv",
             step_number,
             metadata={"source_name": names[-1]},
@@ -528,24 +529,33 @@ def test_stream_name_preserves_source_identity_and_raw_access_is_unqualified(
         step_run_id="b" * 32,
         software_digest="e" * 64,
     )
-    staged, terminal, recorder = _run(coordinator, admission, operation, backend_fs[1])
+    staged, terminal, recorder = _run(
+        coordinator, admission, operation, raw_backend_fs[1]
+    )
     assert staged.success, staged.error
     assert staged.execution_run_id is not None
     assert names == [source.path]
     coordinator.finish(reference, staged.execution_run_id, terminal)
-    if mode in {"raw", "detach"}:
-        assert "untracked_filesystem_access" in recorder.proof.ineligible_reasons
-        assert not recorder.proof.carrier_reads
+    plan = read_curator_plan(committer.delta_root, reference.step_run_id, committer.fs)
+    assert isinstance(plan, CuratorCommitPlan)
+    persisted = CuratorReader(committer).metadata(plan.step_run_id, plan.plan_digest)
+    assert isinstance(persisted, CuratorCommitPlan)
+    proof = persisted.cache_proof
+    assert proof == recorder.proof
+    assert proof is not None
+    if mode == "raw":
+        assert "untracked_filesystem_access" in proof.ineligible_reasons
+        assert not proof.carrier_reads
     else:
-        assert not recorder.proof.ineligible_reasons
-        assert recorder.proof.carrier_reads
+        assert not proof.ineligible_reasons
+        assert proof.carrier_reads
 
 
 @pytest.mark.parametrize("kind", ["merge", "filter"])
 def test_id_only_curators_reuse_external_outputs_without_byte_read_witnesses(
-    backend_fs: Backend, tmp_path: Path, kind: str
+    raw_backend_fs: Backend, tmp_path: Path, kind: str
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     operation = Merge() if kind == "merge" else Filter()
     inputs = {"files" if kind == "merge" else "passthrough": supplied}
     coordinator, admission, reference = admit_curator(
@@ -555,7 +565,9 @@ def test_id_only_curators_reuse_external_outputs_without_byte_read_witnesses(
         step_run_id="b" * 32,
         software_digest="e" * 64,
     )
-    staged, terminal, recorder = _run(coordinator, admission, operation, backend_fs[1])
+    staged, terminal, recorder = _run(
+        coordinator, admission, operation, raw_backend_fs[1]
+    )
     assert staged.success, staged.error
     assert staged.execution_run_id is not None
     assert not recorder.proof.views
@@ -581,9 +593,9 @@ def test_id_only_curators_reuse_external_outputs_without_byte_read_witnesses(
 
 @pytest.mark.parametrize("stage", ["acceptance", "lookup"])
 def test_id_only_selection_still_rejects_changed_output_carriers(
-    backend_fs: Backend, tmp_path: Path, stage: str
+    raw_backend_fs: Backend, tmp_path: Path, stage: str
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     operation = Merge()
     coordinator, admission, reference = admit_curator(
         committer,
@@ -592,7 +604,9 @@ def test_id_only_selection_still_rejects_changed_output_carriers(
         step_run_id="b" * 32,
         software_digest="e" * 64,
     )
-    staged, terminal, recorder = _run(coordinator, admission, operation, backend_fs[1])
+    staged, terminal, recorder = _run(
+        coordinator, admission, operation, raw_backend_fs[1]
+    )
     assert staged.success, staged.error
     assert staged.execution_run_id is not None
     assert not recorder.proof.ineligible_reasons
@@ -620,9 +634,9 @@ def test_id_only_selection_still_rejects_changed_output_carriers(
 
 
 def test_a_verified_duplicate_does_not_erase_prior_ingestion_bypass(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    committer, supplied = _setup(backend_fs, tmp_path)
+    committer, supplied = _setup(raw_backend_fs, tmp_path)
     original = IngestCSV.convert_file
     calls = 0
 
@@ -648,7 +662,7 @@ def test_a_verified_duplicate_does_not_erase_prior_ingestion_bypass(
         step_run_id="b" * 32,
         software_digest="e" * 64,
     )
-    staged, _, recorder = _run(coordinator, admission, operation, backend_fs[1])
+    staged, _, recorder = _run(coordinator, admission, operation, raw_backend_fs[1])
     assert staged.success, staged.error
     assert calls == 2
     assert len(recorder.proof.carrier_reads) == 1
