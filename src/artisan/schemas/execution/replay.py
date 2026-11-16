@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import (
     BaseModel,
@@ -13,6 +13,7 @@ from pydantic import (
     model_validator,
 )
 
+from artisan.schemas.execution.assignment import SoftwareDigest
 from artisan.utils.application_modules import validate_application_modules
 from artisan.utils.hashing import CacheInputIdentity
 
@@ -119,16 +120,6 @@ class ReplayReplacement(ReplayModel):
     suggested_environment: str | None = None
 
 
-class RemoteObservation(ReplayModel):
-    """Actual endpoint identity and delivery outcome for one dispatch slot."""
-
-    dispatch_index: int
-    status: Literal["observed", "not_started", "not_applicable", "unavailable"]
-    identity: OperationIdentity | None = None
-    diagnostic_status: Literal["complete", "incomplete", "unavailable"] | None = None
-    diagnostic_error: str | None = None
-
-
 class ReplayDiagnostic(ReplayModel):
     """Selected replay conditions and evidence-delivery outcomes."""
 
@@ -136,13 +127,27 @@ class ReplayDiagnostic(ReplayModel):
     source_execution_spec_id: str
     source_identity: OperationIdentity
     selected_identity: OperationIdentity
-    source_remote_identity: list[RemoteObservation]
+    source_software_digest: SoftwareDigest | None = None
+    selected_software_digest: SoftwareDigest | None = None
     allow_code_change: bool
     runner: str
     roots: dict[str, str | None]
     status: Literal["complete", "incomplete", "unavailable"] = "complete"
     errors: list[str] = Field(default_factory=list)
     reproducibility_notes: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_software(self) -> ReplayDiagnostic:
+        """Require paired measured identities and explicit changed-software replay."""
+        if (self.source_software_digest is None) != (
+            self.selected_software_digest is None
+        ) or (
+            not self.allow_code_change
+            and self.source_software_digest != self.selected_software_digest
+        ):
+            msg = "Replay software identity is incomplete or changed without permission"
+            raise ValueError(msg)
+        return self
 
 
 class ReplaySnapshot(ReplayModel):
@@ -157,7 +162,13 @@ class ReplaySnapshot(ReplayModel):
     associated_complete: bool
     source: ReplaySource | None
     required_replacements: list[ReplayReplacement]
-    remote_identity: list[RemoteObservation]
+    required_runtime_keys: (
+        tuple[
+            Annotated[str, Field(pattern=r"^[A-Za-z_][A-Za-z0-9_]*$", strict=True)], ...
+        ]
+        | None
+    ) = None
+    """None means uncaptured; an empty tuple is an explicitly empty injection set."""
     read_semantics: Literal["explicit_inputs_and_current_committed_store"] = (
         "explicit_inputs_and_current_committed_store"
     )
@@ -166,6 +177,11 @@ class ReplaySnapshot(ReplayModel):
     @model_validator(mode="after")
     def validate_evidence(self) -> ReplaySnapshot:
         """Reject ready evidence missing the concrete reconstruction contract."""
+        if self.required_runtime_keys is not None and list(
+            self.required_runtime_keys
+        ) != sorted(set(self.required_runtime_keys)):
+            msg = "Replay runtime keys must be unique and canonically ordered"
+            raise ValueError(msg)
         if self.status == "unavailable":
             if not self.unavailable_reason:
                 msg = "Unavailable replay evidence requires a reason"
@@ -205,10 +221,6 @@ class ReplaySnapshot(ReplayModel):
             if set(owners) != expected:
                 msg = "Complete associated capture must identify every declared primary/type pair"
                 raise ValueError(msg)
-        slots = [item.dispatch_index for item in self.remote_identity]
-        if len(slots) != len(set(slots)) or any(slot < 0 for slot in slots):
-            msg = "Invalid replay remote dispatch ownership"
-            raise ValueError(msg)
         pointers = [item.pointer for item in self.required_replacements]
         if len(pointers) != len(set(pointers)) or any(
             not pointer.startswith("/") for pointer in pointers
@@ -265,6 +277,5 @@ class ReplaySnapshot(ReplayModel):
             associated_complete=False,
             source=None,
             required_replacements=[],
-            remote_identity=[],
             diagnostic=None,
         )

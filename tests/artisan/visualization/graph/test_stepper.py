@@ -4,15 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import polars as pl
 import pytest
-from fixtures.execution_records import executions_df
-from fixtures.store_format import commit_test_tables, publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.retained_inspection import commit_inspection_attempt, inspection_store
 
-from artisan.storage.core.table_schemas import (
-    ARTIFACT_INDEX_SCHEMA,
-)
+from artisan.schemas import CSVArtifact
 
 # Import conditionally to handle environments without ipywidgets
 try:
@@ -25,56 +20,22 @@ except ImportError:
 
 @pytest.fixture
 def delta_root_with_steps(tmp_path: Path, monkeypatch) -> Path:
-    """Create Delta Lake tables with multi-step test data."""
+    """Create three completed attempts with real artifact membership."""
     monkeypatch.setenv("IPYTHONDIR", str(tmp_path / "ipython"))
     delta_root = tmp_path / "delta"
-    delta_root.mkdir()
-
-    exec_data = {
-        "execution_run_id": ["exec_0", "exec_1", "exec_2"],
-        "execution_spec_id": ["spec_0", "spec_1", "spec_2"],
-        "step_run_id": ["seed-stepper-0", "seed-stepper-1", "seed-stepper-2"],
-        "origin_step_number": [0, 1, 2],
-        "operation_name": ["ingest", "creator", "calculate"],
-        "params": ["{}", "{}", "{}"],
-        "user_overrides": ["{}", "{}", "{}"],
-        "timestamp_start": [None, None, None],
-        "timestamp_end": [None, None, None],
-        "source_worker": [0, 0, 0],
-        "compute_backend": ["local", "local", "local"],
-        "success": [True, True, True],
-        "error": [None, None, None],
-        "tool_output": [None, None, None],
-        "worker_log": [None, None, None],
-        "metadata": ["{}", "{}", "{}"],
-    }
-    exec_df = executions_df(**exec_data)
-
-    artifact_data = {
-        "artifact_id": ["art_0", "art_1", "art_2"],
-        "artifact_type": ["file_ref", "csv", "metric"],
-        "origin_step_number": [0, 1, 2],
-        "metadata": ["{}", "{}", "{}"],
-    }
-    artifact_df = pl.DataFrame(artifact_data, schema=ARTIFACT_INDEX_SCHEMA)
-    for step_number in range(3):
-        commit_test_tables(
-            str(delta_root),
-            str(tmp_path / "staging"),
-            LocalFileSystem(),
-            {
-                "orchestration/executions": exec_df.filter(
-                    pl.col("origin_step_number") == step_number
-                ),
-                "artifacts/index": artifact_df.filter(
-                    pl.col("origin_step_number") == step_number
-                ),
-            },
-            step_run_id=f"seed-stepper-{step_number}",
-            step_number=step_number,
-            operation_name=f"seed_stepper_{step_number}",
+    previous = None
+    for number, name in enumerate(("ingest", "creator", "calculate")):
+        artifact = CSVArtifact.draft(
+            f"value\n{number}\n".encode(), f"step-{number}.csv", number
+        ).finalize()
+        commit_inspection_attempt(
+            delta_root,
+            number=number,
+            name=name,
+            outputs={"output": [artifact]},
+            inputs={} if previous is None else {"input": [previous]},
         )
-
+        previous = artifact
     return delta_root
 
 
@@ -83,8 +44,7 @@ def empty_delta_root(tmp_path: Path, monkeypatch) -> Path:
     """Create empty Delta Lake root directory."""
     monkeypatch.setenv("IPYTHONDIR", str(tmp_path / "ipython"))
     delta_root = tmp_path / "delta_empty"
-    delta_root.mkdir()
-    publish_test_store(str(delta_root), LocalFileSystem())
+    inspection_store(delta_root)
     return delta_root
 
 

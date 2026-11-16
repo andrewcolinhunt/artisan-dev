@@ -142,54 +142,13 @@ def serialize_params(operation: Any) -> dict[str, Any]:
     return dumped
 
 
-def effective_config_payload(operation: Any) -> dict[str, Any]:
-    """Serialize the effective, cache-affecting config off an op instance.
-
-    The config counterpart to ``serialize_params``: both read the merged
-    values (class defaults + applied overrides) off an already-instantiated
-    operation, so the cache key reflects what actually runs — not just what
-    the caller typed at the call site. Active Modal execution additionally
-    includes its checked-command policy; local preimages remain unchanged.
-
-    Args:
-        operation: A fully-instantiated ``OperationDefinition`` (post
-            ``instantiate_operation``). Duck-typed to keep ``utils`` free
-            of an ``operations`` import, mirroring ``serialize_params``.
-
-    Returns:
-        JSON-ready dict fed to ``compute_step_spec_id`` /
-        ``compute_execution_spec_id`` as ``config_overrides``.
-    """
-    tool = operation.tool
-    group_by = operation.group_by
-    payload = {
-        "version": type(operation).version,
-        "environments": operation.environments.model_dump(
-            mode="json",
-            exclude={
-                name: {"public_env"}
-                for name in ("local", "docker", "apptainer", "pixi")
-            },
-        ),
-        "tool": tool.model_dump(mode="json") if tool is not None else None,
-        "compute_provider": operation.compute_provider.model_dump(
-            mode="json", exclude={"modal": {"public_env"}}
-        ),
-        "compute_resources": operation.compute_resources.model_dump(mode="json"),
-        "group_by": group_by.value if group_by is not None else None,
-    }
-    if operation.compute_provider.active == "modal":
-        payload["endpoint_contract_policy"] = "fixed_command_v1"
-    return payload
-
-
 def compute_execution_spec_id(
     operation_name: str,
     inputs: dict[str, list[CacheInputIdentity]],
     params: dict[str, Any] | None = None,
     config_overrides: dict[str, Any] | None = None,
 ) -> str:
-    """Compute a v2 execution cache ID from concrete ordered inputs.
+    """Compute a v3 execution cache ID from concrete ordered inputs.
 
     The spec_id uniquely identifies an execution based on:
     - operation_name: The operation's name attribute
@@ -210,7 +169,7 @@ def compute_execution_spec_id(
         32-character xxh3_128 hex string.
     """
     payload = {
-        "domain": "execution-spec-v2",
+        "domain": "execution-spec-v3",
         "operation": operation_name,
         "params": params or {},
         "config": config_overrides or {},
@@ -226,7 +185,7 @@ def compute_step_spec_id(
     inputs: dict[str, list[CacheInputIdentity]],
     config_overrides: dict[str, Any] | None = None,
 ) -> str:
-    """Compute a v2 step cache ID from concrete ordered inputs.
+    """Compute a v3 step cache ID from concrete ordered inputs.
 
     Args:
         operation_name: The operation's name attribute.
@@ -240,7 +199,7 @@ def compute_step_spec_id(
         32-character xxh3_128 hex string.
     """
     payload = {
-        "domain": "step-spec-v2",
+        "domain": "step-spec-v3",
         "operation": operation_name,
         "step_number": step_number,
         "params": params or {},

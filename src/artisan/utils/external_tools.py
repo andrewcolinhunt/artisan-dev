@@ -150,7 +150,7 @@ class ExternalToolError(ArtisanError):
         return_code: Exit code from the subprocess.
         stdout: Captured standard output.
         stderr: Captured standard error.
-        runtime: The EnvironmentSpec or context that was executed.
+        runtime: The command adapter or execution context.
     """
 
     def __init__(
@@ -259,11 +259,11 @@ def run_command(
 ) -> subprocess.CompletedProcess[str]:
     """Execute a command in the given environment.
 
-    The operation builds the command; the environment wraps it. Works with
-    the EnvironmentSpec hierarchy.
+    The operation builds the command; the adapter wraps argv and prepares
+    the environment consumed by the shared command owner.
 
     Args:
-        environment: An EnvironmentSpec instance that wraps the command.
+        environment: A command adapter providing wrap_command and prepare_env.
         cmd: Pre-built command list (e.g. from ToolSpec.parts() + args).
         cwd: Working directory for subprocess.
         stream_output: If True, print output lines in real-time.
@@ -291,14 +291,9 @@ def run_command(
         if observer is not None:
             observer.prepare(environment, cmd, sensitive_values)
         wrapped = environment.wrap_command(cmd, cwd)
-        from artisan.schemas.operation_config.environment_spec import (
-            DockerEnvironmentSpec,
-        )
-
+        managed_container = getattr(environment, "_managed_container_command", None)
         docker_create = (
-            environment._managed_container_command(wrapped)
-            if type(environment) is DockerEnvironmentSpec
-            else None
+            managed_container(wrapped) if managed_container is not None else None
         )
         env = environment.prepare_env()
         observation = _CommandObservation(
@@ -379,8 +374,13 @@ def _run_managed(
                 "succeeded" if command.returncode == 0 else "failed", command.returncode
             )
         except BaseException as error:
-            command.interrupt(error)
-            attempt.finish("interrupted", command.returncode)
+            if command.state == "launch_failed":
+                attempt.finish("launch_failed", None)
+            else:
+                try:
+                    command.interrupt(error)
+                finally:
+                    attempt.finish("interrupted", command.returncode)
             raise
         finally:
             command.dispose()

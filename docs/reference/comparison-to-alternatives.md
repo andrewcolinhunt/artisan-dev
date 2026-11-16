@@ -55,7 +55,7 @@ These are approximate correspondences, not interchangeable APIs.
 | Nextflow process, Snakemake rule, Airflow task, Prefect task | `OperationDefinition`, with declared input and output roles |
 | Nextflow workflow, Snakefile, Airflow DAG, Prefect flow | `PipelineManager`, which submits and records pipeline steps |
 | Dependency between tasks or rules | `OutputReference`, connecting a step's output role to a later input |
-| Reusable group of workflow steps | `CompositeDefinition`, which expands into ordinary Artisan steps |
+| Reusable group of transformations | `CompositeDefinition`, which runs creator calls under one outer persistence and cache boundary |
 | Produced file or task return value | An artifact with a type, content identity, and declared parents |
 
 An operation may produce many artifacts within one execution. It declares the
@@ -68,14 +68,14 @@ from filenames or command arguments.
 
 Artisan is independent of Prefect. `PipelineManager` owns step sequencing,
 input resolution, cache lookup, and persistence. Its native local runner uses
-worker processes; optional packages implement the public `RunnerBase` and
-`LifecycleRouter` contracts for other infrastructure.
+worker processes; optional packages use the provider contracts exported by
+`artisan.orchestration.runner_api` for other infrastructure.
 
-The separate `artisan-submitit` package supplies SLURM job-array and
-intra-allocation runners. Users pass configured runner instances to Artisan.
-Curators remain in local subprocesses, while creator workers use the selected
-runner. A tool endpoint can independently place a creator's execute phase on
-remote compute.
+The separate `artisan-submitit` package submits one SLURM job per worker pack,
+or one step inside an existing allocation. Users pass configured runner instances
+to Artisan.
+The selected runner places the worker lifecycle. Command operations declare
+their tool software independently through a locked Pixi project.
 
 See [configuring execution](../how-to-guides/configuring-execution.md) for
 placement choices and [runner providers](../contributing/coding-conventions.md#external-step-runner-providers)

@@ -14,12 +14,16 @@ from artisan.execution.recording.parquet_writer import (
     _artifact_index_row,
     _create_staging_path,
 )
-from artisan.execution.recording.recorder import build_execution_edges
+from artisan.execution.recording.recorder import (
+    build_execution_edges,
+    curator_carrier_stager,
+)
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external import validate_persistable_uri
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.curator_carriers import CuratorCarrierInventory
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.storage.core.table_schemas import get_schema
 from artisan.storage.io.bounded_io import (
@@ -65,6 +69,7 @@ class StreamRecorder:
                     msg = "Artifact streaming requires a fresh canonical staging namespace"
                     raise StoreIntegrityError(msg)
         self.promotion_started = False
+        self._carriers = curator_carrier_stager(context, self.staging_path)
         self.output_ids: dict[str, list[str]] = {}
         self._max_bytes = max_bytes
         self._buffer_bytes = 0
@@ -90,6 +95,8 @@ class StreamRecorder:
             msg = "Cannot stage an unfinished streamed artifact"
             raise ValueError(msg)
         definition = ArtifactTypeDef.get(artifact.artifact_type)
+        if self._carriers is not None:
+            self._carriers.capture(artifact)
         self._add_row(
             definition.parquet_filename(), artifact.to_row(), definition.polars_schema()
         )
@@ -199,3 +206,12 @@ class StreamRecorder:
         for path in self._temporaries:
             with suppress(OSError):
                 self.fs.rm(path)
+
+    def finish_carriers(self) -> CuratorCarrierInventory | None:
+        """Bind captured external files after the complete stream was promoted."""
+        return None if self._carriers is None else self._carriers.finish()
+
+    def abort_carriers(self) -> None:
+        """Remove owned external snapshots after a failed, unsealed stream."""
+        if self._carriers is not None:
+            self._carriers.abort()

@@ -232,6 +232,7 @@ def test_specialized_known_error_parity_preserves_extensions(
 ):
     from artisan.inspection import runs
 
+    app = make_app(delta_root=tmp_path)
     error = CommitError(
         logical_commit_id="commit",
         table="steps",
@@ -251,7 +252,7 @@ def test_specialized_known_error_parity_preserves_extensions(
     assert actual == expected
 
     async def check():
-        async with Client(make_app(delta_root=tmp_path)) as client:
+        async with Client(app) as client:
             result = await client.call_tool("artisan_list_runs", raise_on_error=False)
             assert result.is_error
             assert result.structured_content == expected
@@ -277,7 +278,7 @@ def test_changed_evidence_rejects_portable_cursor_everywhere(
         }
         for run_id in ("first", "second")
     ]
-    monkeypatch.setattr(reader, "list_runs", lambda root: pl.DataFrame(rows))
+    monkeypatch.setattr(reader, "list_runs", lambda root, **kwargs: pl.DataFrame(rows))
     first = inspect_evidence("list_runs", {"limit": 1}, delta_root=str(tmp_path))
     arguments = first.follow_up.arguments
     rows[1]["last_status"] = "failed"

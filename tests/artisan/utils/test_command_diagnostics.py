@@ -17,12 +17,12 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from fixtures.commands import IdentityCommandEnvironment
 
 from artisan import cli
+from artisan.execution.compute.prepared import freeze_runtime_injections
 from artisan.execution.recording.commands import capture_commands, invocation_scope
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.operation_config.compute import ModalComputeConfig
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.utils import command_supervisor
 from artisan.utils.command_supervisor import (
     CommandOwnershipError,
@@ -35,21 +35,16 @@ from artisan.utils.external_tools import run_command
 from artisan.utils.process_call import execute_process_call, serialize_process_call
 
 
-@pytest.mark.parametrize("model", [LocalEnvironmentSpec, ModalComputeConfig])
 @pytest.mark.parametrize("mapping_type", [dict, UserDict, MappingProxyType])
-def test_authored_environment_mapping_never_keeps_runtime_attachment(
-    model: Any, mapping_type: Any
+def test_runtime_environment_rejects_injected_ownership_without_mutation(
+    mapping_type: Any,
 ) -> None:
     values = dict.fromkeys(COMMAND_ATTACHMENT_ENV, "synthetic-runtime-capability")
     values["FORMAT"] = "json"
-
-    environment = model(env=mapping_type(values), public_env=("FORMAT",))
-
-    assert environment.env == {"FORMAT": "json"}
-    assert (
-        environment.model_dump_json()
-        == model(env={"FORMAT": "json"}, public_env=("FORMAT",)).model_dump_json()
-    )
+    supplied = mapping_type(values)
+    with pytest.raises(ValueError, match="ownership controls"):
+        freeze_runtime_injections(supplied)
+    assert dict(supplied) == values
 
 
 @pytest.mark.parametrize("streaming", [False, True])
@@ -85,11 +80,14 @@ def test_invalid_attachment_rejected_before_environment_hooks_or_log_open(
 
 def test_revoked_invocation_rejected_before_environment_hooks() -> None:
     environment = Mock(env={}, public_env=())
-    with managed_invocation():
+    with managed_invocation() as invocation:
         close_command_scope()
         with pytest.raises(CommandOwnershipError):
             run_command(environment, ["not-launched"])
+        assert invocation.closed
+        assert not invocation.uncertain
     environment.wrap_command.assert_not_called()
+    environment.prepare_env.assert_not_called()
 
 
 def test_unknown_parent_command_rejected_before_environment_hooks(
@@ -222,7 +220,7 @@ def test_joined_commands_keep_enclosing_dispatch_slot_and_declared_tool(
             futures = [
                 pool.submit(
                     run_command,
-                    LocalEnvironmentSpec(),
+                    IdentityCommandEnvironment(),
                     [sys.executable, "-c", "print('joined')"],
                 )
                 for _ in range(2)
@@ -247,9 +245,9 @@ def test_joined_commands_keep_enclosing_dispatch_slot_and_declared_tool(
 def test_managed_command_inherits_callers_redirected_stdin(streaming: bool) -> None:
     code = f"""
 import sys
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from fixtures.commands import IdentityCommandEnvironment
 from artisan.utils.external_tools import run_command
-result = run_command(LocalEnvironmentSpec(),
+result = run_command(IdentityCommandEnvironment(),
     [sys.executable, '-c', 'import sys;sys.stdout.write(sys.stdin.read())'],
     stream_output={streaming!r})
 if not {streaming!r}:
@@ -258,6 +256,7 @@ if not {streaming!r}:
     result = subprocess.run(
         [sys.executable, "-c", code],
         input="inherited stdin\n",
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
         capture_output=True,
         text=True,
         timeout=15,
@@ -280,10 +279,10 @@ time.sleep(15)
 """
     caller_code = f"""
 import sys
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from fixtures.commands import IdentityCommandEnvironment
 from artisan.utils.external_tools import run_command
 try:
-    run_command(LocalEnvironmentSpec(), [sys.executable, '-c', sys.argv[1], sys.argv[2]],
+    run_command(IdentityCommandEnvironment(), [sys.executable, '-c', sys.argv[1], sys.argv[2]],
         stream_output={streaming!r})
 except KeyboardInterrupt:
     print('original interruption preserved')
@@ -294,6 +293,7 @@ else:
         [sys.executable, "-c", caller_code, command_code, str(marker)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
+        env={**os.environ, "PYTHONPATH": str(Path(__file__).resolve().parents[2])},
         text=True,
     )
     try:

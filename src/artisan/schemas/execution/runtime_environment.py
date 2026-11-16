@@ -27,9 +27,9 @@ class RuntimeEnvironment(BaseModel):
     don't require sandboxing or materialization.
 
     Field semantics:
-    - delta_root, staging_root, files_root: Cloud-capable — local path or
+    - delta_root, staging_root, files_root, failure_logs_root: Local path or
       s3://bucket/... URI. Use uri_join(), fs.* for I/O.
-    - working_root, failure_logs_root: Always local paths. Use os.* for I/O.
+    - working_root: Always a local path. Use os.* for I/O.
 
     Example:
         >>> env = RuntimeEnvironment(
@@ -84,7 +84,7 @@ class RuntimeEnvironment(BaseModel):
     failure_logs_root: str | None = Field(
         None,
         description=(
-            "Where to write human-readable failure log files. Always a local path."
+            "Where to write human-readable failure logs: local path or configured storage URI."
         ),
     )
 

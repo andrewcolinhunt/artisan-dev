@@ -1,336 +1,178 @@
-"""CompositeContext — build-time context for ``CompositeDefinition.compose``.
-
-Each ``ctx.run()`` delegates to the parent pipeline's ``submit()``, so every
-internal operation becomes an independent pipeline step that inherits
-dispatch, caching, lifecycle records, cancellation, and provenance from the
-ordinary step machinery.
-"""
+"""Declare creator and nested-composite calls under one scientific boundary."""
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Any
+from collections.abc import Mapping, Sequence
+from typing import TYPE_CHECKING, cast
+from uuid import uuid4
 
-from artisan.composites.base.results import CompositeStepHandle
-from artisan.schemas.composites.composite_ref import CompositeRef
-from artisan.schemas.enums import CachePolicy, FailurePolicy
-from artisan.schemas.operation_config.compute import ComputeProvider
-from artisan.schemas.operation_config.compute_resources import ComputeResources
+from artisan.composites.base.compiled import CompiledCall, CompiledPlan
+from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.composite_ref import CompositeCall, CompositeRef
+from artisan.schemas.composites.plan import (
+    DefinitionContract,
+    ExecutionRecipe,
+    InputContract,
+    OutputContract,
+    RecipeCall,
+    RecipeReference,
+    RoleBinding,
+)
 
 if TYPE_CHECKING:
-    from artisan.composites.base.composite_definition import CompositeDefinition
-    from artisan.operations.base.operation_definition import OperationDefinition
-    from artisan.orchestration.pipeline_manager import PipelineManager
-    from artisan.orchestration.runners import RunnerBase
-    from artisan.orchestration.step_future import StepFuture
-    from artisan.schemas.orchestration.output_reference import OutputReference
-    from artisan.schemas.specs.output_spec import OutputSpec
+    from artisan.composites.base.compiler import Definition, Parameters
 
 
 class CompositeContext:
-    """Build-time context passed to ``CompositeDefinition.compose``.
-
-    Each ``run()`` submits a real pipeline step via the parent pipeline.
-    Composite-level override kwargs from ``submit_composite`` act as per-knob
-    defaults: an explicit kwarg on ``run()`` wins wholesale for that knob,
-    otherwise the composite-level default fills it. ``params`` is never
-    inherited — composite params belong to the composite's own ``Params``
-    consumed inside ``compose()``.
-    """
+    """Build one immutable scientific composition without dispatch or storage."""
 
     def __init__(
-        self,
-        pipeline: PipelineManager,
-        input_refs: dict[str, OutputReference],
-        composite: CompositeDefinition,
-        step_name_prefix: str,
-        step_defaults: dict[str, Any],
+        self, recipe: DefinitionContract, stack: tuple[Definition, ...]
     ) -> None:
-        """Initialize the context.
-
-        Args:
-            pipeline: Parent pipeline that each ``run()`` submits into.
-            input_refs: Resolved external inputs keyed by composite input role.
-            composite: Instantiated composite whose ``compose()`` runs here.
-            step_name_prefix: Prefix for every child step name.
-            step_defaults: Composite-level override defaults for child steps,
-                keyed by knob name (``step_runner``, ``environment``, ...).
-        """
-        self._pipeline = pipeline
-        self._input_refs = input_refs
-        self._composite = composite
-        self._step_name_prefix = step_name_prefix
-        self._step_defaults = step_defaults
-        self._output_map: dict[str, OutputReference] = {}
-        # Flatten descendants so wait() shares one deadline across owned steps.
-        self._child_futures: list[StepFuture] = []
+        self._owner = uuid4().hex
+        self._recipe = recipe
+        self._stack = stack
+        self._calls: dict[str, CompiledPlan] = {}
+        self._wiring: list[RecipeCall] = []
+        self._exports: dict[str, RoleBinding] = {}
 
     def input(self, role: str) -> CompositeRef:
-        """Reference a declared input of this composite.
-
-        Args:
-            role: Input role name.
-
-        Returns:
-            CompositeRef wrapping the parent pipeline's OutputReference.
-
-        Raises:
-            ValueError: If role is not a declared input.
-        """
-        if role not in self._input_refs:
-            available = sorted(self._input_refs.keys())
-            msg = f"Unknown input role '{role}'. Available: {available}"
+        """Reference a declared boundary role without resolving any artifacts."""
+        if role not in {item.role for item in self._recipe.inputs}:
+            msg = f"Unknown composite input role {role!r}"
             raise ValueError(msg)
-        return CompositeRef(
-            output_reference=self._input_refs[role],
-            role=role,
-        )
+        return CompositeRef(self._owner, None, role)
 
-    def run(
+    def call(
         self,
-        operation: type[OperationDefinition] | type[CompositeDefinition],
-        inputs: dict[str, Any] | None = None,
-        params: dict[str, Any] | None = None,
-        runner_resources: dict[str, Any] | None = None,
-        batch_strategy: dict[str, Any] | None = None,
-        step_runner: str | RunnerBase | None = None,
-        environment: str | dict[str, Any] | None = None,
-        tool: dict[str, Any] | None = None,
-        compute_resources: dict[str, Any] | ComputeResources | None = None,
-        compute_provider: str | dict[str, Any] | ComputeProvider | None = None,
-        skip_cache: bool | None = None,
-        failure_policy: FailurePolicy | None = None,
-        compact: bool | None = None,
-        cache_policy: CachePolicy | None = None,
-    ) -> CompositeStepHandle:
-        """Submit an operation or nested composite as a child pipeline step.
-
-        Any knob left unset (``None``) inherits the composite-level default
-        for that knob; an explicit value wins wholesale. ``params`` is never
-        inherited from the composite level.
-
-        Args:
-            operation: OperationDefinition or CompositeDefinition subclass.
-            inputs: Input wiring as {role: CompositeRef}.
-            params: Parameter overrides for this operation.
-            runner_resources: Resource overrides. Defaults from composite level.
-            batch_strategy: Batching overrides. Defaults from composite level.
-            step_runner: Step runner. Defaults from composite level.
-            environment: Environment override. Defaults from composite level.
-            tool: Tool overrides. Defaults from composite level.
-            compute_resources: Hardware resources. Defaults from composite level.
-            compute_provider: Compute provider. Defaults from composite level.
-            skip_cache: Bypass cache. Defaults from composite level, else False.
-            failure_policy: Failure policy. Defaults from composite level.
-            compact: Run Delta compaction. Defaults from composite level, else True.
-            cache_policy: Whole-step cache policy. None inherits the nearest
-                composite default, then the pipeline default.
-
-        Returns:
-            CompositeStepHandle wrapping the child step's StepFuture.
-        """
-        from artisan.composites.base.composite_definition import CompositeDefinition
-
-        # Resolve composite-level defaults per knob: an explicit per-op value
-        # wins, otherwise the composite-level default fills the knob.
-        defaults = self._step_defaults
-        if runner_resources is None:
-            runner_resources = defaults.get("runner_resources")
-        if batch_strategy is None:
-            batch_strategy = defaults.get("batch_strategy")
-        if step_runner is None:
-            step_runner = defaults.get("step_runner")
-        if environment is None:
-            environment = defaults.get("environment")
-        if tool is None:
-            tool = defaults.get("tool")
-        if compute_resources is None:
-            compute_resources = defaults.get("compute_resources")
-        if compute_provider is None:
-            compute_provider = defaults.get("compute_provider")
-        if failure_policy is None:
-            failure_policy = defaults.get("failure_policy")
-        if cache_policy is None:
-            cache_policy = defaults.get("cache_policy")
-        if skip_cache is None:
-            skip_cache = defaults.get("skip_cache", False)
-        if compact is None:
-            compact = defaults.get("compact", True)
-
-        translated_inputs = self._translate_inputs(inputs or {})
-
-        op_name = getattr(operation, "name", operation.__name__)
-        step_name = f"{self._step_name_prefix}.{op_name}"
-
-        if issubclass(operation, CompositeDefinition):
-            return self._run_nested_composite(
-                operation,
-                translated_inputs,
-                params,
-                step_name,
-                runner_resources,
-                batch_strategy,
-                step_runner,
-                environment,
-                tool,
-                compute_resources,
-                compute_provider,
-                skip_cache,
-                failure_policy,
-                compact,
-                cache_policy,
-            )
-
-        future = self._pipeline.submit(
-            operation,
-            inputs=translated_inputs,
-            params=params,
-            step_runner=step_runner,
-            runner_resources=runner_resources,
-            compute_resources=compute_resources,
-            batch_strategy=batch_strategy,
-            environment=environment,
-            tool=tool,
-            compute_provider=compute_provider,
-            failure_policy=failure_policy,
-            cache_policy=cache_policy,
-            compact=compact,
-            skip_cache=skip_cache,
-            name=step_name,
-        )
-        self._child_futures.append(future)
-
-        return CompositeStepHandle(
-            step_future=future,
-            operation_outputs=getattr(operation, "outputs", {}),
-        )
-
-    def output(self, role: str, ref: CompositeRef) -> None:
-        """Map an internal result to a declared output of this composite.
-
-        Args:
-            role: Composite output role name.
-            ref: CompositeRef from an internal ctx.run().output().
-
-        Raises:
-            ValueError: If role is not a declared output, or ref carries no
-                OutputReference.
-        """
-        composite_outputs = getattr(type(self._composite), "outputs", {})
-        if composite_outputs and role not in composite_outputs:
-            available = sorted(composite_outputs.keys())
-            msg = f"Unknown output role '{role}'. Available: {available}"
-            raise ValueError(msg)
-        if ref.output_reference is None:
-            msg = f"CompositeRef for output role '{role}' has no OutputReference"
-            raise ValueError(msg)
-        self._output_map[role] = ref.output_reference
-
-    def get_output_map(self) -> dict[str, OutputReference]:
-        """Return the recorded output mappings."""
-        return dict(self._output_map)
-
-    def get_child_futures(self) -> list[StepFuture]:
-        """Return futures for direct children and nested descendants."""
-        return list(self._child_futures)
-
-    def get_output_types(self) -> dict[str, str | None]:
-        """Return output types from composite definition."""
-        composite_outputs: dict[str, OutputSpec] = getattr(
-            type(self._composite), "outputs", {}
-        )
-        return {
-            role: spec.artifact_type if spec.artifact_type else None
-            for role, spec in composite_outputs.items()
-        }
-
-    # ----- Helpers -----
-
-    def _translate_inputs(self, inputs: dict[str, Any]) -> dict[str, Any]:
-        """Convert CompositeRef inputs to OutputReferences."""
-        translated: dict[str, Any] = {}
-        for role, ref in inputs.items():
-            if isinstance(ref, CompositeRef):
-                if ref.output_reference is not None:
-                    translated[role] = ref.output_reference
-                else:
-                    msg = f"CompositeRef for role '{role}' has no OutputReference"
-                    raise ValueError(msg)
-            else:
-                translated[role] = ref
-        return translated
-
-    def _run_nested_composite(
-        self,
-        composite_class: type[CompositeDefinition],
-        translated_inputs: dict[str, Any],
-        params: dict[str, Any] | None,
-        step_name: str,
-        runner_resources: dict[str, Any] | None,
-        batch_strategy: dict[str, Any] | None,
-        step_runner: str | RunnerBase | None,
-        environment: str | dict[str, Any] | None,
-        tool: dict[str, Any] | None,
-        compute_resources: dict[str, Any] | ComputeResources | None,
-        compute_provider: str | dict[str, Any] | ComputeProvider | None,
-        skip_cache: bool,
-        failure_policy: FailurePolicy | None,
-        compact: bool,
-        cache_policy: CachePolicy | None,
-    ) -> CompositeStepHandle:
-        """Recursively expand a nested composite.
-
-        Delegates to ``pipeline.submit_composite`` with the already-resolved
-        overrides, so they become the nested composite's own composite-level
-        defaults and propagate to its child steps.
-        """
-        from artisan.composites.base.results import CompositeResult
-
-        result = self._pipeline.submit_composite(
-            composite_class,
-            inputs=translated_inputs,
-            params=params,
-            name=step_name,
-            step_runner=step_runner,
-            runner_resources=runner_resources,
-            batch_strategy=batch_strategy,
-            environment=environment,
-            tool=tool,
-            compute_resources=compute_resources,
-            compute_provider=compute_provider,
-            failure_policy=failure_policy,
-            cache_policy=cache_policy,
-            compact=compact,
-            skip_cache=skip_cache,
-        )
-        assert isinstance(result, CompositeResult)
-        self._child_futures.extend(result._child_futures)
-
-        return _NestedHandle(
-            nested_result=result,
-            operation_outputs=getattr(composite_class, "outputs", {}),
-        )
-
-
-class _NestedHandle(CompositeStepHandle):
-    """Handle for a nested composite submitted from within ``compose()``."""
-
-    def __init__(
-        self,
+        definition: Definition,
         *,
-        nested_result: Any,
-        operation_outputs: dict[str, OutputSpec] | None = None,
-    ) -> None:
-        super().__init__(operation_outputs=operation_outputs)
-        self._nested_result = nested_result
-
-    def output(self, role: str) -> CompositeRef:
-        """Get output reference from the nested composite."""
-        if self._operation_outputs and role not in self._operation_outputs:
-            available = sorted(self._operation_outputs.keys())
-            msg = f"Unknown output role '{role}'. Available: {available}"
+        inputs: Mapping[str, CompositeRef | Sequence[CompositeRef]] | None = None,
+        params: Parameters = None,
+        name: str | None = None,
+    ) -> CompositeCall:
+        """Declare one creator or nested composition with ordered input wiring."""
+        call_name = name if name is not None else f"call_{len(self._calls) + 1}"
+        if not isinstance(cast(object, call_name), str) or not call_name:
+            msg = "Call names must be nonempty strings"
             raise ValueError(msg)
-        out_ref = self._nested_result.output(role)
-        return CompositeRef(
-            output_reference=out_ref,
-            role=role,
+        if call_name in self._calls:
+            msg = f"Duplicate composition call name {call_name!r}"
+            raise ValueError(msg)
+        from artisan.composites.base.compiler import _compile
+
+        child = _compile(definition, params, self._stack)
+        bindings = self._bind_inputs(child.recipe, {} if inputs is None else inputs)
+        self._calls[call_name] = child
+        self._wiring.append(
+            RecipeCall(name=call_name, inputs=bindings, recipe=child.recipe)
         )
+        return CompositeCall(
+            self._owner, call_name, tuple(item.role for item in child.recipe.outputs)
+        )
+
+    def output(
+        self, role: str, reference: CompositeRef | Sequence[CompositeRef]
+    ) -> None:
+        """Bind one public role to an ordered concatenation of streams."""
+        contracts = {item.role: item for item in self._recipe.outputs}
+        if role not in contracts:
+            msg = f"Unknown composite output role {role!r}"
+            raise ValueError(msg)
+        if role in self._exports:
+            msg = f"Composite output role {role!r} is already bound"
+            raise ValueError(msg)
+        sources = self._references(reference, contracts[role].artifact_type)
+        if not sources and contracts[role].required:
+            msg = f"Required composite output {role!r} cannot be explicitly empty"
+            raise ValueError(msg)
+        self._exports[role] = RoleBinding(role=role, sources=sources)
+
+    def finish(self) -> CompiledPlan:
+        """Freeze all calls and output bindings under one scientific recipe."""
+        missing = {item.role for item in self._recipe.outputs} - self._exports.keys()
+        if missing:
+            msg = f"Composite output roles were not bound: {sorted(missing)}"
+            raise ValueError(msg)
+        recipe = ExecutionRecipe.model_validate(
+            {
+                **self._recipe.model_dump(),
+                "calls": tuple(self._wiring),
+                "exports": tuple(
+                    self._exports[item.role] for item in self._recipe.outputs
+                ),
+                "cacheable": self._recipe.cacheable
+                and all(child.recipe.cacheable for child in self._calls.values()),
+            }
+        )
+        return CompiledPlan(
+            self._stack[-1],
+            recipe,
+            tuple(CompiledCall(name, child) for name, child in self._calls.items()),
+        )
+
+    def _bind_inputs(
+        self,
+        recipe: ExecutionRecipe,
+        inputs: object,
+    ) -> tuple[RoleBinding, ...]:
+        if not isinstance(inputs, Mapping):
+            msg = "Composition inputs must map roles to plan references"
+            raise TypeError(msg)
+        if any(not isinstance(role, str) for role in inputs):
+            msg = "Input role names must be strings"
+            raise TypeError(msg)
+        contracts = {item.role: item for item in recipe.inputs}
+        unknown = inputs.keys() - contracts.keys()
+        missing = {
+            role
+            for role, spec in contracts.items()
+            if spec.required and role not in inputs
+        }
+        if unknown or missing:
+            msg = f"Invalid call inputs: unknown={sorted(unknown)}, missing={sorted(missing)}"
+            raise ValueError(msg)
+        return tuple(
+            RoleBinding(
+                role=role,
+                sources=self._references(inputs[role], spec.artifact_type),
+            )
+            for role, spec in contracts.items()
+            if role in inputs
+        )
+
+    def _references(
+        self,
+        reference: object,
+        expected_type: str,
+    ) -> tuple[RecipeReference, ...]:
+        values = (reference,) if isinstance(reference, CompositeRef) else reference
+        if not isinstance(values, Sequence) or isinstance(values, (str, bytes)):
+            msg = "Wiring requires a plan reference or an ordered reference sequence"
+            raise TypeError(msg)
+        result = []
+        for value in values:
+            if not isinstance(value, CompositeRef) or value.owner != self._owner:
+                msg = "Wiring reference belongs to another composition"
+                raise ValueError(msg)
+            artifact_type = self._reference_type(value)
+            if not ArtifactTypes.matches(expected_type, artifact_type):
+                msg = f"Cannot wire {artifact_type!r} into {expected_type!r}"
+                raise ValueError(msg)
+            result.append(RecipeReference(call=value.call, role=value.role))
+        return tuple(result)
+
+    def _reference_type(self, reference: CompositeRef) -> str:
+        contracts: tuple[InputContract | OutputContract, ...]
+        if reference.call is None:
+            contracts = self._recipe.inputs
+        elif reference.call in self._calls:
+            contracts = self._calls[reference.call].recipe.outputs
+        else:
+            msg = f"Reference names an undeclared call {reference.call!r}"
+            raise ValueError(msg)
+        for contract in contracts:
+            if contract.role == reference.role:
+                return contract.artifact_type
+        msg = f"Reference names an undeclared role {reference.role!r}"
+        raise ValueError(msg)

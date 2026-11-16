@@ -17,7 +17,6 @@ from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -86,10 +85,6 @@ class DataGeneratorWithMetrics(OperationDefinition):
         artifacts_per_unit=100,
         units_per_worker=1,
         job_name="data_generator_with_metrics",
-    )
-
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
     )
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:

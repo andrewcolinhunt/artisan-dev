@@ -6,14 +6,15 @@ import os
 from pathlib import Path
 
 import pytest
+from fixtures.retained_pipeline import NativePipelineRunner
 
-from artisan.execution.executors.creator import run_creator_lifecycle
-from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.operations.examples.file_generator import FileGenerator
+from artisan.orchestration import PipelineManager
+from artisan.orchestration.engine.current_outputs import read_current_step_outputs
 from artisan.schemas.execution.curator_result import ArtifactResult
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
-from artisan.utils.hashing import compute_content_digest, digest_utf8
+from artisan.utils.hashing import compute_content_digest
 
 
 def _run(
@@ -106,10 +107,8 @@ class TestFileGenerator:
 class TestFileGeneratorLifecycle:
     """End-to-end creator lifecycle for FileGenerator on both backends.
 
-    Regression guard for the files_root upload path: without
-    ``_upload_files_to_root`` the cloud run would leak a literal-colon
-    directory under the executor and store a local path in
-    ``path``.
+    Selected outputs must use verified managed carriers on the requested backend,
+    after worker scratch has been closed.
     """
 
     def test_path_resolves_on_parametrized_backend(
@@ -117,25 +116,28 @@ class TestFileGeneratorLifecycle:
     ) -> None:
         fs, storage, delta_root, files_root, working_root = backend_env
 
-        env = RuntimeEnvironment(
-            delta_root=delta_root,
+        with PipelineManager.create(
+            "external-example",
+            delta_root,
+            f"{delta_root}-staging",
             working_root=working_root,
-            staging_root=str(tmp_path / "staging"),
             files_root=files_root,
             storage=storage,
-        )
-        unit = ExecutionUnit(
-            operation=FileGenerator(
-                params=FileGenerator.Params(count=2, file_size_bytes=256, seed=0)
-            ),
-            inputs={},
-            execution_spec_id=digest_utf8("file-generator-lifecycle"),
-            step_number=3,
-        )
+        ) as pipeline:
+            pipeline.runner = NativePipelineRunner(pipeline.committer)
+            result = pipeline.run(
+                FileGenerator,
+                params=FileGenerator.Params(count=2, file_size_bytes=256, seed=0),
+            )
+            assert result.status == StepStatus.SUCCEEDED, result.error
+            selected = read_current_step_outputs(pipeline.committer, result.step_run_id)
+            artifacts = [
+                occurrence.artifact
+                for group in selected
+                if group.role == "files"
+                for occurrence in group.occurrences
+            ]
 
-        result = run_creator_lifecycle(unit, env)
-
-        artifacts = result.artifacts["files"]
         assert len(artifacts) == 2
         for art in artifacts:
             assert art.path is not None

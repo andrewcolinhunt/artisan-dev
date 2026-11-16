@@ -1,409 +1,408 @@
-"""Native local runner backed by a spawn-context process pool."""
+"""Local preparation and exact admitted assignment and curator dispatch."""
 
 from __future__ import annotations
 
-import multiprocessing
-import threading
-import time
-import warnings
-from concurrent.futures import Future, ProcessPoolExecutor
-from concurrent.futures import wait as wait_futures
-from concurrent.futures.process import BrokenProcessPool
-from typing import Any
+import os
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import ClassVar, Literal, cast
 
-from artisan.execution.compute.routing import routes_to_endpoint
-from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.orchestration.engine.batching import pack_units
-from artisan.orchestration.engine.dispatch import (
-    execute_unit_batch,
-    failure_results_for_units,
-    validate_batch_results,
+from artisan.composites.base.compiled import CompiledPlan
+from artisan.composites.base.compiler import Definition, Parameters, compile_definition
+from artisan.execution.application_bootstrap import validate_worker_applications
+from artisan.execution.assignment import verify_assignment
+from artisan.execution.assignment_transport import (
+    AdmittedAssignment,
+    AssignmentDispatch,
 )
-from artisan.orchestration.engine.lifecycle_router import LifecycleRouter
-from artisan.orchestration.engine.native_pool import (
-    _CLEANUP_SECONDS,
-    _NativePoolOwnership,
+from artisan.execution.curator_definition import capture_curator_definition
+from artisan.execution.curator_worker import AdmittedCurator, LocalCuratorHandle
+from artisan.execution.environments.command_witness import prepare_command_witness
+from artisan.execution.environments.container_runtime import (
+    ApptainerRuntime,
+    DockerRuntime,
 )
-from artisan.orchestration.runners.base import (
-    OrchestratorTraits,
-    RunnerBase,
-    WorkerTraits,
+from artisan.execution.environments.curator_software import resolve_curator_software
+from artisan.execution.environments.native import (
+    lookup_native_environment,
+    prepare_native_environment,
 )
-from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.execution.unit_result import UnitResult
+from artisan.execution.environments.native_gpu import capture_native_gpu
+from artisan.execution.environments.observed_worker import (
+    ObservedWorker,
+    qualify_observed_worker,
+)
+from artisan.execution.environments.prepared_oci import prepare_oci_environment
+from artisan.execution.environments.prepared_sif import prepare_sif_environment
+from artisan.execution.environments.requirements import select_tool_environments
+from artisan.execution.environments.worker_qualification import (
+    controller_definition_sources,
+    controller_worker_sources,
+    lookup_worker_qualification,
+    prepare_worker_qualification,
+)
+from artisan.execution.local_assignment import (
+    PreparedLocalBindings,
+    bind_local_software,
+)
+from artisan.execution.local_call import LocalCallStartupError
+from artisan.execution.local_packing import (
+    LocalAssignmentRequest,
+    LocalPackStartupError,
+    launch_local_assignments,
+)
+from artisan.execution.local_worker import LocalAssignmentHandle
+from artisan.execution.runtime_compatibility import verify_runtime_compatibility
+from artisan.execution.worker_requirements import (
+    observed_controller_sources,
+)
+from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration.runners.assignment import (
+    AssignmentHandle,
+    AssignmentLaunchError,
+    AssignmentSoftware,
+)
+from artisan.orchestration.runners.curator import CuratorHandle, CuratorLaunchError
+from artisan.registry import bootstrap_applications
+from artisan.schemas.execution.prepared_environment import PreparedNativeEnvironment
+from artisan.schemas.operation_config.environment import Environment
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
 )
-from artisan.utils.command_supervisor import (
-    initialize_native_worker,
-    reject_nested_native_scope,
-)
-from artisan.utils.external_tools import redact_values
-from artisan.utils.process_call import execute_process_call, serialize_process_call
-from artisan.utils.spawn import suppress_main_reimport
-from artisan.utils.traceback import format_error
+from artisan.utils.application_modules import validate_application_modules
 
 
-class LocalLifecycleRouter(LifecycleRouter):
-    """Run ordered unit batches with independent command and worker ownership."""
+@dataclass(frozen=True)
+class LocalRunner:
+    """Store explicit software/launcher declarations without provisioning.
 
-    def __init__(self, max_workers: int, units_per_worker: int) -> None:
-        super().__init__()
-        self._max_workers = max_workers
-        self._units_per_worker = units_per_worker
-        self._lock = threading.RLock()
-        self._executor: ProcessPoolExecutor | None = None
-        self._ownership: _NativePoolOwnership | None = None
-        self._futures: list[Future[list[UnitResult]]] = []
-        self._dispatch_started = False
-        self._scope_expected = False
-        self._cancel_requested = False
-        self._cancel_requested_at: float | None = None
-        self._cancel_deadline: float | None = None
-        self._cancel_acknowledgement: CancellationAcknowledgement | None = None
-        self._remote_indices: list[int] = []
-
-    def _set_cancellation_deadline(self, deadline: float) -> None:
-        with self._lock:
-            self._cancel_deadline = min(self._cancel_deadline or deadline, deadline)
-            if self._cancel_requested and self._ownership is not None:
-                self._ownership.request_cancel(self._cancel_deadline)
-
-    def _dispatch(
-        self,
-        units: list[ExecutionUnit],
-        runtime_env: RuntimeEnvironment,
-    ) -> None:
-        reject_nested_native_scope()
-        batches = pack_units(units, self._units_per_worker)
-        with self._lock:
-            self._dispatch_started = True
-            self._scope_expected = bool(batches)
-            self._remote_indices = [
-                index
-                for index, unit in enumerate(units)
-                if routes_to_endpoint(unit.operation)
-            ]
-        self._start_background(lambda: self._run_batches(batches, runtime_env))
-
-    def _run_batches(
-        self,
-        batches: list[list[ExecutionUnit]],
-        runtime_env: RuntimeEnvironment,
-    ) -> list[UnitResult]:
-        if not batches:
-            return []
-        try:
-            return self._execute_batches(batches, runtime_env)
-        except Exception as exc:
-            units = [unit for batch in batches for unit in batch]
-            return failure_results_for_units(
-                units,
-                _owner_error(exc, self._ownership)
-                if self._ownership is not None
-                else exc,
-            )
-
-    def _execute_batches(
-        self,
-        batches: list[list[ExecutionUnit]],
-        runtime_env: RuntimeEnvironment,
-    ) -> list[UnitResult]:
-        ownership = _NativePoolOwnership()
-        with self._lock:
-            self._ownership = ownership
-            if self._cancel_requested:
-                assert self._cancel_deadline is not None
-                ownership.request_cancel(self._cancel_deadline)
-        collected = False
-        try:
-            with suppress_main_reimport():
-                admitted = ownership.begin_dispatch()
-                try:
-                    with self._lock:
-                        cancelled = self._cancel_requested
-                    if admitted and not cancelled:
-                        executor = ProcessPoolExecutor(
-                            max_workers=self._max_workers,
-                            mp_context=multiprocessing.get_context("spawn"),
-                            initializer=initialize_native_worker,
-                            initargs=(ownership.supervisor.attachment,),
-                        )
-                        with self._lock:
-                            self._executor = executor
-                            ownership.executor = executor
-                finally:
-                    if admitted:
-                        ownership.end_dispatch()
-                futures = self._submit_batches(batches, runtime_env)
-                results = _collect_batch_futures(batches, futures, ownership)
-                collected = True
-        finally:
-            closed = ownership.finish(failed=not collected)
-            with self._lock:
-                self._executor = None
-        if not closed:
-            self._cancellation_acknowledgement = CancellationAcknowledgement(
-                CancellationStatus.UNKNOWN, ownership.reason
-            )
-        return results
-
-    def _submit_batches(
-        self,
-        batches: list[list[ExecutionUnit]],
-        runtime_env: RuntimeEnvironment,
-    ) -> list[Future[list[UnitResult]]]:
-        with self._lock:
-            executor = self._executor
-            ownership = self._ownership
-            cancelled = self._cancel_requested
-            if cancelled or executor is None:
-                return []
-            assert ownership is not None
-            self._futures = []
-        for index, batch in enumerate(batches):
-            admitted = ownership.begin_dispatch()
-            try:
-                if not admitted:
-                    message = "Local execution cancelled before submission"
-                    raise RuntimeError(message)
-                # Serialization and process creation may block. Cancellation must
-                # still reach the independent owner while either is in flight.
-                call = serialize_process_call(execute_unit_batch, batch, runtime_env)
-                with self._lock:
-                    cancelled_before_submit = self._cancel_requested
-                    if cancelled_before_submit:
-                        message = "Local execution cancelled before submission"
-                        raise RuntimeError(message)
-                future = executor.submit(execute_process_call, call)
-            except Exception as exc:
-                ownership.request_failure_cleanup()
-                error = _owner_error(exc, ownership)
-                with self._lock:
-                    for unsent_batch in batches[index:]:
-                        failed: Future[list[UnitResult]] = Future()
-                        failed.set_result(
-                            failure_results_for_units(unsent_batch, error)
-                        )
-                        self._futures.append(failed)
-                break
-            finally:
-                if admitted:
-                    ownership.end_dispatch()
-            with self._lock:
-                self._futures.append(future)
-                if self._cancel_requested:
-                    future.cancel()
-        with self._lock:
-            return list(self._futures)
-
-    def cancel(self) -> CancellationAcknowledgement:
-        """Initiate cleanup promptly; confirm only from settled ownership proof."""
-        with self._lock:
-            if self._cancel_acknowledgement is not None:
-                return self._cancel_acknowledgement
-            if not self._dispatch_started:
-                return CancellationAcknowledgement(
-                    CancellationStatus.REJECTED, "Local work has not been dispatched"
-                )
-            if self.is_done():
-                acknowledgement = self._completed_cancellation_evidence()
-                self._cancel_acknowledgement = acknowledgement
-                return acknowledgement
-            newly_requested = not self._cancel_requested
-            if newly_requested:
-                self._cancel_requested = True
-                self._cancel_requested_at = time.monotonic()
-                self._cancel_deadline = self._cancel_deadline or (
-                    self._cancel_requested_at + _CLEANUP_SECONDS
-                )
-            assert self._cancel_deadline is not None
-            if self._ownership is not None:
-                accepted = self._ownership.request_cancel(self._cancel_deadline)
-                if not accepted and newly_requested:
-                    self._cancel_requested = False
-                    self._cancel_acknowledgement = (
-                        self._completed_cancellation_evidence()
-                    )
-                    return self._cancel_acknowledgement
-            for future in self._futures:
-                future.cancel()
-            if time.monotonic() >= self._cancel_deadline:
-                self._cancel_acknowledgement = CancellationAcknowledgement(
-                    CancellationStatus.UNKNOWN,
-                    "Native cancellation confirmation timed out",
-                )
-                return self._cancel_acknowledgement
-            return CancellationAcknowledgement(
-                CancellationStatus.REQUESTED, "Waiting for native ownership closure"
-            )
-
-    def _completed_cancellation_evidence(self) -> CancellationAcknowledgement:
-        ownership = self._ownership
-        if self._scope_expected and (ownership is None or not ownership.closed):
-            return CancellationAcknowledgement(
-                CancellationStatus.UNKNOWN,
-                ownership.reason
-                if ownership is not None
-                else "Native owner evidence is missing",
-            )
-        if not self._cancel_requested:
-            return CancellationAcknowledgement(
-                CancellationStatus.REJECTED, "Local work completed before cancellation"
-            )
-        if ownership is None:
-            return CancellationAcknowledgement(
-                CancellationStatus.CONFIRMED, "Empty local dispatch never started work"
-            )
-        if self._remote_indices:
-            if self._results is None or self._error is not None:
-                return CancellationAcknowledgement(
-                    CancellationStatus.UNKNOWN,
-                    "Remote cancellation evidence is missing",
-                )
-            for index in self._remote_indices:
-                result = self._results[index]
-                outcome = result.cancellation_acknowledgement
-                if (
-                    outcome is not None
-                    and outcome.status == CancellationStatus.CONFIRMED
-                ):
-                    continue
-                if result.success and (
-                    outcome is None or outcome.status == CancellationStatus.REJECTED
-                ):
-                    continue
-                return CancellationAcknowledgement(
-                    CancellationStatus.UNKNOWN,
-                    "Local ownership closed without remote cancellation evidence",
-                )
-        return ownership.acknowledgement()
-
-
-def _owner_error(error: BaseException, ownership: _NativePoolOwnership) -> str:
-    """Protect capability aliases in bootstrap and transport failures."""
-    return redact_values(
-        format_error(error), (ownership.supervisor.attachment["secret"],)
-    )
-
-
-def _collect_batch_futures(
-    batches: list[list[ExecutionUnit]],
-    futures: list[Future[list[UnitResult]]],
-    ownership: _NativePoolOwnership,
-) -> list[UnitResult]:
-    """Poll with the owner budget, retaining ordered completed siblings."""
-    if not futures:
-        return failure_results_for_units(
-            [unit for batch in batches for unit in batch],
-            "Local execution cancelled before submission",
-        )
-
-    inspected: set[Future[list[UnitResult]]] = set()
-    while True:
-        ready = {future for future in futures if future.done()}
-        for future in ready - inspected:
-            if not future.cancelled() and isinstance(
-                future.exception(), BrokenProcessPool
-            ):
-                ownership.request_failure_cleanup()
-        inspected.update(ready)
-        pending = {future for future in futures if not future.done()}
-        if not pending or ownership.advance():
-            break
-        # Recompute done() on the next iteration: a cancelled queued Future need
-        # not enter CANCELLED_AND_NOTIFIED in a broken executor manager.
-        wait_futures(pending, timeout=0.02)
-
-    results: list[UnitResult] = []
-    for batch, future in zip(batches, futures, strict=True):
-        if not future.done():
-            results.extend(
-                failure_results_for_units(batch, "Native cleanup remained unresolved")
-            )
-            continue
-        try:
-            batch_results = future.result()
-        except Exception as exc:
-            batch_results = failure_results_for_units(
-                batch, _owner_error(exc, ownership)
-            )
-        else:
-            batch_results = validate_batch_results(batch, batch_results)
-        results.extend(batch_results)
-    return results
-
-
-class LocalRunner(RunnerBase):
-    """Process-pool execution on the orchestrator machine.
-
-    Args:
-        default_max_workers: Default process pool size. Overridden by
-            ``BatchStrategy.max_workers`` when set.
+    This local runner does not reserve CPU or memory. Worker GPU qualification
+    remains separate from observed-current-interpreter qualification.
     """
 
-    name = "local"
-    worker_traits = WorkerTraits()
-    orchestrator_traits = OrchestratorTraits()
+    environment: Environment | None = None
+    cache_root: Path = field(
+        default_factory=lambda: Path(
+            os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")
+        )
+        / "artisan/environments"
+    )
+    tool_backend: Literal["pixi", "docker", "apptainer"] = "pixi"
+    pixi: Path = Path.home() / ".pixi/bin/pixi"
+    system_env: Path = Path("/usr/bin/env")
+    docker: DockerRuntime | None = None
+    apptainer: ApptainerRuntime | None = None
+    base_image: str | None = None
+    name: ClassVar[str] = "local"
 
-    def __init__(self, default_max_workers: int = 4) -> None:
-        if default_max_workers < 1:
-            msg = "default_max_workers must be at least 1"
+    def __post_init__(self) -> None:
+        if (
+            not self.cache_root.is_absolute()
+            or not self.pixi.is_absolute()
+            or not self.system_env.is_absolute()
+        ):
+            msg = "Local runner configuration requires explicit absolute paths"
             raise ValueError(msg)
-        self._default_max_workers = default_max_workers
+        if self.tool_backend not in {"pixi", "docker", "apptainer"}:
+            msg = "Unsupported local tool backend"
+            raise ValueError(msg)
 
-    @property
-    def default_max_workers(self) -> int:
-        """Default process pool size used when a step does not override it."""
-        return self._default_max_workers
+    def worker_code_roots(self) -> tuple[type, ...]:
+        """Select trusted provider code, including SDK entry types used by subclasses.
 
-    def create_lifecycle_router(
-        self,
-        runner_resources: RunnerResources,
-        batch_strategy: BatchStrategy,
-        step_number: int,
-        job_name: str,
-        log_folder: str | None = None,
-        staging_root: str | None = None,
-    ) -> LifecycleRouter:
-        """Build a native local process-pool router.
-
-        GPU operations default to one process to avoid GPU memory contention.
-        An explicit ``max_workers`` always takes precedence.
+        These live types extend measured import coverage; they are not authored
+        package requirements or recorded names to import on a worker.
         """
-        if batch_strategy.max_workers is not None:
-            max_workers = batch_strategy.max_workers
-        elif runner_resources.gpus > 0:
-            max_workers = 1
-        else:
-            max_workers = self._default_max_workers
-        if max_workers < 1:
-            msg = "max_workers must be at least 1"
-            raise ValueError(msg)
+        return (type(self),)
 
-        return LocalLifecycleRouter(
-            max_workers=max_workers,
-            units_per_worker=batch_strategy.units_per_worker,
+    def _trusted_code_roots(self) -> tuple[type, ...]:
+        # An SDK extension cannot remove the actual selected provider's code.
+        return tuple(dict.fromkeys((type(self), *self.worker_code_roots())))
+
+    def prepare(
+        self,
+        definition: Definition,
+        *,
+        params: Parameters = None,
+        runner_resources: RunnerResources | None = None,
+        application_modules: tuple[str, ...] = (),
+    ) -> None:
+        """Compile and explicitly provision unique worker/tool software requirements."""
+        resources = runner_resources or RunnerResources(cpus=1, memory_gb=4, gpus=0)
+        _validate_resources(resources)
+        application_modules = validate_application_modules(application_modules)
+        bootstrap_applications(application_modules, purpose="worker preparation")
+        capture_native_gpu(resources.gpus)
+        plan = compile_definition(definition, params=params)
+        selections = select_tool_environments(plan)
+        declarations: list[Environment] = []
+        for selection in selections:
+            declaration = selection.declaration
+            if declaration is not None and declaration not in declarations:
+                declarations.append(declaration)
+        if declarations and self.tool_backend != "pixi":
+            self._validate_container_preparation()
+        if selections:
+            prepare_command_witness(self.cache_root)
+        if self.environment is not None:
+            worker = prepare_native_environment(
+                self.environment, cache_root=self.cache_root
+            )
+            names, _ = controller_worker_sources(
+                plan,
+                self._trusted_code_roots(),
+                self.environment,
+                worker,
+                application_modules=application_modules,
+            )
+            prepare_worker_qualification(
+                worker,
+                names,
+                cache_root=self.cache_root,
+                pixi=self.pixi,
+                system_env=self.system_env,
+            )
+        for declaration in declarations:
+            self._prepare_tool(declaration)
+        self.resolve(plan, resources, application_modules=application_modules)
+
+    def prepare_curator(
+        self,
+        operation: OperationDefinition,
+        *,
+        runner_resources: RunnerResources | None = None,
+        application_modules: tuple[str, ...] = (),
+    ) -> None:
+        """Explicitly prepare only the worker needed by one trusted curator."""
+        resources = runner_resources or RunnerResources(cpus=1, memory_gb=4, gpus=0)
+        _validate_resources(resources)
+        application_modules = validate_application_modules(application_modules)
+        bootstrap_applications(
+            application_modules, purpose="curator worker preparation"
+        )
+        capture_curator_definition(operation)
+        capture_native_gpu(resources.gpus)
+        if self.environment is not None:
+            worker = prepare_native_environment(
+                self.environment, cache_root=self.cache_root
+            )
+            names, _ = controller_definition_sources(
+                (type(operation),),
+                self._trusted_code_roots(),
+                self.environment,
+                worker,
+                application_modules=application_modules,
+            )
+            prepare_worker_qualification(
+                worker,
+                names,
+                cache_root=self.cache_root,
+                pixi=self.pixi,
+                system_env=self.system_env,
+            )
+        self.resolve_curator(
+            operation, resources, application_modules=application_modules
         )
 
-    def validate_operation(self, operation: Any) -> None:
-        """Warn on local-runner configuration that is likely a mistake."""
-        resources = operation.runner_resources
-        if resources.extra:
-            warnings.warn(
-                f"Operation {operation.name!r} has provider-specific resources "
-                f"(extra={resources.extra!r}) but step_runner is 'local'. "
-                "These will be ignored.",
-                stacklevel=2,
+    def resolve_curator(
+        self,
+        operation: OperationDefinition,
+        runner_resources: RunnerResources,
+        *,
+        application_modules: tuple[str, ...] = (),
+    ) -> AssignmentSoftware:
+        """Resolve curator worker coverage without compiling a creator plan."""
+        _validate_resources(runner_resources)
+        return resolve_curator_software(
+            operation,
+            self._trusted_code_roots(),
+            environment=self.environment,
+            cache_root=self.cache_root,
+            pixi=self.pixi,
+            system_env=self.system_env,
+            native_gpu=capture_native_gpu(runner_resources.gpus),
+            application_modules=validate_application_modules(application_modules),
+        )
+
+    def launch_curator(
+        self,
+        curator: AdmittedCurator,
+        *,
+        software: AssignmentSoftware,
+        dispatch: AssignmentDispatch,
+    ) -> CuratorHandle:
+        """Launch one whole curator stream without fabricating a creator attempt."""
+        if not isinstance(software, PreparedLocalBindings):
+            msg = "Local curator dispatch requires resolved local software"
+            raise ValueError(msg)
+        verify_runtime_compatibility(software.compatibility)
+        validate_worker_applications(
+            dispatch.application_modules,
+            qualified_modules=software.application_modules,
+        )
+        try:
+            return LocalCuratorHandle(curator, software, dispatch)
+        except LocalCallStartupError as error:
+            handle = cast(LocalCuratorHandle, error.handle)
+            msg = "Local curator startup failed"
+            raise CuratorLaunchError(
+                msg,
+                handles=(handle,),
+                cancellation=CancellationAcknowledgement(
+                    CancellationStatus.CONFIRMED
+                    if error.cleanup_outcome.state == "closed"
+                    else CancellationStatus.UNKNOWN,
+                    error.cleanup_outcome.reason,
+                ),
+            ) from error
+
+    def _validate_container_preparation(self) -> None:
+        if self.docker is None or self.base_image is None:
+            msg = "Container preparation requires an explicit local Docker builder and existing base image"
+            raise ValueError(msg)
+        if self.tool_backend == "apptainer" and self.apptainer is None:
+            msg = "SIF preparation requires an explicit Apptainer launcher"
+            raise ValueError(msg)
+
+    def _prepare_tool(self, declaration: Environment) -> None:
+        if self.tool_backend == "pixi":
+            if declaration != self.environment:
+                prepare_native_environment(declaration, cache_root=self.cache_root)
+            return
+        assert self.docker is not None
+        assert self.base_image is not None
+        oci = prepare_oci_environment(
+            declaration,
+            cache_root=self.cache_root,
+            docker=self.docker,
+            base_image=self.base_image,
+        )
+        if self.tool_backend == "apptainer":
+            assert self.apptainer is not None
+            prepare_sif_environment(
+                oci,
+                cache_root=self.cache_root,
+                docker=self.docker,
+                apptainer=self.apptainer,
             )
-        if resources.gpus > 0 and operation.compute_provider.active == "modal":
-            warnings.warn(
-                f"Operation {operation.name!r} sets runner_resources.gpus="
-                f"{resources.gpus} with compute_provider='modal'. The GPU request "
-                "serializes the local lifecycle pool, but execute runs on Modal — "
-                "request the container GPU via compute_resources.gpu instead.",
-                stacklevel=2,
+
+    def resolve(
+        self,
+        plan: CompiledPlan,
+        runner_resources: RunnerResources,
+        *,
+        application_modules: tuple[str, ...] = (),
+    ) -> AssignmentSoftware:
+        """Resolve prepared targets and compatibility without provisioning software."""
+        _validate_resources(runner_resources)
+        application_modules = validate_application_modules(application_modules)
+        allocation = capture_native_gpu(runner_resources.gpus)
+        worker: PreparedNativeEnvironment | ObservedWorker
+        if self.environment is None:
+            names, _ = observed_controller_sources(
+                plan,
+                self._trusted_code_roots(),
+                application_modules=application_modules,
             )
+            worker = qualify_observed_worker(names)
+        else:
+            worker = lookup_native_environment(
+                self.environment, cache_root=self.cache_root
+            )
+            names, _ = controller_worker_sources(
+                plan,
+                self._trusted_code_roots(),
+                self.environment,
+                worker,
+                application_modules=application_modules,
+            )
+            worker = lookup_worker_qualification(
+                worker, names, cache_root=self.cache_root
+            )
+        return bind_local_software(
+            plan,
+            worker,
+            cache_root=self.cache_root,
+            pixi=self.pixi,
+            system_env=self.system_env,
+            worker_environment=self.environment,
+            tool_backend=self.tool_backend,
+            docker=self.docker,
+            apptainer=self.apptainer,
+            native_gpu=allocation,
+            application_modules=application_modules,
+        )
+
+    def launch(
+        self,
+        assignments: Sequence[AdmittedAssignment],
+        *,
+        software: AssignmentSoftware,
+        dispatch: AssignmentDispatch,
+    ) -> tuple[AssignmentHandle, ...]:
+        """Launch exactly one ordered pack and preserve any partially started handles."""
+        if not isinstance(software, PreparedLocalBindings):
+            msg = "Local dispatch requires resolved local software"
+            raise ValueError(msg)
+        for assignment in assignments:
+            verify_assignment(assignment, software)
+        verify_runtime_compatibility(software.compatibility)
+        validate_worker_applications(
+            dispatch.application_modules,
+            qualified_modules=software.application_modules,
+        )
+        if not assignments:
+            return ()
+        requests = tuple(
+            LocalAssignmentRequest(
+                assignment, software, None, dispatch.runtime_env, dispatch
+            )
+            for assignment in assignments
+        )
+        try:
+            return launch_local_assignments(
+                requests,
+                working_root=dispatch.working_root,
+                units_per_worker=len(requests),
+            )
+        except LocalPackStartupError as error:
+            message = "Local assignment pack startup failed"
+            raise AssignmentLaunchError(
+                message,
+                handles=cast(tuple[LocalAssignmentHandle, ...], error.handles),
+                cancellation=_startup_cancellation(error),
+                worker_owners=error.worker_owners,
+            ) from error
+
+
+def _validate_resources(resources: RunnerResources) -> None:
+    if resources.extra:
+        msg = "This local adapter does not support provider-specific resource options"
+        raise ValueError(msg)
+
+
+def _startup_cancellation[ResultT](
+    error: LocalPackStartupError[ResultT],
+) -> CancellationAcknowledgement:
+    settled = True
+    for handle in error.handles:
+        try:
+            confirmed = handle.done() and handle.cancel().status in {
+                CancellationStatus.CONFIRMED,
+                CancellationStatus.REJECTED,
+            }
+        except Exception:
+            confirmed = False
+        settled = settled and confirmed
+    closed = all(outcome.state == "closed" for outcome in error.transport_outcomes)
+    return CancellationAcknowledgement(
+        CancellationStatus.CONFIRMED
+        if settled and closed
+        else CancellationStatus.UNKNOWN,
+        "Local startup ownership settled"
+        if settled and closed
+        else "Local startup ownership could not be confirmed",
+    )

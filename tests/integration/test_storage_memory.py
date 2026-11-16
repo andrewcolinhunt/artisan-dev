@@ -1,4 +1,8 @@
-"""Fresh-process RSS diagnostics for incremental ingestion and Delta deposition."""
+"""Fresh-process recording/controller RSS diagnostics for incremental ingestion.
+
+The explicit in-process runner exercises real admission and publication. Its
+phase readings share a process; installed-worker memory is a separate gate.
+"""
 
 from __future__ import annotations
 
@@ -14,15 +18,14 @@ from fixtures.memory import peak_rss_bytes
 from pydantic import BaseModel, Field
 
 from artisan.operations.curator import IngestCSV
-from artisan.orchestration import PipelineManager, StepStatus
+from artisan.orchestration import StepStatus
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 
 pytestmark = pytest.mark.integration
 
 
 class MeasuredIngestCSV(IngestCSV):
-    """Observe the worker peak after all stream recording and publication."""
+    """Observe the in-process admitted curator at the end of stream recording."""
 
     name = "measured_ingest_csv_memory_test"
 
@@ -79,32 +82,44 @@ def _probe(configuration):
     files = json.loads((root / "inputs.json").read_text())
     driver_start = peak_rss_bytes()
     worker_peak = root / "worker-peak"
-    config = PipelineConfig(
+    from integration.conftest import create_native_pipeline
+
+    with create_native_pipeline(
         name="memory_qualification",
         delta_root=f"{prefix}/delta",
         staging_root=f"{prefix}/staging",
         working_root=str(root / "work"),
         storage=storage,
-    )
-    with PipelineManager(config, configure_logging=False) as pipeline:
+        files_root=f"{prefix}/files",
+    ) as pipeline:
         result = pipeline.run(
             MeasuredIngestCSV,
             inputs=files,
             params={"peak_path": str(worker_peak)},
-            compact=False,
         )
-    if result.status is not StepStatus.SUCCEEDED or result.succeeded_count != count:
+    if result.status is not StepStatus.SUCCEEDED or result.succeeded_count != 1:
         msg = f"Memory qualification ingestion failed: {result.status}"
         raise AssertionError(msg)
+    from artisan.orchestration.engine.current_outputs import read_current_step_outputs
+
+    assert (
+        sum(
+            len(group.occurrences)
+            for group in read_current_step_outputs(
+                pipeline.committer, result.step_run_id
+            )
+        )
+        == count
+    )
     (root / "measurement.json").write_text(
         json.dumps(
             {
-                "worker_bytes": int(worker_peak.read_text()),
-                "worker_start_bytes": int(
+                "recording_peak_bytes": int(worker_peak.read_text()),
+                "recording_start_bytes": int(
                     Path(str(worker_peak) + ".baseline").read_text()
                 ),
-                "driver_bytes": peak_rss_bytes(),
-                "driver_start_bytes": driver_start,
+                "controller_peak_bytes": peak_rss_bytes(),
+                "controller_start_bytes": driver_start,
                 "payload_bytes": count * (6 + 64 * 65537),
             }
         )

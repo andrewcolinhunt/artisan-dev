@@ -171,7 +171,7 @@ class FileRefArtifact(Artifact):
         path: str,
         content_hash: str,
         size_bytes: int,
-        step_number: int,
+        step_number: int | None = None,
         metadata: dict[str, Any] | None = None,
         original_name: str | None = None,
         extension: str | None = None,
@@ -182,7 +182,7 @@ class FileRefArtifact(Artifact):
             path: Current filesystem path or URI to the referenced file.
             content_hash: xxh3_128 hash of the file bytes.
             size_bytes: Byte count of the complete file.
-            step_number: Pipeline step number.
+            step_number: Pipeline step number, or None for a standalone draft.
             metadata: Optional metadata dict.
             original_name: Original human-readable filename stem.
             extension: File extension from original path.

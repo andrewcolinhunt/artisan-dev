@@ -1,0 +1,9 @@
+[project]
+name = "qualification-helper"
+version = "0.1.0"
+requires-python = ">=3.12"
+[build-system]
+requires = ["hatchling==1.31.0"]
+build-backend = "hatchling.build"
+[tool.hatch.build.targets.wheel]
+packages = ["src/qualification_helper"]

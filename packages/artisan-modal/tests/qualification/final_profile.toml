@@ -1,0 +1,39 @@
+[workspace]
+name = "artisan-modal-qualification"
+channels = ["conda-forge"]
+platforms = ["linux-64"]
+
+[dependencies]
+python = "==3.12.12"
+
+[feature.framework.pypi-dependencies]
+dexterity-artisan = { path = "wheels/dexterity_artisan-0.2.0.dev0-py3-none-any.whl" }
+artisan-modal = { path = "wheels/artisan_modal-0.1.0.dev0-py3-none-any.whl" }
+artisan-modal-qualification = { path = "wheels/artisan_modal_qualification-1.0.0-py3-none-any.whl" }
+modal = "==1.4.1"
+s3fs = "==2026.2.0"
+
+[feature.worker.activation.env]
+ARTISAN_MODAL_WORKER = "canonical-worker"
+
+[feature.tool-a.pypi-dependencies]
+packaging = "==24.2"
+s3fs = "==2026.2.0"
+
+[feature.tool-a.activation.env]
+ARTISAN_MODAL_TOOL = "alpha"
+PROBE_ACTIVATION = "alpha"
+
+[feature.tool-b.pypi-dependencies]
+packaging = "==25.0"
+s3fs = "==2026.2.0"
+
+[feature.tool-b.activation.env]
+ARTISAN_MODAL_TOOL = "beta"
+PROBE_ACTIVATION = "beta"
+
+[environments]
+controller = ["framework"]
+worker = ["framework", "worker"]
+tool-a = ["tool-a"]
+tool-b = ["tool-b"]

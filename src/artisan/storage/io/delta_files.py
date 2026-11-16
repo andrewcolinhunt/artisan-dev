@@ -41,6 +41,7 @@ from artisan.utils.path import uri_join
 class _ActiveFile:
     path: str
     partitions: dict[str, Any]
+    size_bytes: int
 
 
 def _delta_type(dtype: pa.DataType) -> pa.DataType:
@@ -102,11 +103,14 @@ class DeltaSnapshot:
         *,
         fs: AbstractFileSystem,
         storage_options: dict[str, str] | None = None,
+        version: int | None = None,
     ) -> None:
         self.path = path
         self.schema = dict(schema)
         self.fs = fs
-        self.delta = DeltaTable(path, storage_options=storage_options or {})
+        self.delta = DeltaTable(
+            path, version=version, storage_options=storage_options or {}
+        )
         self.arrow_schema = pa.schema(self.delta.schema().to_arrow())
         self.partitions = self.delta.metadata().partition_columns
         self._validate_contract()
@@ -118,9 +122,10 @@ class DeltaSnapshot:
             _ActiveFile(
                 row["path"],
                 {name: row[f"partition.{name}"] for name in self.partitions},
+                row["size_bytes"],
             )
             for row in actions.select(
-                "path", *(f"partition.{name}" for name in self.partitions)
+                "path", "size_bytes", *(f"partition.{name}" for name in self.partitions)
             ).iter_rows(named=True)
         )
         for item in self.files:
@@ -208,8 +213,16 @@ class DeltaSnapshot:
         expected = pa.schema(
             [f for f in self.arrow_schema if f.name not in self.partitions]
         )
+        options: dict[str, Any] = {"cache_type": "none"}
+        if 0 < item.size_bytes <= STREAM_CHUNK_BYTES:
+            # Coalesce tiny remote column reads without prefetching large payloads.
+            options.update(
+                cache_type="blockcache",
+                block_size=STREAM_CHUNK_BYTES,
+                cache_options={"maxblocks": 1},
+            )
         with (
-            self.fs.open(path, "rb", cache_type="none") as stream,
+            self.fs.open(path, "rb", **options) as stream,
             pq.ParquetFile(
                 stream,
                 buffer_size=STREAM_CHUNK_BYTES,

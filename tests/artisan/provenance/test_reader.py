@@ -1,69 +1,74 @@
-"""Tests for the bounded provenance edge-list reader."""
+"""Bounded provenance reads over real retained direct and collapsed relations."""
 
 from __future__ import annotations
 
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from pathlib import Path
+
+import pytest
+from fixtures.retained_inspection import commit_inspection_attempt, inspection_store
 
 from artisan.provenance import provenance_edges
-
-A = "a" * 32
-B = "b" * 32
-C = "c" * 32
-D = "d" * 32
-
-CHAIN = [(A, B), (B, C), (C, D)]
+from artisan.schemas import CSVArtifact
 
 
-class TestProvenanceEdges:
-    """Tests for provenance_edges."""
+@pytest.fixture(scope="module")
+def chain(tmp_path_factory: pytest.TempPathFactory) -> tuple[Path, list[str]]:
+    root = tmp_path_factory.mktemp("retained-provenance") / "delta"
+    artifacts = [
+        CSVArtifact.draft(
+            f"value\n{index}\n".encode(), f"data-{index}.csv", index
+        ).finalize()
+        for index in range(4)
+    ]
+    for index, artifact in enumerate(artifacts):
+        commit_inspection_attempt(
+            root,
+            number=index,
+            inputs={} if not index else {"source": [artifacts[index - 1]]},
+            outputs={"data": [artifact]},
+        )
+    return root, [artifact.artifact_id for artifact in artifacts]
 
-    def test_backward_full_chain(self, tmp_path, seed_artifact_edges):
-        """Depth covering the whole chain returns every edge, untruncated."""
-        seed_artifact_edges(tmp_path, CHAIN)
-        result = provenance_edges(str(tmp_path), D, direction="backward", depth=3)
-        assert result.edges == [
-            {"source_artifact_id": C, "target_artifact_id": D},
-            {"source_artifact_id": B, "target_artifact_id": C},
-            {"source_artifact_id": A, "target_artifact_id": B},
-        ]
-        assert result.truncated is False
 
-    def test_backward_depth_bound_truncates(self, tmp_path, seed_artifact_edges):
-        """Depth 1 from D returns only the C -> D edge and flags truncation."""
-        seed_artifact_edges(tmp_path, CHAIN)
-        result = provenance_edges(str(tmp_path), D, direction="backward", depth=1)
-        assert result.edges == [{"source_artifact_id": C, "target_artifact_id": D}]
-        assert result.truncated is True
+def test_backward_full_chain(chain: tuple[Path, list[str]]) -> None:
+    root, (a, b, c, d) = chain
+    result = provenance_edges(str(root), d, direction="backward", depth=3)
+    assert result.edges == [
+        {"source_artifact_id": c, "target_artifact_id": d},
+        {"source_artifact_id": b, "target_artifact_id": c},
+        {"source_artifact_id": a, "target_artifact_id": b},
+    ]
+    assert result.truncated is False
+    assert (result.artifact_id, result.direction, result.depth) == (d, "backward", 3)
 
-    def test_forward_walk(self, tmp_path, seed_artifact_edges):
-        """Forward from A collects descendant edges in hop order."""
-        seed_artifact_edges(tmp_path, CHAIN)
-        result = provenance_edges(str(tmp_path), A, direction="forward", depth=2)
-        assert result.edges == [
-            {"source_artifact_id": A, "target_artifact_id": B},
-            {"source_artifact_id": B, "target_artifact_id": C},
-        ]
-        assert result.truncated is True
-        assert result.direction == "forward"
 
-    def test_unknown_artifact_is_empty(self, tmp_path, seed_artifact_edges):
-        """An artifact with no edges yields empty edges, not an error."""
-        seed_artifact_edges(tmp_path, CHAIN)
-        result = provenance_edges(str(tmp_path), "f" * 32)
-        assert result.edges == []
-        assert result.truncated is False
+def test_backward_depth_bound_truncates(chain: tuple[Path, list[str]]) -> None:
+    root, (_, _, c, d) = chain
+    result = provenance_edges(str(root), d, direction="backward", depth=1)
+    assert result.edges == [{"source_artifact_id": c, "target_artifact_id": d}]
+    assert result.truncated is True
 
-    def test_empty_table_is_empty(self, tmp_path):
-        """A coordinated store with no artifact edges returns an empty result."""
-        publish_test_store(str(tmp_path), LocalFileSystem())
-        result = provenance_edges(str(tmp_path), A)
-        assert result.edges == []
-        assert result.truncated is False
 
-    def test_echoes_query_args(self, tmp_path, seed_artifact_edges):
-        """The result carries the query parameters for machine consumers."""
-        seed_artifact_edges(tmp_path, CHAIN)
-        result = provenance_edges(str(tmp_path), D, direction="backward", depth=2)
-        assert result.artifact_id == D
-        assert result.depth == 2
+def test_forward_walk(chain: tuple[Path, list[str]]) -> None:
+    root, (a, b, c, _) = chain
+    result = provenance_edges(str(root), a, direction="forward", depth=2)
+    assert result.edges == [
+        {"source_artifact_id": a, "target_artifact_id": b},
+        {"source_artifact_id": b, "target_artifact_id": c},
+    ]
+    assert result.truncated is True
+    assert result.direction == "forward"
+
+
+def test_unknown_artifact_is_empty(chain: tuple[Path, list[str]]) -> None:
+    root, _ = chain
+    result = provenance_edges(str(root), "f" * 32)
+    assert result.edges == []
+    assert result.truncated is False
+
+
+def test_initialized_empty_table_is_empty(tmp_path: Path) -> None:
+    inspection_store(tmp_path)
+    result = provenance_edges(str(tmp_path), "a" * 32)
+    assert result.edges == []
+    assert result.truncated is False

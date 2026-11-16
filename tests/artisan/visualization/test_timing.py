@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
-from fixtures.cache_isolation_store import build_cache_isolation_store
+from fixtures.retained_cache_isolation_store import build_cache_isolation_store
 
 from artisan.errors import IncompatibleStoreError
 from artisan.visualization.timing import PipelineTimings
@@ -169,7 +171,15 @@ class TestExecutionStats:
     def test_correct_columns(self, sample_timing_data):
         timings = PipelineTimings(sample_timing_data)
         result = timings.execution_stats(step_number=0)
-        assert list(result.columns) == ["phase", "mean", "std", "min", "max"]
+        assert list(result.columns) == [
+            "phase",
+            "mean",
+            "std",
+            "min",
+            "max",
+            "observed_count",
+            "total_count",
+        ]
 
     def test_correct_phases(self, sample_timing_data):
         timings = PipelineTimings(sample_timing_data)
@@ -305,7 +315,7 @@ class TestPipelineTimingsFromDelta:
     """Tests for from_delta() loading."""
 
     def test_missing_path_raises(self, tmp_path):
-        with pytest.raises(IncompatibleStoreError, match="missing manifest"):
+        with pytest.raises(IncompatibleStoreError, match="manifest"):
             PipelineTimings.from_delta(tmp_path)
 
     def test_run_excludes_other_and_reused_execution_timings(self, tmp_path):
@@ -378,7 +388,15 @@ def _command_timings_data(*recordings):
                         "execution_run_id": f"execution-{index}",
                         "operation_name": "op",
                         "timings": {"execute": 1.0},
-                        "command_recording": recording,
+                        "commands": {
+                            "execution_run_id": f"execution-{index}",
+                            "status": recording.get("status", "unavailable")
+                            if isinstance(recording, dict)
+                            else "unavailable",
+                            "recording": recording,
+                            "invocations": [],
+                            "omitted_invocations": 0,
+                        },
                     }
                     for index, recording in enumerate(recordings)
                 ],
@@ -417,6 +435,12 @@ def test_command_timings_preserves_typed_order_and_partial_evidence():
         "step_number": pl.Int32,
         "execution_run_id": pl.String,
         "operation_name": pl.String,
+        "coverage_status": pl.String,
+        "omitted_invocations": pl.Int64,
+        "invocation_id": pl.String,
+        "call_path": pl.List(pl.String),
+        "invocation_operation": pl.String,
+        "invocation_version": pl.String,
         "recording_status": pl.String,
         "omitted_commands": pl.Int64,
         "omitted_missing_invocations": pl.Int64,
@@ -523,7 +547,7 @@ def test_command_timings_requires_raw_evidence_and_valid_step():
     from artisan.errors import StoreIntegrityError
 
     data = _command_timings_data(_timing_recording())
-    data["steps"][0]["executions"][0].pop("command_recording")
+    data["steps"][0]["executions"][0].pop("commands")
     with pytest.raises(StoreIntegrityError):
         PipelineTimings(data).command_timings(0)
     with pytest.raises(ValueError, match="Step 99 not found"):
@@ -542,19 +566,95 @@ def test_command_timings_from_delta_retains_only_selected_fresh_evidence(tmp_pat
 
 @pytest.mark.parametrize("invalid", [None, "not-json", "{}"])
 def test_from_delta_rejects_invalid_canonical_recording(tmp_path, monkeypatch, invalid):
-    import polars as pl
+    import json
+    from pathlib import Path
+
+    from fixtures.retained_inspection import inspection_store
 
     from artisan.errors import StoreIntegrityError
-    from artisan.storage.core import run_scope
+    from artisan.execution.recording.delivery_diagnostics import _path
+    from artisan.storage.core.retained_reader import RetainedReader
 
     store = build_cache_isolation_store(tmp_path)
-    original = run_scope.load_execution_membership
-
-    def invalid_evidence(*args, **kwargs):
-        return original(*args, **kwargs).with_columns(
-            pl.lit(invalid, dtype=pl.String).alias("command_recording")
-        )
-
-    monkeypatch.setattr(run_scope, "load_execution_membership", invalid_evidence)
-    with pytest.raises(StoreIntegrityError, match=store.current_data_execution):
+    committer = inspection_store(store.root)
+    receipt = next(
+        plan.receipt
+        for plan in RetainedReader(committer).completed_plans()
+        if plan.receipt.delivery.delivery_id == store.current_data_execution
+    )
+    path = Path(_path(str(store.root), receipt.delivery))
+    value = json.loads(path.read_bytes())
+    value["invocations"][0]["command_recording"] = invalid
+    path.write_text(json.dumps(value))
+    with pytest.raises(StoreIntegrityError, match="diagnostics"):
         PipelineTimings.from_delta(store.root, pipeline_run_id=store.current_run)
+
+
+@pytest.mark.parametrize(
+    "metadata",
+    [
+        "sensitive malformed JSON",
+        '"sensitive value"',
+        '{"timings": []}',
+        '{"timings": {"execute": -1.0}}',
+        '{"timings": {"execute": NaN}}',
+        '{"timings": {"execute": true}}',
+        '{"timings": {"execute": "sensitive value"}}',
+    ],
+)
+def test_present_phase_metadata_must_be_valid(metadata: str) -> None:
+    from artisan.errors import StoreIntegrityError
+    from artisan.visualization.timing import _parse_timings
+
+    with pytest.raises(StoreIntegrityError) as error:
+        _parse_timings(metadata)
+    assert "sensitive" not in str(error.value)
+
+
+@pytest.mark.parametrize("metadata", [None, "{}", '{"timings": {}}'])
+def test_absent_phase_metadata_has_no_measurements(metadata: str | None) -> None:
+    from artisan.visualization.timing import _parse_timings
+
+    assert _parse_timings(metadata) == {}
+
+
+def test_observed_integral_zero_is_a_real_phase_measurement() -> None:
+    from artisan.visualization.timing import _parse_timings
+
+    assert _parse_timings('{"timings": {"execute": 0}}') == {"execute": 0.0}
+
+
+def test_late_observations_survive_initial_missing_rows() -> None:
+    executions: list[dict[str, Any]] = [
+        {
+            "execution_run_id": f"execution-{index}",
+            "operation_name": "synthetic",
+            "timings": {},
+            "invocations": [],
+        }
+        for index in range(101)
+    ]
+    executions[-1].update(
+        {
+            "timings": {"execute": 0.25},
+            "invocations": [{"invocation_id": "last", "duration_seconds": 0.25}],
+        }
+    )
+    steps = [
+        {
+            "step_number": index,
+            "step_name": "synthetic",
+            "duration_seconds": None,
+            "timings": {"execute": 0.25} if index == 100 else {},
+            "executions": executions if index == 100 else [],
+        }
+        for index in range(101)
+    ]
+    timing = PipelineTimings({"steps": steps})
+
+    assert timing.step_timings()["execute"].to_list() == [None] * 100 + [0.25]
+    observed = timing.execution_timings(100)
+    assert observed["execute"].to_list() == [None] * 100 + [0.25]
+    assert observed["invocations"][-1].to_list() == [
+        {"invocation_id": "last", "duration_seconds": 0.25}
+    ]

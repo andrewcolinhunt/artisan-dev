@@ -1,266 +1,176 @@
-"""Tests for step persistence and caching in PipelineManager."""
+"""Public pipelines persist exact lifecycle history and content-based reuse."""
 
 from __future__ import annotations
 
 import json
-import os
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import ClassVar
-from unittest.mock import MagicMock, patch
 
 import polars as pl
-from pydantic import BaseModel
+from fixtures.retained_pipeline import NativePipelineRunner
+from pydantic import BaseModel, Field
 
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration.engine.inputs import PreparedInputs
+from artisan.operations.curator.merge import Merge
+from artisan.orchestration.engine.current_outputs import read_current_step_outputs
 from artisan.orchestration.pipeline_manager import PipelineManager
-from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.artifact.csv import CSVArtifact
+from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.execution.worker_ownership import OwnershipState
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
-from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.storage.core.artifact_store import ArtifactStore
 
 
-class MockOp(OperationDefinition):
-    """Mock operation for testing."""
+class RepeatableSource(OperationDefinition):
+    """A changed parameter deliberately produces the same scientific content."""
 
-    class InputRole(StrEnum):
-        data = auto()
-
-    class OutputRole(StrEnum):
-        data = auto()
-        metrics = auto()
-
-    name: ClassVar[str] = "MockOp"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.data: OutputSpec(
-            artifact_type=ArtifactTypes.CSV,
-            derives_from={"inputs": ["data"]},
-        ),
-        OutputRole.metrics: OutputSpec(
-            artifact_type=ArtifactTypes.METRIC,
-            derives_from={"outputs": ["data"]},
-        ),
-    }
-
-    def preprocess(self, inputs):
-        return {}
-
-    def execute_function(self, inputs, output_dir):
-        pass
-
-
-class IngestMockOp(OperationDefinition):
-    """Mock ingest operation (curator-style)."""
+    name: ClassVar[str] = "repeatable_source"
 
     class OutputRole(StrEnum):
-        file = auto()
+        data = auto()
 
-    name: ClassVar[str] = "Ingest"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
     outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
+        "data": OutputSpec(artifact_type="csv", derives_from={"inputs": []})
     }
 
     class Params(BaseModel):
-        """Params for ``IngestMockOp``.
-
-        Attributes:
-            seed: Mock RNG seed for cache-invalidation tests.
-        """
-
-        seed: int = 42
+        seed: int = Field(
+            default=42, description="Parameter deliberately ignored by this fixture."
+        )
 
     params: Params = Params()
 
-    def execute_curator(self, execute_input):
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-def _mock_execute_step(**kwargs):
-    """Return a fake StepResult."""
-    from artisan.orchestration.engine.step_executor import build_step_result
-    from artisan.schemas.enums import FailurePolicy
-
-    result = build_step_result(
-        operation=kwargs["operation"],
-        step_number=kwargs["step_number"],
-        succeeded_count=5,
-        failed_count=0,
-        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
-        step_run_id=kwargs["step_run_id"],
-    )
-    return kwargs["persist_result"](result, ())
-
-
-def _mock_prepared_inputs(inputs, *_args, **_kwargs) -> PreparedInputs:
-    """Keep output-reference inputs concrete in mocked execution tests."""
-    resolved = {} if inputs is None else {"data": ["a" * 32]}
-    return PreparedInputs(
-        inputs=resolved,
-        group_ids=None,
-        cache_inputs={},
-    )
-
-
-class TestPersistence:
-    """Tests for delta table persistence via run()."""
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_run_writes_to_delta(self, mock_exec, tmp_path):
-        """steps table has rows after run()."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
+    def execute_curator(
+        self,
+        inputs: dict[str, pl.DataFrame],
+        step_number: int,
+        artifact_store: ArtifactStore,
+    ) -> ArtifactResult:
+        return ArtifactResult(
+            artifacts={
+                "data": [
+                    CSVArtifact.draft(
+                        b"value\n1\n", "source.csv", step_number=step_number
+                    )
+                ]
+            },
+            lineage={"data": []},
         )
-        pipeline.run(IngestMockOp, inputs=None)
 
-        steps_path = str(tmp_path / "delta" / "orchestration/steps")
-        assert os.path.exists(steps_path)
-        df = pl.read_delta(steps_path)
-        # Every attempt persists pending, running, then one terminal snapshot.
-        assert len(df) == 3
-        statuses = set(df["status"].to_list())
-        assert statuses == {"pending", "running", "succeeded"}
-        assert df.sort("state_sequence")["state_sequence"].to_list() == [0, 1, 2]
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
+def _create(root: Path) -> PipelineManager:
+    return PipelineManager.create(
+        name="persistent-pipeline",
+        delta_root=str(root / "delta"),
+        staging_root=str(root / "staging"),
+        working_root=str(root / "working"),
     )
-    def test_run_cache_hit(self, mock_exec, tmp_path):
-        """A whole-step hit is recorded under a fresh current-run identity."""
-        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
 
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
 
-        # First run
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
+def test_run_writes_exact_pending_running_terminal_history(tmp_path: Path) -> None:
+    with _create(tmp_path) as pipeline:
+        result = pipeline.run(
+            RepeatableSource, step_runner=NativePipelineRunner(pipeline.committer)
         )
-        first_result = p1.run(IngestMockOp, inputs=None)
-        assert mock_exec.call_count == 1
-
-        # Second run — same operation, same step position, same params
-        p2 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
+        assert result.status == StepStatus.SUCCEEDED, result.error
+        assert (
+            pipeline.tracker.current_state(result.step_run_id).to_step_result()
+            == result
         )
-        p2._step_tracker.check_cache = MagicMock(
-            return_value=_WholeStepCacheHit(
-                result=first_result,
-                source_step_run_id=first_result.step_run_id,
-                execution_run_ids=(),
+        assert (
+            len(
+                read_current_step_outputs(pipeline.committer, result.step_run_id)[
+                    0
+                ].occurrences
             )
+            == 1
         )
-        result = p2.run(IngestMockOp, inputs=None)
+    rows = pl.read_delta(tmp_path / "delta/orchestration/steps").sort("state_sequence")
+    assert rows["status"].to_list() == ["pending", "running", "succeeded"]
+    assert rows["state_sequence"].to_list() == [0, 1, 2]
 
-        # execute_step NOT called again
-        assert mock_exec.call_count == 1
-        assert result.step_name == "Ingest"
-        assert result.status == StepStatus.SUCCEEDED
+
+def test_run_cache_hit_has_new_identity_and_original_accepted_outputs(
+    tmp_path: Path,
+) -> None:
+    with _create(tmp_path) as original:
+        source = original.run(
+            RepeatableSource, step_runner=NativePipelineRunner(original.committer)
+        )
+        accepted = read_current_step_outputs(original.committer, source.step_run_id)
+    with _create(tmp_path) as current:
+        runner = NativePipelineRunner(current.committer)
+        result = current.run(RepeatableSource, step_runner=runner)
+        assert result.status == StepStatus.SUCCEEDED, result.error
         assert result.disposition == StepDisposition.CACHE_HIT
-        assert result.step_run_id != first_result.step_run_id
-        assert len(result.step_run_id) == 32
-
-        rows = pl.read_delta(delta / "orchestration" / "steps").filter(
-            pl.col("pipeline_run_id") == p2.config.pipeline_run_id
+        assert runner.curator_launches == 0
+        assert result.step_run_id != source.step_run_id
+        assert (
+            read_current_step_outputs(current.committer, result.step_run_id) == accepted
         )
-        assert rows.height == 3
-        assert set(rows["step_run_id"].to_list()) == {result.step_run_id}
-        row = rows.filter(pl.col("status") == StepStatus.SUCCEEDED.value).row(
-            0, named=True
-        )
-        assert row["status"] == StepStatus.SUCCEEDED.value
-        assert row["disposition"] == StepDisposition.CACHE_HIT.value
-        assert row["step_run_id"] == result.step_run_id
-        assert row["total_count"] == 5
-        assert json.loads(row["output_roles_json"]) == ["file"]
-        assert row["compute_backend"] == "local"
-        options = json.loads(row["compute_options_json"])
+        state = current.tracker.current_state(result.step_run_id)
+        assert state.to_step_result() == result
+        options = json.loads(state.compute_options_json)
         assert options["pipeline_default_step_runner"] == "local"
-        assert options["pipeline_default_local_runner"] == {"default_max_workers": 4}
+        assert state.compute_backend == runner.name
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.prepare_inputs",
-        side_effect=_mock_prepared_inputs,
-    )
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_upstream_change_without_output_change_reuses_downstream(
-        self, mock_exec, mock_prepare, tmp_path
-    ):
-        """Changed upstream params do not invalidate identical concrete inputs."""
-        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
 
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-
-        # First run: Ingest -> MockOp
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
+def test_same_content_from_changed_producer_does_not_reuse_curator_membership(
+    tmp_path: Path,
+) -> None:
+    with _create(tmp_path) as first:
+        runner = NativePipelineRunner(first.committer)
+        source = first.run(RepeatableSource, step_runner=runner)
+        selected = first.run(
+            Merge, inputs={"source": source.output("data")}, step_runner=runner
         )
-        step0 = p1.run(IngestMockOp, inputs=None)
-        downstream_source = p1.run(MockOp, inputs={"data": step0.output("file")})
-        assert mock_exec.call_count == 2
+        assert selected.status == StepStatus.SUCCEEDED, selected.error
+        accepted = read_current_step_outputs(first.committer, selected.step_run_id)
+    with _create(tmp_path) as second:
+        runner = NativePipelineRunner(second.committer)
+        changed = second.run(RepeatableSource, params={"seed": 99}, step_runner=runner)
+        assert changed.disposition == StepDisposition.EXECUTED
+        assert runner.curator_launches == 1
+        reused = second.run(
+            Merge, inputs={"source": changed.output("data")}, step_runner=runner
+        )
+        assert reused.status == StepStatus.SUCCEEDED, reused.error
+        assert reused.disposition == StepDisposition.EXECUTED
+        assert runner.curator_launches == 2
+        current = read_current_step_outputs(second.committer, reused.step_run_id)
+        assert [item.artifact.artifact_id for item in current[0].occurrences] == [
+            item.artifact.artifact_id for item in accepted[0].occurrences
+        ]
+        assert (
+            current[0].occurrences[0].reference != accepted[0].occurrences[0].reference
+        )
+        exact_retry = second.run(
+            Merge, inputs={"source": changed.output("data")}, step_runner=runner
+        )
+        assert exact_retry.disposition == StepDisposition.CACHE_HIT, exact_retry.error
+        assert runner.curator_launches == 2
+        assert (
+            read_current_step_outputs(second.committer, exact_retry.step_run_id)
+            == current
+        )
 
-        # Second run with different params on step 0
-        p2 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        step0b = p2.run(IngestMockOp, inputs=None, params={"seed": 99})
-        cached_execution = "c" * 32
-        p2._step_tracker.check_cache = MagicMock(
-            return_value=_WholeStepCacheHit(
-                result=downstream_source,
-                source_step_run_id=downstream_source.step_run_id,
-                execution_run_ids=(cached_execution,),
-            )
-        )
-        with patch.object(p2, "_commit_whole_step_reuse"):
-            downstream_current = p2.run(MockOp, inputs={"data": step0b.output("file")})
-        # Step 0 re-executes, but the mocked run still exposes the same empty
-        # concrete output snapshot, so the content-addressed downstream key is stable.
-        assert mock_exec.call_count == 3
-        assert downstream_current.step_run_id != downstream_source.step_run_id
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_pipeline_run_id_generated(self, mock_exec, tmp_path):
-        """pipeline_run_id is non-empty and contains pipeline name."""
-        pipeline = PipelineManager.create(
-            name="example_pipeline",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        assert pipeline.config.pipeline_run_id != ""
-        assert "example_pipeline" in pipeline.config.pipeline_run_id
+def test_pipeline_run_ids_are_generated_and_distinct(tmp_path: Path) -> None:
+    with _create(tmp_path) as first, _create(tmp_path) as second:
+        assert first.config.pipeline_run_id.startswith("persistent-pipeline_")
+        assert second.config.pipeline_run_id != first.config.pipeline_run_id
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_finalize_waits_and_shuts_down(self, mock_exec, tmp_path):
-        """Finalize waits for futures and shuts down executor."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
+
+def test_finalize_collects_pending_future_and_closes_ownership(tmp_path: Path) -> None:
+    with _create(tmp_path) as pipeline:
+        future = pipeline.submit(
+            RepeatableSource, step_runner=NativePipelineRunner(pipeline.committer)
         )
-        pipeline.run(IngestMockOp, inputs=None)
         summary = pipeline.finalize()
+        assert future.result().status == StepStatus.SUCCEEDED
         assert summary["total_steps"] == 1
         assert summary["overall_success"] is True
-        assert pipeline._executor is None
+        assert pipeline.ownership_state() == OwnershipState.CLOSED
+        assert pipeline.finalize() == summary

@@ -10,6 +10,7 @@ from artisan.inspection._boundary import invalid_input, validate_int_range
 from artisan.inspection._evidence import MAX_PAYLOAD_BYTES, ensure_fits, json_ready
 from artisan.inspection._pagination import paginate, reject_cursor
 from artisan.inspection.requests import DiagnosisView
+from artisan.schemas.execution.storage_config import StorageConfig
 
 
 def runs_payload(
@@ -18,12 +19,14 @@ def runs_payload(
     cursor: str | None = None,
     *,
     budget: int = MAX_PAYLOAD_BYTES,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
 ) -> dict[str, Any]:
     """Return deterministically ordered run rollups."""
     from artisan.orchestration.run_history import list_runs
 
     validate_int_range(limit, field="limit", minimum=1, maximum=100)
-    rows = list_runs(root).to_dicts()
+    rows = list_runs(root, storage=storage, files_root=files_root).to_dicts()
     rows.sort(key=lambda row: row["pipeline_run_id"])
     rows.sort(
         key=lambda row: (row["started_at"] is not None, row["started_at"]), reverse=True
@@ -46,12 +49,16 @@ def status_payload(
     cursor: str | None = None,
     *,
     budget: int = MAX_PAYLOAD_BYTES,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
 ) -> dict[str, Any]:
     """Page current steps while keeping the full run rollup in every response."""
     from artisan.orchestration.run_status import run_status
 
     validate_int_range(limit, field="limit", minimum=1, maximum=100)
-    header = json_ready(run_status(root, pipeline_run_id))
+    header = json_ready(
+        run_status(root, pipeline_run_id, storage=storage, files_root=files_root)
+    )
     steps = sorted(header.pop("steps"), key=lambda step: step["step_number"])
     return paginate(
         steps,
@@ -75,6 +82,8 @@ def diagnosis_payload(
     cursor: str | None = None,
     *,
     budget: int = MAX_PAYLOAD_BYTES,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
 ) -> dict[str, Any]:
     """Select one diagnosis collection without concealing its source window."""
     from artisan.visualization.inspect import diagnose_run
@@ -84,7 +93,9 @@ def diagnosis_payload(
         invalid_input(
             "detail", "Identity detail is available only in the failures view"
         )
-    diagnosis = json_ready(diagnose_run(root, pipeline_run_id))
+    diagnosis = json_ready(
+        diagnose_run(root, pipeline_run_id, storage=storage, files_root=files_root)
+    )
     failures = diagnosis["failed_steps"]
     header = {
         "pipeline_run_id": pipeline_run_id,

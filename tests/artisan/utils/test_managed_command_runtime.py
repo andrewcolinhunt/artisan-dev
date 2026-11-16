@@ -10,12 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+from fixtures.commands import ExternalCommandEnvironment, IdentityCommandEnvironment
 
-from artisan.schemas.operation_config.environment_spec import (
-    EnvironmentSpec,
-    LocalEnvironmentSpec,
-    PixiEnvironmentSpec,
-)
 from artisan.utils._command_supervisor import ATTACHMENT_ENV
 from artisan.utils.command_supervisor import (
     CommandOwnershipError,
@@ -66,7 +62,7 @@ os._exit(0)
 """
     started = time.monotonic()
     result = run_command(
-        LocalEnvironmentSpec(),
+        IdentityCommandEnvironment(),
         [sys.executable, "-c", code, str(marker)],
         stream_output=streaming,
     )
@@ -81,30 +77,35 @@ def test_nested_managed_group_closes_when_foreground_parent_exits(tmp_path):
     nested = "import os,signal,time,pathlib; signal.signal(signal.SIGTERM,signal.SIG_IGN); signal.alarm(15); pathlib.Path(__import__('sys').argv[1]).write_text(str(os.getpid())); time.sleep(12)"
     code = """
 import os, sys, pathlib, time
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from fixtures.commands import IdentityCommandEnvironment
 from artisan.utils.external_tools import run_command
 child = os.fork()
 if not child:
-    run_command(LocalEnvironmentSpec(), [sys.executable, '-c', sys.argv[2], sys.argv[1]])
+    run_command(IdentityCommandEnvironment(), [sys.executable, '-c', sys.argv[2], sys.argv[1]])
     os._exit(0)
 while not pathlib.Path(sys.argv[1]).exists(): time.sleep(.01)
 os._exit(0)
 """
     with pytest.raises(CommandOwnershipError):
         run_command(
-            LocalEnvironmentSpec(), [sys.executable, "-c", code, str(marker), nested]
+            IdentityCommandEnvironment(),
+            [sys.executable, "-c", code, str(marker), nested],
         )
     _wait_absent(int(marker.read_text()))
 
 
-def test_joined_command_threads_share_one_invocation_owner():
+def test_joined_command_threads_share_one_invocation_owner() -> None:
     with managed_invocation():
         with concurrent.futures.ThreadPoolExecutor(2) as pool:
             futures = [
                 pool.submit(
                     run_command,
-                    LocalEnvironmentSpec(),
-                    [sys.executable, "-c", "import os;print(os.getppid())"],
+                    IdentityCommandEnvironment(),
+                    [
+                        sys.executable,
+                        "-c",
+                        f"import os;print(os.environ[{ATTACHMENT_ENV[0]!r}])",
+                    ],
                 )
                 for _ in range(2)
             ]
@@ -118,7 +119,7 @@ def test_independent_standalone_threads_have_independent_owners():
         results = list(
             pool.map(
                 lambda _: run_command(
-                    LocalEnvironmentSpec(),
+                    IdentityCommandEnvironment(),
                     [
                         sys.executable,
                         "-c",
@@ -145,7 +146,7 @@ def test_supplied_invalid_attachment_never_creates_independent_owner(monkeypatch
         patch.object(CommandSupervisor, "start") as start,
         pytest.raises(CommandOwnershipError),
     ):
-        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+        run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
     start.assert_not_called()
 
 
@@ -166,7 +167,7 @@ def test_private_capability_is_redacted_without_command_recorder():
     with managed_invocation():
         secret = attachment_sensitive_values()[0]
         with pytest.raises(ExternalToolError) as failure:
-            run_command(LocalEnvironmentSpec(), command)
+            run_command(IdentityCommandEnvironment(), command)
         assert secret not in str(failure.value)
         assert "<redacted>" in failure.value.stdout
 
@@ -177,14 +178,14 @@ def test_nested_scope_uses_same_secret_and_raw_output_stays_raw():
 import sys
 from artisan.utils.external_tools import run_command
 from artisan.utils.command_supervisor import managed_invocation
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from fixtures.commands import IdentityCommandEnvironment
 with managed_invocation():
-    print(run_command(LocalEnvironmentSpec(), [sys.executable, '-c', sys.argv[1]]).stdout, end='')
+    print(run_command(IdentityCommandEnvironment(), [sys.executable, '-c', sys.argv[1]]).stdout, end='')
 """
     with managed_invocation():
         secret = attachment_sensitive_values()[0]
         result = run_command(
-            LocalEnvironmentSpec(), [sys.executable, "-c", outer, code]
+            IdentityCommandEnvironment(), [sys.executable, "-c", outer, code]
         )
         assert result.stdout.strip() == secret
 
@@ -213,7 +214,9 @@ def test_external_obligation_survives_completed_command_until_cancel():
 
 
 def test_ordinary_external_completion_can_close_host_scope():
-    result = run_command(EnvironmentSpec(), [sys.executable, "-c", "print('done')"])
+    result = run_command(
+        ExternalCommandEnvironment(), [sys.executable, "-c", "print('done')"]
+    )
     assert result.stdout == "done\n"
 
 
@@ -251,26 +254,3 @@ def test_owner_uses_one_shortened_deadline_for_concurrent_groups(tmp_path):
         for command in commands:
             command.dispose()
         owner.finish(time.monotonic() + 2)
-
-
-def test_capability_is_not_a_serialized_or_hashed_environment_field():
-    assert LocalEnvironmentSpec.cancellation_scope == "process_group"
-    assert EnvironmentSpec.cancellation_scope == "external"
-    assert PixiEnvironmentSpec.cancellation_scope == "external"
-    assert "cancellation_scope" not in LocalEnvironmentSpec().model_dump()
-    assert (
-        "cancellation_scope"
-        not in LocalEnvironmentSpec.model_json_schema()["properties"]
-    )
-
-
-@pytest.mark.parametrize("provider", [False, True])
-def test_copied_runtime_attachment_is_excluded_from_authored_environment(provider):
-    from artisan.schemas.operation_config.compute import ModalComputeConfig
-
-    model = ModalComputeConfig if provider else LocalEnvironmentSpec
-    values = dict.fromkeys(ATTACHMENT_ENV, "runtime-only-value")
-    environment = model(env={**values, "FORMAT": "json"}, public_env=("FORMAT",))
-    assert environment.env == {"FORMAT": "json"}
-    assert "runtime-only-value" not in environment.model_dump_json()
-    assert not set(ATTACHMENT_ENV) & set(environment.model_dump()["env"])

@@ -166,7 +166,7 @@ class AppendableArtifact(Artifact):
         record_id: str,
         content_hash: str,
         size_bytes: int,
-        step_number: int,
+        step_number: int | None,
         external_path: str,
         original_name: str | None = None,
         metadata: dict[str, Any] | None = None,
@@ -177,7 +177,7 @@ class AppendableArtifact(Artifact):
             record_id: Unique identifier within the file.
             content_hash: xxh3_128 hash of this record's JSON line.
             size_bytes: Size of this record's JSON line in bytes.
-            step_number: Pipeline step number.
+            step_number: Pipeline step number, or None for a standalone draft.
             external_path: Path to the JSONL file.
             original_name: Human-readable record key.
             metadata: Optional metadata dict.
@@ -204,6 +204,7 @@ class AppendableTypeDef(ArtifactTypeDef):
     key = "appendable"
     table_path = "artifacts/appendables"
     model = AppendableArtifact
+    required_references = None
 
 
 def _bounded_records(source: BinaryIO) -> Iterator[bytes]:

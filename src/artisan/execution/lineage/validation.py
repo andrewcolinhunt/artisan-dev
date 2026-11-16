@@ -134,6 +134,56 @@ def _validate_mapping_reference(
             raise LineageIntegrityError(msg)
 
 
+def resolve_input_index(
+    mapping: LineageMapping,
+    input_artifact_ids: dict[str, list[str]],
+    *,
+    invocation_id: str,
+) -> int:
+    """Resolve a parent to its exact input position without merging equal IDs.
+
+    Args:
+        mapping: One input-parent declaration.
+        input_artifact_ids: Ordered IDs in each input role.
+        invocation_id: Consuming invocation that owns the input positions.
+
+    Returns:
+        The declared or uniquely resolved index in the source input role.
+
+    Raises:
+        LineageIntegrityError: If the owner, position, or identity is invalid,
+            or an ID-only reference matches more than one input position.
+    """
+    if not invocation_id:
+        msg = "Exact lineage resolution requires an invocation identity"
+        raise LineageIntegrityError(msg)
+    if mapping.source_artifact_id is None:
+        msg = "Input lineage requires source_artifact_id"
+        raise LineageIntegrityError(msg)
+    values = input_artifact_ids.get(mapping.source_role, [])
+    if mapping.source_input_index is not None:
+        if mapping.source_invocation != invocation_id:
+            msg = "Input lineage belongs to another invocation"
+            raise LineageIntegrityError(msg)
+        index = mapping.source_input_index
+        if not 0 <= index < len(values):
+            msg = "Input lineage index is outside the referenced role"
+            raise LineageIntegrityError(msg)
+        if values[index] != mapping.source_artifact_id:
+            msg = "Input lineage expected artifact identity does not match"
+            raise LineageIntegrityError(msg)
+        return index
+    matches = [
+        index
+        for index, artifact_id in enumerate(values)
+        if artifact_id == mapping.source_artifact_id
+    ]
+    if len(matches) != 1:
+        msg = "Input ID lineage is missing or ambiguous; use an exact occurrence"
+        raise LineageIntegrityError(msg)
+    return matches[0]
+
+
 def validate_lineage_integrity(
     lineage: dict[str, list[LineageMapping]],
     input_artifact_ids: dict[str, list[str]],
@@ -141,11 +191,14 @@ def validate_lineage_integrity(
     output_specs: dict[str, OutputSpec],
     *,
     prepared_input_ids: dict[str, set[str]] | None = None,
+    invocation_id: str | None = None,
 ) -> None:
     """Validate explicit role coverage, contracts, references, and uniqueness.
 
     Different parents in the same role are valid fan-in. Only an identical
-    reference for the same target occurrence is a duplicate.
+    reference for the same target occurrence is a duplicate. Supplying the
+    consuming invocation enables exact ordered input resolution; precomputed
+    ID sets cannot substitute for ordered inputs on that path.
 
     Raises:
         LineageIntegrityError: If role coverage, contracts, or references fail.
@@ -167,7 +220,7 @@ def validate_lineage_integrity(
         if not allowed_roles and mappings:
             msg = f"Root output role {target_role!r} must have empty lineage"
             raise LineageIntegrityError(msg)
-        seen: set[tuple[int, str, str | None, int | None]] = set()
+        seen: set[tuple[int, str, str | int | None, int | None]] = set()
         for mapping in mappings:
             if not 0 <= mapping.draft_index < len(output_artifacts[target_role]):
                 msg = f"Lineage references non-existent output {target_role!r}[{mapping.draft_index}]"
@@ -178,11 +231,20 @@ def validate_lineage_integrity(
                     f"{mapping.source_role!r}; allowed roles: {sorted(allowed_roles)}"
                 )
                 raise LineageIntegrityError(msg)
-            _validate_mapping_reference(mapping, input_ids, output_artifacts, kind)
+            source: str | int | None = mapping.source_artifact_id
+            if kind == "inputs" and invocation_id is not None:
+                source = resolve_input_index(
+                    mapping, input_artifact_ids, invocation_id=invocation_id
+                )
+            else:
+                if mapping.source_input_index is not None:
+                    msg = "Precise input lineage requires its consuming invocation"
+                    raise LineageIntegrityError(msg)
+                _validate_mapping_reference(mapping, input_ids, output_artifacts, kind)
             key = (
                 mapping.draft_index,
                 mapping.source_role,
-                mapping.source_artifact_id,
+                source,
                 mapping.source_output_index,
             )
             if key in seen:

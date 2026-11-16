@@ -22,21 +22,20 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
-from artisan.schemas.orchestration.pipeline_config import PipelineConfig
+from artisan.orchestration.runners import LocalRunner
 
 
 def _make_pipeline(env: dict, name: str) -> PipelineManager:
     """Build a PipelineManager from the cloud env dict."""
-    config = PipelineConfig(
+    return PipelineManager.create(
         name=name,
         delta_root=env["delta_root"],
         staging_root=env["staging_root"],
         working_root=env["working_root"],
         files_root=env["files_root"],
         storage=env["storage"],
+        default_step_runner=LocalRunner(),
     )
-    return PipelineManager(config, configure_logging=False)
 
 
 class TestS3PipelineEndToEnd:
@@ -50,12 +49,12 @@ class TestS3PipelineEndToEnd:
         gen = pipeline.run(
             DataGenerator,
             params={"count": 2, "rows_per_file": 5, "seed": 7},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": gen.output("datasets")},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         pipeline.finalize()
 
@@ -73,25 +72,23 @@ class TestS3PipelineEndToEnd:
         assert "csv" in types, f"Expected 'csv' in {types}"
         assert "metric" in types, f"Expected 'metric' in {types}"
 
-        # Verify the executions table was committed.
-        exec_uri = f"{env['delta_root']}/orchestration/executions"
-        exec_df = pl.read_delta(exec_uri, storage_options=storage_options)
-        assert exec_df.height >= 2  # one per execution unit
-        assert all(exec_df["success"].to_list())
+        from artisan.orchestration.engine.retained_execution_query import (
+            read_retained_execution_membership,
+        )
+        from artisan.storage.core.execution_source import ScientificExecutionSource
+
+        members = read_retained_execution_membership(
+            pipeline.committer, pipeline_run_id=pipeline.config.pipeline_run_id
+        )
+        assert len(members) >= 2
+        assert all(
+            isinstance(member.source, ScientificExecutionSource) for member in members
+        )
 
     def test_manager_initializes_with_cloud_failure_logs(self, s3_pipeline_env):
         """PipelineManager constructs cleanly with cloud persistence roots."""
         env = s3_pipeline_env
-        config = PipelineConfig(
-            name="s3_manager_init",
-            delta_root=env["delta_root"],
-            staging_root=env["staging_root"],
-            working_root=env["working_root"],
-            files_root=env["files_root"],
-            storage=env["storage"],
-        )
-        # Just constructing must not crash.
-        pipeline = PipelineManager(config, configure_logging=False)
+        pipeline = _make_pipeline(env, "s3_manager_init")
         pipeline.finalize()
 
     def test_cloud_uri_input_ingestion(self, s3_pipeline_env):
@@ -122,7 +119,7 @@ class TestS3PipelineEndToEnd:
                 f"{uri_prefix}/raw/data_0.csv",
                 f"{uri_prefix}/raw/data_1.csv",
             ],
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         result = pipeline.finalize()
         assert result["overall_success"]
@@ -148,8 +145,7 @@ class TestS3PipelineEndToEnd:
         local sandbox files_dir, records that local path as
         path, and downstream materialization fails because
         the bytes don't exist at the path the consumer resolves. This
-        test is the regression guard for PR 7 (files_root cloud
-        uploads).
+        test verifies managed cloud carrier publication.
         """
         env = s3_pipeline_env
         pipeline = _make_pipeline(env, "s3_file")
@@ -157,7 +153,7 @@ class TestS3PipelineEndToEnd:
         pipeline.run(
             FileGenerator,
             params={"count": 2, "file_size_bytes": 1024, "seed": 0},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         result = pipeline.finalize()
         assert result["overall_success"]
@@ -181,8 +177,7 @@ class TestS3PipelineEndToEnd:
             assert fs.exists(uri), f"Artifact location {uri!r} is not readable"
 
         # No new literal-colon leak from this run under the repo root.
-        # (Pre-existing dirs from before PR 7 may still be present; this
-        # check only asserts nothing new was created inside one today.)
+        # A pre-existing directory must not acquire new files during this run.
         repo_root = pathlib.Path(__file__).resolve().parents[2]
         leaked = repo_root / "s3:"
         if leaked.exists():

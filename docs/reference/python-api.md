@@ -12,12 +12,15 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Match filenames inside an operation | `artisan.operations.lineage` | `match_outputs_to_inputs_by_stem` |
 | Define an operation | `artisan.operations.base` | `OperationDefinition`, `PerArtifact` |
 | Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
+| Declare worker or command software | `artisan.schemas` | `Environment.from_pixi` |
+| Prepare and place local work | `artisan.orchestration.runners` | `LocalRunner`, `DockerRuntime`, `ApptainerRuntime` |
+| Invoke creators inside an existing process | `artisan.execution` | `ExecutionSession` |
 | Retain generated external files | `artisan.schemas` | `ExecuteInput`, `PostprocessInput`, `FileRefArtifact` |
 | Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
 | Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |
 | Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
 | Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |
-| Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeResult` |
+| Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeCall`, `CompositeRef` |
 | Read stored artifacts and export inspection copies | `artisan.storage` | `ArtifactStore`, `PublicationExport`, `export_publication` |
 | Inspect results, failures, and timing | `artisan.visualization` | `inspect_pipeline`, `inspect_csv`, `inspect_failures`, `PipelineTimings` |
 | Discover and query bounded evidence | `artisan.inspection` | `list_inspections`, `describe_inspection`, `inspect_evidence` |
@@ -25,7 +28,7 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Save and reload complete reports | `artisan.inspection` | `export_evidence`, `load_evidence_export` |
 | Assess recorded metrics or compare selected attempts | `artisan.visualization` | `OutcomeSelection`, `AssessmentSpec`, `assess_outcomes`, `ComparisonSpec`, `compare_runs` |
 | Traverse provenance | `artisan.provenance` | `provenance_edges`, `walk_forward`, `walk_backward` |
-| Implement a runner provider | `artisan.orchestration.runner_api` | `RunnerBase`, `LifecycleRouter`, `UnitResult` |
+| Implement a runner provider | `artisan.orchestration.runner_api` | `LocalRunner`, `AssignmentHandle`, `CuratorHandle`, `WorkerOwner` |
 
 For structured error definitions, see `artisan.errors`: `ArtisanError`,
 `ArtisanErrorEnvelope`, and `ErrorCode`. See
@@ -72,6 +75,7 @@ Use `pixi run artisan --help` to find CLI commands, then append
 
 - [Build a pipeline](../how-to-guides/building-a-pipeline.md).
 - [Configure execution](../how-to-guides/configuring-execution.md).
+- [Prepare execute environments](../how-to-guides/execute-environments.md).
 - [Write an operation](../how-to-guides/writing-creator-operations.md).
 - [Retain command-generated files](../how-to-guides/writing-creator-operations.md#retain-command-files).
 - [Resolve configuration references](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).

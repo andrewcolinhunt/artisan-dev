@@ -112,6 +112,13 @@ class PublicationPolicy:
         if row["error"] is not None:
             row["error"] = self.text(row["error"])
         inputs = json.loads(row["input_refs_json"])
+        if (
+            isinstance(inputs, dict)
+            and set(inputs) == {"raw_paths"}
+            and isinstance(inputs["raw_paths"], list)
+            and all(isinstance(value, str) for value in inputs["raw_paths"])
+        ):
+            inputs["raw_paths"] = [self.text(value) for value in inputs["raw_paths"]]
         entries = inputs.values() if isinstance(inputs, dict) else inputs or []
         for entry in entries:
             if isinstance(entry, dict) and entry.get("type") == "literal":
@@ -139,6 +146,7 @@ class PublicationPolicy:
                 snapshot["diagnostic"][name] = self.diagnostic(
                     snapshot["diagnostic"][name]
                 )
+        self.protected(snapshot, "replay evidence")
         return ReplaySnapshot.model_validate(snapshot).model_dump_json()
 
     def _omit(self, value: dict[str, Any] | list[Any], pointer: str = "") -> list[str]:

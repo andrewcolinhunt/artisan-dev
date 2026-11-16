@@ -3,16 +3,43 @@
 These are the framework validating an operation's declared output/lineage
 contract *after* it ran — a validation category, distinct from a tool crash
 (``compute``) or an unstructured Python exception in ``execute()``. Each
-subclasses ``ArtisanError`` so its structured code reaches the persisted
-``executions.error_envelope`` and ``inspect_failures``; ``str(err)`` stays
+subclasses ``ArtisanError`` so its structured code reaches curator records or
+optional scientific delivery diagnostics and ``inspect_failures``; ``str(err)`` stays
 the plain message and by-type ``except``/``pytest.raises`` keep working.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from artisan.errors import ArtisanError, ErrorCode
+
+if TYPE_CHECKING:
+    from artisan.schemas.execution.assignment import DeliveryIdentity
+
+
+class AssignmentExecutionError(RuntimeError):
+    """A confirmed operation failure, distinct from assignment infrastructure.
+
+    Only direct scientific hooks and their output contracts create this marker.
+    The assignment boundary attaches its fresh delivery only after session cleanup.
+    Providers preserve that identity, sanitized diagnostic, and call location.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        phase: str | None = None,
+        call_path: tuple[str, ...] = (),
+        delivery: DeliveryIdentity | None = None,
+        error_envelope: dict[str, Any] | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.phase = phase
+        self.call_path = call_path
+        self.delivery = delivery
+        self.error_envelope = error_envelope
 
 
 class ArtifactValidationError(ArtisanError):

@@ -10,7 +10,7 @@ import polars as pl
 from fsspec.implementations.local import LocalFileSystem
 
 from artisan.errors import ArtisanError, ArtisanErrorEnvelope, ErrorCode
-from artisan.execution.executors.creator import _ExecuteFailure
+from artisan.execution.invocation import ExecuteFailure
 from artisan.execution.recording.commands import capture_commands
 from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.execution.recording.recorder import (
@@ -184,7 +184,7 @@ class TestErrorEnvelopeDict:
             message="boom",
             error_type="compute",
         )
-        outer = _ExecuteFailure("wrapped")
+        outer = ExecuteFailure("wrapped")
         outer.__cause__ = inner
         env = error_envelope_dict(outer)
         assert env is not None
@@ -196,7 +196,7 @@ class TestErrorEnvelopeDict:
 
     def test_execute_failure_without_cause_returns_none(self):
         """The un-chained batch path (__cause__ is None) yields no envelope."""
-        assert error_envelope_dict(_ExecuteFailure("wrapped")) is None
+        assert error_envelope_dict(ExecuteFailure("wrapped")) is None
 
 
 class TestRecordExecutionFailureEnvelope:
@@ -274,6 +274,7 @@ class TestPassthroughStagedRowsGolden:
         ctx.worker_id = 0
         ctx.compute_backend = "local"
         ctx.step_run_id = None
+        ctx.curator_cache_proof = None
 
         edge = ArtifactProvenanceEdge(
             execution_run_id="0" * 32,  # sentinel; recorder stamps the real one
@@ -343,7 +344,7 @@ class TestPassthroughStagedRowsGolden:
                 '"unavailable_reason":"direct_recorder_fixture",'
                 '"operation":null,"inputs":{},"group_ids":null,'
                 '"associated":[],"associated_complete":false,"source":null,'
-                '"required_replacements":[],"remote_identity":[],'
+                '"required_replacements":[],"required_runtime_keys":null,'
                 '"read_semantics":"explicit_inputs_and_current_committed_store",'
                 '"diagnostic":null}'
             ),

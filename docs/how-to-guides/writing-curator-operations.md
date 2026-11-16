@@ -1,8 +1,8 @@
 # Write Curator Operations
 
-Use a curator to route, filter, merge, or ingest artifacts in an isolated local
-subprocess. Use a [creator](writing-creator-operations.md) for heavy computation
-or external tools.
+Use a curator to route, filter, merge, or ingest artifacts in a worker selected
+by your runner. It reads a fixed view of the store. Use a
+[creator](writing-creator-operations.md) for heavy computation or external tools.
 
 Before writing a custom curator, check whether a
 [built-in operation](#built-in-curator-operations) already does what you need.
@@ -16,6 +16,9 @@ Before writing a custom curator, check whether a
 
 This example implements a merge to show the curator contract. For ordinary
 pipeline merging, use the built-in `Merge` operation.
+
+Put custom curator definitions in an installed, importable application package
+before submitting them to a pipeline worker.
 
 ```python
 from __future__ import annotations
@@ -91,8 +94,8 @@ pipeline.run(
 |---|---------|---------|
 | **Purpose** | Heavy computation, file I/O | Route, filter, merge, or ingest artifacts |
 | **Execution** | Three phases (`preprocess` / `execute_function` / `postprocess`) | Single `execute_curator` method |
-| **Sandboxing** | Full sandbox with file materialization | No working sandbox; memory-isolated subprocess |
-| **Dispatch** | Built-in local runner or an external provider instance | Local spawned subprocess; step-runner overrides do not relocate it |
+| **Resources** | Lifecycle scratch and declared input materialization | Scratch for one invocation and a fixed store view |
+| **Dispatch** | Selected local runner or external provider | Selected local runner or external provider |
 | **Returns** | `ArtifactResult` containing any new artifacts | `ArtifactResult`, `ArtifactStreamResult`, or `PassthroughResult` |
 
 ---
@@ -591,11 +594,16 @@ Imported artifacts become destination roots, with their immediate source run
 and artifact identity in `metadata.imported_from`. The execution's
 `ingest_source` metadata records which source attempts contributed.
 
-External files retain their verified source locations. Keep those files
-accessible for the lifetime of the imported artifacts. Destination readers
-need a filesystem that supports the retained URIs and the required access or
-credentials. `source_storage` configures source reads; it does not transfer
-credentials or copy file ownership. Missing or modified bytes fail the import.
+External file content is verified and copied into destination-owned storage.
+`source_storage` and `source_files_root` configure the source reads; cloud sources
+require an explicit files root. Once the destination accepts the import, its
+artifacts no longer depend on the source files remaining available.
+
+Import preserves artifact content and does not rewrite embedded references.
+For example, a config containing `{"$artifact": X}` still requires the exact
+artifact X in the destination. Importing a CSV alongside that config creates a
+new CSV identity, so it does not satisfy the reference to X. Unresolved required
+references reject the import without publishing its outputs.
 
 ### InteractiveFilter
 
@@ -606,7 +614,7 @@ filtered result as a pipeline step:
 from artisan.operations.curator import InteractiveFilter
 
 filt = InteractiveFilter(delta_root="/runs/my_pipeline/delta")
-filt.load(step_numbers=[1], artifact_type="csv")
+filt.load(step_numbers=[1], artifact_type="csv", pipeline_run_id=run_id)
 
 # Explore metrics
 filt.wide_df   # one row per artifact, metrics as columns
@@ -626,15 +634,17 @@ result = filt.commit(step_name="interactive_filter")
 # result.output("passthrough") is available for downstream steps
 ```
 
-The `load()` step filter uses artifact origin steps across the store. It does
-not select outputs accepted by a particular run. Use it when you intend that
-origin-based selection; see [run selection](inspecting-provenance.md#select-the-run-you-want-to-inspect)
-for the distinction.
+Here `run_id` identifies the run to inspect. `load()` selects its current accepted
+outputs at the requested logical steps, including exact cache sources. Without
+`pipeline_run_id`, it selects the newest run. Content origins remain unchanged;
+see [run selection](inspecting-provenance.md#select-the-run-you-want-to-inspect).
 
 The `load()` method discovers descendant metrics via forward provenance walk.
 `set_criteria()` validates metric names against loaded data and checks for
-ambiguous field names across steps. `commit()` writes step and execution records
-to the Delta store, making the filtered result available for downstream wiring.
+ambiguous field names across steps. `commit()` submits the captured selection
+through the selected curator worker and preserves the loaded source attempts.
+It does not rerun the criteria against newer metrics. The accepted result is
+available for downstream wiring.
 
 ---
 
@@ -680,9 +690,9 @@ etc.).
 | `TypeError: must define OutputRole` | Missing `OutputRole(StrEnum)` inner class | Add enum with values matching `outputs` keys |
 | `NotImplementedError` from `execute_curator` | Forgot to override the method | Implement `execute_curator` on your subclass |
 | Empty `inputs` dict | Input role name mismatch | Check that `pipeline.run(inputs={...})` keys match what the operation expects |
-| `ArtifactResult` with unfinalizable drafts | Missing `step_number` on `draft()` | Use the `step_number` parameter |
+| `ArtifactResult` with invalid drafts | Missing required content or inconsistent identity | Validate the draft's content; the framework supplies an omitted pipeline origin |
 | `PassthroughResult` with invalid IDs | Passed artifact objects instead of ID strings | Use `artifact.artifact_id`, not the artifact itself |
-| Operation used the external runner instead of staying local | Operation overrides `execute_function()` and is therefore a creator | Override `execute_curator()` — curators run in an isolated local subprocess |
+| Store-bound operation uses the creator lifecycle | Operation overrides `execute_function()` | Implement `execute_curator()` for the curator contract; the configured runner still selects worker placement |
 
 ---
 

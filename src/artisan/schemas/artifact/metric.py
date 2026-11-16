@@ -87,7 +87,7 @@ class MetricArtifact(JsonContentMixin, Artifact):
         cls,
         content: dict[str, Any],
         original_name: str,
-        step_number: int,
+        step_number: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> MetricArtifact:
         """Create a draft from a metric values dict.
@@ -95,7 +95,7 @@ class MetricArtifact(JsonContentMixin, Artifact):
         Args:
             content: Metric key-value pairs (JSON-serializable).
             original_name: Human-readable filename; extensions are stored separately.
-            step_number: Pipeline step number.
+            step_number: Pipeline step number, or None for a standalone draft.
             metadata: Optional metadata dict.
 
         Returns:

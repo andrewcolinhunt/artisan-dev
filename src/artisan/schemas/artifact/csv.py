@@ -115,7 +115,7 @@ class CSVArtifact(Artifact):
         cls,
         content: bytes,
         original_name: str,
-        step_number: int,
+        step_number: int | None = None,
         metadata: dict[str, Any] | None = None,
         external_path: str | None = None,
     ) -> CSVArtifact:
@@ -124,7 +124,7 @@ class CSVArtifact(Artifact):
         Args:
             content: Raw CSV bytes.
             original_name: Original filename (extensions will be stripped).
-            step_number: Pipeline step number.
+            step_number: Pipeline step number, or None for a standalone draft.
             metadata: Optional metadata dict.
             external_path: Optional path to the original external file.
 
@@ -190,3 +190,4 @@ class CSVTypeDef(ArtifactTypeDef):
     key = "csv"
     table_path = "artifacts/csvs"
     model = CSVArtifact
+    required_references = None

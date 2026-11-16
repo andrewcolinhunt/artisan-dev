@@ -80,52 +80,54 @@ include more than one input per execution unit so batching mistakes are visible.
 
 ## External step-runner providers
 
-Core supplies the local runner. A scheduler or other lifecycle runner is a
-separate package that imports its contract from
-`artisan.orchestration.runner_api`. Users pass a configured `RunnerBase`
-instance to a pipeline; core does not register external providers by string or
-reconstruct provider objects from stored configuration.
+Core supplies `LocalRunner`. Provider packages implement the contracts exported
+by `artisan.orchestration.runner_api`. Users pass configured runner instances;
+core does not reconstruct external providers from recorded names.
 
-A provider implements a `RunnerBase` subclass with its name, traits, validation,
-and `create_lifecycle_router`. Its `LifecycleRouter` owns submission and
-collection for one step:
+A provider implements `resolve` and `launch` for ordered scientific units, and
+`resolve_curator` and `launch_curator` for store-bound curators. Resolution selects
+already prepared software. The worker invokes the shared core execution kernel;
+providers do not implement their own lineage, cache acceptance, or persistence.
 
-- `_dispatch` checks submission preconditions and starts asynchronous collection
-  through `_start_background`.
-- Collection returns one `UnitResult` per submitted `ExecutionUnit`, in submission
-  order. Return the result model, not a dictionary with selected fields.
-- `cancel` is thread-safe, idempotent, and limited to the handles this router
-  submitted. Its acknowledgement must reflect what the provider can prove.
-- A partial submission failure still settles a result for every original unit
-  and cancels only the handles already created by that submission.
+Each unit has a result handle, while a `WorkerOwner` retains the actual transport
+and process resources. Result availability and worker closure are separate facts.
+Partial launch errors must return ownership of every handle already created.
+Cancellation acknowledgements report only what the provider can prove; an SDK or
+scheduler acknowledgement alone cannot establish closure.
 
-Use `pack_units` and `execute_unit_batch` at the worker boundary. Apply
-`validate_batch_results` to returned batches and `failure_results_for_units` to
-job-level failures. These helpers preserve result cardinality and execution
-identity when one batch fails. The base router owns `dispatch`, `is_done`,
-`collect`, and `run`; providers implement its hooks instead of replacing that
-state machine.
-
-Inspect the current contract directly:
+Inspect the installed interfaces:
 
 ```python
-from artisan.orchestration.runner_api import LifecycleRouter, RunnerBase, UnitResult
+from artisan.orchestration.runner_api import (
+    AssignmentHandle,
+    CuratorHandle,
+    LocalRunner,
+    WorkerOwner,
+)
 
-help(RunnerBase)
-help(LifecycleRouter)
-help(UnitResult)
+help(LocalRunner.resolve)
+help(LocalRunner.launch)
+help(LocalRunner.resolve_curator)
+help(LocalRunner.launch_curator)
+help(AssignmentHandle)
+help(CuratorHandle)
+help(WorkerOwner)
 ```
 
-Provider tests should cover serialized worker execution, ordered batch results,
-partial submission, malformed responses, cancellation races, and log delivery.
-A successful submission alone does not prove that remote workers produced usable
-results.
+Preparation is explicit and may install, build, or deploy. Resolution and normal
+launch must not provision software. Bind transported work to the selected installed
+code, prepared environments, exact admission, and output location before decoding
+and invoking application code.
 
-Stored configuration retains the provider's name. Resuming a pipeline with an
-external default runner requires the configured provider instance again.
-Curators still execute in an isolated local subprocess. For the distinction
-between lifecycle runners and tool compute, see
-[configuring execution](../how-to-guides/configuring-execution.md).
+Provider tests should exercise real serialized worker entry, ordered units,
+partial launch, malformed or mismatched replies, early results with later cleanup,
+command cancellation, uncertain native execution, and diagnostic delivery. Run
+those checks against the matched installed core and provider payloads. Mock SDK
+success alone does not qualify remote execution.
+
+Resume requires the configured provider instance again. See
+[Configure Execution](../how-to-guides/configuring-execution.md) for placement and
+[Run Remote Workers](../how-to-guides/running-remote-workers.md) for setup.
 
 ## Error handling
 
@@ -195,6 +197,6 @@ every selected test passes without skips. The full and integration test tasks
 also require these container checks; `test-unit` remains service-free.
 
 Native platform checks and these container checks run in CI. Live Modal
-cancellation uses the separate
-[qualification procedure](https://github.com/dexterity-systems/artisan/blob/main/tests/qualification/modal/README.md),
-which creates a temporary app and requires explicit deployment approval.
+checks use the optional provider's
+[qualification harness](../../packages/artisan-modal/tests/qualification/final_launch.py).
+They require a configured account and allocate temporary cloud resources.

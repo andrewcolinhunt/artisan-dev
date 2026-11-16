@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import importlib
+import subprocess
+import sys
 import tomllib
 from dataclasses import fields
 from importlib.metadata import version
@@ -26,6 +28,7 @@ def test_package_version_matches_manifest_and_installed_metadata() -> None:
 
 _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
     "artisan": ("__version__",),
+    "artisan.execution.environments": (),
     "artisan.inspection": (
         "EvidenceExportReceipt",
         "InspectionCatalog",
@@ -40,7 +43,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "load_evidence_export",
         "read_operating_guide",
     ),
-    "artisan.operations.base": ("OperationDefinition", "PerArtifact"),
+    "artisan.operations.base": (
+        "OperationDefinition",
+        "PerArtifact",
+    ),
     "artisan.operations.lineage": ("match_outputs_to_inputs_by_stem",),
     "artisan.operations.curator": (
         "ConsolidateAppendables",
@@ -55,6 +61,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
     "artisan.operations.examples": (
         "AppendableGenerator",
         "CsvHead",
+        "CsvPair",
         "DataGenerator",
         "DataGeneratorWithMetrics",
         "DataTransformer",
@@ -70,11 +77,10 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "WaitTool",
     ),
     "artisan.composites": (
+        "CompositeCall",
         "CompositeContext",
         "CompositeDefinition",
         "CompositeRef",
-        "CompositeResult",
-        "CompositeStepHandle",
     ),
     "artisan.orchestration": (
         "CancellationStatus",
@@ -82,8 +88,6 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "PipelineConfig",
         "PipelineManager",
         "ReplayResult",
-        "Runner",
-        "RunnerBase",
         "StepDisposition",
         "StepFuture",
         "StepResult",
@@ -92,28 +96,92 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "replay_execution",
     ),
     "artisan.orchestration.runner_api": (
-        "BatchStrategy",
+        "AdmittedAssignment",
+        "AdmittedCurator",
+        "ApptainerRuntime",
+        "Assignment",
+        "AssignmentAttempt",
+        "AssignmentDispatch",
+        "AssignmentHandle",
+        "AssignmentLaunchError",
+        "AssignmentReply",
+        "AssignmentReplyContext",
+        "AssignmentSoftware",
         "CancellationAcknowledgement",
         "CancellationStatus",
-        "ExecutionUnit",
-        "LifecycleRouter",
-        "OrchestratorTraits",
-        "RunnerBase",
+        "CommandOwnershipError",
+        "CommandRecorder",
+        "CompiledPlan",
+        "ContainerBuildInputs",
+        "ContainerLauncherIdentity",
+        "CuratorAdmissionReference",
+        "CuratorHandle",
+        "CuratorLaunchError",
+        "CuratorReply",
+        "CuratorReplyContext",
+        "Definition",
+        "DerivedWheel",
+        "Environment",
+        "EnvironmentSource",
+        "ExecuteAdapter",
+        "InertCallControl",
+        "InertCallResult",
+        "InertWorkerCall",
+        "LocalLauncherIdentity",
+        "LocalPackStartupError",
+        "LocalRunner",
+        "LocalWorkerProfile",
+        "NativeGPUAllocation",
+        "NativeGPUSoftware",
+        "OperationDefinition",
+        "OwnershipState",
+        "Parameters",
+        "PreparedAssignmentSoftware",
+        "PreparedCommandWitness",
+        "PreparedCuratorSoftware",
+        "PreparedLocalBindings",
+        "PreparedNativeEnvironment",
+        "PreparedSIFEnvironment",
+        "PreparedToolBinding",
         "RunnerResources",
-        "RuntimeEnvironment",
-        "UnitResult",
-        "WorkerTraits",
-        "execute_unit",
-        "execute_unit_batch",
-        "failure_results_for_units",
-        "pack_units",
-        "validate_batch_results",
+        "RuntimeCompatibility",
+        "SealedDelivery",
+        "StagingResult",
+        "StorageConfig",
+        "WorkerOwner",
+        "WorkerTransportHeader",
+        "capture_container_inputs",
+        "capture_curator_definition",
+        "capture_native_gpu",
+        "capture_runtime_compatibility",
+        "compile_definition",
+        "controller_definition_sources",
+        "controller_worker_sources",
+        "execute_admitted_assignment",
+        "execute_admitted_curator",
+        "execute_inert_call",
+        "launch_inert_calls",
+        "observed_controller_sources",
+        "observed_definition_sources",
+        "prepare_command_witness",
+        "select_runtime_compatibility",
+        "select_tool_environments",
+        "serialize_worker_call",
+        "verify_command_witness",
+        "verify_container_source",
+        "verify_native_environment",
+        "verify_native_gpu_loader",
+        "verify_runtime_compatibility",
+        "verify_sif_environment",
+        "verify_wheel_installation",
+        "wheel_builder_digest",
+        "write_container_payload",
     ),
     "artisan.schemas": (
         "AppendableArtifact",
-        "ApptainerEnvironmentSpec",
         "Artifact",
         "ArtifactEmission",
+        "ArtifactOccurrence",
         "ArtifactResult",
         "ArtifactStreamResult",
         "ArtifactTypeDef",
@@ -121,37 +189,38 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "BatchStrategy",
         "CSVArtifact",
         "CachePolicy",
-        "ComputeProvider",
-        "ComputeResources",
         "CuratorInput",
         "CuratorResult",
-        "DockerEnvironmentSpec",
-        "EnvironmentSpec",
-        "Environments",
+        "Environment",
         "ExecuteInput",
         "ExecutionConfigArtifact",
         "FailurePolicy",
         "FileRefArtifact",
+        "FrozenInputContext",
         "GroupByStrategy",
+        "InputReference",
         "InputSpec",
         "JsonContentMixin",
         "LineageMapping",
-        "LocalEnvironmentSpec",
         "MetricArtifact",
-        "ModalComputeConfig",
+        "OccurrenceAddress",
         "OutputSpec",
         "PassthroughResult",
-        "PixiEnvironmentSpec",
         "PostprocessInput",
         "PreprocessInput",
+        "ReferenceContext",
+        "RequiredReference",
         "RunnerResources",
         "StorageConfig",
         "TablePath",
-        "ToolEndpointDataPolicy",
         "ToolSpec",
         "get_compound_extension",
     ),
-    "artisan.storage": ("ArtifactStore", "PublicationExport", "export_publication"),
+    "artisan.storage": (
+        "ArtifactStore",
+        "PublicationExport",
+        "export_publication",
+    ),
     "artisan.provenance": (
         "ProvenanceEdges",
         "provenance_edges",
@@ -234,7 +303,16 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "to_cli_value",
         "tutorial_setup",
     ),
-    "artisan_mcp": ("__version__", "build_mcp_app"),
+    "artisan_mcp": (
+        "__version__",
+        "build_mcp_app",
+    ),
+    "artisan.execution": ("ExecutionSession",),
+    "artisan.orchestration.runners": (
+        "ApptainerRuntime",
+        "DockerRuntime",
+        "LocalRunner",
+    ),
 }
 
 _SCHEMA_SUBPACKAGE_EXPORTS: dict[str, tuple[str, ...]] = {
@@ -261,21 +339,11 @@ _SCHEMA_SUBPACKAGE_EXPORTS: dict[str, tuple[str, ...]] = {
         "StorageConfig",
     ),
     "artisan.schemas.operation_config": (
-        "ApptainerEnvironmentSpec",
-        "ComputeProvider",
-        "ComputeResources",
-        "DockerEnvironmentSpec",
-        "EnvironmentSpec",
-        "Environments",
-        "LocalEnvironmentSpec",
-        "ModalComputeConfig",
-        "PixiEnvironmentSpec",
         "RunnerResources",
-        "ToolEndpointDataPolicy",
         "ToolSpec",
     ),
     "artisan.schemas.orchestration": (),
-    "artisan.schemas.provenance": ("LineageMapping",),
+    "artisan.schemas.provenance": ("InputReference", "LineageMapping"),
     "artisan.schemas.specs": (
         "CuratorInput",
         "ExecuteInput",
@@ -342,7 +410,7 @@ def test_facade_exports_are_exact_and_importable(
         ),
         (
             "artisan.schemas.operation_config",
-            ("ARTISAN_WORKER_IMAGE", "ComputeConfig", "LocalComputeConfig"),
+            ("ComputeConfig", "LocalComputeConfig"),
         ),
     ],
 )
@@ -374,6 +442,93 @@ def test_retired_csv_modules_are_absent(module_name: str) -> None:
 
 def test_composite_ref_has_only_the_supported_fields() -> None:
     assert tuple(field.name for field in fields(CompositeRef)) == (
-        "output_reference",
+        "owner",
+        "call",
         "role",
     )
+
+
+@pytest.mark.parametrize(
+    "first",
+    [
+        "artisan.storage.core.store_format",
+        "artisan.execution.curator_worker",
+        "artisan.execution.inert_worker",
+        "artisan.execution",
+        "artisan.composites",
+        "artisan.orchestration.runner_api",
+        "artisan.visualization.inspect",
+        "artisan.storage.publication",
+    ],
+)
+def test_public_facades_import_in_fresh_worker_and_storage_orders(first: str) -> None:
+    program = (
+        f"import {first}; "
+        "from artisan.execution import ExecutionSession; "
+        "from artisan.execution.session import ExecutionSession as ActualSession; "
+        "from artisan.orchestration import PipelineManager, replay_execution; "
+        "from artisan.orchestration.replay import replay_execution as ActualReplay; "
+        "assert replay_execution is ActualReplay; "
+        "from artisan.orchestration.pipeline_manager import PipelineManager as ActualManager; "
+        "from artisan.orchestration.runners import LocalRunner, ApptainerRuntime, DockerRuntime; "
+        "from artisan.execution.environments.container_runtime import "
+        "ApptainerRuntime as ActualApptainer, DockerRuntime as ActualDocker; "
+        "from artisan.orchestration.runners.local import LocalRunner as ActualRunner; "
+        "from artisan.storage import ArtifactStore, PublicationExport, export_publication; "
+        "from artisan.storage.core.artifact_store import ArtifactStore as ActualStore; "
+        "from artisan.storage.publication import PublicationExport as ActualExport, "
+        "export_publication as actual_export; "
+        "assert ExecutionSession is ActualSession; "
+        "assert PipelineManager is ActualManager; "
+        "assert LocalRunner is ActualRunner; "
+        "assert ApptainerRuntime is ActualApptainer; "
+        "assert DockerRuntime is ActualDocker; "
+        "assert ArtifactStore is ActualStore; "
+        "assert PublicationExport is ActualExport; "
+        "assert export_publication is actual_export"
+    )
+    subprocess.run([sys.executable, "-c", program], check=True, timeout=20)
+
+
+@pytest.mark.parametrize(
+    "module_name",
+    [
+        "artisan.orchestration.engine.retained_pipeline",
+        "artisan.orchestration.runners.prepared_local",
+        "artisan.composites.base.results",
+        "artisan.orchestration.runners.base",
+        "artisan.orchestration.engine.step_executor",
+        "artisan.execution.tool_endpoint",
+        "artisan.schemas.operation_config.compute",
+        "artisan.schemas.operation_config.environment_spec",
+        "artisan.schemas.operation_config.execute_environment",
+    ],
+)
+def test_replaced_execution_modules_are_absent(module_name: str) -> None:
+    with pytest.raises(ModuleNotFoundError) as error:
+        importlib.import_module(module_name)
+    assert error.value.name == module_name
+
+
+@pytest.mark.parametrize(
+    ("module_name", "names"),
+    [
+        ("artisan.composites", ("CompositeResult", "CompositeStepHandle")),
+        (
+            "artisan.composites.base.compiler",
+            ("PlanContext", "PlanCall", "PlanReference"),
+        ),
+        ("artisan.orchestration", ("Runner", "RunnerBase")),
+        ("artisan.orchestration.runners", ("Runner", "RunnerBase", "resolve_runner")),
+        (
+            "artisan.orchestration.runner_api",
+            ("RunnerBase", "LifecycleRouter", "ExecutionUnit", "UnitResult"),
+        ),
+    ],
+)
+def test_removed_execution_contracts_have_no_compatibility_exports(
+    module_name: str, names: tuple[str, ...]
+) -> None:
+    module = importlib.import_module(module_name)
+    for name in names:
+        assert not hasattr(module, name)

@@ -215,7 +215,7 @@ contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 |------|----------------------------|
 | `install-hooks` | Install this repository's Git hooks |
 | `test` | Run unit, integration, S3, and local tutorial suites; requires local Docker; S3 uses MinIO or a configured endpoint |
-| `test-unit` | Unit tests; no external services |
+| `test-unit` | Unit tests in four parallel workers; no external services |
 | `test-integration` | End-to-end local pipelines and container checks; requires local Docker |
 | `test-docker` | Container cancellation and working-directory checks; requires local Docker |
 | `prepare-docker-tests` | Check the selected Docker engine and prepare or reuse the pinned test image |
@@ -224,7 +224,6 @@ contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 | `test-notebook-modal` | Optional Modal tutorials; needs deployed endpoints and credentials, plus object storage for the R2 tutorial |
 | `test-seq` | Sequential tests for debugging; requires local Docker, excludes notebooks and Modal, includes S3 |
 | `test-modal` | Optional live Modal tests; needs cloud credentials and each test's prerequisites |
-| `test-modal-endpoint` | Deploy a test endpoint and exercise R2 delivery; needs Modal/R2 credentials and a worker secret |
 | `fmt` | Format and lint the codebase |
 | `build-dist` | Build distribution packages |
 | `check-dist` | Validate distribution packages |

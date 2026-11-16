@@ -8,6 +8,7 @@ from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.commands import IdentityCommandEnvironment
 from fsspec.implementations.local import LocalFileSystem
 from pydantic import BaseModel, Field, SecretBytes, SecretStr, field_validator
 
@@ -20,8 +21,6 @@ from artisan.execution.recording.parquet_writer import _write_execution_record
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
-from artisan.schemas.operation_config.environments import Environments
 from artisan.utils.external_tools import redact_values
 
 
@@ -73,35 +72,21 @@ def test_schema_learning_preserves_public_tuple_and_skips_user_code():
     assert supplied["nested"]["supplied"] == "nested-raw-secret"
 
 
-def test_configuration_classifies_defaults_aliases_and_keeps_provider_references():
+def test_configuration_classifies_defaults_and_environment_aliases():
     params = {
         "nested": {"supplied": "nested-raw-secret", "pair": [b"byte-secret", "visible"]}
     }
-    env = {
-        "local": {
-            "env": {
-                "PUBLIC": "/public",
-                "ALIAS": "/private/default",
-                "HIDDEN": "opaque-env",
-            },
-            "public_env": ["PUBLIC", "ALIAS"],
-        }
-    }
-    provider = {
-        "modal": {"auth_secret": "proxy-reference", "secrets": ["named-reference"]}
-    }
-    recorder = configuration_recorder(
-        DurableSecretGenerator,
-        params=params,
-        environment=env,
-        compute_provider=provider,
+    environment = IdentityCommandEnvironment(
+        env={"PUBLIC": "/public", "ALIAS": "/private/default", "HIDDEN": "opaque-env"},
+        public_env=("PUBLIC", "ALIAS"),
     )
-    assert recorder.sanitize_json(env)["local"]["env"] == {
+    recorder = configuration_recorder(DurableSecretGenerator, params=params)
+    recorder.prepare(environment, ["tool"], ())
+    assert recorder.sanitize_json(environment.env) == {
         "PUBLIC": "/public",
         "ALIAS": "<redacted>",
         "HIDDEN": "<redacted>",
     }
-    assert recorder.sanitize_json(provider) == provider
     assert recorder.sanitize_json({"value": 47, "flag": True}) == {
         "value": "<redacted>",
         "flag": "<redacted>",
@@ -196,80 +181,44 @@ def test_error_envelope_preserves_machine_fields_under_secret_collisions():
     assert original["message"] == "message"
 
 
-def test_raw_override_alias_is_removed_from_initial_replay_snapshot(tmp_path):
-    from artisan.execution.models.execution_unit import ExecutionUnit
-    from artisan.execution.recording.replay_snapshot import build_replay_snapshot
-    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-    from artisan.utils.hashing import (
-        compute_execution_spec_id,
-        effective_config_payload,
-        serialize_params,
-    )
+def test_raw_override_alias_is_removed_from_initial_configuration():
+    from artisan.execution.recording.replay_snapshot import _configuration
 
     class NormalizedGenerator(DataGenerator):
         name = "durable_normalized_generator"
 
         class Params(DataGenerator.Params):
             token: str = Field(description="Normalized credential.")
+            alias: str = Field(description="Ordinary alias of raw input.")
+            public: str = Field(default="/public/root", description="Public value.")
 
             @field_validator("token")
             @classmethod
-            def normalize_token(cls, value):
+            def normalize_token(cls, value: str) -> str:
                 return value.upper()
 
         params: Params
 
     raw = "raw-credential-before-validation"
-    operation = NormalizedGenerator(
-        params={"token": raw},
-        environments=Environments(
-            local=LocalEnvironmentSpec(
-                env={"ROOT": raw, "PUBLIC": "/public/root"},
-                public_env=("ROOT", "PUBLIC"),
-            )
-        ),
-    )
-    identity = compute_execution_spec_id(
-        operation.name,
-        {},
-        serialize_params(operation),
-        effective_config_payload(operation),
-    )
-    unit = ExecutionUnit(
-        operation=operation, execution_spec_id=identity, user_overrides={"token": raw}
-    )
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "staging"),
-        working_root=str(tmp_path / "work"),
-    )
-    snapshot = build_replay_snapshot(unit, runtime, {})
-    assert snapshot.status != "unavailable"
-    assert raw not in snapshot.model_dump_json()
-    assert "/environments/local/env/ROOT" in {
-        slot.pointer for slot in snapshot.required_replacements
-    }
-    assert (
-        snapshot.operation.configuration["environments"]["local"]["env"]["PUBLIC"]
-        == "/public/root"
-    )
+    operation = NormalizedGenerator(params={"token": raw, "alias": raw})
+    configuration, replacements = _configuration(operation, (raw,))
+    assert raw not in str(configuration)
+    assert "/params/alias" in {slot.pointer for slot in replacements}
+    assert configuration["params"]["public"] == "/public/root"
     assert operation.params.token == raw.upper()
-    assert identity == compute_execution_spec_id(
-        operation.name,
-        {},
-        serialize_params(operation),
-        effective_config_payload(operation),
-    )
+    assert operation.params.alias == raw
 
 
 def test_seal_late_metadata_classification_protects_copied_evidence(tmp_path):
-    from artisan.execution.models.execution_unit import ExecutionUnit
     from artisan.execution.recording.commands import capture_commands
-    from artisan.execution.recording.replay_snapshot import build_replay_snapshot
-    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+    from artisan.execution.recording.replay_snapshot import (
+        _configuration,
+        operation_behavior,
+    )
+    from artisan.registry.resolve import operation_identity
+    from artisan.schemas.execution.replay import ReplayOperation
     from artisan.utils.hashing import (
         compute_execution_spec_id,
-        effective_config_payload,
         serialize_params,
     )
 
@@ -287,21 +236,25 @@ def test_seal_late_metadata_classification_protects_copied_evidence(tmp_path):
         operation.name,
         {},
         serialize_params(operation),
-        effective_config_payload(operation),
     )
-    unit = ExecutionUnit(operation=operation, execution_spec_id=identity)
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "staging"),
-        working_root=str(tmp_path / "work"),
+    configuration, replacements = _configuration(operation)
+    snapshot = ReplaySnapshot.unavailable("configuration_only_fixture").model_copy(
+        update={
+            "operation": ReplayOperation(
+                identity=operation_identity(type(operation)),
+                configuration=configuration,
+                behavior=operation_behavior(operation),
+                artisan_version="0.0.0",
+            ),
+            "required_replacements": replacements,
+        }
     )
-    snapshot = build_replay_snapshot(unit, runtime, {})
     assert raw in snapshot.model_dump_json()
     staging = tmp_path / "seal"
     staging.mkdir()
     with capture_commands(operation) as recorder:
         attempt = recorder.begin(
-            LocalEnvironmentSpec(), ["tool", raw], ["tool", raw], "/public", ()
+            IdentityCommandEnvironment(), ["tool", raw], ["tool", raw], "/public", ()
         )
         attempt.finish("succeeded", 0)
         recording = recorder.snapshot()
@@ -361,48 +314,56 @@ def test_unparameterized_collections_keep_value_based_classification():
     assert clean["sequence"][1] == clean["pair"][1] == "visible"
 
 
-def test_synthetic_failure_seal_sanitizes_raw_overrides_and_error(tmp_path):
-    from artisan.execution.models.execution_unit import ExecutionUnit
-    from artisan.orchestration.engine.step_executor import _synthesize_failure_record
-    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-    from artisan.utils.hashing import (
-        compute_execution_spec_id,
-        effective_config_payload,
-        serialize_params,
+@pytest.mark.parametrize(
+    "location",
+    ["source_roots", "diagnostic_roots", "diagnostic_errors", "diagnostic_notes"],
+)
+def test_late_secret_removes_unsafe_runtime_evidence_at_seal(location):
+    from artisan.execution.recording.durable import sanitize_replay_snapshot
+    from artisan.schemas.execution.replay import (
+        OperationIdentity,
+        ReplayDiagnostic,
+        ReplaySource,
     )
 
-    raw = "synthetic-worker-raw-secret"
-    overrides = {"nested": {"supplied": raw, "pair": [b"byte-secret", "visible"]}}
-    operation = DurableSecretGenerator(params=overrides)
-    identity = compute_execution_spec_id(
-        operation.name,
-        {},
-        serialize_params(operation),
-        effective_config_payload(operation),
-    )
-    unit = ExecutionUnit(
-        operation=operation, execution_spec_id=identity, user_overrides=overrides
-    )
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "staging"),
-        working_root=str(tmp_path / "work"),
-        failure_logs_root=str(tmp_path / "logs"),
-    )
-    execution_id = _synthesize_failure_record(
-        unit,
-        runtime,
-        f"worker failed with {raw}",
-        datetime.now(UTC),
-        overrides,
-        step_run_id="a" * 32,
-    )
-    assert execution_id
-    seal = next((tmp_path / "staging").rglob("executions.parquet"))
-    row = pl.read_parquet(seal).row(0, named=True)
-    assert row["success"] is False
-    assert raw not in str(row)
-    assert "<redacted>" in row["error"]
-    for log in (tmp_path / "logs").rglob("*.log"):
-        assert raw not in log.read_text()
-    assert operation.params.nested.value.get_secret_value() == raw
+    private = "synthetic-late-runtime-secret-73291"
+    snapshot = ReplaySnapshot.unavailable("unverified_input_occurrences")
+    if location == "source_roots":
+        snapshot = snapshot.model_copy(
+            update={
+                "source": ReplaySource(
+                    step_number=0,
+                    step_run_id=None,
+                    runner="local",
+                    execution_spec_id="source-spec",
+                    roots={"working_root": private},
+                )
+            }
+        )
+    else:
+        operation = OperationIdentity(
+            module="example.ops",
+            qualname="Tool",
+            name="tool",
+            version="1",
+            module_digest="b" * 64,
+        )
+        diagnostic = ReplayDiagnostic(
+            source_execution_run_id="source-run",
+            source_execution_spec_id="source-spec",
+            source_identity=operation,
+            selected_identity=operation,
+            allow_code_change=False,
+            runner="local",
+            roots={"working_root": private} if location == "diagnostic_roots" else {},
+            errors=[private] if location == "diagnostic_errors" else [],
+            reproducibility_notes=[private] if location == "diagnostic_notes" else [],
+        )
+        snapshot = snapshot.model_copy(update={"diagnostic": diagnostic})
+    recorder = CommandRecorder()
+    assert sanitize_replay_snapshot(recorder, snapshot) == snapshot
+    recorder.add_sensitive_data(private)
+    sealed = sanitize_replay_snapshot(recorder, snapshot)
+    assert sealed.status == "unavailable"
+    assert sealed.unavailable_reason == "sensitive_evidence_discovered_at_seal"
+    assert private not in sealed.model_dump_json()

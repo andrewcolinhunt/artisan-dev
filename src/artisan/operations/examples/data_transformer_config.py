@@ -15,7 +15,6 @@ from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -90,10 +89,6 @@ class DataTransformerConfig(OperationDefinition):
 
     batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_config")  # type: ignore[call-arg]  # pydantic defaults
 
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
-    )
-
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract per-dataset info as parallel lists (one entry per artifact)."""
         datasets: list[CSVArtifact] = [
@@ -101,6 +96,7 @@ class DataTransformerConfig(OperationDefinition):
         ]
         return {
             "dataset_artifact_ids": PerArtifact([d.artifact_id for d in datasets]),
+            "dataset_input_indices": PerArtifact(list(range(len(datasets)))),
             "dataset_stems": PerArtifact(
                 [os.path.splitext(d.original_name or "")[0] for d in datasets]
             ),
@@ -110,9 +106,12 @@ class DataTransformerConfig(OperationDefinition):
         """Build configs for each (dataset, scale_factor, noise_amplitude) combo."""
         artifact_ids = inputs.inputs["dataset_artifact_ids"]
         stems = inputs.inputs["dataset_stems"]
+        input_indices = inputs.inputs["dataset_input_indices"]
 
         configs: list[dict[str, Any]] = []
-        for artifact_id, stem in zip(artifact_ids, stems, strict=True):
+        for artifact_id, stem, input_index in zip(
+            artifact_ids, stems, input_indices, strict=True
+        ):
             for scale_factor in self.params.scale_factors:
                 for noise_amplitude in self.params.noise_amplitudes:
                     index = len(configs)
@@ -120,6 +119,7 @@ class DataTransformerConfig(OperationDefinition):
                         {
                             "index": index,
                             "source_artifact_id": artifact_id,
+                            "source_input_index": input_index,
                             "original_name": f"{stem}_config_{index}.json",
                             "content": {
                                 "input": {"$artifact": artifact_id},
@@ -145,6 +145,8 @@ class DataTransformerConfig(OperationDefinition):
                     original_name=cfg["original_name"],
                     step_number=inputs.step_number,
                 ),
-                sources={"dataset": [cfg["source_artifact_id"]]},
+                sources={
+                    "dataset": [inputs.ref("dataset", index=cfg["source_input_index"])]
+                },
             )
         return result

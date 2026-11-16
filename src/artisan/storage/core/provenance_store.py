@@ -6,15 +6,24 @@ loading, step/type maps, and ancestor/descendant lookups.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.committed_scan import scan_committed
-from artisan.storage.core.store_format import assert_store_format
-from artisan.utils.path import uri_join
+from artisan.storage.core.store_read_scope import (
+    RetainedStoreReadScope,
+    with_read_scope,
+)
+from artisan.storage.io.retained_store import (
+    open_retained_store,
+    resolve_store_files_root,
+)
+
+if TYPE_CHECKING:
+    from artisan.storage.core.query_view import QueryScope, QueryView
 
 
 class ProvenanceStore:
@@ -34,22 +43,58 @@ class ProvenanceStore:
         *,
         fs: AbstractFileSystem,
         storage_options: dict[str, str] | None = None,
-    ):
+        files_root: str | None = None,
+        _view: QueryView | None = None,
+        _read_scope: QueryScope | None = None,
+    ) -> None:
         """Initialize with the Delta Lake root directory.
 
         Args:
             base_path: Root URI/path containing Delta tables.
             fs: Filesystem implementation (LocalFileSystem, S3FileSystem, etc.).
             storage_options: Credentials/config passed to delta-rs calls.
+            files_root: Managed carrier root. Local stores default to the sibling
+                ``files`` directory; nonlocal stores require an explicit root.
         """
         self.base_path = base_path
         self._fs = fs
         self._storage_options = storage_options or {}
-        assert_store_format(self.base_path, self._fs, self._storage_options)
+        if _view is not None and _read_scope is not None:
+            msg = "A store cannot combine fixed and fresh retained visibility"
+            raise ValueError(msg)
+        source = _view if _view is not None else _read_scope
+        if source is None:
+            files_root = resolve_store_files_root(
+                base_path, files_root, protocols=fs.protocol
+            )
+            _read_scope = RetainedStoreReadScope(
+                open_retained_store(
+                    base_path, files_root, fs=fs, storage_options=storage_options
+                )
+            )
+            source = _read_scope
+        if files_root is not None and files_root != source.files_root:
+            msg = "Provenance store has another managed files root"
+            raise StoreIntegrityError(msg)
+        source.validate_binding(self.base_path, self._fs, self._storage_options)
+        self.files_root = source.files_root
+        self._fixed_view = _view
+        self._read_scope = _read_scope
 
-    def _table_path(self, table: TablePath) -> str:
-        """Resolve the URI for a Delta table."""
-        return uri_join(self.base_path, table)
+    @property
+    def _view(self) -> QueryView | None:
+        return (
+            self._read_scope.view if self._read_scope is not None else self._fixed_view
+        )
+
+    def _scan(self, table: str | TablePath, *, direct: bool = False) -> pl.LazyFrame:
+        view = self._view
+        if view is None:
+            msg = "Table reads require an active query scope"
+            raise RuntimeError(msg)
+        if direct and table == TablePath.ARTIFACT_EDGES:
+            return view.artifact_edges(direct=True)
+        return view.scan(table)
 
     # -------------------------------------------------------------------------
     # Backward / forward maps (dict-based, full scan)
@@ -65,19 +110,10 @@ class ProvenanceStore:
             value_index: Column index to use as dict values (0=source, 1=target).
 
         Returns:
-            Adjacency mapping. Empty dict if table does not exist or is empty.
+            Adjacency mapping. Empty dict when no visible edges exist.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return {}
-
         result = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_EDGES,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(TablePath.ARTIFACT_EDGES)
             .select(["source_artifact_id", "target_artifact_id"])
             .collect()
         )
@@ -90,21 +126,23 @@ class ProvenanceStore:
             adj.setdefault(row[key_index], []).append(row[value_index])
         return adj
 
+    @with_read_scope
     def load_backward_map(self) -> dict[str, list[str]]:
         """Load the full backward provenance map in one Delta scan.
 
         Returns:
             Mapping of target artifact ID to its source (ancestor) IDs.
-            Empty dict if the artifact_edges table does not exist.
+            Empty dict when no visible edges exist.
         """
         return self._build_adjacency(key_index=1, value_index=0)
 
+    @with_read_scope
     def load_forward_map(self) -> dict[str, list[str]]:
         """Load the full forward provenance map in one Delta scan.
 
         Returns:
             Mapping of source artifact ID to its descendant (target)
-            IDs. Empty dict if the artifact_edges table does not exist.
+            IDs. Empty dict when no visible edges exist.
         """
         return self._build_adjacency(key_index=0, value_index=1)
 
@@ -124,19 +162,11 @@ class ProvenanceStore:
             artifact_ids: Optional restriction to these IDs.
 
         Returns:
-            Mapping of artifact ID to column value. Empty dict if table
-            does not exist or query returns no rows.
+            Mapping of artifact ID to column value. Empty dict for no matches.
         """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not self._fs.exists(index_path):
-            return {}
-
-        query = scan_committed(
-            self.base_path,
-            TablePath.ARTIFACT_INDEX,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        ).select(["artifact_id", value_column])
+        query = self._scan(TablePath.ARTIFACT_INDEX).select(
+            ["artifact_id", value_column]
+        )
         if artifact_ids is not None:
             query = query.filter(pl.col("artifact_id").is_in(list(artifact_ids)))
         result = query.collect()
@@ -152,6 +182,7 @@ class ProvenanceStore:
             )
         )
 
+    @with_read_scope
     def load_type_map(self, artifact_ids: list[str] | None = None) -> dict[str, str]:
         """Bulk-load artifact type strings from the index.
 
@@ -160,11 +191,11 @@ class ProvenanceStore:
                 every entry in the index.
 
         Returns:
-            Mapping of artifact ID to type string. Empty dict if the
-            artifact_index table does not exist.
+            Mapping of artifact ID to type string. Empty dict for no matches.
         """
         return self._load_index_column("artifact_type", artifact_ids)
 
+    @with_read_scope
     def load_step_map(self, artifact_ids: set[str] | None = None) -> dict[str, int]:
         """Load origin step numbers from the artifact_index.
 
@@ -173,8 +204,7 @@ class ProvenanceStore:
                 every entry in the index.
 
         Returns:
-            Mapping of artifact ID to origin step number. Empty dict
-            if the artifact_index table does not exist.
+            Mapping of artifact ID to origin step number. Empty dict for no matches.
         """
         return self._load_index_column("origin_step_number", artifact_ids)
 
@@ -182,6 +212,7 @@ class ProvenanceStore:
     # Direct queries (1-hop)
     # -------------------------------------------------------------------------
 
+    @with_read_scope
     def get_direct_ancestors(self, artifact_id: str) -> list[str]:
         """Return direct ancestor (source) artifact IDs.
 
@@ -192,20 +223,10 @@ class ProvenanceStore:
             artifact_id: Target artifact whose parents are requested.
 
         Returns:
-            Source artifact IDs. Empty if no ancestors exist or the
-            artifact_edges table is missing.
+            Source artifact IDs. Empty if no direct ancestors exist.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return []
-
         result = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_EDGES,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(TablePath.ARTIFACT_EDGES, direct=True)
             .filter(pl.col("target_artifact_id") == artifact_id)
             .select("source_artifact_id")
             .collect()
@@ -216,6 +237,7 @@ class ProvenanceStore:
 
         return result["source_artifact_id"].to_list()
 
+    @with_read_scope
     def get_direct_descendants(
         self,
         source_artifact_ids: set[str],
@@ -234,22 +256,14 @@ class ProvenanceStore:
 
         Returns:
             Mapping of source ID to its descendant target IDs. Sources
-            with no descendants are omitted. Empty dict when the
-            artifact_edges table does not exist.
+            with no descendants are omitted.
         """
         if not source_artifact_ids:
             return {}
 
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return {}
-
-        query = scan_committed(
-            self.base_path,
-            TablePath.ARTIFACT_EDGES,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        ).filter(pl.col("source_artifact_id").is_in(list(source_artifact_ids)))
+        query = self._scan(TablePath.ARTIFACT_EDGES, direct=True).filter(
+            pl.col("source_artifact_id").is_in(list(source_artifact_ids))
+        )
 
         if target_artifact_type is not None:
             query = query.filter(pl.col("target_artifact_type") == target_artifact_type)
@@ -269,6 +283,7 @@ class ProvenanceStore:
     # Step queries
     # -------------------------------------------------------------------------
 
+    @with_read_scope
     def get_artifact_step_number(self, artifact_id: str) -> int | None:
         """Return the origin step number for a single artifact.
 
@@ -278,17 +293,8 @@ class ProvenanceStore:
         Returns:
             Origin step number, or None if the artifact is not indexed.
         """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not self._fs.exists(index_path):
-            return None
-
         result = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_INDEX,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(TablePath.ARTIFACT_INDEX)
             .filter(pl.col("artifact_id") == artifact_id)
             .select("origin_step_number")
             .limit(1)
@@ -301,6 +307,7 @@ class ProvenanceStore:
         step_number: int = result["origin_step_number"][0]
         return step_number
 
+    @with_read_scope
     def get_step_range(self, artifact_ids: list[str]) -> tuple[int, int] | None:
         """Return the min and max origin step numbers for the given IDs.
 
@@ -309,23 +316,13 @@ class ProvenanceStore:
                 returns None immediately.
 
         Returns:
-            ``(step_min, step_max)`` tuple, or None if no matches exist
-            or the artifact_index table is missing.
+            ``(step_min, step_max)`` tuple, or None if no matches exist.
         """
         if not artifact_ids:
             return None
 
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not self._fs.exists(index_path):
-            return None
-
         result = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_INDEX,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(TablePath.ARTIFACT_INDEX)
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(
                 pl.col("origin_step_number").min().alias("step_min"),
@@ -339,6 +336,7 @@ class ProvenanceStore:
 
         return (result["step_min"][0], result["step_max"][0])
 
+    @with_read_scope
     def load_artifact_ids_by_type(
         self,
         artifact_type: str,
@@ -354,19 +352,11 @@ class ProvenanceStore:
             artifact_ids: If given, restrict to these IDs.
 
         Returns:
-            Matching artifact IDs. Empty set if the artifact_index
-            table does not exist.
+            Matching artifact IDs. Empty set if no matches exist.
         """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not self._fs.exists(index_path):
-            return set()
-
-        query = scan_committed(
-            self.base_path,
-            TablePath.ARTIFACT_INDEX,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        ).filter(pl.col("artifact_type") == artifact_type)
+        query = self._scan(TablePath.ARTIFACT_INDEX).filter(
+            pl.col("artifact_type") == artifact_type
+        )
         if step_numbers is not None:
             query = query.filter(pl.col("origin_step_number").is_in(step_numbers))
         if artifact_ids is not None:
@@ -375,6 +365,7 @@ class ProvenanceStore:
         result = query.select("artifact_id").collect()
         return set(result["artifact_id"].to_list())
 
+    @with_read_scope
     def load_step_name_map(self, pipeline_run_id: str | None = None) -> dict[int, str]:
         """Load a mapping of step number to human-readable step name.
 
@@ -386,23 +377,17 @@ class ProvenanceStore:
             Mapping of logical step number to its latest attempt's step name.
             Empty when the selected run has no steps.
         """
-        steps_path = self._table_path(TablePath.STEPS)
-        if self._fs.exists(steps_path):
-            from artisan.orchestration.engine.step_tracker import StepTracker
-
-            states = StepTracker(
-                self.base_path,
-                storage_options=self._storage_options,
-                fs=self._fs,
-            ).load_current_states(pipeline_run_id)
-            return {state.step_number: state.step_name for state in states}
-
-        return {}
+        view = self._view
+        if view is None:
+            msg = "Step-name reads require an active query scope"
+            raise RuntimeError(msg)
+        return view.step_names(pipeline_run_id)
 
     # -------------------------------------------------------------------------
     # Edge loading (DataFrame-native)
     # -------------------------------------------------------------------------
 
+    @with_read_scope
     def load_edges_df(
         self,
         step_min: int,
@@ -445,27 +430,13 @@ class ProvenanceStore:
         output_cols = [*base_cols, *extra_cols]
         empty = pl.DataFrame(schema=dict.fromkeys(output_cols, pl.String))
 
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-
-        if not self._fs.exists(prov_path) or not self._fs.exists(index_path):
-            return empty
-
-        edges = scan_committed(
-            self.base_path,
-            TablePath.ARTIFACT_EDGES,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        )
+        edges = self._scan(TablePath.ARTIFACT_EDGES)
         if execution_ids is not None:
             edges = edges.filter(pl.col("execution_run_id").is_in(execution_ids))
         edges = edges.select(output_cols)
-        index = scan_committed(
-            self.base_path,
-            TablePath.ARTIFACT_INDEX,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        ).select(["artifact_id", "origin_step_number"])
+        index = self._scan(TablePath.ARTIFACT_INDEX).select(
+            ["artifact_id", "origin_step_number"]
+        )
 
         result = (
             edges.join(index, left_on="source_artifact_id", right_on="artifact_id")
@@ -519,26 +490,13 @@ class ProvenanceStore:
         Returns:
             Reachable artifact IDs (excludes the starting artifact). When
             ``type_col`` is set, only type-matching IDs. Empty list if no
-            matches exist or the artifact_edges table is missing.
+            matches exist.
         """
-        prov_path = self._table_path(TablePath.ARTIFACT_EDGES)
-        if not self._fs.exists(prov_path):
-            return []
-
         select_cols = [frontier_col, collect_col]
         if type_col is not None:
             select_cols.append(type_col)
 
-        edges = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_EDGES,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
-            .select(select_cols)
-            .collect()
-        )
+        edges = self._scan(TablePath.ARTIFACT_EDGES).select(select_cols).collect()
         if edges.is_empty():
             return []
 
@@ -565,6 +523,7 @@ class ProvenanceStore:
             return list(type_matched)
         return list(collected)
 
+    @with_read_scope
     def get_ancestor_ids(
         self,
         artifact_id: str,
@@ -582,7 +541,7 @@ class ProvenanceStore:
 
         Returns:
             Ancestor artifact IDs (excludes the starting artifact itself).
-            Empty list if no ancestors exist or tables are missing.
+            Empty list if no ancestors exist.
         """
         # Resolve ancestor types from the authoritative index after traversal.
         ancestor_ids = self._walk_transitive(
@@ -601,6 +560,7 @@ class ProvenanceStore:
 
         return ancestor_ids
 
+    @with_read_scope
     def get_descendant_ids(
         self,
         artifact_id: str,
@@ -618,7 +578,7 @@ class ProvenanceStore:
 
         Returns:
             Descendant artifact IDs (excludes the starting artifact itself).
-            Empty list if no descendants exist or tables are missing.
+            Empty list if no descendants exist.
         """
         # Descendant type filtering uses the edge's target_artifact_type
         # inline during the walk, so it is pushed into the helper.

@@ -1,45 +1,69 @@
-"""Contract tests for the public third-party runner facade."""
+"""Supported provider entry points retain typed transport and ownership seams."""
 
 from __future__ import annotations
 
-from inspect import signature
+from inspect import Parameter, signature
+from typing import get_type_hints
 
+from artisan.orchestration import runner_api
 from artisan.orchestration.runner_api import (
-    BatchStrategy,
-    ExecutionUnit,
-    LifecycleRouter,
-    OrchestratorTraits,
-    RunnerBase,
-    RunnerResources,
-    RuntimeEnvironment,
-    UnitResult,
-    WorkerTraits,
-    execute_unit,
-    execute_unit_batch,
-    failure_results_for_units,
-    pack_units,
-    validate_batch_results,
+    ApptainerRuntime,
+    ContainerLauncherIdentity,
+    LocalRunner,
+    PreparedSIFEnvironment,
+    execute_admitted_assignment,
+    execute_admitted_curator,
+    execute_inert_call,
+    launch_inert_calls,
+    serialize_worker_call,
+    verify_sif_environment,
 )
 
 
-def test_runner_api_exports_provider_contract() -> None:
-    """Every provider-facing contract component imports from one module."""
-    assert RunnerBase
-    assert WorkerTraits
-    assert OrchestratorTraits
-    assert LifecycleRouter
-    assert ExecutionUnit
-    assert RuntimeEnvironment
-    assert UnitResult
-    assert RunnerResources
-    assert BatchStrategy
-    assert pack_units
-    assert execute_unit
-    assert execute_unit_batch
-    assert failure_results_for_units
-    assert validate_batch_results
-
-
 def test_worker_entry_points_keep_provider_signatures() -> None:
-    assert list(signature(execute_unit).parameters) == ["unit", "runtime_env"]
-    assert list(signature(execute_unit_batch).parameters) == ["units", "runtime_env"]
+    assert list(signature(execute_admitted_assignment).parameters) == [
+        "admitted",
+        "software",
+        "dispatch",
+        "working_root",
+    ]
+    assert list(signature(execute_admitted_curator).parameters) == [
+        "curator",
+        "software",
+        "dispatch",
+        "working_root",
+    ]
+    assert "application_modules" in signature(serialize_worker_call).parameters
+    assert "control" in signature(execute_inert_call).parameters
+    assert {"runtime_env", "preserve_working"} <= signature(
+        launch_inert_calls
+    ).parameters.keys()
+
+
+def test_local_provider_supports_both_scientific_and_curator_placement() -> None:
+    for name in ("resolve", "resolve_curator"):
+        assert "application_modules" in signature(getattr(LocalRunner, name)).parameters
+    for name in ("launch", "launch_curator"):
+        parameters = signature(getattr(LocalRunner, name)).parameters
+        assert {"software", "dispatch"} <= parameters.keys()
+
+
+def test_sif_provider_contracts_keep_typed_verification_seam() -> None:
+    assert {
+        "ApptainerRuntime",
+        "ContainerLauncherIdentity",
+        "PreparedSIFEnvironment",
+        "verify_sif_environment",
+    } <= set(runner_api.__all__)
+    assert (
+        get_type_hints(ApptainerRuntime.identity)["return"] is ContainerLauncherIdentity
+    )
+    assert get_type_hints(verify_sif_environment) == {
+        "target": PreparedSIFEnvironment,
+        "apptainer": ApptainerRuntime,
+        "return": type(None),
+    }
+    assert (
+        signature(verify_sif_environment).parameters["apptainer"].kind
+        is Parameter.KEYWORD_ONLY
+    )

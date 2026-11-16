@@ -1,4 +1,4 @@
-"""Tests for PipelineManager module-level helper functions."""
+"""Public run identity and input snapshots retain exact logical references."""
 
 from __future__ import annotations
 
@@ -7,179 +7,91 @@ import re
 from pathlib import Path
 
 import pytest
+from fixtures.composition_operations import Transform
 
-from artisan.orchestration.pipeline_manager import (
-    _extract_name_from_run_id,
-    _extract_source_steps,
-    _generate_run_id,
-    _generate_step_run_id,
-    _qualified_name,
-    _serialize_input_refs,
-    _set_default,
-)
-from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.orchestration import OutputReference, PipelineManager
+from artisan.orchestration.engine.pipeline_inputs import normalize_pipeline_inputs
 
 
-class TestGenerateRunId:
-    """Tests for _generate_run_id."""
-
-    def test_format(self):
-        """Contains name, timestamp pattern, and uuid hex."""
-        run_id = _generate_run_id("example_pipeline")
-        assert run_id.startswith("example_pipeline_")
-        # Format: name_YYYYMMDD_HHMMSS_hex8
-        parts = run_id.split("_")
-        # "example_pipeline" -> ["example", "pipeline", date, time, hex]
-        assert len(parts) >= 4
-        # Last part is 8 hex chars
-        assert len(parts[-1]) == 8
-        assert re.match(r"^[0-9a-f]{8}$", parts[-1])
-
-    def test_unique_across_calls(self):
-        a = _generate_run_id("x")
-        b = _generate_run_id("x")
-        assert a != b
-
-
-class TestGenerateStepRunId:
-    """Tests for _generate_step_run_id."""
-
-    def test_length(self):
-        """32-char hex string."""
-        step_run_id = _generate_step_run_id()
-        assert len(step_run_id) == 32
-        assert re.match(r"^[0-9a-f]{32}$", step_run_id)
-
-    def test_consecutive_calls_produce_different_ids(self):
-        """Each attempt receives a distinct run ID."""
-        id1 = _generate_step_run_id()
-        id2 = _generate_step_run_id()
-        assert id1 != id2
+def test_run_and_attempt_identities_are_unique_and_names_are_explicit(
+    tmp_path: Path,
+) -> None:
+    identities = []
+    attempts = []
+    for index in range(2):
+        with PipelineManager.create(
+            "example_pipeline",
+            str(tmp_path / f"store-{index}"),
+            str(tmp_path / "staging"),
+        ) as pipeline:
+            identities.append(pipeline.config.pipeline_run_id)
+            assert pipeline.config.name == "example_pipeline"
+            assert re.fullmatch(
+                r"example_pipeline_\d{8}_\d{6}_[0-9a-f]{8}", identities[-1]
+            )
+            result = pipeline.run(Transform, inputs={"structure": []})
+            attempts.append(result.step_run_id)
+            assert re.fullmatch(r"[0-9a-f]{32}", result.step_run_id)
+            assert pipeline.executions[0].record.operation_class == (
+                f"{Transform.__module__}.{Transform.__qualname__}"
+            )
+    assert len(set(identities)) == len(set(attempts)) == 2
 
 
-class TestQualifiedName:
-    """Tests for _qualified_name."""
+def test_named_input_snapshots_bind_attempt_identity_and_preserve_duplicates() -> None:
+    reference = OutputReference(source_step=2, role="data", artifact_type="csv")
+    source = {"data": [reference, reference]}
+    inputs = normalize_pipeline_inputs(source, step_run_ids={2: "a" * 32})
+    source["data"].clear()
+    assert inputs.dependency_step_run_ids == ("a" * 32,)
+    assert json.loads(json.dumps(inputs.diagnostic_data())) == {
+        "data": [
+            {
+                "source_step": 2,
+                "step_run_id": "a" * 32,
+                "role": "data",
+                "artifact_type": "csv",
+            },
+            {
+                "source_step": 2,
+                "step_run_id": "a" * 32,
+                "role": "data",
+                "artifact_type": "csv",
+            },
+        ]
+    }
 
-    def test_returns_module_qualname(self):
-        """Returns module.qualname."""
-        from artisan.operations.curator.filter import Filter
 
-        name = _qualified_name(Filter)
-        assert name == f"{Filter.__module__}.{Filter.__qualname__}"
-
-
-class TestExtractSourceSteps:
-    """Tests for _extract_source_steps."""
-
-    def test_dict_input(self):
-        """Dict with OutputReferences."""
-        inputs = {
-            "data": OutputReference(source_step=0, role="data"),
-            "metrics": OutputReference(source_step=1, role="scores"),
-        }
-        assert _extract_source_steps(inputs) == {0, 1}
-
-    def test_list_input(self):
-        """List of OutputReferences."""
-        inputs = [
-            OutputReference(source_step=2, role="data"),
+def test_unnamed_reference_streams_keep_source_order() -> None:
+    inputs = normalize_pipeline_inputs(
+        [
             OutputReference(source_step=3, role="data"),
-        ]
-        assert _extract_source_steps(inputs) == {2, 3}
-
-    def test_none_input(self):
-        """None returns empty set."""
-        assert _extract_source_steps(None) == set()
-
-    def test_dict_with_literal_ids(self):
-        """Dict with literal artifact IDs (not OutputReferences)."""
-        inputs = {"data": ["id1", "id2"]}
-        assert _extract_source_steps(inputs) == set()
+            OutputReference(source_step=1, role="score"),
+        ],
+        step_run_ids={1: "b" * 32, 3: "c" * 32},
+    )
+    assert inputs.dependency_step_run_ids == ("c" * 32, "b" * 32)
+    assert [
+        value["source_step"] for value in inputs.diagnostic_data()["_merged_streams"]
+    ] == [3, 1]
 
 
-class TestSerializeInputRefs:
-    """Tests for _serialize_input_refs."""
-
-    def test_round_trip_output_ref(self):
-        """OutputReference serialization is valid JSON."""
-        import json
-
-        inputs = {"data": OutputReference(source_step=0, role="data")}
-        result = _serialize_input_refs(inputs)
-        parsed = json.loads(result)
-        assert parsed["data"]["type"] == "output_ref"
-        assert parsed["data"]["source_step"] == 0
-        assert parsed["data"]["role"] == "data"
-
-    def test_none_input(self):
-        """None serializes to 'null'."""
-        assert _serialize_input_refs(None) == "null"
-
-    def test_list_of_refs(self):
-        """List of OutputReferences."""
-        import json
-
-        inputs = [
-            OutputReference(source_step=0, role="data"),
-            OutputReference(source_step=1, role="data"),
-        ]
-        result = _serialize_input_refs(inputs)
-        parsed = json.loads(result)
-        assert len(parsed) == 2
-        assert parsed[0]["type"] == "output_ref"
-        assert parsed[1]["source_step"] == 1
-
-    def test_list_of_paths(self):
-        """List of file paths."""
-        import json
-
-        inputs = ["/data/a.dat", "/data/b.dat"]
-        result = _serialize_input_refs(inputs)
-        parsed = json.loads(result)
-        assert len(parsed) == 2
-        assert parsed[0]["type"] == "literal"
-
-    def test_dict_with_literal(self):
-        inputs = {"data": ["some_artifact_id"]}
-        result = json.loads(_serialize_input_refs(inputs))
-        assert result["data"]["type"] == "literal"
-        assert result["data"]["value"] == ["some_artifact_id"]
-
-    def test_fallback_to_str(self):
-        result = json.loads(_serialize_input_refs(42))
-        assert result == "42"
+@pytest.mark.parametrize(
+    "value", [None, {"data": ["a" * 32, "b" * 32]}, ["/data/a.csv", "/data/b.csv"]]
+)
+def test_literal_inputs_do_not_invent_step_dependencies(value: object) -> None:
+    inputs = normalize_pipeline_inputs(value, step_run_ids={})
+    assert inputs.dependency_step_run_ids == ()
+    if value is None:
+        assert inputs.diagnostic_data() == {}
+    elif isinstance(value, list):
+        assert inputs.diagnostic_data() == {"raw_paths": value}
+    else:
+        assert inputs.diagnostic_data() == {
+            "data": [{"artifact_id": "a" * 32}, {"artifact_id": "b" * 32}]
+        }
 
 
-class TestExtractNameFromRunId:
-    """Tests for _extract_name_from_run_id."""
-
-    def test_simple_name(self):
-        """Single-word name."""
-        assert _extract_name_from_run_id("test_20260215_120000_abcd1234") == "test"
-
-    def test_underscore_name(self):
-        """Name containing underscores."""
-        assert (
-            _extract_name_from_run_id("example_pipeline_20260214_103000_a1b2c3d4")
-            == "example_pipeline"
-        )
-
-    def test_name_with_underscores(self):
-        result = _extract_name_from_run_id("a_b_c_20240101_120000_abc12345")
-        assert result == "a_b_c"
-
-
-class TestSetDefault:
-    """Tests for _set_default JSON serializer."""
-
-    def test_set_becomes_sorted_list(self):
-        result = _set_default({"c", "a", "b"})
-        assert result == ["a", "b", "c"]
-
-    def test_path_becomes_string(self):
-        result = _set_default(Path("/tmp/foo"))
-        assert result == "/tmp/foo"
-
-    def test_unsupported_type_raises(self):
-        with pytest.raises(TypeError, match="not JSON serializable"):
-            _set_default(object())
+def test_arbitrary_objects_are_rejected_without_string_coercion() -> None:
+    with pytest.raises(TypeError):
+        normalize_pipeline_inputs(42, step_run_ids={})
