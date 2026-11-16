@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import csv
 import os
+from collections.abc import Mapping
 from enum import StrEnum, auto
 from typing import Any, ClassVar
 
@@ -204,7 +205,7 @@ class FailCuratorRaise(_CuratorBase):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> Any:
@@ -219,7 +220,7 @@ class FailCuratorArtisan(_CuratorBase):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> Any:
@@ -238,7 +239,7 @@ class FailCuratorReturn(_CuratorBase):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> Any:
@@ -254,7 +255,7 @@ class CuratorWorkerCrash(_CuratorBase):
 
     def execute_curator(
         self,
-        inputs: dict[str, pl.DataFrame],
+        inputs: Mapping[str, pl.DataFrame],
         step_number: int,
         artifact_store: ArtifactStore,
     ) -> Any:

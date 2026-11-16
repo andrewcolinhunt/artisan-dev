@@ -58,7 +58,11 @@ from artisan.orchestration.runners.base import RunnerBase
 from artisan.schemas.enums import FailurePolicy, TablePath
 from artisan.schemas.execution.cache_result import CacheHit
 from artisan.schemas.execution.command_record import CommandRecording
-from artisan.schemas.execution.replay import RemoteObservation, ReplaySnapshot
+from artisan.schemas.execution.replay import (
+    RemoteObservation,
+    ReplaySnapshot,
+    captured_associations,
+)
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.unit_result import UnitResult
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -645,6 +649,7 @@ def execute_step(
             step_run_ids=step_run_ids,
             storage_options=config.storage.delta_storage_options(),
             files_root=config.files_root,
+            input_specs=operation.inputs,
         )
 
     # Cache-affecting config (environment, tool, compute_provider,
@@ -880,6 +885,7 @@ def _execute_curator_step(
         unit = ExecutionUnit(
             operation=operation,
             inputs=paired_inputs,
+            associated_inputs=captured_associations(inputs.cache_inputs),
             execution_spec_id=spec_id,
             step_number=step_number,
             group_ids=group_ids,
@@ -1499,6 +1505,7 @@ def _execute_creator_step(
                 unit = ExecutionUnit(
                     operation=operation,
                     inputs=execution_unit_inputs,
+                    associated_inputs=captured_associations(execution_cache_inputs),
                     execution_spec_id=spec_id,
                     step_number=step_number,
                     group_ids=batch_group_ids,

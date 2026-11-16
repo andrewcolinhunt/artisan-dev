@@ -78,9 +78,10 @@ class InputSpec(BaseModel):
     with_associated: tuple[str, ...] = ()
     """Artifact types to auto-resolve via provenance associations.
 
-    When set, the framework resolves associated artifacts (direct descendants
-    of the specified types) for each primary artifact in this role. Operations
-    access them via ``inputs.associated_artifacts(artifact, type_str)``.
+    Membership is captured before step and execution cache lookup, including
+    empty primary/type pairs. Workers hydrate these exact IDs without a new
+    association lookup. Creators and curators access the captured artifacts
+    via ``inputs.associated_artifacts(artifact, type_str)``.
 
     Example:
         InputSpec(artifact_type="csv", with_associated=("data_annotation",))

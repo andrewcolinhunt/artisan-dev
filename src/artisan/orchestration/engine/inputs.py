@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -15,11 +16,15 @@ from fsspec import AbstractFileSystem
 from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.specs.input_spec import InputSpec
 from artisan.storage.core.committed_scan import scan_committed
-from artisan.utils.hashing import CacheInputIdentity
+from artisan.utils.hashing import AssociatedInputIdentity, CacheInputIdentity
 from artisan.utils.path import uri_join
 
 logger = logging.getLogger(__name__)
+
+if TYPE_CHECKING:
+    from artisan.storage.core.artifact_store import ArtifactStore
 
 
 @dataclass(frozen=True, slots=True)
@@ -264,6 +269,7 @@ def prepare_inputs(
     storage_options: dict[str, str] | None = None,
     files_root: str | None = None,
     already_verified: set[str] | None = None,
+    input_specs: dict[str, InputSpec] | None = None,
 ) -> PreparedInputs:
     """Resolve, type, verify, group, and encode concrete operation inputs."""
     from artisan.execution.inputs.grouping import group_inputs
@@ -317,14 +323,49 @@ def prepare_inputs(
     else:
         aligned, group_ids = resolved, None
 
-    cache_inputs = _build_cache_inputs(aligned, type_map, group_ids)
+    associated = _capture_associated(aligned, input_specs or {}, store)
+    cache_inputs = _build_cache_inputs(
+        aligned, type_map, group_ids, associated, input_specs or {}
+    )
     return PreparedInputs(aligned, group_ids, cache_inputs)
+
+
+def _capture_associated(
+    inputs: dict[str, list[str]],
+    specs: dict[str, InputSpec],
+    store: ArtifactStore,
+) -> dict[tuple[str, str], tuple[str, ...]]:
+    """Capture all requested memberships together and verify their exact content."""
+    requests: dict[str, set[str]] = {}
+    for role, primary_ids in inputs.items():
+        for artifact_id in primary_ids:
+            requests.setdefault(artifact_id, set()).update(
+                specs[role].with_associated if role in specs else ()
+            )
+    if not any(requests.values()):
+        return {}
+    captured = store.capture_associated(
+        {primary: tuple(sorted(kinds)) for primary, kinds in requests.items() if kinds}
+    )
+    by_type: dict[str, set[str]] = {}
+    for (_, kind), members in captured.items():
+        by_type.setdefault(kind, set()).update(members)
+    for kind, captured_ids in by_type.items():
+        if not captured_ids:
+            continue
+        loaded = store.get_artifacts_by_type(sorted(captured_ids), kind)
+        if set(loaded) != captured_ids:
+            msg = f"Captured associated artifacts are missing content rows: {sorted(captured_ids - set(loaded))!r}"
+            raise ArtifactIntegrityError(msg)
+    return captured
 
 
 def _build_cache_inputs(
     inputs: dict[str, list[str]],
     artifact_types: dict[str, str],
     group_ids: list[str] | None,
+    associated: dict[tuple[str, str], tuple[str, ...]] | None = None,
+    input_specs: dict[str, InputSpec] | None = None,
 ) -> dict[str, list[CacheInputIdentity]]:
     """Build ordered role-local cache occurrences for prepared inputs."""
     return {
@@ -335,6 +376,16 @@ def _build_cache_inputs(
                 position=position,
                 artifact_type=artifact_types[artifact_id],
                 artifact_id=artifact_id,
+                associated=tuple(
+                    AssociatedInputIdentity(
+                        kind, (associated or {})[(artifact_id, kind)]
+                    )
+                    for kind in sorted(
+                        input_specs[role].with_associated
+                        if input_specs is not None and role in input_specs
+                        else ()
+                    )
+                ),
             )
             for position, artifact_id in enumerate(artifact_ids)
         ]

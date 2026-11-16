@@ -26,15 +26,15 @@ def instantiate_inputs(
 
     Avoids N+1 delta scans by: (1) resolving all artifact types in one
     scan, (2) batch-loading per type for hydrated roles, and (3) resolving
-    ``with_associated`` specs via provenance descendant lookup.
+    exact associated IDs captured before cache lookup.
 
     Args:
         inputs: Role-keyed artifact ID lists from the execution unit.
         artifact_store: Store for loading and hydrating artifacts.
         input_specs: Role-keyed input specs controlling hydration behavior.
         default_hydrate: Fallback hydration flag when a role has no spec.
-        recorded_associated: Replay associations to load exactly as captured.
-            None resolves live descendants; an empty list resolves none.
+        recorded_associated: Frozen associations to load exactly as captured.
+            Required when any input declares associated types.
 
     Returns:
         Tuple of (artifacts_by_role, associated_map) where associated_map
@@ -113,33 +113,48 @@ def instantiate_inputs(
 
         result[role] = artifacts
 
-    if recorded_associated is not None:
-        associated = {}
-        for capture in recorded_associated:
-            artifacts = []
-            for artifact_id in capture.artifact_ids:
-                artifact = artifact_store.get_artifact(
-                    artifact_id, artifact_type=capture.artifact_type
-                )
-                if artifact is None:
-                    msg = f"Recorded associated artifact {artifact_id} is missing"
-                    raise ValueError(msg)
-                artifacts.append(artifact)
-            associated[(capture.primary_id, capture.artifact_type)] = artifacts
-        return result, associated
+    return result, hydrate_associated(
+        inputs, artifact_store, input_specs, recorded_associated
+    )
 
-    # Resolve associated artifacts via provenance
-    associated = {}
-    for role, artifacts in result.items():
-        spec = input_specs.get(role)
-        if spec is None or not spec.with_associated:
-            continue
-        primary_ids = {a.artifact_id for a in artifacts if a.artifact_id}
-        if not primary_ids:
-            continue
-        for assoc_type in spec.with_associated:
-            assoc_map = artifact_store.get_associated(primary_ids, assoc_type)
-            for primary_id in primary_ids:
-                associated[(primary_id, assoc_type)] = assoc_map.get(primary_id, [])
 
-    return result, associated
+def hydrate_associated(
+    inputs: dict[str, list[str]],
+    artifact_store: ArtifactStore,
+    input_specs: dict[str, InputSpec],
+    recorded: list[ReplayAssociation] | None,
+) -> dict[tuple[str, str], list[Artifact]]:
+    """Load complete frozen association membership without live rediscovery."""
+    expected = {
+        (primary, kind)
+        for role, ids in inputs.items()
+        for primary in ids
+        for kind in (input_specs[role].with_associated if role in input_specs else ())
+    }
+    captures = recorded or []
+    owners = [(item.primary_id, item.artifact_type) for item in captures]
+    if len(set(owners)) != len(owners) or set(owners) != expected:
+        msg = "Associated inputs require a complete frozen primary/type snapshot"
+        raise ValueError(msg)
+    ids_by_type: dict[str, set[str]] = {}
+    for item in captures:
+        if len(set(item.artifact_ids)) != len(item.artifact_ids) or any(
+            not is_hex_id(artifact_id) for artifact_id in item.artifact_ids
+        ):
+            msg = "Frozen associated artifact IDs are invalid or duplicated"
+            raise ValueError(msg)
+        ids_by_type.setdefault(item.artifact_type, set()).update(item.artifact_ids)
+    loaded: dict[str, Artifact] = {}
+    for kind, ids in ids_by_type.items():
+        if ids:
+            artifacts = artifact_store.get_artifacts_by_type(sorted(ids), kind)
+            if set(artifacts) != ids:
+                msg = f"Recorded associated artifacts are missing: {sorted(ids - set(artifacts))!r}"
+                raise ValueError(msg)
+            loaded.update(artifacts)
+    return {
+        (item.primary_id, item.artifact_type): [
+            loaded[artifact_id] for artifact_id in item.artifact_ids
+        ]
+        for item in captures
+    }
