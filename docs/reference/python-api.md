@@ -8,6 +8,7 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Task | Public package | Start with |
 | --- | --- | --- |
 | Run a pipeline or inspect its run history | `artisan.orchestration` | `PipelineManager`, `PipelineConfig`, `StepResult`, `list_runs` |
+| Reuse a saved step in the same store | `artisan.orchestration` | `PipelineManager.get_step`, `StepResult.output`, `StepFuture.output` |
 | Declare artifact parents | `artisan.schemas` | `ArtifactResult.add_artifact`, `LineageMapping`, `OutputSpec` |
 | Match filenames inside an operation | `artisan.operations.lineage` | `match_outputs_to_inputs_by_stem` |
 | Define an operation | `artisan.operations.base` | `OperationDefinition`, `PerArtifact` |

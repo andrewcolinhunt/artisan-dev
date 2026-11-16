@@ -21,6 +21,8 @@ recovery, make it a separate pipeline submission instead.
 
 Store-bound curators such as `Filter`, `Merge`, and ingestion operations stay at
 the pipeline level. `compose()` cannot read a store or uncommitted child results.
+Creator children must declare static input roles and cannot use NAME or LINEAGE
+grouping inside the composite.
 
 ## Declare the plan
 
@@ -39,12 +41,14 @@ References contain wiring, not artifact values or futures. Loops and conditions
 may depend on parameters, but not on future output contents. Keep composition
 deterministic and free of provisioning, command execution, and filesystem I/O.
 Do not attach child runner, cache, retry, batching, or persistence settings.
+Base scientific wiring on `Params`, not on execution-default fields.
 
 ## Select what survives
 
 Choose the intended public outputs explicitly. Child operations retain their
-ordinary lineage declarations; the composite does not repeat them. Unexported
-intermediates remain temporary unless a retained artifact's semantic-reference
+ordinary lineage declarations; leave composite `OutputSpec.derives_from` unset
+instead of repeating those declarations. Unexported intermediates remain
+temporary unless a retained artifact's semantic-reference
 policy requires support content.
 
 Export both a structure and its metric when their direct relationship should
@@ -63,6 +67,18 @@ Submit through the same `pipeline.run(Definition, ...)` or
 resources, grouping, batching, cache, and failure policies belong to that outer
 submission. Each command child may declare its own canonical tool `Environment`;
 preparation remains explicit through the selected runner.
+
+Declare `runner_resources`, `batch_strategy`, and `group_by` defaults on a
+composite when it needs reusable outer settings. Submission overrides patch only
+the supplied fields; omitted fields retain the declaration. The composite author
+chooses its worker allocation without combining child resource defaults. These
+outer defaults do not apply when the composite is nested through `ctx.call`:
+nested composites expand within their parent's boundary.
+
+Wire the returned result or future through `.output(role)`, just as for an
+operation. The reference identifies its exact source attempt and store. A saved
+result selected with `pipeline.get_step(step_number, pipeline_run_id=...)` uses
+the same interface; cross-run inputs require the same authoritative store.
 
 For local authoring checks, use `ExecutionSession` from `artisan.execution` as a
 context manager and call `session.run(Definition, inputs=..., params=...)`.
