@@ -289,6 +289,7 @@ def _run_phase(root, phase, *, monitor):
     return None
 
 
+@pytest.mark.large_deposit
 @pytest.mark.skipif(
     not sys.platform.startswith("linux"),
     reason="RSS qualification uses Linux process accounting",

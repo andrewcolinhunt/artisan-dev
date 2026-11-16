@@ -52,9 +52,9 @@ def _measurement_case(field: str, *, hidden: bool = False) -> RetainedCase:
 
 
 def test_curator_queries_preserve_global_metrics_for_equal_content_producers(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     first = _measurement_case("score_a")
     _, receipt = admit_read_case(committer, first, step_run_id="a" * 32)
@@ -91,9 +91,9 @@ def test_curator_queries_preserve_global_metrics_for_equal_content_producers(
 
 
 def test_curator_direct_queries_exclude_collapsed_parent_shortcuts(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = _measurement_case("hidden_score", hidden=True)
     _, receipt = admit_read_case(committer, case, step_run_id="a" * 32)
@@ -108,9 +108,9 @@ def test_curator_direct_queries_exclude_collapsed_parent_shortcuts(
 
 
 def test_curator_view_excludes_later_complete_content(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     empty = capture_curator_view(committer)
     case = retained_case(tmp_path, kind="alias")
@@ -151,9 +151,9 @@ def test_curator_view_excludes_later_complete_content(
 
 
 def test_curator_view_rejects_changed_complete_owner(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_read_case(
         committer, retained_case(tmp_path, kind="alias"), step_run_id="a" * 32

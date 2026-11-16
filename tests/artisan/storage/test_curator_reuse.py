@@ -87,9 +87,9 @@ def _hit(
 
 @pytest.mark.parametrize("empty", [False, True])
 def test_reuse_preserves_original_outputs_and_publishes_only_current_membership(
-    backend_fs: Backend, monkeypatch: pytest.MonkeyPatch, empty: bool
+    raw_backend_fs: Backend, monkeypatch: pytest.MonkeyPatch, empty: bool
 ) -> None:
-    committer, coordinator, hit = _hit(backend_fs, empty=empty)
+    committer, coordinator, hit = _hit(raw_backend_fs, empty=empty)
     monkeypatch.setattr(
         DynamicCurator,
         "execute_curator",
@@ -141,10 +141,10 @@ def test_reuse_preserves_original_outputs_and_publishes_only_current_membership(
     ],
 )
 def test_reuse_recovers_exact_source_after_controller_process_death(
-    backend_fs: Backend, boundary: str, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, boundary: str, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    committer, coordinator, hit = _hit(backend_fs)
-    _, storage, _ = backend_fs
+    committer, coordinator, hit = _hit(raw_backend_fs)
+    _, storage, _ = raw_backend_fs
     process = subprocess.run(
         [sys.executable, "-m", "fixtures.curator_reuse"],
         input=json.dumps(
@@ -193,8 +193,10 @@ def test_reuse_recovers_exact_source_after_controller_process_death(
     )
 
 
-def test_reuse_cancellation_fence_and_plan_first_ordering(backend_fs: Backend) -> None:
-    committer, coordinator, hit = _hit(backend_fs)
+def test_reuse_cancellation_fence_and_plan_first_ordering(
+    raw_backend_fs: Backend,
+) -> None:
+    committer, coordinator, hit = _hit(raw_backend_fs)
     requested = CancellationAcknowledgement(status=CancellationStatus.REQUESTED)
     confirmed = CancellationAcknowledgement(status=CancellationStatus.CONFIRMED)
     coordinator.record_cancellation(hit.admission.step_run_id, requested)
@@ -226,8 +228,8 @@ def test_reuse_cancellation_fence_and_plan_first_ordering(backend_fs: Backend) -
     assert state.cancellation_status is None
 
 
-def test_reuse_rechecks_lookup_key_and_selected_source(backend_fs: Backend) -> None:
-    committer, coordinator, hit = _hit(backend_fs)
+def test_reuse_rechecks_lookup_key_and_selected_source(raw_backend_fs: Backend) -> None:
+    committer, coordinator, hit = _hit(raw_backend_fs)
     with pytest.raises(StoreIntegrityError, match="lookup key"):
         coordinator.reuse(replace(hit, cache_key="0" * 32))
     source = replace(
@@ -242,9 +244,9 @@ def test_reuse_rechecks_lookup_key_and_selected_source(backend_fs: Backend) -> N
 
 
 def test_curator_reuse_preserves_downstream_creator_cache_key_and_hit(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    committer, coordinator, hit = _hit(backend_fs)
+    committer, coordinator, hit = _hit(raw_backend_fs)
     reader = RetainedReader(committer)
     plan = compile_definition(MeasureCSV)
     first = prepare_step_inputs(
@@ -321,9 +323,9 @@ def test_curator_reuse_preserves_downstream_creator_cache_key_and_hit(
     "change", ["diagnostic", "uncacheable", "unqualified", "software_ineligible"]
 )
 def test_reuse_rejects_forced_ineligible_current_admission(
-    backend_fs: Backend, change: str
+    raw_backend_fs: Backend, change: str
 ) -> None:
-    committer, coordinator, hit = _hit(backend_fs)
+    committer, coordinator, hit = _hit(raw_backend_fs)
     current = read_curator_admission(
         hit.admission, delta_root=committer.delta_root, fs=committer.fs
     )
@@ -360,9 +362,9 @@ def test_reuse_rejects_forced_ineligible_current_admission(
 
 
 def test_reuse_preserves_source_sets_frozen_queries_and_required_support(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     graph = OccurrenceGraph()

@@ -110,10 +110,10 @@ def _prepare(
     [(None, "c" * 32), ("c" * 32, None), ("c" * 32, "d" * 32)],
 )
 def test_diagnostic_assignments_require_matching_pending_owner(
-    backend_fs: Backend, step_replay: str | None, unit_replay: str | None
+    raw_backend_fs: Backend, step_replay: str | None, unit_replay: str | None
 ) -> None:
     tracker, admission = _prepare(
-        backend_fs, step_replay=step_replay, unit_replay=unit_replay
+        raw_backend_fs, step_replay=step_replay, unit_replay=unit_replay
     )
     with pytest.raises(StoreIntegrityError, match="pending scientific owner"):
         tracker.admit(admission)
@@ -122,11 +122,11 @@ def test_diagnostic_assignments_require_matching_pending_owner(
 
 @pytest.mark.parametrize("count", [0, 2])
 def test_diagnostic_admission_preserves_pending_owner(
-    backend_fs: Backend, count: int
+    raw_backend_fs: Backend, count: int
 ) -> None:
     source = "c" * 32
     tracker, admission = _prepare(
-        backend_fs, count=count, step_replay=source, unit_replay=source
+        raw_backend_fs, count=count, step_replay=source, unit_replay=source
     )
     assert tracker.admit(admission).replay_of_execution_run_id == source
     assert tracker.read_admission(admission.step_run_id) == admission
@@ -141,10 +141,10 @@ def test_diagnostic_admission_preserves_pending_owner(
     ],
 )
 def test_admission_requires_pending_output_contract(
-    backend_fs: Backend, roles: str, types: str, options: str
+    raw_backend_fs: Backend, roles: str, types: str, options: str
 ) -> None:
     tracker, admission = _prepare(
-        backend_fs, output_roles=roles, output_types=types, compute_options=options
+        raw_backend_fs, output_roles=roles, output_types=types, compute_options=options
     )
     with pytest.raises(StoreIntegrityError, match="pending scientific owner"):
         tracker.admit(admission)
@@ -152,9 +152,9 @@ def test_admission_requires_pending_output_contract(
 
 @pytest.mark.parametrize("count", [0, 2])
 def test_finite_admission_survives_controller_recreation(
-    backend_fs: Backend, count: int
+    raw_backend_fs: Backend, count: int
 ) -> None:
-    tracker, admission = _prepare(backend_fs, count=count)
+    tracker, admission = _prepare(raw_backend_fs, count=count)
     assert tracker.current_state(admission.step_run_id).status == StepStatus.PENDING
     with pytest.raises(StoreIntegrityError, match="no durable finite"):
         tracker.read_admission(admission.step_run_id)
@@ -168,9 +168,9 @@ def test_finite_admission_survives_controller_recreation(
 
 
 def test_replaced_finite_admission_rejects_even_with_self_consistent_content(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    tracker, admission = _prepare(backend_fs)
+    tracker, admission = _prepare(raw_backend_fs)
     tracker.admit(admission)
     path = f"{tracker.committer.delta_root}/_artisan/step-admissions/{admission.step_run_id}.json"
     with tracker.committer.fs.open(path, "rb") as stream:
@@ -185,9 +185,9 @@ def test_replaced_finite_admission_rejects_even_with_self_consistent_content(
 
 @pytest.mark.parametrize("change", ["cancelled", "generation", "digest", "step_number"])
 def test_finite_admission_requires_exact_active_units(
-    backend_fs: Backend, change: str
+    raw_backend_fs: Backend, change: str
 ) -> None:
-    tracker, admission = _prepare(backend_fs)
+    tracker, admission = _prepare(raw_backend_fs)
     reference = admission.assignments[0]
     if change == "cancelled":
         tracker.committer.journal.cancel(reference.attempt)
