@@ -210,8 +210,10 @@ class OperationDefinition(BaseModel):
     """Whether execute fans out per artifact in batch dispatch.
 
     When True (default), the framework splits preprocess output into
-    per-artifact ExecuteInputs and dispatches each separately. Modal
-    sends them to parallel containers; in-process execution loops sequentially.
+    per-artifact ExecuteInputs and runs each execute call within the assigned
+    worker. Command calls may start separate processes in their tool
+    environments. Worker placement and packing are controlled by the runner
+    and the submitted step's batch strategy.
 
     Set to False for operations that run external tools via
     ``run_command()`` where a single subprocess should process all

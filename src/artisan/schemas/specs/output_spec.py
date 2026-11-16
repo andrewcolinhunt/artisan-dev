@@ -30,8 +30,10 @@ class OutputSpec(BaseModel):
             - {"outputs": ["role"]}: Output role(s) as parent (output->output)
             - {"inputs": []}: Generative operation (no lineage - no parents)
 
-            None is valid only for passthrough outputs.
             Artifact-producing operations must set this explicitly.
+            Composite outputs must leave it as None: their lineage is projected
+            from the selected child outputs. Passthrough outputs also use None
+            to preserve their existing identity.
             Operations still declare exact parents in ArtifactResult.lineage.
             Multiple parents from each required role are allowed.
 
