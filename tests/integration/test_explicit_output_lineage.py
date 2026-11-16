@@ -17,8 +17,6 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.examples import DataGenerator
-from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult, ExecutionConfigArtifact, LineageMapping
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
@@ -33,10 +31,10 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
 
 from .conftest import (
+    create_native_pipeline,
     get_artifact_edges,
     load_artifact_edges,
     prepare_paired_files,
-    read_table,
 )
 
 
@@ -105,7 +103,7 @@ def test_explicit_output_to_output_lineage(pipeline_env: dict[str, str]) -> None
     """An output index resolves to the exact persisted sibling artifact."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_explicit_output_lineage",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -115,13 +113,11 @@ def test_explicit_output_to_output_lineage(pipeline_env: dict[str, str]) -> None
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 7},
-        step_runner=Runner.LOCAL,
     )
 
     pipeline.run(
         StructureAndMetricCurator,
         inputs={"datasets": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -247,7 +243,7 @@ def _run_parity_pipeline(
     staging_root.mkdir()
     working_root.mkdir()
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name=f"parity_{'helper' if use_helper else 'manual'}",
         delta_root=str(delta_root),
         staging_root=str(staging_root),
@@ -256,12 +252,10 @@ def _run_parity_pipeline(
     primary = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 7},
-        step_runner=Runner.LOCAL,
     )
     secondary = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 19},
-        step_runner=Runner.LOCAL,
     )
     pipeline.run(
         TwoInputParity,
@@ -270,7 +264,6 @@ def _run_parity_pipeline(
             "secondary": secondary.output("datasets"),
         },
         params={"use_helper": use_helper},
-        step_runner=Runner.LOCAL,
     )
     result = pipeline.finalize()
     assert result["overall_success"], (
@@ -303,11 +296,11 @@ def test_manual_and_helper_persist_identical_edges_and_groups(tmp_path: Path) ->
         helper.select(columns).iter_rows()
     )
     assert manual.height == 4
-    assert manual["group_id"].null_count() == 0
+    assert manual["group_id"].null_count() == manual.height
     for target in targets:
         rows = manual.filter(pl.col("target_artifact_id") == target)
         assert set(rows["source_role"]) == {"primary", "secondary"}
-        assert rows["group_id"].n_unique() == 1
+        assert rows["execution_run_id"].n_unique() == 1
 
 
 class ConfigDeclarationCurator(OperationDefinition):
@@ -355,7 +348,7 @@ class ConfigDeclarationCurator(OperationDefinition):
 @pytest.mark.parametrize("declare_all", [True, False])
 def test_config_parents_are_operation_declared_once(pipeline_env, declare_all) -> None:
     """Repeated references deduplicate; the executor never supplements declarations."""
-    pipeline = PipelineManager.create(name="explicit_config", **pipeline_env)
+    pipeline = create_native_pipeline(name="explicit_config", **pipeline_env)
     generated = pipeline.run(DataGenerator, params={"count": 2, "seed": 7})
     pipeline.run(
         ConfigDeclarationCurator,
@@ -453,7 +446,7 @@ def test_missing_declaration_never_falls_back_to_names(
     pipeline_env, operation, omit
 ) -> None:
     """Matching filenames cannot rescue a missing declaration or stage success."""
-    pipeline = PipelineManager.create(name="required_declaration", **pipeline_env)
+    pipeline = create_native_pipeline(name="required_declaration", **pipeline_env)
     generated = pipeline.run(DataGenerator, params={"count": 1})
     step = pipeline.run(
         operation,
@@ -462,7 +455,24 @@ def test_missing_declaration_never_falls_back_to_names(
     )
     assert bool(step.failed_count) is omit
     assert pipeline.finalize()["overall_success"] is (not omit)
-    executions = read_table(pipeline_env["delta_root"], "orchestration/executions")
-    current = executions.filter(pl.col("origin_step_number") == 1)
-    assert current.height == 1
-    assert current["success"][0] is (not omit)
+    from artisan.orchestration.engine.retained_execution_query import (
+        read_retained_execution_membership,
+    )
+    from artisan.storage.core.execution_source import (
+        CuratorExecutionSource,
+        FailedScientificExecutionSource,
+    )
+
+    members = [
+        item
+        for item in read_retained_execution_membership(
+            pipeline.committer, pipeline_run_id=pipeline.config.pipeline_run_id
+        )
+        if item.state.step_run_id == step.step_run_id
+    ]
+    assert len(members) == 1
+    source = members[0].source
+    if isinstance(source, CuratorExecutionSource):
+        assert source.execution_record["success"] is (not omit)
+    else:
+        assert isinstance(source, FailedScientificExecutionSource) is omit

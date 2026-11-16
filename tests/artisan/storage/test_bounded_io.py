@@ -16,7 +16,7 @@ from fsspec.implementations.local import LocalFileSystem
 from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
-from artisan.storage.io import bounded_io, commit_plan
+from artisan.storage.io import bounded_io
 from artisan.storage.io.bounded_io import (
     capture_parquet,
     iter_parquet_frames,
@@ -24,6 +24,7 @@ from artisan.storage.io.bounded_io import (
     value_size,
     write_parquet_rows,
 )
+from artisan.storage.io.curator_effects import prepare_curator_effects
 from artisan.storage.io.staging import StagingManager
 from artisan.utils.hashing import (
     STREAM_CHUNK_BYTES,
@@ -187,21 +188,14 @@ def test_preparation_disk_full_removes_private_scratch_and_preserves_staging(
         step_run_id="b" * 32,
         step_number=0,
         operation_name="disk_full",
-        commit_kind="input_registration",
+        commit_kind="step_result",
     )
     original = fs.cat_file(source)
     attempted = _exhaust_scratch(monkeypatch)
-    monkeypatch.setattr(
-        commit_plan,
-        "publish_commit_plan",
-        lambda *_args: pytest.fail("A failed preparation cannot publish its plan"),
-    )
     with pytest.raises(StoreIntegrityError, match="failed scratch capture") as caught:
-        commit_plan.build_commit_plan(
-            delta_root=root,
+        prepare_curator_effects(
             staging_root=staging_root,
             fs=fs,
-            commit_kind="input_registration",
             step_run_id="b" * 32,
             step_number=0,
             operation_name="disk_full",
@@ -210,9 +204,6 @@ def test_preparation_disk_full_removes_private_scratch_and_preserves_staging(
     assert attempted
     assert all(not path.parent.exists() for path in attempted)
     assert fs.cat_file(source) == original
-    assert not fs.exists(
-        commit_plan.commit_plan_path(root, "b" * 32, "input_registration")
-    )
 
 
 def test_write_parquet_rows_empty_file_retains_schema(tmp_path):

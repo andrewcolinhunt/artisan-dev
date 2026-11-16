@@ -3,21 +3,18 @@
 from __future__ import annotations
 
 import os
+from collections.abc import Mapping
 from typing import TYPE_CHECKING
+
+from fsspec import AbstractFileSystem
 
 from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
-
-
-def _is_remote(path: str | None) -> bool:
-    """True when ``path`` is a cloud URI (``scheme://`` other than file)."""
-    return path is not None and "://" in path and not path.startswith("file://")
 
 
 def materialize_inputs(
@@ -25,30 +22,41 @@ def materialize_inputs(
     input_specs: dict[str, InputSpec],
     directory: str,
     artifact_store: ArtifactStore,
-    *,
-    endpoint_routed: bool = False,
 ) -> dict[str, list[Artifact]]:
-    """Materialize input artifacts to disk with dependency-aware ordering.
+    """Capture store dependencies, then materialize the supplied input artifacts."""
+    selected_specs = {
+        role: spec for role, spec in input_specs.items() if spec.materialize
+    }
+    references = capture_input_references(
+        {
+            role: values
+            for role, values in artifacts.items()
+            if input_specs.get(role, InputSpec()).materialize
+        },
+        selected_specs,
+        artifact_store,
+    )
+    return materialize_captured_inputs(
+        artifacts,
+        input_specs,
+        directory,
+        references,
+        fs=artifact_store._fs,
+    )
 
-    Non-config artifacts are materialized first so that config artifacts
-    can resolve file-path references to already-written files.
 
-    Args:
-        artifacts: Role-keyed hydrated input artifacts.
-        input_specs: Role-keyed input specs controlling materialization.
-        directory: Target directory for materialized files.
-        artifact_store: Store for hydrating config-referenced artifacts.
-        endpoint_routed: When True, a remote ``FileRefArtifact``
-            is shipped to the worker by reference.
-            Other artifact families still materialize locally. Local execution
-            keeps the default (False), materializing every input as before.
+def materialize_captured_inputs(
+    artifacts: dict[str, list[Artifact]],
+    input_specs: dict[str, InputSpec],
+    directory: str,
+    references: Mapping[str, Mapping[str, Artifact]],
+    *,
+    fs: AbstractFileSystem | None = None,
+) -> dict[str, list[Artifact]]:
+    """Materialize finalized inputs using only explicitly captured dependencies.
 
-    Returns:
-        The same artifacts dict, with materialized paths set on its artifacts.
-
-    Raises:
-        ValueError: If a materialized endpoint config contains artifact references,
-            or a locally referenced artifact cannot be loaded.
+    Reference membership is checked before writing any files. Missing captures,
+    including absent captures for empty configs, fail without a store fallback.
     """
     non_configs: list[tuple[Artifact, str | None]] = []
     configs: list[ExecutionConfigArtifact] = []
@@ -69,46 +77,38 @@ def materialize_inputs(
             seen_ids.add(artifact.artifact_id)
 
             if isinstance(artifact, ExecutionConfigArtifact):
-                if endpoint_routed and artifact.get_artifact_references():
-                    msg = (
-                        "Endpoint materialization does not support config artifact "
-                        "references. Build worker-local configuration in "
-                        "execute_command from explicit input roles."
-                    )
-                    raise ValueError(msg)
                 configs.append(artifact)
             else:
                 non_configs.append((artifact, spec.materialize_as))
 
-    loaded = {
-        artifact.artifact_id: artifact
-        for artifact, _ in non_configs
-        if artifact.artifact_id is not None
-    }
-    loaded.update(
-        {config.artifact_id: config for config in configs if config.artifact_id}
-    )
     for config in configs:
-        for ref_id, ref_artifact in resolve_config_references(
-            config, artifact_store, loaded
-        ).items():
+        for ref_id, ref_artifact in _captured_references(config, references).items():
             if ref_id in seen_ids:
                 continue
             seen_ids.add(ref_id)
             non_configs.append((ref_artifact, None))
 
     resolved_paths: dict[str, str] = {}
+    materialized_paths: dict[str, str] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
             continue
-        materialized = _materialize_artifact(
-            artifact, directory, artifact_store, fmt, endpoint_routed=endpoint_routed
-        )
+        materialized = _materialize_artifact(artifact, directory, fs, fmt)
         if isinstance(materialized, str):
             resolved_paths[artifact.artifact_id] = materialized
+            materialized_paths[artifact.artifact_id] = materialized
 
     for config in configs:
-        config.materialize_to(directory, resolved_paths=resolved_paths)
+        materialized = config.materialize_to(directory, resolved_paths=resolved_paths)
+        assert config.artifact_id is not None
+        materialized_paths[config.artifact_id] = materialized
+    for role, values in artifacts.items():
+        if input_specs.get(role, InputSpec()).materialize:
+            for artifact in values:
+                if artifact.artifact_id in materialized_paths:
+                    artifact.materialized_path = materialized_paths[
+                        artifact.artifact_id
+                    ]
     return artifacts
 
 
@@ -144,62 +144,132 @@ def resolve_config_references(
     return result
 
 
+def capture_input_references(
+    artifacts: dict[str, list[Artifact]],
+    input_specs: dict[str, InputSpec],
+    artifact_store: ArtifactStore,
+) -> dict[str, dict[str, Artifact]]:
+    """Hydrate config dependencies before entering a store-free invocation."""
+    loaded = {
+        artifact.artifact_id: artifact
+        for values in artifacts.values()
+        for artifact in values
+        if artifact.artifact_id is not None and artifact.is_hydrated
+    }
+    result: dict[str, dict[str, Artifact]] = {}
+    for role, values in artifacts.items():
+        spec = input_specs.get(role, InputSpec())
+        for config in values:
+            if not spec.resolve_references and not (
+                spec.materialize and isinstance(config, ExecutionConfigArtifact)
+            ):
+                continue
+            if (
+                not isinstance(config, ExecutionConfigArtifact)
+                or not config.is_hydrated
+                or config.artifact_id is None
+            ):
+                if not spec.resolve_references:
+                    continue
+                msg = "Reference resolution requires a hydrated, finalized config"
+                raise ValueError(msg)
+            result[config.artifact_id] = resolve_config_references(
+                config,
+                artifact_store,
+                loaded,
+                typed=spec.resolve_references,
+            )
+    return result
+
+
 def resolve_input_references(
     artifacts: dict[str, list[Artifact]],
     input_specs: dict[str, InputSpec],
     directory: str,
     artifact_store: ArtifactStore,
 ) -> dict[str, dict[str, Artifact]]:
-    """Prepare opt-in typed dependencies while leaving config markers intact.
+    """Capture and materialize the legacy typed configuration dependencies."""
+    selected = {
+        role: spec for role, spec in input_specs.items() if spec.resolve_references
+    }
+    references = capture_input_references(
+        {role: values for role, values in artifacts.items() if role in selected},
+        selected,
+        artifact_store,
+    )
+    return materialize_captured_references(
+        artifacts,
+        input_specs,
+        directory,
+        references,
+        fs=artifact_store._fs,
+    )
 
-    Dependency files are local preparation inputs even for endpoint execution.
-    Operations package the consumed files into their declared portable inputs.
-    """
-    loaded: dict[str, Artifact] = {}
+
+def _captured_references(
+    config: ExecutionConfigArtifact,
+    references: Mapping[str, Mapping[str, Artifact]],
+) -> dict[str, Artifact]:
+    """Require exact config membership, preserving captured-empty context."""
+    if config.artifact_id is None or config.artifact_id not in references:
+        msg = "Config references were not captured for this input"
+        raise ValueError(msg)
+    captured = references[config.artifact_id]
+    if set(captured) != set(config.get_artifact_references()):
+        msg = "Captured config references do not match its declared dependencies"
+        raise ValueError(msg)
+    for artifact_id, artifact in captured.items():
+        if artifact.artifact_id != artifact_id or not artifact.is_hydrated:
+            msg = "Captured config dependency is not hydrated with the expected ID"
+            raise ValueError(msg)
+    return dict(captured)
+
+
+def materialize_captured_references(
+    artifacts: dict[str, list[Artifact]],
+    input_specs: dict[str, InputSpec],
+    directory: str,
+    references: Mapping[str, Mapping[str, Artifact]],
+    *,
+    fs: AbstractFileSystem | None = None,
+) -> dict[str, dict[str, Artifact]]:
+    """Prepare explicitly captured typed dependencies without store access."""
     result: dict[str, dict[str, Artifact]] = {}
-    for role, artifact_list in artifacts.items():
-        spec = input_specs.get(role)
-        if spec is None or not spec.resolve_references:
+    for role, values in artifacts.items():
+        if not input_specs.get(role, InputSpec()).resolve_references:
             continue
-        for config in artifact_list:
-            if (
-                not isinstance(config, ExecutionConfigArtifact)
-                or not config.is_hydrated
-                or config.artifact_id is None
-            ):
+        for config in values:
+            if not isinstance(config, ExecutionConfigArtifact):
                 msg = "Reference resolution requires a hydrated, finalized config"
                 raise ValueError(msg)
-            result[config.artifact_id] = resolve_config_references(
-                config, artifact_store, loaded, typed=True
-            )
-    for ref_id, artifact in loaded.items():
-        target = os.path.join(directory, "references", ref_id)
+            captured = _captured_references(config, references)
+            if any(not is_hex_id(key) for key in captured):
+                msg = "Config references must be 32-character hexadecimal artifact IDs"
+                raise ValueError(msg)
+            if any(
+                isinstance(value, ExecutionConfigArtifact)
+                for value in captured.values()
+            ):
+                msg = "Typed config references cannot target another config"
+                raise ValueError(msg)
+            assert config.artifact_id is not None
+            result[config.artifact_id] = captured
+    loaded = {key: value for values in result.values() for key, value in values.items()}
+    for artifact_id, artifact in loaded.items():
+        target = os.path.join(directory, "references", artifact_id)
         os.makedirs(target, exist_ok=True)
-        _materialize_artifact(artifact, target, artifact_store)
+        _materialize_artifact(artifact, target, fs)
+    for captured in result.values():
+        for artifact_id, artifact in captured.items():
+            artifact.materialized_path = loaded[artifact_id].materialized_path
     return result
 
 
 def _materialize_artifact(
     artifact: Artifact,
     directory: str,
-    artifact_store: ArtifactStore,
+    fs: AbstractFileSystem | None,
     fmt: str | None = None,
-    *,
-    endpoint_routed: bool = False,
 ) -> str | None:
-    """Share native materialization and the complete-file URI transport boundary."""
-    fs = artifact_store._fs
-    locator = (
-        getattr(artifact, next(iter(artifact.LOCATOR_FIELDS)))
-        if artifact.EXTERNALLY_BACKED
-        else None
-    )
-    if (
-        endpoint_routed
-        and isinstance(artifact, FileRefArtifact)
-        and _is_remote(locator)
-    ):
-        artifact.verify_external_content(fs=fs)
-        artifact.materialized_path = locator
-        return None
+    """Materialize one verified input using the explicitly supplied filesystem."""
     return artifact.materialize_to(directory, format=fmt, fs=fs)

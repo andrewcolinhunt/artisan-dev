@@ -34,8 +34,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # latest = dev default; sha-<short> = the immutable handle
-      # production configs pin (see ModalComputeConfig.image docstring)
+      # latest follows development; sha-<short> selects a specific commit build.
       - uses: docker/metadata-action@v5
         id: meta
         with:

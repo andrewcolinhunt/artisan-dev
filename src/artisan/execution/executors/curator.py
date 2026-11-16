@@ -10,12 +10,16 @@ from __future__ import annotations
 
 import logging
 import time
+from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any
 
 import polars as pl
 
 from artisan.execution.context.builder import build_execution_context
+from artisan.execution.curator_definition import verify_curator_definition
+from artisan.execution.curator_resources import curator_resources
 from artisan.execution.executors.curator_stream import handle_artifact_stream
 from artisan.execution.inputs.instantiation import hydrate_associated
 from artisan.execution.lineage.builder import build_edges
@@ -56,6 +60,8 @@ from artisan.execution.utils import (
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.registry.discovery import bootstrap_applications
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.curator_cache import CURATOR_CACHE_PROOF_KEY
+from artisan.schemas.execution.curator_carriers import CURATOR_CARRIER_INVENTORY_KEY
 from artisan.schemas.execution.curator_result import (
     ArtifactResult,
     ArtifactStreamResult,
@@ -65,7 +71,9 @@ from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.specs.input_models import CuratorInput
+from artisan.storage.cache.curator_dependencies import CuratorReadRecorder
 from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.core.curator_view import CuratorView
 from artisan.utils.command_supervisor import (
     check_command_scope,
     close_command_scope,
@@ -107,6 +115,10 @@ def _handle_artifact_result(
         result.lineage, inputs, result.artifacts, operation.outputs
     )
     validate_lineage_completeness(result.artifacts, operation.outputs, result.lineage)
+    for artifacts in result.artifacts.values():
+        for artifact in artifacts:
+            if artifact.is_draft:
+                artifact.origin_step_number = execution_context.step_number
     finalized = finalize_artifacts(result.artifacts)
     source_ids = {
         mapping.source_artifact_id
@@ -187,20 +199,30 @@ def _handle_passthrough_result(
 
 
 def run_curator_flow(
-    unit: ExecutionUnit, runtime_env: RuntimeEnvironment
+    unit: ExecutionUnit,
+    runtime_env: RuntimeEnvironment,
+    *,
+    curator_view: CuratorView | None = None,
+    read_recorder: CuratorReadRecorder | None = None,
 ) -> StagingResult:
     """Execute a curator and stage its result with command and replay evidence.
 
     Args:
         unit: Configured operation and concrete input batch.
         runtime_env: Resolved worker identity, runtime paths and storage.
+        curator_view: Verified fixed store view supplied by admitted worker entry.
+        read_recorder: Qualified observation of authored reads in that same view.
 
     Returns:
         Staged success or failure, or an unstaged failure if setup prevents
         recording.
     """
+    _validate_observation(unit, curator_view, read_recorder)
     with (
         managed_invocation(),
+        curator_resources(
+            runtime_env.working_root, preserve_working=runtime_env.preserve_working
+        ),
         capture_commands(unit.operation) as commands,
     ):
         bootstrap_applications(
@@ -212,13 +234,66 @@ def run_curator_flow(
         commands.add_environment(
             {str(i): value for i, value in enumerate(unit.replay_sensitive_values)}
         )
-        with capture_replay(unit, runtime_env):
-            return _run_curator_flow(unit, runtime_env)
+        with capture_replay(unit):
+            return _run_curator_flow(
+                unit,
+                runtime_env,
+                curator_view=curator_view,
+                read_recorder=read_recorder,
+            )
+
+
+def _validate_observation(
+    unit: ExecutionUnit,
+    view: CuratorView | None,
+    recorder: CuratorReadRecorder | None,
+) -> None:
+    """Bind observed reads to the exact invocation whose proof will be sealed."""
+    if recorder is None:
+        return
+    admission = recorder._admission
+    if admission.definition is None:
+        msg = "Curator observation requires a closed admitted definition"
+        raise ValueError(msg)
+    verify_curator_definition(unit.operation, admission.definition)
+    associations = tuple(
+        sorted(
+            (item.primary_id, item.artifact_type, tuple(item.artifact_ids))
+            for item in unit.associated_inputs
+        )
+    )
+    if (
+        recorder._view is not view
+        or (unit.step_run_id, unit.step_number, unit.execution_spec_id)
+        != (
+            admission.record.step_run_id,
+            admission.record.step_number,
+            admission.digest,
+        )
+        or unit.operation.cacheable != admission.cacheable
+        or (unit.operation.name, unit.operation.version)
+        != (admission.operation_name, admission.operation_version)
+        or unit.inputs
+        != {
+            role.role: [item.artifact_id for item in role.members]
+            for role in admission.inputs
+        }
+        or associations
+        != tuple(
+            (item.primary_id, item.artifact_type, item.artifact_ids)
+            for item in admission.associations
+        )
+    ):
+        msg = "Curator read observation differs from its exact admitted invocation"
+        raise ValueError(msg)
 
 
 def _run_curator_flow(
     unit: ExecutionUnit,
     runtime_env: RuntimeEnvironment,
+    *,
+    curator_view: CuratorView | None = None,
+    read_recorder: CuratorReadRecorder | None = None,
 ) -> StagingResult:
     """Run setup, execution and recording for one curator unit."""
     timings: dict[str, Any] = {}
@@ -248,6 +323,7 @@ def _run_curator_flow(
                 runtime_env=runtime_env,
                 operation=operation,
                 step_run_id=unit.step_run_id,
+                curator_view=curator_view,
             )
             artifact_store = execution_context.artifact_store
             verify_replay_worker(unit)
@@ -262,6 +338,12 @@ def _run_curator_flow(
                 operation.inputs,
                 unit.associated_inputs,
             )
+            if read_recorder is not None and any(
+                artifact.EXTERNALLY_BACKED
+                for artifacts in associated.values()
+                for artifact in artifacts
+            ):
+                read_recorder.exclusions.add("untracked_external_content")
             curator_inputs = CuratorInput(
                 input_dfs,
                 {key: tuple(artifacts) for key, artifacts in associated.items()},
@@ -271,11 +353,16 @@ def _run_curator_flow(
         with phase_timer("execute", timings):
             try:
                 execute_start = time.perf_counter()
-                result = operation.execute_curator(
-                    inputs=curator_inputs,
-                    step_number=unit.step_number,
-                    artifact_store=artifact_store,
-                )
+                with (
+                    read_recorder.authored()
+                    if read_recorder is not None
+                    else nullcontext()
+                ):
+                    result = operation.execute_curator(
+                        inputs=curator_inputs,
+                        step_number=unit.step_number,
+                        artifact_store=artifact_store,
+                    )
                 if isinstance(result, ArtifactStreamResult):
                     stream_started = True
                     return handle_artifact_stream(
@@ -288,6 +375,7 @@ def _run_curator_flow(
                         params_dict,
                         user_overrides,
                         runtime_env.failure_logs_root,
+                        read_recorder=read_recorder,
                     )
                 close_command_scope()
             except Exception as exc:
@@ -308,7 +396,15 @@ def _run_curator_flow(
                 )
 
         # Reject collisions before adding framework execution timings.
-        reserved = {"timings", "skip_reason", "status", "cancelled", "skipped"}
+        reserved = {
+            "timings",
+            "skip_reason",
+            "status",
+            "cancelled",
+            "skipped",
+            CURATOR_CACHE_PROOF_KEY,
+            CURATOR_CARRIER_INVENTORY_KEY,
+        }
         if reserved.intersection(result.metadata):
             msg = "Curator metadata uses reserved framework keys"
             raise ValueError(msg)
@@ -329,6 +425,10 @@ def _run_curator_flow(
                     failure_logs_root=runtime_env.failure_logs_root,
                 )
             else:
+                if read_recorder is not None:
+                    execution_context = replace(
+                        execution_context, curator_cache_proof=read_recorder.finish()
+                    )
                 merged_metadata: dict[str, Any] = {"timings": timings}
                 if hasattr(result, "metadata") and result.metadata:
                     merged_metadata.update(result.metadata)

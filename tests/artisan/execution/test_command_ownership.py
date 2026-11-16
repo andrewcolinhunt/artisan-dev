@@ -1,37 +1,40 @@
-"""Check publication barriers after real owner loss in every user phase."""
+"""Keep phase and publication barriers after real invocation-owner loss."""
 
 from __future__ import annotations
 
 import sys
 from collections.abc import Callable
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import CancelledError, ThreadPoolExecutor
 from enum import StrEnum, auto
 from pathlib import Path
 from typing import Any, ClassVar
 
 import polars as pl
 import pytest
+from fixtures.commands import IdentityCommandEnvironment
+from fsspec.implementations.local import LocalFileSystem
 
+from artisan.composites.base.compiler import compile_definition
+from artisan.execution import invocation
+from artisan.execution.composition import PlanExecution, execute_compiled_plan
 from artisan.execution.compute.base import ExecuteRouter
-from artisan.execution.executors import creator, creator_phases, curator
+from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.executors import curator
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.tool_endpoint.client import EndpointCancellationError
+from artisan.execution.recording import delivery_diagnostics
+from artisan.execution.recording.delivery_diagnostics import DeliveryRecorder
+from artisan.execution.session import ExecutionSession
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import ArtifactResult, PassthroughResult
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
-from artisan.schemas.orchestration.step_lifecycle import (
-    CancellationAcknowledgement,
-    CancellationStatus,
-)
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
     PreprocessInput,
 )
 from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.storage.io.retained_store import create_retained_store
 from artisan.utils import command_supervisor
 from artisan.utils.external_tools import run_command
 
@@ -54,10 +57,11 @@ class _OwnedCreator(OperationDefinition):
         return {}
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        return ArtifactResult(
-            artifacts={"metrics": [MetricArtifact.draft({"value": 1}, "metric", 1)]},
-            lineage={"metrics": []},
+        result = ArtifactResult()
+        result.add_artifact(
+            "metrics", MetricArtifact.draft({"value": 1}, "metric", 1), sources={}
         )
+        return result
 
 
 class _OwnedCurator(OperationDefinition):
@@ -71,29 +75,34 @@ class _OwnedCurator(OperationDefinition):
     }
 
     def execute_curator(self, **kwargs: Any) -> ArtifactResult:
-        return ArtifactResult(
-            artifacts={"metrics": [MetricArtifact.draft({"value": 1}, "metric", 1)]},
-            lineage={"metrics": []},
+        result = ArtifactResult()
+        result.add_artifact(
+            "metrics", MetricArtifact.draft({"value": 1}, "metric", 1), sources={}
         )
+        return result
 
 
 @pytest.fixture
 def runtime(tmp_path: Path) -> RuntimeEnvironment:
+    delta = tmp_path / "owner-store"
+    files = tmp_path / "files"
+    create_retained_store(str(delta), str(files), fs=LocalFileSystem())
     return RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"),
+        delta_root=str(delta),
+        files_root=str(files),
         staging_root=str(tmp_path / "staging"),
         working_root=str(tmp_path / "work"),
         failure_logs_root=str(tmp_path / "failures"),
     )
 
 
-def _lose_owner() -> None:
-    """Destroy only this invocation's exact owner; it has no live commands."""
-    invocation = command_supervisor._current
-    assert invocation is not None
-    assert invocation.owner is not None
-    invocation.owner.process.kill()
-    invocation.owner.process.wait(timeout=5)
+def _lose_owner(session: ExecutionSession | None = None) -> None:
+    """Destroy this test's exact supervisor while it has no active commands."""
+    scope = session._invocation if session is not None else command_supervisor._current
+    assert scope is not None
+    assert scope.owner is not None
+    scope.owner.process.kill()
+    scope.owner.process.wait(timeout=5)
     with pytest.raises(command_supervisor.CommandOwnershipError):
         command_supervisor.check_command_scope()
 
@@ -102,23 +111,29 @@ def _forbid_publication(*args: Any, **kwargs: Any) -> None:
     pytest.fail("uncertain commands reached output collection or publication")
 
 
-def _assert_failed_record(result: Any) -> dict[str, Any]:
-    assert not result.success
-    assert result.artifact_ids == []
-    row = pl.read_parquet(Path(result.staging_path) / "executions.parquet").row(
-        0, named=True
+def _creator(
+    session: ExecutionSession, router: ExecuteRouter | None = None
+) -> PlanExecution:
+    return execute_compiled_plan(
+        compile_definition(_OwnedCreator),
+        {},
+        session,
+        invocation_id="owned-scientific-unit",
+        execute_adapter=lambda _operation, _path: (
+            LocalExecuteRouter() if router is None else router
+        ),
+        step_number=1,
     )
-    assert row["success"] is False
-    return row
 
 
 @pytest.mark.parametrize(
-    "failed_phase", ["bootstrap", "preprocess", "execute", "postprocess"]
+    "failed_phase", ["entry", "preprocess", "execute", "postprocess"]
 )
-def test_creator_caught_owner_loss_forbids_later_phases_and_success(
-    runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, failed_phase: str
+def test_creator_owner_loss_forbids_later_phases_and_finalization(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_phase: str
 ) -> None:
     visited: list[str] = []
+    session = ExecutionSession(working_root=tmp_path / "owned-work")
     phases = {
         "preprocess": "preprocess",
         "execute": "execute_function",
@@ -137,61 +152,68 @@ def test_creator_caught_owner_loss_forbids_later_phases_and_success(
             visited.append(phase)
             value = original(self, inputs)
             if phase == failed_phase:
-                _lose_owner()
+                _lose_owner(session)
             return value
 
         monkeypatch.setattr(_OwnedCreator, method, run)
-    if failed_phase == "bootstrap":
-        monkeypatch.setattr(
-            creator, "bootstrap_applications", lambda *a, **k: _lose_owner()
-        )
-    for name in ("finalize_artifacts", "_upload_files_to_root", "_read_tool_output"):
-        monkeypatch.setattr(creator_phases, name, _forbid_publication)
-    monkeypatch.setattr(creator, "_read_tool_output", _forbid_publication)
+    monkeypatch.setattr(invocation, "finalize_artifacts", _forbid_publication)
+    monkeypatch.setattr(invocation, "_read_tool_output", _forbid_publication)
 
-    result = creator.run_creator_flow(
-        ExecutionUnit(operation=_OwnedCreator(), inputs={}, step_number=1), runtime
-    )
+    with pytest.raises(command_supervisor.CommandOwnershipError), session:
+        if failed_phase == "entry":
+            _lose_owner(session)
+        _creator(session)
 
-    _assert_failed_record(result)
     expected = (
         []
-        if failed_phase == "bootstrap"
+        if failed_phase == "entry"
         else list(phases)[: list(phases).index(failed_phase) + 1]
     )
     assert visited == expected
-    if failed_phase != "bootstrap":
-        assert list(Path(runtime.working_root).rglob("execute"))
+    assert not session.cleanup_complete
+    assert session._root is not None
+    assert session._root.is_dir()
+    with pytest.raises(RuntimeError, match="unresolved cleanup"):
+        session.__enter__()
 
 
 @pytest.mark.parametrize(
     "failed_phase", ["preprocess", "execute_function", "postprocess"]
 )
-def test_creator_preserves_primary_error_and_skips_log_reads_when_owner_is_lost(
-    runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, failed_phase: str
+def test_creator_preserves_primary_error_without_reading_unclosed_logs(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, failed_phase: str
 ) -> None:
+    diagnostics = DeliveryRecorder(sensitive_values=())
+    session = ExecutionSession(
+        working_root=tmp_path / "owned-work", diagnostics=diagnostics
+    )
+
     def fail(self: _OwnedCreator, inputs: Any) -> None:
-        _lose_owner()
+        _lose_owner(session)
         message = "primary user failure"
         raise ValueError(message)
 
     monkeypatch.setattr(_OwnedCreator, failed_phase, fail)
-    monkeypatch.setattr(creator, "_read_tool_output", _forbid_publication)
-    monkeypatch.setattr(creator_phases, "_read_tool_output", _forbid_publication)
-    result = creator.run_creator_flow(
-        ExecutionUnit(operation=_OwnedCreator(), inputs={}, step_number=1), runtime
+    monkeypatch.setattr(invocation, "_read_tool_output", _forbid_publication)
+    monkeypatch.setattr(delivery_diagnostics, "_read_tool_output", _forbid_publication)
+    error_type = (
+        invocation.ExecuteFailure if failed_phase == "execute_function" else ValueError
     )
+    with pytest.raises(error_type, match="primary user failure") as caught, session:
+        _creator(session)
 
-    row = _assert_failed_record(result)
-    assert "primary user failure" in row["error"]
-    assert "cleanup could not be confirmed" in row["error"]
-    assert list(Path(runtime.working_root).rglob("execute"))
+    assert "cleanup could not be confirmed" in " ".join(caught.value.__notes__)
+    assert not session.cleanup_complete
+    assert diagnostics.cleanup == "unknown"
+    assert diagnostics.invocations[0].cleanup == "unknown"
+    assert session._root is not None
+    assert session._root.is_dir()
 
 
 @pytest.mark.parametrize(
     "result_kind", ["bootstrap", "artifact", "passthrough", "exception"]
 )
-def test_curator_caught_owner_loss_forbids_both_success_handlers(
+def test_curator_owner_loss_forbids_success_handlers(
     runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, result_kind: str
 ) -> None:
     original = _OwnedCurator.execute_curator
@@ -199,7 +221,7 @@ def test_curator_caught_owner_loss_forbids_both_success_handlers(
     def execute(
         self: _OwnedCurator, **kwargs: Any
     ) -> ArtifactResult | PassthroughResult:
-        assert result_kind != "bootstrap", "curator ran after bootstrap owner loss"
+        assert result_kind != "bootstrap"
         _lose_owner()
         if result_kind == "exception":
             message = "primary curator failure"
@@ -215,24 +237,24 @@ def test_curator_caught_owner_loss_forbids_both_success_handlers(
         )
     monkeypatch.setattr(curator, "_handle_artifact_result", _forbid_publication)
     monkeypatch.setattr(curator, "_handle_passthrough_result", _forbid_publication)
-    result = curator.run_curator_flow(
-        ExecutionUnit(operation=_OwnedCurator(), inputs={}, step_number=1), runtime
-    )
-
+    with pytest.raises(command_supervisor.CommandOwnershipError):
+        curator.run_curator_flow(
+            ExecutionUnit(operation=_OwnedCurator(), inputs={}, step_number=1), runtime
+        )
+    records = list(Path(runtime.staging_root).rglob("executions.parquet"))
     if result_kind == "bootstrap":
-        assert not result.success
-        assert result.artifact_ids == []
-        assert result.error
-        assert "cleanup could not be confirmed" in result.error
-        return
-    row = _assert_failed_record(result)
-    if result_kind == "exception":
-        assert "primary curator failure" in row["error"]
-    assert "cleanup could not be confirmed" in row["error"]
+        assert not records
+    else:
+        assert len(records) == 1
+        row = pl.read_parquet(records[0]).row(0, named=True)
+        assert row["success"] is False
+        assert "cleanup could not be confirmed" in row["error"]
+        if result_kind == "exception":
+            assert "primary curator failure" in row["error"]
 
 
 @pytest.mark.parametrize("result_kind", ["artifact", "passthrough"])
-def test_curator_completed_ownership_survives_later_owner_loss(
+def test_curator_closed_science_does_not_prove_later_supervisor_closure(
     runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, result_kind: str
 ) -> None:
     if result_kind == "passthrough":
@@ -250,113 +272,92 @@ def test_curator_completed_ownership_survives_later_owner_loss(
 
     def lose_owner_during_result_processing(*args: Any, **kwargs: Any) -> Any:
         result = original(*args, **kwargs)
-        invocation = command_supervisor._current
-        assert invocation is not None
-        assert invocation.closed
-        assert not invocation.uncertain
+        scope = command_supervisor._current
+        assert scope is not None
+        assert scope.closed
+        assert not scope.uncertain
         _lose_owner()
         return result
 
     monkeypatch.setattr(curator, hook_name, lose_owner_during_result_processing)
-
-    result = curator.run_curator_flow(
-        ExecutionUnit(operation=_OwnedCurator(), inputs={}, step_number=1), runtime
-    )
-
-    assert result.success, result.error
-    row = pl.read_parquet(Path(result.staging_path) / "executions.parquet").row(
-        0, named=True
-    )
-    assert row["success"] is True
+    with pytest.raises(command_supervisor.CommandOwnershipError):
+        curator.run_curator_flow(
+            ExecutionUnit(operation=_OwnedCurator(), inputs={}, step_number=1), runtime
+        )
+    # A seal can precede outer owner loss; it cannot make that entry return success.
+    records = list(Path(runtime.staging_root).rglob("executions.parquet"))
+    assert len(records) == 1
+    assert pl.read_parquet(records[0])["success"].to_list() == [True]
 
 
 @pytest.mark.parametrize("joined_threads", [False, True])
-def test_creator_all_phases_launch_from_one_owner_and_record_success(
-    runtime: RuntimeEnvironment,
-    monkeypatch: pytest.MonkeyPatch,
-    joined_threads: bool,
+def test_creator_phases_share_supervisor_and_record_subtree_success(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, joined_threads: bool
 ) -> None:
-    owner_pids: list[int] = []
+    diagnostics = DeliveryRecorder(sensitive_values=())
+    session = ExecutionSession(
+        working_root=tmp_path / "owned-work", diagnostics=diagnostics
+    )
+    attachments: list[str] = []
     for method in ("preprocess", "execute_function", "postprocess"):
         original = getattr(_OwnedCreator, method)
 
         def run(
-            self: _OwnedCreator,
-            inputs: Any,
-            *,
-            original: Callable[..., Any] = original,
+            self: _OwnedCreator, inputs: Any, *, original: Callable[..., Any] = original
         ) -> Any:
-            invocation = command_supervisor._current
-            assert invocation is not None
-            assert invocation.owner is not None
+            scope = command_supervisor._current
+            assert scope is not None
+            attachments.append(scope.attachment["socket"])
 
-            def command() -> int:
+            def command() -> None:
                 result = run_command(
-                    LocalEnvironmentSpec(),
-                    [sys.executable, "-c", "import os; print(os.getppid())"],
+                    IdentityCommandEnvironment(),
+                    [sys.executable, "-c", "print('ready')"],
                 )
-                return int(result.stdout.strip())
+                assert result.stdout.strip() == "ready"
 
             if joined_threads:
                 with ThreadPoolExecutor(max_workers=2) as pool:
                     futures = [pool.submit(command) for _ in range(2)]
-                    pids = [future.result() for future in futures]
+                    for future in futures:
+                        future.result()
             else:
-                pids = [command()]
-            owner_pids.extend(pids)
-            assert all(pid == invocation.owner.process.pid for pid in pids)
+                command()
             return original(self, inputs)
 
         monkeypatch.setattr(_OwnedCreator, method, run)
-
-    result = creator.run_creator_flow(
-        ExecutionUnit(operation=_OwnedCreator(), inputs={}, step_number=1), runtime
-    )
-
-    assert result.success, result.error
-    assert len(owner_pids) == (6 if joined_threads else 3)
-    assert len(set(owner_pids)) == 1
-    row = pl.read_parquet(Path(result.staging_path) / "executions.parquet").row(
-        0, named=True
-    )
-    recording = CommandRecording.model_validate_json(row["command_recording"])
-    assert len(recording.commands) == len(owner_pids)
+    with session:
+        result = _creator(session)
+        assert len(result.result.artifacts["metrics"]) == 1
+    assert session.cleanup_complete
+    assert len(attachments) == 3
+    assert len(set(attachments)) == 1
+    recording = diagnostics.invocations[0].command_recording
+    assert len(recording.commands) == (6 if joined_threads else 3)
     assert all(command.outcome == "succeeded" for command in recording.commands)
-    assert not list(Path(runtime.working_root).rglob("execute"))
+    assert not list((tmp_path / "owned-work").iterdir())
 
 
 @pytest.mark.parametrize("lose_local_owner", [False, True])
-def test_remote_cancellation_requires_confirmed_local_command_closure(
-    runtime: RuntimeEnvironment, lose_local_owner: bool
+def test_cancelled_execution_preserves_actual_local_cleanup(
+    tmp_path: Path, lose_local_owner: bool
 ) -> None:
+    session = ExecutionSession(working_root=tmp_path / "owned-work")
+
     class CancelledRouter(ExecuteRouter):
         def route_execute(
-            self,
-            operation: Any,
-            execute_inputs: list[ExecuteInput],
-            sandbox_root: str,
+            self, operation: Any, execute_inputs: list[ExecuteInput], sandbox_root: str
         ) -> list[Any]:
             if lose_local_owner:
-                _lose_owner()
-            return [
-                EndpointCancellationError(
-                    CancellationAcknowledgement(
-                        CancellationStatus.CONFIRMED, "Remote commands stopped"
-                    )
-                )
-            ]
+                _lose_owner(session)
+            return [CancelledError()]
 
-    result = creator.run_creator_flow(
-        ExecutionUnit(operation=_OwnedCreator(), inputs={}, step_number=1),
-        runtime,
-        execute_router=CancelledRouter(),
-    )
-
-    assert not result.success
-    assert result.artifact_ids == []
-    assert result.cancellation_acknowledgement is not None
-    expected = (
-        CancellationStatus.UNKNOWN if lose_local_owner else CancellationStatus.CONFIRMED
-    )
-    assert result.cancellation_acknowledgement.status == expected
-    assert list(Path(runtime.working_root).rglob("execute"))
+    with pytest.raises(CancelledError) as caught, session:
+        _creator(session, CancelledRouter())
+    assert session.cleanup_complete is not lose_local_owner
+    if lose_local_owner:
+        assert "cleanup could not be confirmed" in " ".join(caught.value.__notes__)
+        assert session._root is not None
+        assert session._root.is_dir()
+    else:
+        assert not list((tmp_path / "owned-work").iterdir())

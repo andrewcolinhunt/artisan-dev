@@ -1,31 +1,26 @@
 # Write Composite Operations
 
-Define shared operation wiring once, then run it as a composite. Each child
-remains a pipeline step with its own results, cache, and provenance.
-
-**Prerequisites:** [Operations Model](../concepts/operations-model.md),
-[Writing Creator Operations](writing-creator-operations.md)
-
----
+A composite connects creators and selects the outputs to keep. Submit it through
+`pipeline.run()` or `pipeline.submit()`, just like an operation. Each execution
+unit runs its children in one worker and persists one boundary result.
 
 ## Minimal working example
 
-A composite that transforms data and computes quality metrics:
+Add this definition to an installed application package, for example in
+`example_ops/compositions.py`. It transforms a dataset and returns both the
+transformed data and its metrics. Pipeline workers need installed, importable
+definitions; a class defined only in a script or notebook is not sufficient.
 
 ```python
-from __future__ import annotations
-
 from enum import StrEnum
 from typing import ClassVar
 
-from artisan.composites import CompositeDefinition, CompositeContext
+from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.examples import DataTransformer, MetricCalculator
 from artisan.schemas import InputSpec, OutputSpec
 
 
 class TransformAndScore(CompositeDefinition):
-    """Transform data then compute quality metrics."""
-
     name = "transform_and_score"
 
     class InputRole(StrEnum):
@@ -36,7 +31,7 @@ class TransformAndScore(CompositeDefinition):
         METRICS = "metrics"
 
     inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATASET: InputSpec(artifact_type="csv", required=True),
+        InputRole.DATASET: InputSpec(artifact_type="csv"),
     }
     outputs: ClassVar[dict[str, OutputSpec]] = {
         OutputRole.DATASET: OutputSpec(artifact_type="csv"),
@@ -44,394 +39,124 @@ class TransformAndScore(CompositeDefinition):
     }
 
     def compose(self, ctx: CompositeContext) -> None:
-        transformed = ctx.run(
+        transformed = ctx.call(
             DataTransformer,
+            name="transform",
             inputs={"dataset": ctx.input("dataset")},
             params={"scale_factor": 2.0, "variants": 1, "seed": 100},
         )
-        scored = ctx.run(
+        scored = ctx.call(
             MetricCalculator,
+            name="score",
             inputs={"dataset": transformed.output("dataset")},
         )
         ctx.output("dataset", transformed.output("dataset"))
         ctx.output("metrics", scored.output("metrics"))
 ```
 
----
+`ctx.call` declares wiring. It does not execute anything during `compose`.
+`ctx.output` selects the public outputs. The child operations declare ordinary
+lineage, so the composite does not repeat their lineage mappings.
 
 ## Run the composite in a pipeline
 
-Call `pipeline.run_composite()`. Each `ctx.run()` creates a step whose name is
-prefixed with the composite name.
+After installing that package in your worker environment, run this separate
+script with a fresh output directory:
 
 ```python
-from artisan.orchestration import PipelineManager
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from example_ops.compositions import TransformAndScore
+
 from artisan.operations.examples import DataGenerator
+from artisan.orchestration import PipelineManager, StepStatus
+from artisan.visualization import inspect_step
 
-pipeline = PipelineManager.create(
-    name="example",
-    delta_root="runs/delta",
-    staging_root="runs/staging",
-)
-output = pipeline.output
-
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
-pipeline.run_composite(
-    TransformAndScore,
-    inputs={"dataset": output("generate", "datasets")},
-)
-result = pipeline.finalize()
-assert result["overall_success"]
+with TemporaryDirectory() as directory:
+    root = Path(directory)
+    with PipelineManager.create(
+        name="composition_example",
+        delta_root=str(root / "delta"),
+        staging_root=str(root / "staging"),
+    ) as pipeline:
+        generated = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
+        scored = pipeline.run(
+            TransformAndScore,
+            inputs={"dataset": generated.output("datasets")},
+        )
+        assert scored.status is StepStatus.SUCCEEDED, scored.error
+        outputs = inspect_step(
+            str(root / "delta"),
+            scored.step_number,
+            pipeline_run_id=pipeline.config.pipeline_run_id,
+        )
+        assert outputs.height == 4  # Two datasets and their two metrics.
+        assert len(pipeline) == 2  # Generate, then the whole composite.
 ```
 
-`run_composite` blocks until every child step completes. Use
-`submit_composite` to receive a `CompositeResult` whose `.output(role)` wires
-downstream steps and whose `.wait()` waits for the children. Composition can
-wait while preparing dependent children, so submission is not guaranteed to
-return immediately. The current manager executes child steps serially.
+The temporary directory is deleted when the example ends. Use a persistent path
+for results you want to keep. For asynchronous submission, use
+`pipeline.submit(TransformAndScore, ...)`; its `StepFuture.output(role)` wires a
+dependent step and `.result()` returns the completed step result.
 
-To wire a submitted composite's output downstream, replace the blocking call
-and finalization above with:
+## Choose what persists
 
-```python
-scored = pipeline.submit_composite(
-    TransformAndScore,
-    inputs={"dataset": output("generate", "datasets")},
-)
-pipeline.run(
-    operation=MetricCalculator,
-    name="rescore",
-    inputs={"dataset": scored.output("dataset")},
-)
-pipeline.finalize()
-```
+This example exports both the transformed dataset and its metric, preserving
+their direct relationship. To keep only metrics, remove the dataset output role,
+its `OutputSpec`, and its `ctx.output` call. Intermediate datasets then disappear
+unless a retained artifact type explicitly requires one as a semantic reference.
 
-Composites run only through `run_composite`/`submit_composite`. Passing a
-`CompositeDefinition` to `pipeline.run()` raises `TypeError`.
+For a fixed sequence of refinement iterations, use a parameter-dependent Python
+loop to declare repeated calls, then export only the final result. An operation
+can produce a metric containing a whole history; it remains an ordinary metric.
+Its lineage should name the final structure if that is the relationship the
+operation intends to retain. Discarded structures do not acquire stored rows
+merely because they contributed to that metric's values.
 
----
-
-## Define metadata and role enums
-
-Every composite needs a `name`. The following fragments show parts of a class;
-use `TransformAndScore` above for a complete definition. Composites with inputs
-define `InputRole(StrEnum)` whose values match the `inputs` dict keys.
-Composites with outputs define `OutputRole(StrEnum)` whose values match
-the `outputs` dict keys. The framework validates this match at class
-definition time.
-
-```python
-class MyComposite(CompositeDefinition):
-    name = "my_composite"
-    description = "Short human-readable summary"
-
-    class InputRole(StrEnum):
-        DATA = "data"
-
-    class OutputRole(StrEnum):
-        RESULT = "result"
-```
-
-Composites without inputs (generative composites) omit `InputRole`.
-
----
-
-## Declare inputs and outputs
-
-### Inputs
-
-Each entry maps a role name to an `InputSpec`:
-
-```python
-inputs: ClassVar[dict[str, InputSpec]] = {
-    InputRole.DATA: InputSpec(artifact_type="csv", required=True),
-}
-```
-
-### Outputs
-
-Map each output role to an `OutputSpec`. Internal operations declare lineage,
-so composite outputs omit `derives_from`:
-
-```python
-outputs: ClassVar[dict[str, OutputSpec]] = {
-    OutputRole.RESULT: OutputSpec(artifact_type="metric"),
-}
-```
-
----
-
-## Implement `compose()`
-
-`compose()` receives a `CompositeContext` and wires internal operations
-using three methods:
-
-```python
-def compose(self, ctx: CompositeContext) -> None:
-    # 1. Reference declared inputs
-    data_ref = ctx.input("data")
-
-    # 2. Run internal operations, wiring outputs to inputs
-    step_a = ctx.run(OpA, inputs={"data": data_ref})
-    step_b = ctx.run(OpB, inputs={"data": step_a.output("result")})
-
-    # 3. Map internal results to declared outputs
-    ctx.output("result", step_b.output("result"))
-```
-
-`ctx.input()` returns a `CompositeRef`. `ctx.run()` returns a
-`CompositeStepHandle` whose `.output()` method produces another
-`CompositeRef`. `ctx.output()` maps an internal ref to a declared
-composite output.
-
----
+`ctx.output(role, [first, second])` concatenates compatible output streams in
+order. Repeating a reference preserves repeated occurrences. Every declared
+output role must be bound once. An optional output can be explicitly empty.
 
 ## Add parameters
 
-Group composite-level configuration into a nested `Params` model:
+Use a nested Pydantic `Params` model and a `params` field, as with an operation.
+The composite validates parameters before building its plan. Forward values to
+children explicitly through `ctx.call(..., params=...)`.
 
-```python
-from pydantic import BaseModel, Field
-
-
-class TransformAndScore(CompositeDefinition):
-    # ... name, roles, inputs, outputs ...
-
-    class Params(BaseModel):
-        scale_factor: float = Field(
-            default=2.0, ge=0.0, description="Multiplier for values."
-        )
-
-    params: Params = Params()
-
-    def compose(self, ctx: CompositeContext) -> None:
-        transformed = ctx.run(
-            DataTransformer,
-            inputs={"dataset": ctx.input("dataset")},
-            params={"scale_factor": self.params.scale_factor},
-        )
-        # ...
-```
-
-Override at the pipeline level:
-
-```python
-pipeline.run_composite(
-    TransformAndScore,
-    inputs={"dataset": output("gen", "datasets")},
-    params={"scale_factor": 3.0},
-)
-```
-
-`params` configure the composite itself and are consumed inside
-`compose()`. They are not forwarded to child steps.
-
----
+Loops and conditionals may depend on those parameters. They cannot depend on
+future artifact values: `CompositeRef` describes wiring and contains no result
+data. Do not read stores, dispatch workers, or install software inside `compose`.
 
 ## Forward execution overrides
 
-`run_composite` and `submit_composite` accept the same
-[execution overrides](configuring-execution.md) as ordinary steps. They become
-defaults for child steps. An explicit `ctx.run()` setting overrides the composite
-default for that setting; omitted settings inherit it.
+Choose placement, resources, batching, caching, and failure policy on the outer
+`pipeline.run` or `submit` call. For example, continuing with an existing
+`pipeline`, `generated` result, and configured `runner`:
 
 ```python
-# batch_strategy here is the default for every child step
-pipeline.run_composite(
+scored = pipeline.run(
     TransformAndScore,
-    inputs={"dataset": output("gen", "datasets")},
-    batch_strategy={"artifacts_per_unit": 4},
+    inputs={"dataset": generated.output("datasets")},
+    step_runner=runner,
+    batch_strategy={"artifacts_per_unit": 2, "units_per_worker": 2},
 )
 ```
 
-```python
-# A child step that sets the same knob wins for that step only
-def compose(self, ctx: CompositeContext) -> None:
-    transformed = ctx.run(
-        DataTransformer,
-        inputs={"dataset": ctx.input("dataset")},
-        batch_strategy={"artifacts_per_unit": 1},  # overrides the default here
-    )
-    scored = ctx.run(  # inherits the composite-level default
-        MetricCalculator,
-        inputs={"dataset": transformed.output("dataset")},
-    )
-    ctx.output("metrics", scored.output("metrics"))
-```
-
-To co-locate a composite's steps in one compute allocation, install the
-optional `artisan-submitit` package and pass
-`run_composite(..., step_runner=SlurmIntraRunner())`. Creator children inherit
-that provider and run via `srun` inside the current allocation; curator
-children remain in isolated local subprocesses. See
-[Configure Execution](configuring-execution.md).
-
----
-
-## Common patterns
-
-### Multi-input composite
-
-This pattern assumes you supply an `Aligner` operation with `data` and
-`reference` inputs and an `aligned` data output:
-
-```python
-class AlignAndScore(CompositeDefinition):
-    name = "align_and_score"
-
-    class InputRole(StrEnum):
-        DATA = "data"
-        REFERENCE = "reference"
-
-    class OutputRole(StrEnum):
-        METRICS = "metrics"
-
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATA: InputSpec(artifact_type="csv", required=True),
-        InputRole.REFERENCE: InputSpec(artifact_type="csv", required=True),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.METRICS: OutputSpec(artifact_type="metric"),
-    }
-
-    def compose(self, ctx: CompositeContext) -> None:
-        aligned = ctx.run(
-            Aligner,
-            inputs={"data": ctx.input("data"), "reference": ctx.input("reference")},
-        )
-        scored = ctx.run(
-            MetricCalculator,
-            inputs={"dataset": aligned.output("aligned")},
-        )
-        ctx.output("metrics", scored.output("metrics"))
-```
-
-### Generate-then-process
-
-A composite with no inputs that generates and processes data:
-
-```python
-class GenerateAndAnalyze(CompositeDefinition):
-    name = "generate_and_analyze"
-
-    class OutputRole(StrEnum):
-        METRICS = "metrics"
-
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.METRICS: OutputSpec(artifact_type="metric"),
-    }
-
-    def compose(self, ctx: CompositeContext) -> None:
-        generated = ctx.run(DataGenerator, params={"count": 10})
-        scored = ctx.run(
-            MetricCalculator,
-            inputs={"dataset": generated.output("datasets")},
-        )
-        ctx.output("metrics", scored.output("metrics"))
-```
+These settings govern the submitted boundary. `ctx.call` accepts scientific
+wiring and parameters; it has no child runner, persistence, cache, or retry
+settings. Separate pipeline submissions when an intermediate needs an independent
+checkpoint. Tool environments remain declarations on the child operations;
+different command environments do not require different workers.
 
 (author-composite-nesting)=
-### Nesting composites
+## Nesting composites
 
-Pass a composite to `ctx.run()` to expand its children into steps with
-dot-separated names:
+Pass another `CompositeDefinition` to `ctx.call` to expand it inside the same
+boundary. A nested composite does not create a separate persisted step or cache.
+Store-bound curators such as `Filter` and `Merge` stay top-level pipeline steps;
+they cannot query uncommitted children inside a scientific composite.
 
-```python
-class FullPipeline(CompositeDefinition):
-    name = "full_pipeline"
-
-    class OutputRole(StrEnum):
-        METRICS = "metrics"
-
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.METRICS: OutputSpec(artifact_type="metric"),
-    }
-
-    def compose(self, ctx: CompositeContext) -> None:
-        generated = ctx.run(DataGenerator, params={"count": 5})
-        scored = ctx.run(
-            TransformAndScore,  # nested composite
-            inputs={"dataset": generated.output("datasets")},
-        )
-        ctx.output("metrics", scored.output("metrics"))
-```
-
-### Curator inside a composite
-
-A curator inside `compose()` runs as a pipeline step after its upstream
-artifacts commit, with the usual provenance recording:
-
-```python
-from artisan.operations.curator import Filter
-
-
-def compose(self, ctx: CompositeContext) -> None:
-    generated = ctx.run(DataGenerator, params={"count": 10, "seed": 42})
-    ctx.run(MetricCalculator, inputs={"dataset": generated.output("datasets")})
-    filtered = ctx.run(
-        Filter,
-        inputs={"passthrough": generated.output("datasets")},
-        params={
-            "criteria": [
-                {"metric": "distribution.median", "operator": "gt", "value": 0.5}
-            ]
-        },
-    )
-    ctx.output("filtered", filtered.output("passthrough"))
-```
-
----
-
-## Common pitfalls
-
-| Problem | Cause | Fix |
-|---------|-------|-----|
-| `TypeError: must implement compose()` | Missing `compose()` override | Implement `compose(self, ctx)` |
-| `TypeError: must define OutputRole` | Missing `OutputRole(StrEnum)` inner class | Add enum with values matching `outputs` keys |
-| `TypeError: must define InputRole` | Missing `InputRole(StrEnum)` inner class | Add enum with values matching `inputs` keys |
-| `ValueError: Unknown input role` | Typo in `ctx.input("role")` | Check `InputRole` enum values |
-| `ValueError: Unknown output role` | Typo in `ctx.output("role", ref)` | Check `OutputRole` enum values |
-| `TypeError: Invalid input type for role ...` | Passed a raw value instead of a `ctx.input()` or `handle.output()` result | Wire steps with the `CompositeRef` objects the context API returns |
-| `TypeError` from `pipeline.run()` | Passed a composite to `run`/`submit` | Use `run_composite`/`submit_composite` for composites |
-| A `ctx.run()` ignores a composite-level override | The child set the same setting explicitly | Remove the child's setting to inherit the composite default |
-
----
-
-## Verify
-
-Test your composite end-to-end in a minimal pipeline:
-
-```python
-from artisan.orchestration import PipelineManager
-from artisan.operations.examples import DataGenerator
-
-pipeline = PipelineManager.create(
-    name="test",
-    delta_root="test/delta",
-    staging_root="test/staging",
-)
-output = pipeline.output
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 3, "seed": 42})
-
-result = pipeline.run_composite(
-    TransformAndScore,
-    inputs={"dataset": output("generate", "datasets")},
-)
-assert result.output("metrics") is not None
-summary = pipeline.finalize()
-assert summary["overall_success"]
-assert summary["total_steps"] == 3  # Generator, transformer, and metric calculator.
-```
-
----
-
-## Cross-references
-
-- [Composites and Composition](../concepts/composites-and-composition.md) — why
-  composites exist and how they execute
-- [CompositeDefinition Reference](../reference/composite-definition.md) — public entry points and source contracts
-- [Composable Operations Tutorial](../tutorials/02-pipeline-design/07-composites.ipynb) —
-  interactive examples
-- [Writing Creator Operations](writing-creator-operations.md) — the operations
-  that composites compose
-- [Building a Pipeline](building-a-pipeline.md) — using composites in pipelines
+See [Composites and Composition](../concepts/composites-and-composition.md) for
+the boundaries and [Prepare Execute Environments](execute-environments.md) for
+worker and tool software.

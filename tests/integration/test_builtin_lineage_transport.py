@@ -1,7 +1,7 @@
-"""Local endpoint-worker transport preserves built-in operation declarations.
+"""Built-in command phases preserve names and explicit parent declarations.
 
-This exercises real file packing and worker commands locally. It is not live
-Modal deployment or network evidence; those checks live in test_tool_endpoint.
+The adapter uses the test interpreter to exercise commands and the ordinary
+kernel. Matched installed worker transport has a separate qualification driver.
 """
 
 from __future__ import annotations
@@ -9,140 +9,56 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+from fixtures.commands import command_router
 
-from artisan.execution.compute.invoke import invoke_op_work
-from artisan.execution.lineage.builder import build_edges
-from artisan.execution.lineage.enrich import build_artifact_edges_from_types
-from artisan.execution.lineage.validation import (
-    validate_lineage_completeness,
-    validate_lineage_integrity,
-)
-from artisan.execution.tool_endpoint.protocol import ToolRequest
-from artisan.execution.tool_endpoint.server import run_tool_request
-from artisan.execution.tool_endpoint.spec import command_contract
-from artisan.execution.tool_endpoint.transport import InlineTransport
+from artisan.composites.base.compiler import compile_definition
+from artisan.execution.composition import execute_compiled_plan
+from artisan.execution.session import ExecutionSession
 from artisan.operations.base import OperationDefinition
 from artisan.operations.examples import CsvHead, WaitTool
-from artisan.schemas import CSVArtifact, ExecuteInput, PostprocessInput
+from artisan.schemas import CSVArtifact
 
 pytestmark = pytest.mark.integration
 
 
+@pytest.mark.parametrize("repeated", [False, True], ids=["distinct", "repeated"])
 @pytest.mark.parametrize(
-    ("operation_cls", "params", "suffix"),
-    [(WaitTool, {"seconds": 1}, "_waited"), (CsvHead, {"rows": 1}, "_head")],
+    ("operation", "params", "role", "suffix"),
+    [
+        (WaitTool, {"seconds": 1}, "output", "_waited"),
+        (CsvHead, {"rows": 1}, "dataset", "_head"),
+    ],
 )
-def test_builtin_exact_parents_and_names_survive_worker_transport(
-    tmp_path: Path, operation_cls: type[OperationDefinition], params: dict, suffix: str
+def test_builtin_command_preserves_exact_parents_and_names(
+    tmp_path: Path,
+    operation: type[OperationDefinition],
+    params: dict,
+    role: str,
+    suffix: str,
+    repeated: bool,
 ) -> None:
     sources = [
         CSVArtifact.draft(
-            content=f"id,value\n1,{value}\n2,9\n".encode(),
-            original_name=f"sample_{value}.csv",
-            step_number=0,
+            f"id,value\n1,{value}\n2,9\n".encode(), f"sample_{value}.csv", 0
         ).finalize()
         for value in (1, 10)
     ]
-    materialized = tmp_path / "inputs"
-    materialized.mkdir()
-    paths = [source.materialize_to(str(materialized)) for source in sources]
-    operation = operation_cls(params=params)
-    transport = InlineTransport()
-    signatures = []
-    for route in ("local", "worker_transport"):
-        output_files = []
-        for index, path in enumerate(paths):
-            output_dir = tmp_path / route / str(index)
-            output_dir.mkdir(parents=True)
-            if route == "local":
-                assert (
-                    invoke_op_work(
-                        operation,
-                        ExecuteInput(
-                            inputs={"dataset": [path]}, execute_dir=str(output_dir)
-                        ),
-                    )
-                    is None
-                )
-            else:
-                refs = transport.pack_inputs({"dataset": path})
-                assert refs[0].filename == Path(path).name
-                response = run_tool_request(
-                    operation_cls,
-                    ToolRequest(
-                        expected_command_contract=command_contract(operation_cls),
-                        params=params,
-                        inputs=refs,
-                    ),
-                )
-                assert response.manifest.error is None
-                assert response.output_tar is not None
-                assert response.manifest.output_names == [
-                    f"{Path(path).stem}{suffix}.csv"
-                ]
-                transport.unpack_outputs(response.output_tar, str(output_dir))
-            output_files.extend(
-                str(file) for file in output_dir.rglob("*") if file.is_file()
-            )
-        result = operation.postprocess(
-            PostprocessInput(
-                file_outputs=output_files,
-                memory_outputs=None,
-                input_artifacts={"dataset": sources},
-                step_number=1,
-                postprocess_dir=str(tmp_path),
-            )
+    if repeated:
+        sources.append(sources[0])
+    with ExecutionSession(working_root=tmp_path) as session:
+        result = execute_compiled_plan(
+            compile_definition(operation, params=params),
+            {"dataset": sources},
+            session,
+            invocation_id="builtin-commands",
+            execute_adapter=lambda _operation, _path: command_router(),
         )
-        input_ids = {"dataset": [source.artifact_id for source in sources]}
-        validate_lineage_integrity(
-            result.lineage, input_ids, result.artifacts, operation.outputs
-        )
-        validate_lineage_completeness(
-            result.artifacts, operation.outputs, result.lineage
-        )
-        finalized = {
-            role: [artifact.finalize() for artifact in artifacts]
-            for role, artifacts in result.artifacts.items()
-        }
-        all_outputs = [
-            artifact for artifacts in finalized.values() for artifact in artifacts
+        assert [item.original_name for item in result.result.artifacts[role]] == [
+            item.original_name + suffix for item in sources
         ]
-        types = {
-            artifact.artifact_id: artifact.artifact_type
-            for artifact in [*sources, *all_outputs]
-        }
-        edges = build_artifact_edges_from_types(
-            build_edges(result.lineage, finalized, types), "e" * 32, types
-        )
-        names = {
-            artifact.artifact_id: artifact.original_name for artifact in all_outputs
-        }
-        assert len(edges) == len(all_outputs) == 2
-        signatures.append(
-            {
-                (
-                    names[edge.target_artifact_id],
-                    edge.source_artifact_id,
-                    edge.source_role,
-                    edge.target_role,
-                    edge.source_artifact_type,
-                    edge.target_artifact_type,
-                    edge.group_id,
-                )
-                for edge in edges
-            }
-        )
-    target_role = "output" if operation_cls is WaitTool else "dataset"
-    expected = {
-        (
-            f"{source.original_name}{suffix}",
-            source.artifact_id,
-            "dataset",
-            target_role,
-            "csv",
-            "csv",
-            None,
-        )
-        for source in sources
-    }
-    assert signatures == [expected, expected]
+        assert [item.source_artifact_id for item in result.result.lineage[role]] == [
+            item.artifact_id for item in sources
+        ]
+        assert [
+            item.source_input_index for item in result.result.lineage[role]
+        ] == list(range(len(sources)))

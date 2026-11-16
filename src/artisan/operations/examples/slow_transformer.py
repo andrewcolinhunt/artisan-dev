@@ -13,7 +13,6 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.csv import CSVArtifact
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
     PostprocessInput,
@@ -75,22 +74,18 @@ class SlowTransformer(OperationDefinition):
 
     params: Params = Params()
 
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
-    )
-
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
-        """Carry each dataset's path, identity, and human name together."""
+        """Carry each dataset's path, input position, and human name together."""
         return {
             "dataset": PerArtifact(
                 [
                     {
                         "path": artifact.materialized_path,
-                        "artifact_id": artifact.artifact_id,
+                        "input_index": index,
                         "original_name": artifact.original_name,
                     }
-                    for artifact in cast(
-                        list[CSVArtifact], inputs.input_artifacts["dataset"]
+                    for index, artifact in enumerate(
+                        cast(list[CSVArtifact], inputs.input_artifacts["dataset"])
                     )
                 ]
             )
@@ -116,7 +111,9 @@ class SlowTransformer(OperationDefinition):
             time.sleep(self.params.duration)
             elapsed = time.perf_counter() - start
 
-            marker = os.path.join(output_dir, f"{stem}_slow.csv")
+            marker = os.path.join(
+                output_dir, f"{dataset['input_index']}_{stem}_slow.csv"
+            )
             with open(marker, "w") as f:
                 f.write(
                     f"input,requested,actual\n{stem},{self.params.duration},{elapsed:.4f}\n"
@@ -126,7 +123,7 @@ class SlowTransformer(OperationDefinition):
                 {
                     "path": marker,
                     "original_name": f"{dataset['original_name']}_slow.csv",
-                    "source_artifact_id": dataset["artifact_id"],
+                    "source_input_index": dataset["input_index"],
                 }
             )
 
@@ -143,7 +140,13 @@ class SlowTransformer(OperationDefinition):
                     step_number=inputs.step_number,
                 )
             result.add_artifact(
-                "dataset", draft, sources={"dataset": [output["source_artifact_id"]]}
+                "dataset",
+                draft,
+                sources={
+                    "dataset": [
+                        inputs.ref("dataset", index=output["source_input_index"])
+                    ]
+                },
             )
         return result
 

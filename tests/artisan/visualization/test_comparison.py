@@ -11,9 +11,7 @@ from unittest.mock import patch
 
 import pytest
 from fixtures.outcome_store import append_metric_attempt
-from fixtures.run_outputs import commit_outputs
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.retained_inspection import commit_inspection_attempt, inspection_store
 from pydantic import ValidationError
 
 from artisan.errors import (
@@ -29,6 +27,7 @@ from artisan.visualization.comparison import (
     ExplicitPair,
     ExplicitPairsMatch,
     MetadataKeyMatch,
+    _compare_observations,
     compare_runs,
 )
 from artisan.visualization.outcomes import (
@@ -40,7 +39,6 @@ from artisan.visualization.outcomes import (
     OutcomeSelection,
     ResolvedOutcomeSelection,
     SelectedMetadata,
-    read_metric_observations,
 )
 
 
@@ -126,15 +124,7 @@ def _population(
 
 
 def _compare(baseline, candidate, spec=None):
-    with patch(
-        "artisan.visualization.comparison.read_metric_observations",
-        side_effect=[baseline, candidate],
-    ) as reader:
-        report = compare_runs(
-            "unused", _selection("baseline"), _selection("candidate"), spec or _spec()
-        )
-    assert reader.call_count == 2
-    return report
+    return _compare_observations(baseline, candidate, spec or _spec())
 
 
 @pytest.mark.parametrize(
@@ -482,7 +472,7 @@ def test_compare_runs_invalid_spec_fails_before_store_io(path, value):
         target = target[part]
     target[path[-1]] = value
     with (
-        patch("artisan.visualization.comparison.read_metric_observations") as reader,
+        patch("artisan.storage.io.retained_store.open_configured_store") as reader,
         pytest.raises(ComparisonSpecError),
     ):
         compare_runs("unused", _selection("baseline"), _selection("candidate"), spec)
@@ -534,19 +524,19 @@ def test_compare_runs_requests_union_and_reuses_each_side_for_assessment():
                 MetricMeasurement(metric_path=["nested", ""], status="valid", value=1)
             )
     with patch(
-        "artisan.visualization.comparison.read_metric_observations", side_effect=sides
+        "artisan.visualization.retained_outcomes._read_populations", return_value=sides
     ) as reader:
-        report = compare_runs(
-            "unused", _selection("baseline"), _selection("candidate"), spec
+        from artisan.visualization.retained_outcomes import compare_retained_runs
+
+        report = compare_retained_runs(
+            None, _selection("baseline"), _selection("candidate"), spec
         )
-    assert reader.call_count == 2
-    assert all(
-        call.kwargs["metadata_keys"] == ["case"] for call in reader.call_args_list
-    )
-    assert all(
-        {tuple(path) for path in call.args[2]} == {("score",), ("nested", "")}
-        for call in reader.call_args_list
-    )
+    assert reader.call_count == 1
+    assert reader.call_args.kwargs["metadata_keys"] == ["case"]
+    assert {tuple(path) for path in reader.call_args.args[2]} == {
+        ("score",),
+        ("nested", ""),
+    }
     assert report.baseline_assessment.evidence_id == report.baseline.evidence_id
     assert report.candidate_assessment.evidence_id == report.candidate.evidence_id
 
@@ -555,7 +545,7 @@ def test_compare_runs_validates_both_selections_before_reading_either():
     candidate = _selection("candidate")
     candidate.role = "x" * 257
     with (
-        patch("artisan.visualization.comparison.read_metric_observations") as reader,
+        patch("artisan.storage.io.retained_store.open_configured_store") as reader,
         pytest.raises(OutcomeSelectionError),
     ):
         compare_runs("unused", _selection("baseline"), candidate, _spec())
@@ -566,7 +556,7 @@ def test_compare_runs_revalidates_mutated_nested_spec_before_reading():
     spec = _spec()
     spec.metrics[0].absolute_tolerance = True
     with (
-        patch("artisan.visualization.comparison.read_metric_observations") as reader,
+        patch("artisan.storage.io.retained_store.open_configured_store") as reader,
         pytest.raises(ComparisonSpecError),
     ):
         compare_runs("unused", _selection("baseline"), _selection("candidate"), spec)
@@ -655,7 +645,7 @@ def test_compare_runs_fingerprint_binds_both_sides_and_spec():
 @pytest.fixture
 def store(tmp_path: Path) -> str:
     root = str(tmp_path / "delta")
-    publish_test_store(root, LocalFileSystem())
+    inspection_store(root)
     return root
 
 
@@ -666,30 +656,26 @@ def test_compare_runs_real_accepted_metadata_and_cached_origin(store):
     candidate_metric = MetricArtifact.draft(
         {"score": 0.12349}, "candidate.json", 7, metadata={"case": "case-a"}
     ).finalize()
-    _, source_execution = commit_outputs(
-        store, run_id="source", number=3, artifacts=[baseline_metric]
+    _, source_execution = commit_inspection_attempt(
+        store, run_id="source", number=3, outputs={"output": [baseline_metric]}
     )
-    baseline_attempt, _ = commit_outputs(
+    baseline_attempt, _ = commit_inspection_attempt(
         store,
         run_id="baseline",
         number=0,
         reused_execution_id=source_execution,
-        output_ids={"output": [baseline_metric.artifact_id]},
     )
-    commit_outputs(store, run_id="candidate", number=7, artifacts=[candidate_metric])
-    with patch(
-        "artisan.visualization.comparison.read_metric_observations",
-        wraps=read_metric_observations,
-    ) as reader:
-        report = compare_runs(
-            store,
-            _selection("baseline"),
-            OutcomeSelection(
-                pipeline_run_id="candidate", step_name="step-7", role="output"
-            ),
-            _spec(),
-        )
-    assert reader.call_count == 2
+    commit_inspection_attempt(
+        store, run_id="candidate", number=7, outputs={"output": [candidate_metric]}
+    )
+    report = compare_runs(
+        store,
+        _selection("baseline"),
+        OutcomeSelection(
+            pipeline_run_id="candidate", step_name="step-7", role="output"
+        ),
+        _spec(),
+    )
     assert report.pairs[0].baseline.step_run_id == baseline_attempt
     assert report.pairs[0].baseline.origin_step_number == 3
     assert report.pairs[0].candidate.origin_step_number == 7
@@ -701,13 +687,11 @@ def test_compare_runs_current_failed_retry_does_not_fall_back(store):
     metric = MetricArtifact.draft(
         {"score": 1}, "baseline.json", 0, metadata={"case": "a"}
     ).finalize()
-    earlier, _ = commit_outputs(store, run_id="baseline", artifacts=[metric])
-    latest, _ = commit_outputs(
-        store, run_id="baseline", status="failed", execution_success=False
+    earlier, _ = commit_inspection_attempt(
+        store, run_id="baseline", outputs={"output": [metric]}
     )
-    commit_outputs(
-        store, run_id="candidate", output_ids={"output": [metric.artifact_id]}
-    )
+    latest, _ = commit_inspection_attempt(store, run_id="baseline", status="failed")
+    commit_inspection_attempt(store, run_id="candidate", outputs={"output": [metric]})
     report = compare_runs(
         store, _selection("baseline"), _selection("candidate"), _spec()
     )
@@ -722,7 +706,7 @@ def test_compare_runs_current_failed_retry_does_not_fall_back(store):
 def test_compare_runs_shared_integrity_failure_is_not_a_quality_verdict():
     with (
         patch(
-            "artisan.visualization.comparison.read_metric_observations",
+            "artisan.storage.io.retained_store.open_configured_store",
             side_effect=ArtifactIntegrityError("Corrupt metadata"),
         ),
         pytest.raises(ArtifactIntegrityError, match="Corrupt metadata"),

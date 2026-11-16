@@ -1,60 +1,33 @@
-"""Built-in runner namespace and resolution for step execution.
-
-Usage::
-
-    from artisan.orchestration.runners import Runner
-
-    pipeline.run(MyOp, inputs=..., step_runner=Runner.LOCAL)
-
-External providers are passed as runner instances rather than registered by
-name in Artisan core.
-"""
+"""Built-in placement runner; external providers export their own runners."""
 
 from __future__ import annotations
 
-from artisan.orchestration.runners.base import RunnerBase
-from artisan.orchestration.runners.local import LocalRunner
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from artisan.execution.environments.container_runtime import (
+        ApptainerRuntime,
+        DockerRuntime,
+    )
+    from artisan.orchestration.runners.local import LocalRunner
+
+__all__ = ["ApptainerRuntime", "DockerRuntime", "LocalRunner"]
 
 
-class Runner:
-    """Built-in runner instances for IDE discoverability.
+def __getattr__(
+    name: str,
+) -> type[LocalRunner] | type[ApptainerRuntime] | type[DockerRuntime]:
+    # Protocol submodules are used while the local worker entry is initializing.
+    if name == "LocalRunner":
+        from artisan.orchestration.runners.local import LocalRunner
 
-    Usage::
+        return LocalRunner
+    if name in {"ApptainerRuntime", "DockerRuntime"}:
+        from artisan.execution.environments.container_runtime import (
+            ApptainerRuntime,
+            DockerRuntime,
+        )
 
-        from artisan.orchestration.runners import Runner
-
-        pipeline.run(MyOp, inputs=..., step_runner=Runner.LOCAL)
-    """
-
-    LOCAL = LocalRunner()
-
-
-_REGISTRY: dict[str, RunnerBase] = {Runner.LOCAL.name: Runner.LOCAL}
-
-
-def resolve_runner(step_runner: str | RunnerBase) -> RunnerBase:
-    """Resolve a runner from a string key or pass through an instance.
-
-    Args:
-        step_runner: Runner instance or built-in string name (currently
-            ``"local"``).
-
-    Returns:
-        Resolved RunnerBase instance.
-
-    Raises:
-        ValueError: If string key is not in the registry.
-    """
-    if isinstance(step_runner, RunnerBase):
-        return step_runner
-    if step_runner not in _REGISTRY:
-        msg = f"Unknown step_runner: {step_runner!r}. Available: {sorted(_REGISTRY)}"
-        raise ValueError(msg)
-    return _REGISTRY[step_runner]
-
-
-__all__ = [
-    "Runner",
-    "RunnerBase",
-    "resolve_runner",
-]
+        return ApptainerRuntime if name == "ApptainerRuntime" else DockerRuntime
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

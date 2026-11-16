@@ -16,7 +16,7 @@ class PipelineConfig(BaseModel):
     """Configuration for a pipeline execution.
 
     This is the orchestrator-level configuration, set once per pipeline.
-    Values are propagated to workers via RuntimeEnvironment.
+    Worker dispatch carries validated storage, runtime and preservation settings.
     """
 
     application_modules: tuple[str, ...] = Field(
@@ -65,7 +65,7 @@ class PipelineConfig(BaseModel):
     recover_staging: bool = Field(
         default=True,
         description=(
-            "Recover finished staged executions before cache lookup. Requires "
+            "Resume selected recorded claims and frozen terminal plans. Requires "
             "exclusive orchestrator/repair write access to the store."
         ),
     )

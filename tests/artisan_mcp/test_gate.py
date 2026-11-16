@@ -97,6 +97,8 @@ def test_mcp_snapshots_trusted_modules_and_explicit_initialization_version(
             discovery = await client.call_tool("artisan_capabilities")
             assert discovery.structured_content["error_count"] == 0
             runs = await client.call_tool("artisan_list_runs")
-            assert runs.structured_content["total_items"] == 1
+            assert {
+                item["pipeline_run_id"] for item in runs.structured_content["items"]
+            } == {seeded_run.run_id, "unrelated-run"}
 
     asyncio.run(check())

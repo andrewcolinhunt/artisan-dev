@@ -12,6 +12,7 @@ from artisan.schemas import (
     PreprocessInput,
 )
 from artisan.schemas.artifact.csv import CSVArtifact
+from artisan.schemas.specs.input_models import FrozenInputContext
 
 
 def _mock_data_artifact(name: str = "dataset_00000.csv") -> CSVArtifact:
@@ -46,6 +47,7 @@ def _run_config_op(operation, artifacts, output_dir: Path):
             input_artifacts=input_artifacts,
             step_number=1,
             postprocess_dir=output_dir / "post",
+            _context=FrozenInputContext("example-lifecycle", input_artifacts),
         )
     )
 

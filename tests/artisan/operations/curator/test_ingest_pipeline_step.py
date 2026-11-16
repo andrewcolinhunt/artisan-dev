@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
 from unittest.mock import Mock
 
-import polars as pl
 import pytest
-from fixtures import run_outputs
+from deltalake import DeltaTable
 from fixtures.run_outputs import commit_outputs
 from pydantic import ValidationError
 
-from artisan.errors import ArtifactIntegrityError
+from artisan.errors import StoreIntegrityError
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
 from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -69,6 +67,19 @@ def test_params_require_run_and_trim_run_id(tmp_path: Path) -> None:
     assert operation.params.include_prior_steps is False
     assert operation.version == "2"
     assert operation.cacheable is False
+
+
+def test_params_preserve_source_files_root_without_resolving_defaults(
+    tmp_path: Path,
+) -> None:
+    assert _operation(tmp_path).params.source_files_root is None
+    custom = str(tmp_path / "custom-carriers")
+    assert (
+        _operation(tmp_path, source_files_root=custom).params.source_files_root
+        == custom
+    )
+    with pytest.raises(ValidationError, match="source_files_root"):
+        _operation(tmp_path, source_files_root="")
 
 
 @pytest.mark.parametrize(("include_prior", "expected"), [(False, 1), (True, 3)])
@@ -185,17 +196,17 @@ def test_ingest_preserves_content_and_replaces_only_owned_metadata(
 
 
 @pytest.mark.parametrize(
-    ("params", "match"),
+    "params",
     [
-        ({"source_run_id": "unknown-run"}, "Unknown source run 'unknown-run'"),
-        ({"source_step": 99}, "has no step 99"),
+        {"source_run_id": "unknown-run"},
+        {"source_step": 99},
     ],
 )
 def test_ingest_rejects_invalid_selection(
-    tmp_path: Path, params: dict, match: str
+    tmp_path: Path, params: dict[str, object]
 ) -> None:
     commit_outputs(str(tmp_path), artifacts=[_data(b"test")])
-    with pytest.raises(ValueError, match=match):
+    with pytest.raises(ValueError, match="no step at the selected boundary"):
         _execute(_operation(tmp_path, **params))
 
 
@@ -220,25 +231,15 @@ def test_ingest_missing_source_path_fails(tmp_path: Path) -> None:
 
 
 def test_ingest_missing_typed_content_fails_before_success(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path,
 ) -> None:
     artifacts = [_data(b"one"), _data(b"two")]
-    original = run_outputs.commit_test_step
-
-    def omit_content(
-        root: str,
-        staging: str,
-        steps: list[dict[str, object]],
-        tables: dict[str, pl.DataFrame],
-        **kwargs: Any,
-    ) -> None:
-        tables["artifacts/csvs"] = tables["artifacts/csvs"].filter(
-            pl.col("artifact_id") != artifacts[0].artifact_id
-        )
-        original(root, staging, steps, tables, **kwargs)
-
-    with monkeypatch.context() as context:
-        context.setattr(run_outputs, "commit_test_step", omit_content)
-        commit_outputs(str(tmp_path), artifacts=artifacts)
-    with pytest.raises(ArtifactIntegrityError, match=artifacts[0].artifact_id):
+    commit_outputs(str(tmp_path), artifacts=artifacts)
+    assert len(_execute(_operation(tmp_path)).artifacts["csv"]) == 2
+    table = DeltaTable(str(tmp_path / "artifacts/csvs"))
+    table.delete(f"artifact_id = '{artifacts[0].artifact_id}'")
+    assert table.to_pyarrow_table().column("artifact_id").to_pylist() == [
+        artifacts[1].artifact_id
+    ]
+    with pytest.raises(StoreIntegrityError, match="missing artifacts/csvs rows"):
         _execute(_operation(tmp_path))

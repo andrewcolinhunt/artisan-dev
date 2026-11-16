@@ -21,26 +21,21 @@ from artisan.schemas.execution.curator_result import (
     PassthroughResult,
 )
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.operation_config.compute import (
-    ComputeProvider,
-    ModalComputeConfig,
-)
-from artisan.schemas.operation_config.compute_resources import ComputeResources
-from artisan.schemas.operation_config.endpoint_policy import ToolEndpointDataPolicy
-from artisan.schemas.operation_config.environment_spec import (
-    ApptainerEnvironmentSpec,
-    DockerEnvironmentSpec,
-    EnvironmentSpec,
-    LocalEnvironmentSpec,
-    PixiEnvironmentSpec,
-)
-from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.environment import Environment
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
+from artisan.schemas.provenance.occurrence import (
+    ArtifactOccurrence,
+    InputReference,
+    OccurrenceAddress,
+    ReferenceContext,
+    RequiredReference,
+)
 from artisan.schemas.specs.input_models import (
     CuratorInput,
     ExecuteInput,
+    FrozenInputContext,
     PostprocessInput,
     PreprocessInput,
 )
@@ -49,9 +44,9 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 __all__ = [
     "AppendableArtifact",
-    "ApptainerEnvironmentSpec",
     "Artifact",
     "ArtifactEmission",
+    "ArtifactOccurrence",
     "ArtifactResult",
     "ArtifactStreamResult",
     "ArtifactTypeDef",
@@ -59,33 +54,30 @@ __all__ = [
     "BatchStrategy",
     "CSVArtifact",
     "CachePolicy",
-    "ComputeProvider",
-    "ComputeResources",
     "CuratorInput",
     "CuratorResult",
-    "DockerEnvironmentSpec",
-    "EnvironmentSpec",
-    "Environments",
+    "Environment",
     "ExecuteInput",
     "ExecutionConfigArtifact",
     "FailurePolicy",
     "FileRefArtifact",
+    "FrozenInputContext",
     "GroupByStrategy",
+    "InputReference",
     "InputSpec",
     "JsonContentMixin",
     "LineageMapping",
-    "LocalEnvironmentSpec",
     "MetricArtifact",
-    "ModalComputeConfig",
+    "OccurrenceAddress",
     "OutputSpec",
     "PassthroughResult",
-    "PixiEnvironmentSpec",
     "PostprocessInput",
     "PreprocessInput",
+    "ReferenceContext",
+    "RequiredReference",
     "RunnerResources",
     "StorageConfig",
     "TablePath",
-    "ToolEndpointDataPolicy",
     "ToolSpec",
     "get_compound_extension",
 ]

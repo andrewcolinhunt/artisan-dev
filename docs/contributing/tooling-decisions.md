@@ -32,8 +32,8 @@ before upload; see [release preparation](https://github.com/dexterity-systems/ar
 
 `PipelineManager` owns step preparation, sequencing, caching, and persistence.
 A lifecycle runner submits work, collects ordered results, and handles
-cancellation for a step. Local execution uses a Python process pool and does not
-require an orchestration service.
+cancellation for a step. Local execution launches owned worker processes and does
+not require an orchestration service.
 
 External providers implement the same runner contract. Scheduler configuration,
 remote job ownership, and provider-specific logs stay in those packages.

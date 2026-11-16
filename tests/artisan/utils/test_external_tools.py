@@ -6,11 +6,8 @@ import sys
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fixtures.commands import ExternalCommandEnvironment, IdentityCommandEnvironment
 
-from artisan.schemas.operation_config.environment_spec import (
-    DockerEnvironmentSpec,
-    LocalEnvironmentSpec,
-)
 from artisan.utils.external_tools import (
     ExternalToolError,
     format_args,
@@ -222,7 +219,7 @@ def test_real_command_output_and_nonzero_status(streaming, capsys):
         "import sys; print('output'); print('problem',file=sys.stderr); sys.exit(4)",
     ]
     with pytest.raises(ExternalToolError) as failure:
-        run_command(LocalEnvironmentSpec(), command, stream_output=streaming)
+        run_command(IdentityCommandEnvironment(), command, stream_output=streaming)
     assert failure.value.return_code == 4
     assert "output" in failure.value.stdout
     assert "problem" in (failure.value.stdout if streaming else failure.value.stderr)
@@ -239,7 +236,7 @@ def test_real_command_environment_cwd_and_log_modes(streaming, tmp_path):
     ]
     for mode in ("w", "a"):
         result = run_command(
-            LocalEnvironmentSpec(env={"CHECK_VALUE": "value"}),
+            IdentityCommandEnvironment(env={"CHECK_VALUE": "value"}),
             command,
             cwd=str(tmp_path),
             stream_output=streaming,
@@ -253,7 +250,7 @@ def test_real_command_environment_cwd_and_log_modes(streaming, tmp_path):
 @pytest.mark.parametrize("streaming", [False, True])
 def test_real_command_universal_newlines(streaming):
     result = run_command(
-        LocalEnvironmentSpec(),
+        IdentityCommandEnvironment(),
         [sys.executable, "-c", "import os; os.write(1,b'a\\r\\nb\\rc')"],
         stream_output=streaming,
     )
@@ -264,23 +261,21 @@ def test_real_command_universal_newlines(streaming):
 def test_real_command_missing_executable(streaming):
     with pytest.raises(FileNotFoundError, match="could not be launched"):
         run_command(
-            LocalEnvironmentSpec(),
+            IdentityCommandEnvironment(),
             ["/missing-artisan-test-executable"],
             stream_output=streaming,
         )
 
 
-def test_wrapped_command_reaches_owner_with_prepared_environment():
+def test_command_reaches_owner_with_explicit_environment():
     command = MagicMock(returncode=0, launch_seconds=0.01)
     command.communicate.return_value = ("ok", "")
     with patch(
         "artisan.utils.external_tools.ManagedCommand", return_value=command
     ) as launch:
-        run_command(
-            DockerEnvironmentSpec(image="example:1", env={"FOO": "bar"}), ["tool"]
-        )
-    assert launch.call_args.args[1][:3] == ["docker", "run", "--rm"]
-    assert "example:1" in launch.call_args.args[1]
+        run_command(ExternalCommandEnvironment(env={"FOO": "bar"}), ["tool"])
+    assert launch.call_args.args[1] == ["tool"]
+    assert launch.call_args.args[2]["FOO"] == "bar"
     assert launch.call_args.kwargs["external"] is True
     command.dispose.assert_called_once()
 
@@ -314,9 +309,11 @@ def test_owner_launch_duration_and_single_final_outcome(streaming, outcome, tmp_
             launch.side_effect = FileNotFoundError("missing executable")
         if exception:
             with pytest.raises(exception):
-                run_command(LocalEnvironmentSpec(), ["tool"], stream_output=streaming)
+                run_command(
+                    IdentityCommandEnvironment(), ["tool"], stream_output=streaming
+                )
         else:
-            run_command(LocalEnvironmentSpec(), ["tool"], stream_output=streaming)
+            run_command(IdentityCommandEnvironment(), ["tool"], stream_output=streaming)
     records = recorder.snapshot().commands
     assert len(records) == 1
     assert records[0].outcome == outcome
@@ -337,7 +334,50 @@ def test_primary_interruption_preserved_when_cleanup_is_unknown(streaming):
         patch("artisan.utils.external_tools.ManagedCommand", return_value=command),
         pytest.raises(KeyboardInterrupt) as caught,
     ):
-        run_command(LocalEnvironmentSpec(), ["tool"], stream_output=streaming)
+        run_command(IdentityCommandEnvironment(), ["tool"], stream_output=streaming)
     assert caught.value is interruption
     assert "cleanup unconfirmed" in interruption.__notes__
     command.dispose.assert_called_once()
+
+
+@pytest.mark.parametrize("streaming", [False, True])
+def test_delayed_launch_failure_keeps_original_error_and_one_record(streaming):
+    from artisan.execution.recording.commands import capture_commands
+
+    failure = FileNotFoundError("delayed missing executable")
+    command = MagicMock(state="launch_failed", returncode=None, launch_seconds=None)
+    command.communicate.side_effect = failure
+    with (
+        capture_commands() as recorder,
+        patch("artisan.utils.external_tools.ManagedCommand", return_value=command),
+        pytest.raises(FileNotFoundError) as caught,
+    ):
+        run_command(IdentityCommandEnvironment(), ["missing"], stream_output=streaming)
+    assert caught.value is failure
+    command.interrupt.assert_not_called()
+    command.dispose.assert_called_once()
+    records = recorder.snapshot().commands
+    assert len(records) == 1
+    assert records[0].outcome == "launch_failed"
+    assert records[0].returncode is None
+
+
+def test_interruption_record_survives_cleanup_error():
+    from artisan.execution.recording.commands import capture_commands
+    from artisan.utils.command_supervisor import CommandOwnershipError
+
+    failure = CommandOwnershipError("cleanup failed")
+    command = MagicMock(state="unknown", returncode=None, launch_seconds=0.1)
+    command.communicate.side_effect = KeyboardInterrupt
+    command.interrupt.side_effect = failure
+    with (
+        capture_commands() as recorder,
+        patch("artisan.utils.external_tools.ManagedCommand", return_value=command),
+        pytest.raises(CommandOwnershipError) as caught,
+    ):
+        run_command(IdentityCommandEnvironment(), ["tool"])
+    assert caught.value is failure
+    command.dispose.assert_called_once()
+    records = recorder.snapshot().commands
+    assert len(records) == 1
+    assert records[0].outcome == "interrupted"

@@ -156,17 +156,21 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `chore`, `perf`, `style`
 ```
 src/artisan/                # Framework (domain-agnostic)
 ├── composites/             # Composite operations (reusable op compositions)
-│   └── base/               # CompositeDefinition base class, context, runtime results
+│   └── base/               # CompositeDefinition, composition context, compiled plans
 ├── execution/              # Worker execution
-│   ├── compute/            # Compute-provider routing (local passthrough, tool-endpoint invoke)
+│   ├── compute/            # Native Python and prepared command execution
 │   ├── context/            # Execution context builder + sandbox setup
-│   ├── executors/          # Creator/curator phase executors
+│   ├── environments/       # Captured Pixi sources, prepared workers, OCI/SIF tool targets
+│   ├── executors/          # Curator execution and streamed result staging
 │   ├── inputs/             # Input grouping, instantiation, lineage matching, materialization
 │   ├── lineage/            # Explicit lineage validation, resolution, enrichment
 │   ├── models/             # Execution unit model
 │   ├── recording/          # Execution records, command evidence, replay snapshots + parquet writer
-│   ├── tool_endpoint/      # Operation-as-tool endpoint (client, server, deploy, docker)
 │   ├── transport/          # Transport log constants
+│   ├── assignment.py       # Admitted worker assignment execution and result sealing
+│   ├── composition.py      # Execute compiled child calls and project retained outputs
+│   ├── invocation.py       # One operation's preprocess/execute/postprocess lifecycle
+│   ├── session.py          # Local execution session and scratch ownership
 │   ├── exceptions.py       # Execution-phase exceptions
 │   └── utils.py            # Execution helpers (run-id generation, artifact finalization)
 ├── operations/             # Base class + framework ops
@@ -174,8 +178,8 @@ src/artisan/                # Framework (domain-agnostic)
 │   ├── curator/            # Curator ops (Filter, Merge, Ingest*, DeclareLineage, InteractiveFilter)
 │   └── examples/           # Example/demo operations (DataGenerator, DataTransformer, MetricCalculator)
 ├── orchestration/          # Pipeline engine, dispatch, step execution
-│   ├── engine/             # Batching, dispatch, step executor/tracker, lifecycle router
-│   ├── runners/            # Native local runner and public provider contract
+│   ├── engine/             # Submission, source selection, result acceptance and recovery
+│   ├── runners/            # Local worker preparation, launch, packing and cancellation
 │   ├── pipeline_manager.py # PipelineManager orchestration entry point
 │   ├── runner_api.py       # Stable API for external runner providers
 │   ├── replay.py           # Single-execution diagnostic replay
@@ -186,7 +190,7 @@ src/artisan/                # Framework (domain-agnostic)
 ├── registry/               # Operation discovery and registration
 ├── schemas/                # All data models
 │   ├── artifact/           # Artifact base, registry, types, metric, file_ref, csv, execution_config
-│   ├── composites/         # CompositeRef dataclass (runtime results in composites/base/results.py)
+│   ├── composites/         # Composition references, execution recipes and wiring
 │   ├── execution/          # Execution context, record, results, runtime environment, storage config
 │   ├── operation_config/   # Command/resource/environment configuration schemas
 │   ├── orchestration/      # Pipeline/step config + result schemas
@@ -196,15 +200,20 @@ src/artisan/                # Framework (domain-agnostic)
 ├── storage/                # Artifact storage and persistence
 │   ├── cache/              # Cache lookup
 │   ├── core/               # Artifact store, provenance store, table schemas
-│   └── io/                 # Logical commits, exact-plan staging, verification + repair
+│   └── io/                 # Sealed deliveries, selected terminal plans, verification + repair
 ├── utils/                  # Hashing, paths, filenames, external tools, dotenv, logging
 ├── visualization/          # Provenance graphs and analytics
 │   ├── graph/              # Micro/macro provenance rendering (Graphviz) + interactive stepper
 │   ├── inspect.py          # Pipeline/step/metric/CSV/failure inspection readers
 │   └── timing.py           # Timing analytics
-├── cli.py                  # Operation/deployment commands, inspection, replay + store repair
+├── cli.py                  # Operation commands, inspection, replay + store repair
 └── errors.py               # ArtisanError base + domain exception hierarchy
 ```
+
+`packages/artisan-modal/` contains the optional Modal runner. Slurm integration
+lives in the separate `artisan-submitit` provider. Providers implement the
+contract in `orchestration/runner_api.py`; operation dependencies remain declared
+independently of provider placement.
 
 ---
 

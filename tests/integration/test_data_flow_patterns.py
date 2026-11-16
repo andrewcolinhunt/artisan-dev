@@ -22,16 +22,16 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.curator import Filter, IngestCSV, Merge
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
-from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 
 from .conftest import (
+    _step_read,
     count_artifacts_by_step,
     count_artifacts_by_type,
     count_executions_by_step,
+    create_native_pipeline,
     get_execution_inputs,
     get_execution_outputs,
-    read_table,
+    load_artifact_edges,
 )
 
 # =============================================================================
@@ -48,7 +48,7 @@ def linear_chain_pipeline(
 
     Pattern: DataGenerator -> DataTransformer -> MetricCalculator
     """
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_linear_chain",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -59,7 +59,6 @@ def linear_chain_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Transform datasets (1 variant each)
@@ -72,14 +71,12 @@ def linear_chain_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Calculate metrics
     pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -133,7 +130,7 @@ def fan_out_execution_pipeline(
     Pattern: DataGenerator -> [DataTransformer A, DataTransformer B]
     Same input consumed by two parallel branches.
     """
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_fan_out_execution",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -144,7 +141,6 @@ def fan_out_execution_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Shared reference for both branches
@@ -160,7 +156,6 @@ def fan_out_execution_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Transform with seed 200 (Branch B)
@@ -173,7 +168,6 @@ def fan_out_execution_pipeline(
             "variants": 1,
             "seed": 200,
         },
-        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -223,7 +217,7 @@ def fan_out_data_pipeline(
     Pattern: DataGenerator (1) -> DataTransformer (variants=3)
     Single input produces multiple outputs.
     """
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_fan_out_data",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -234,7 +228,6 @@ def fan_out_data_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 1, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Create 3 variants
@@ -247,7 +240,6 @@ def fan_out_data_pipeline(
             "variants": 3,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -278,7 +270,7 @@ def test_fan_out_data(pipeline_env: dict[str, str]):
     input_ids = get_execution_outputs(delta_root, 0, "datasets")
     assert len(input_ids) == 1
 
-    df_prov = read_table(delta_root, "provenance/artifact_edges")
+    df_prov = load_artifact_edges(delta_root, None)
     edges = df_prov.filter(pl.col("source_artifact_id") == input_ids[0])
     assert edges.height == 3, "3 edges from 1 source"
 
@@ -298,7 +290,7 @@ def fan_in_merge_pipeline(
     Pattern: [DataGenerator A, DataGenerator B] -> Merge
     Union of multiple data streams.
     """
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_fan_in_merge",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -309,14 +301,12 @@ def fan_in_merge_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate 2 datasets (Branch B)
     step1 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 100},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Merge both branches
@@ -326,7 +316,6 @@ def fan_in_merge_pipeline(
             "branch_a": step0.output("datasets"),
             "branch_b": step1.output("datasets"),
         },
-        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -380,7 +369,7 @@ def passthrough_pipeline(
     Pattern: DataGenerator -> MetricCalculator -> Filter(direct) -> DataTransformer
     Tests artifact identity preservation through curator operations.
     """
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_passthrough",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -391,14 +380,12 @@ def passthrough_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Calculate metrics
     pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Filter (forward-walk metric discovery, always pass with min >= 0)
@@ -412,7 +399,6 @@ def passthrough_pipeline(
                 {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Transform the passthrough datasets
@@ -425,7 +411,6 @@ def passthrough_pipeline(
             "variants": 1,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -477,7 +462,7 @@ def batch_processing_pipeline(
     Pattern: DataGenerator (5) -> DataTransformer (artifacts_per_unit=2)
     Tests execution unit batching.
     """
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_batch_processing",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -488,7 +473,6 @@ def batch_processing_pipeline(
     step0 = pipeline.run(
         operation=DataGenerator,
         params={"count": 5, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Batch transform with artifacts_per_unit=2 via execution override
@@ -502,7 +486,6 @@ def batch_processing_pipeline(
             "seed": 100,
         },
         batch_strategy={"artifacts_per_unit": 2},
-        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()
@@ -535,25 +518,24 @@ def test_batch_processing(pipeline_env: dict[str, str]):
     # No data loss: still 5 outputs
     assert count_artifacts_by_step(delta_root, 1) == 5
 
-    # Verify batch composition: [2, 2, 1]
-    df_exec = read_table(delta_root, "orchestration/executions")
-    df_prov = read_table(delta_root, "provenance/execution_edges")
+    # Each exact selected admission preserves its complete ordered unit inputs.
+    from artisan.orchestration.engine.retained_execution_query import (
+        _execution_membership,
+    )
+    from artisan.storage.core.execution_source import ScientificExecutionSource
 
-    step1_exec_ids = df_exec.filter(pl.col("origin_step_number") == 1)[
-        "execution_run_id"
-    ].to_list()
-
-    batch_sizes = []
-    for exec_id in step1_exec_ids:
-        n_inputs = df_prov.filter(
-            (pl.col("execution_run_id") == exec_id)
-            & (pl.col("direction") == "input")
-            & (pl.col("role") == "dataset")
-        ).height
-        batch_sizes.append(n_inputs)
-
-    batch_sizes.sort()
-    assert batch_sizes == [1, 2, 2]
+    with _step_read(delta_root, 1, fs=None, storage_options=None, files_root=None) as (
+        read,
+        states,
+    ):
+        members = _execution_membership(read, states)
+    assert all(
+        isinstance(member.source, ScientificExecutionSource) for member in members
+    )
+    assert sorted(
+        len(member.source.admission.boundary.input_roles()["dataset"])
+        for member in members
+    ) == [1, 2, 2]
 
 
 # =============================================================================
@@ -577,7 +559,7 @@ def comprehensive_pipeline(
     - Filter (direct-input with criteria)
     - Final fan-out
     """
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_comprehensive",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -589,14 +571,12 @@ def comprehensive_pipeline(
     step0 = pipeline.run(
         operation=IngestCSV,
         inputs=[str(f) for f in source_files],
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate 2 additional datasets
     step1 = pipeline.run(
         operation=DataGenerator,
         params={"count": 2, "seed": 9999},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Merge ingest + generated
@@ -606,7 +586,6 @@ def comprehensive_pipeline(
             "ingested": step0.output("csv"),
             "generated": step1.output("datasets"),
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Stage 2: Parallel Branches
@@ -621,7 +600,6 @@ def comprehensive_pipeline(
             "seed": 100,
             "output_prefix": "A",
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 4: DataTransformer B
@@ -635,7 +613,6 @@ def comprehensive_pipeline(
             "seed": 200,
             "output_prefix": "B",
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 5: Merge both branches
@@ -645,7 +622,6 @@ def comprehensive_pipeline(
             "branch_a": step3.output("dataset"),
             "branch_b": step4.output("dataset"),
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Stage 3: Metrics & Filter
@@ -653,7 +629,6 @@ def comprehensive_pipeline(
     pipeline.run(
         operation=MetricCalculator,
         inputs={"dataset": step5.output("merged")},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 7: Filter based on median_score (forward-walk metric discovery)
@@ -671,7 +646,6 @@ def comprehensive_pipeline(
                 },
             ],
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Stage 4: Final Fan-Out
@@ -685,7 +659,6 @@ def comprehensive_pipeline(
             "variants": 2,
             "seed": 300,
         },
-        step_runner=Runner.LOCAL,
     )
 
     return pipeline.finalize()

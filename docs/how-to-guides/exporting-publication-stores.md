@@ -3,7 +3,7 @@
 Use a publication export when you want to share recorded results while omitting
 selected local paths from execution evidence. The export preserves scientific
 artifact content and IDs, provenance, metrics, and historical run identities.
-It creates new storage integrity records for the sanitized copy.
+It creates a self-contained inspection manifest and verified content copies.
 
 ## Create and inspect a copy
 
@@ -51,7 +51,7 @@ with TemporaryDirectory() as temporary:
         == original.provenance.load_backward_map()
     )
 
-    # Move the entire bundle, including delta/, files/ and staging/.
+    # Move the entire inspection bundle, including its copied external files.
     moved = root / "moved-results"
     exported.directory.rename(moved)
     relocated = PublicationExport(moved).open_store()
@@ -71,37 +71,35 @@ published locators and cannot fall back to files elsewhere on the host.
 ## Choose what to omit
 
 `redact` contains explicit, case-sensitive substrings. They are omitted only from
-classified operational fields: diagnostic logs, errors, command recordings,
-literal recorded input references, and replay context. File locators point to
-verified copies inside the bundle; their safe original basenames are preserved.
+classified operational fields, including supported diagnostic observations and
+raw input locators. Scientific identity, software identity, exact occurrence
+membership, and declared lineage remain protected. File locators point to
+verified copies inside the bundle.
 
-Matching replay configuration values become `null` with explicit required
-replacement pointers. The original execution ID remains historical evidence;
-the exporter does not claim that a different configuration produced that ID.
-See [recorded execution replay](debugging-executions.md) for replacement handling.
+Sanitized replay observations retain explicit replacement requirements. Original
+execution and seal IDs remain historical assertions; the bundle's own inspection
+digest identifies the copy. An inspection bundle cannot itself authorize replay.
+Use the original live store for [recorded execution replay](debugging-executions.md).
 
 The export fails if a requested omission appears in scientific artifact content,
 artifact metadata, required filenames, parameters, arbitrary execution metadata,
-or other unclassified fields. Caller-supplied environment overrides can also
-appear in protected step configuration or user overrides; they require review
-instead of automatic rewriting. Class-declared replay configuration can use the
-explicit replacement contract without changing those records.
+or other protected evidence. Redaction cannot change the scientific recipe or
+software identity and still claim the same source computation.
 
 This operation does not discover secrets or remove arbitrary private scientific
 data. It checks supplied substrings in decoded store fields and raw external
 file bytes. Inspect nested archives, compressed scientific content, and any
-supplemental files separately before publication. Only FileRef-backed external
-artifacts are currently supported; populated stores with other external artifact
-types are rejected.
+supplemental files separately before publication. Externally backed registered
+artifacts must have verifiable complete carriers; copied bytes are checked again
+when they are loaded.
 
 ## Understand the resulting evidence
 
 Artifact and run identities remain original. File locators and redacted diagnostic
-fields change. Delta files, staging seals, commit plans, and their digests are
-new and are audited before the bundle is returned. Retained staging belongs to
-this inspection export; it does not reproduce the original worker byte layout.
+fields may change. The export has a closed file inventory and its own inspection
+digest. It carries the original result assertions without creating replacement
+worker seals, Delta logs, or acceptance claims.
 
-The publication marker labels the copy for inspection. This version of Artisan
-rejects pipeline initialization, logical commits, and compaction against it.
-Start a fresh pipeline root to run new work. The unchanged format-8 schemas remain
-readable by compatible readers, but older writers may not recognize the marker.
+Open it with `PublicationExport(...).open_store()` for artifact and provenance
+queries. It cannot supply pipeline initialization, resume, cache, repair, or
+replay authority. Start a fresh live pipeline root to run new work.

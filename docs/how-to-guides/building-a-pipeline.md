@@ -190,13 +190,11 @@ step used `run()`. It releases the pipeline's executor and runner resources.
 
 ### `run()` vs `submit()`
 
-`run()` waits and returns a `StepResult`. `submit()` returns a `StepFuture`
-after preparing the step and waiting for any referenced predecessors. Both wire
-downstream with `.output("role")`. Use `submit()` to keep the caller available
-while execution runs, then call `finalize()` to wait and clean up. The current
-manager executes steps serially; workers within a step can run concurrently.
-
-For composites, use `submit_composite()` / `run_composite()`.
+`run()` waits and returns a `StepResult`. `submit()` freezes the call, records a
+pending step, and returns a `StepFuture`. Both wire downstream with `.output("role")`.
+Use `submit()` to keep the caller available, then call `.result()` for the result
+or `finalize()` to wait for all work and clean up. Operations and composites use
+these same methods.
 
 ```python
 output = pipeline.output
@@ -231,7 +229,7 @@ cells, keep the manager open and call `finalize()` in the last cell.
 
 ### Step-level overrides
 
-Both `run()` and `submit()` accept per-step resource, batching, environment,
+Both `run()` and `submit()` accept per-step runner, resource, batching,
 cache, and failure-policy overrides. See
 [Configuring Execution](configuring-execution.md) for examples and inheritance
 rules, and [Python API lookup](../reference/python-api.md) for exact arguments.
@@ -301,48 +299,70 @@ and threshold previews.
 
 ### Composing operations with composites
 
-Run a reusable sequence with `pipeline.run_composite()`. This example uses
+Run a reusable sequence with `pipeline.run()`. This example uses
 `TransformAndScore` from [Write Composite Operations](writing-composite-operations.md).
-Each child becomes a pipeline step with independent caching and dispatch:
+Its children run in one worker per unit, with one persistence and cache boundary:
 
 ```python
 output = pipeline.output
 pipeline.run(operation=DataGenerator, name="gen", params={"count": 10})
 
-# Each internal operation becomes its own step
-pipeline.run_composite(
-    composite=TransformAndScore,
+pipeline.run(
+    TransformAndScore,
     name="ts",
     inputs={"dataset": output("gen", "datasets")},
 )
 ```
 
-Composite-level execution overrides become defaults for child steps. See
-[override inheritance](writing-composite-operations.md#forward-execution-overrides).
+Execution settings apply to the outer submission. See
+[composite submission](writing-composite-operations.md#forward-execution-overrides).
 
 ### Optional SLURM execution
 
-Install `artisan-submitit`, then pass its runner instance to dispatch a step to
-SLURM:
+Install matching Artisan and `artisan-submitit` packages. Prepare a locked worker
+project containing both packages and your application definitions, then pass the
+configured runner to the step. This continuation assumes the existing pipeline's
+store, staging, files, and working roots are visible at the same absolute paths
+on the compute nodes. Replace the shared paths and partition with your site's
+settings:
 
 ```python
+from pathlib import Path
+
+from artisan.schemas import Environment
 from artisan_submitit import SlurmRunner
+
+shared = Path("/shared/artisan/example")
+runner = SlurmRunner(
+    environment=Environment.from_pixi(
+        Path("/shared/software/pixi.toml"), name="worker"
+    ),
+    cache_root=shared / "prepared",
+    log_folder=shared / "scheduler",
+    slurm_partition="cpu",
+)
+runner.prepare(DataTransformer)
 
 pipeline.run(
     operation=DataTransformer,
     name="transform",
     inputs={"dataset": output("generate", "datasets")},
-    step_runner=SlurmRunner(),
-    runner_resources={"gpus": 1, "memory_gb": 16, "extra": {"slurm_partition": "gpu"}},
+    step_runner=runner,
+    runner_resources={"cpus": 1, "memory_gb": 2, "time_limit": "00:05:00"},
 )
 ```
+
+The worker project and prepared cache must also be visible at the same absolute
+paths on the nodes. Preparation may install software; submission only verifies
+and uses the prepared target.
 
 See [Configuring Execution](configuring-execution.md) for resource and batching recipes.
 
 ### Resume a previous run
 
-Use `create()` with the same roots to rerun a pipeline script. Startup recovers
-eligible finished staging before cache lookup; matching work can then be reused.
+Use `create()` with the same roots to rerun a pipeline script. Already accepted
+work may be reused when its inputs and qualified software match. Creation does
+not scan orphan staging and adopt unclaimed results.
 First confirm that the previous orchestrator has stopped: only one driver or
 repair process may write these roots at a time.
 
@@ -359,26 +379,26 @@ pipeline = PipelineManager.resume(
 so new steps continue the sequence. Pass `pipeline_run_id="..."` to resume a
 specific run; omit it to resume the most recent. Pass `name="..."` to override
 the pipeline name. An unresolved `pending` or `running` attempt still prevents
-resume; recovering its finished execution units does not change that history.
+resume; recovering a previously claimed unit does not prove the old worker stopped.
 Rerun with `create()` to reuse those units in new attempts.
 
-Both entry points accept `recover_staging=False` to leave old staging untouched
-and `preserve_staging=True` to retain staging after commitment. These controls
-are independent of cache policy. See
+`resume(recover_staging=False)` disables selected-result recovery.
+`preserve_staging=True` retains staging after commitment. These controls are
+independent of cache policy. See
 [Staging preservation and recovery](../concepts/storage-and-delta-lake.md#staging-preservation)
 for the retention rules and interrupted-work example.
 
-If the pipeline used an external default step runner, create that provider
-again and pass the instance when resuming. Artisan persists the runner's stable
-name for provenance, not the configured Python object:
+If the pipeline used an external default step runner, recreate its configured
+instance before resuming. For a Slurm run, use the explicit environment and
+shared-path setup above, with the settings used by that run. Artisan persists
+the runner's stable name for provenance, not the configured Python object:
 
 ```python
-from artisan_submitit import SlurmRunner
-
+# `runner` is the configured SlurmRunner from the setup above.
 pipeline = PipelineManager.resume(
     delta_root="runs/delta",
     staging_root="runs/staging",
-    default_step_runner=SlurmRunner(slurm_partition="gpu"),
+    default_step_runner=runner,
 )
 ```
 

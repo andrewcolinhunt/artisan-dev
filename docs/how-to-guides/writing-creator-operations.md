@@ -65,10 +65,10 @@ class ScaleData(OperationDefinition):
                 [
                     {
                         "path": a.materialized_path,
-                        "source_id": a.artifact_id,
+                        "parent": inputs.ref("dataset", index=index),
                         "name": a.original_name,
                     }
-                    for a in inputs.input_artifacts["dataset"]
+                    for index, a in enumerate(inputs.input_artifacts["dataset"])
                 ]
             )
         }
@@ -89,7 +89,7 @@ class ScaleData(OperationDefinition):
             outputs.append(
                 {
                     "path": str(out),
-                    "source_id": item["source_id"],
+                    "parent": item["parent"],
                     "name": f"{item['name']}_scaled.csv",
                 }
             )
@@ -103,9 +103,7 @@ class ScaleData(OperationDefinition):
                 original_name=item["name"],
                 step_number=inputs.step_number,
             )
-            result.add_artifact(
-                "dataset", draft, sources={"dataset": [item["source_id"]]}
-            )
+            result.add_artifact("dataset", draft, sources={"dataset": [item["parent"]]})
         return result
 ```
 
@@ -468,9 +466,12 @@ of `source_artifact_id`. Names may repeat; preserve list order after declaring
 indices. Invalid indices, wrong-role IDs, missing parents, duplicate mappings,
 and undeclared parent roles fail validation.
 
-The helper requires `sources`: strings name input IDs, integers name sibling
-output indices, and `{}` declares a root. It never chooses parents. Several IDs
-from one role are valid. For an output jointly derived from `data` and
+The helper requires `sources`: exact references from `inputs.ref(role, index=...)`
+name input occurrences, strings name uniquely matching input IDs, integers name
+sibling output indices, and `{}` declares a root. An ID that occurs twice in the
+same input role is ambiguous; carry its exact reference through the phases, as
+in `ScaleData`. The helper never chooses parents. Several parents from one role
+are valid. For an output jointly derived from `data` and
 `reference`, its spec lists both input roles and the operation supplies both:
 
 ```python
@@ -522,12 +523,11 @@ Malformed IDs, missing or corrupt artifacts, and references to other configs fai
 before preprocessing. The input spec must set `materialize=False` and retain
 `hydrate=True` (the default); invalid combinations fail when the spec is created.
 
-For endpoint execution, use these dependencies to prepare portable files under
-`inputs.preprocess_dir`, then return those files as declared execute inputs. Write
-required values or bytes into them; paths inside file contents are not rewritten
-when files move to a worker. The typed objects stay with the lifecycle worker.
-Check your preparation by moving the prepared files to another directory before
-execution and verifying that the result is unchanged.
+For command execution, use these dependencies to prepare files under
+`inputs.preprocess_dir`, then return those files as declared execute inputs.
+Preprocess runs on the selected worker. Keep paths inside generated files valid
+for the command's working directory and selected tool environment; arbitrary
+file contents are not rewritten by command transport.
 
 For example, this preprocess fragment embeds referenced UTF-8 text in a JSON
 file. It uses the imports from `ScaleData` plus `json` and
@@ -664,7 +664,7 @@ Python memory outputs.
 `WaitTool` in `artisan.operations.examples` is another complete command example.
 A Python `execute_function` that calls `run_command` manually is still a function
 operation; that form runs where the lifecycle worker runs. For remote command
-execution, follow [Deploy Tool Endpoints](deploying-tool-endpoints.md).
+execution, follow [Run Remote Workers](running-remote-workers.md).
 
 (retain-command-files)=
 ### Retain command-generated files
@@ -739,25 +739,28 @@ not identify parents, select files and their exact parent IDs from the tool's
 output manifest instead. Separate paths do not force separate artifact IDs:
 identical bytes and semantic metadata retain the existing deduplication behavior.
 
-The same postprocess code handles local commands and endpoint downloads. The
-managed directory stays on the lifecycle worker; command bodies and remote
-workers do not receive its path. Existing endpoint input constraints still apply:
-send a batch manifest file when a whole batch must travel under one input role.
-Retention requires the whole execution unit to succeed, including postprocessing
-and verification. This does not publish partial
-state from interrupted commands. Failed uploads can leave unreferenced objects;
-their cleanup is outside this workflow.
+The same postprocess code runs on the selected local or remote worker. The
+managed directory is local to that worker; the framework captures the selected
+complete files before closing its scratch space. Retention requires the whole
+execution unit to succeed, including postprocessing and verification. This does
+not publish partial state from interrupted commands. Failed uploads can leave
+unreferenced objects; their cleanup is outside this workflow.
 
 Run the variant in a fresh temporary store, then hydrate new references after
 the pipeline closes. This continuation requires the `CopyCsv` and `RetainCsvFiles`
-definitions above and the local `cp` command:
+definitions above installed in an importable application package and the local
+`cp` command. Prepare that command through the selected runner before submitting:
 
 ```python
 from tempfile import TemporaryDirectory
 
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
+from artisan.orchestration.runners import LocalRunner
 from artisan.storage import ArtifactStore
+
+runner = LocalRunner()
+runner.prepare(RetainCsvFiles)
 
 with TemporaryDirectory() as tmp:
     root = Path(tmp)
@@ -767,6 +770,7 @@ with TemporaryDirectory() as tmp:
         staging_root=str(root / "staging"),
         working_root=str(root / "working"),
         files_root=str(root / "files"),
+        default_step_runner=runner,
     )
     generated = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
     retained = pipeline.run(
@@ -794,8 +798,8 @@ IDs through [run-scoped inspection](inspecting-evidence.md).
 (execute-as-tool)=
 ### Python body as a command (`execute_as_tool`)
 
-Set `execute_as_tool=True` to run a Python body as a local subprocess, Modal
-endpoint, or standalone container command:
+Set `execute_as_tool=True` to run a Python body as a command in its declared tool
+environment:
 
 ```python
 class EmbedSequences(OperationDefinition):
@@ -814,10 +818,10 @@ class EmbedSequences(OperationDefinition):
 ```
 
 The framework supplies the command
-(`artisan op run <module:Qualname> --params … --inputs …`) and uses the command
-execution path: `artisan modal deploy` accepts it,
-`compute_provider='modal'` routes it, and a container with the operation's
-package installed can run it without a pipeline.
+(`artisan op run <module:Qualname> --params … --inputs …`) and uses the managed
+command path. Declare software with `environment = Environment.from_pixi(...)`;
+the runner prepares the target and places the worker. A container with Artisan
+and the operation's package installed can also invoke the command directly.
 
 This mode exchanges files across process boundaries. Validation happens at
 class definition where possible:
@@ -946,64 +950,43 @@ See [Configuring Execution](configuring-execution.md) for resource and batching 
 | Empty artifacts after postprocess | Wrong file extension filter or missing files | Check `file_outputs` contents in the execute directory |
 | Missing lineage | An emitted role or derived draft has no declaration | Return exact parents for each derived draft, and an empty list for roots |
 | `ValidationError` on `LineageMapping` | Set both source fields, or neither | Use `source_artifact_id` for input parents or `source_output_index` for co-produced outputs |
-| `LineageIntegrityError` | An index is outside the declared role or an input ID belongs to another role | Preserve role-local output order and carry the exact source IDs |
+| `LineageIntegrityError` | An index is outside its role, an input ID belongs to another role, or an ID matches repeated inputs | Preserve role-local output order and carry exact input references |
 | `ValueError: materialize_as requires materialize=True` | Set `materialize_as` on a non-materialized input | Remove `materialize_as` or set `materialize=True` |
 
 ---
 
 ## Verify
 
-Test your operation outside a pipeline by constructing inputs directly:
+Run the complete creator lifecycle with `ExecutionSession`. Inline definitions
+work here without installing an application package. Keep the session open while
+using its output files:
 
 ```python
-from pathlib import Path
-from tempfile import TemporaryDirectory
+from artisan.execution import ExecutionSession
 
-from artisan.schemas import ExecuteInput, PostprocessInput
-
-op = ScaleData(params={"factor": 3.0})
-
-with TemporaryDirectory() as tmp:
-    execute_dir = Path(tmp) / "execute"
-    execute_dir.mkdir()
-
-    # Write a test input file
-    test_csv = Path(tmp) / "test.csv"
-    test_csv.write_text("id,value\n1,10\n2,20\n")
-
-    source = CSVArtifact.draft(
-        content=test_csv.read_bytes(), original_name="test.csv", step_number=0
-    ).finalize()
-    source.materialized_path = str(test_csv)
-    prepared = op.preprocess(
-        PreprocessInput(
-            preprocess_dir=str(Path(tmp) / "pre"),
-            input_artifacts={"dataset": [source]},
-        )
+source = CSVArtifact.draft(
+    content=b"id,value\n1,10\n2,20\n", original_name="test.csv"
+).finalize()
+with ExecutionSession() as session:
+    artifact_result = session.run(
+        ScaleData,
+        inputs={"dataset": [source, source]},
+        params={"factor": 3.0},
     )
-    execute_input = ExecuteInput(execute_dir=str(execute_dir), inputs=prepared)
-    result = op.execute_function(execute_input)
-
-    # Run postprocess
-    post_input = PostprocessInput(
-        step_number=0,
-        postprocess_dir=str(Path(tmp) / "post"),
-        file_outputs=[str(path) for path in execute_dir.iterdir()],
-        memory_outputs=result,
-    )
-    artifact_result = op.postprocess(post_input)
-
     assert artifact_result.success
-    assert (
-        artifact_result.lineage["dataset"][0].source_artifact_id == source.artifact_id
-    )
-    assert len(artifact_result.artifacts["dataset"]) == 1
-    assert (
-        artifact_result.artifacts["dataset"][0].content == b"id,value\n1,30.0\n2,60.0\n"
+    assert [edge.source_input_index for edge in artifact_result.lineage["dataset"]] == [
+        0,
+        1,
+    ]
+    assert len(artifact_result.artifacts["dataset"]) == 2
+    assert all(
+        artifact.content == b"id,value\n1,30.0\n2,60.0\n"
+        for artifact in artifact_result.artifacts["dataset"]
     )
 ```
 
-For a full integration test, run in a pipeline (defaults to local backend):
+For a persisted integration test, first put `ScaleData` in an installed,
+importable application package. Run it in a pipeline using that definition:
 
 ```python
 from artisan.orchestration import PipelineManager
@@ -1023,7 +1006,7 @@ step = pipeline.run(
     batch_strategy={"artifacts_per_unit": 3},
 )
 assert step.status is StepStatus.SUCCEEDED
-assert step.succeeded_count == 3
+assert step.succeeded_count == 1  # Three inputs in one accepted execution unit.
 pipeline.finalize()
 ```
 

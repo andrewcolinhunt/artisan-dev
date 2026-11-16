@@ -52,8 +52,11 @@ class DeclaredPairs(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         pairs = [
-            {role: artifact.artifact_id for role, artifact in group.items()}
-            for group in inputs.grouped()
+            {
+                **{role: artifact.artifact_id for role, artifact in group.items()},
+                "input_index": index,
+            }
+            for index, group in enumerate(inputs.grouped())
         ]
         return {"pairs": PerArtifact(pairs)}
 
@@ -70,7 +73,7 @@ class DeclaredPairs(OperationDefinition):
             if self.params.file_outputs
             else inputs.memory_outputs["pairs"]
         )
-        return _declare_pairs(pairs, inputs.step_number)
+        return _declare_pairs(pairs, inputs)
 
 
 class MonolithicDeclaredPairs(DeclaredPairs):
@@ -97,7 +100,13 @@ class DeclaredPairCommand(OperationDefinition):
             path = Path(inputs.preprocess_dir) / f"pair-{index}.json"
             path.write_text(
                 json.dumps(
-                    {role: artifact.artifact_id for role, artifact in group.items()}
+                    {
+                        **{
+                            role: artifact.artifact_id
+                            for role, artifact in group.items()
+                        },
+                        "input_index": index,
+                    }
                 )
             )
             manifests.append(str(path))
@@ -111,7 +120,7 @@ class DeclaredPairCommand(OperationDefinition):
         _write_manifest(pairs, Path(inputs.execute_dir))
 
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
-        return _declare_pairs(_read_manifests(inputs.file_outputs), inputs.step_number)
+        return _declare_pairs(_read_manifests(inputs.file_outputs), inputs)
 
 
 class MonolithicDeclaredPairCommand(DeclaredPairCommand):
@@ -129,7 +138,9 @@ def _write_manifest(pairs: list[dict[str, str]], directory: Path) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         content = {role: pair[role] for role in ("primary", "partner")}
         path.write_text(json.dumps(content))
-        records.append({"path": relative, "parents": content})
+        records.append(
+            {"path": relative, "parents": content, "input_index": pair["input_index"]}
+        )
     (directory / "declared-outputs.json").write_text(json.dumps(records))
 
 
@@ -144,20 +155,23 @@ def _read_manifests(files: list[str]) -> list[dict[str, str]]:
             assert not relative.is_absolute()
             content = json.loads((manifest.parent / relative).read_text())
             assert content == record["parents"]
-            pairs.append(content)
+            pairs.append({**content, "input_index": record["input_index"]})
     return pairs
 
 
-def _declare_pairs(pairs: list[dict[str, str]], step_number: int) -> ArtifactResult:
+def _declare_pairs(pairs: list[dict], inputs: PostprocessInput) -> ArtifactResult:
     result = ArtifactResult()
     for pair in pairs:
-        parents = {role: [pair[role]] for role in ("primary", "partner")}
+        parents = {
+            role: [inputs.ref(role, index=pair["input_index"])]
+            for role in ("primary", "partner")
+        }
         result.add_artifact(
             "prediction",
             MetricArtifact.draft(
-                content={role: values[0] for role, values in parents.items()},
+                content={role: pair[role] for role in ("primary", "partner")},
                 original_name="prediction.json",
-                step_number=step_number,
+                step_number=inputs.step_number,
             ),
             sources=parents,
         )

@@ -18,7 +18,6 @@ from artisan.schemas import (
     PostprocessInput,
     PreprocessInput,
 )
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.utils.hashing import compute_stream_digest
 
 
@@ -43,8 +42,6 @@ class ManagedFileCommand(OperationDefinition):
             artifact_type="file_ref", derives_from={"inputs": ["source"]}
         ),
     }
-
-    compute_provider: ComputeProvider = ComputeProvider(modal=ModalComputeConfig())
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Carry source IDs in portable files for local and endpoint commands."""

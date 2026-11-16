@@ -1,0 +1,241 @@
+{
+  "status": "Preparation manifest; execute only after final core/provider/wheel/profile freeze and launch authorization.",
+  "substitution": "Substitute complete argv elements, without shell evaluation. All paths are absolute. Unresolved placeholders reject execution.",
+  "variables": {
+    "PIXI": "Absolute path to the verified Pixi 0.83.0 executable.",
+    "CHECKOUT": "Assigned build checkout with its own locked dev environment; used only to prepare the task-owned pinned builder.",
+    "OWNED": "Fresh /dev/shm/artisan-modal-final-<unique> owned by the current user; no symlink, maximum6GiB.",
+    "CORE_SOURCE": "Exact frozen core source snapshot under OWNED/source/core; exclude all installed environments.",
+    "PROVIDER_SOURCE": "Exact frozen provider source snapshot under OWNED/source/provider.",
+    "APPLICATION_SOURCE": "Exact frozen qualification/application snapshot under OWNED/source/application.",
+    "PROFILE": "OWNED/profile; canonical pixi.toml, pixi.lock and ordinary wheels/ files.",
+    "HARNESS": "OWNED/harness; exact hashed qualification .py files, including final_apps.py/final_launch.py.",
+    "PYTHON": "PROFILE/.pixi/envs/controller/bin/python; own ordinary installed core/provider/application/SDK.",
+    "INPUTS": "OWNED/launch-inputs.json; frozen LaunchInputs descriptor generated after installation.",
+    "BUILDER_PYTHON": "Verified interpreter from the freshly prepared task-owned core Hatchling builder binding.",
+    "BACKEND_SCRIPT": "CORE_SOURCE/src/artisan/execution/environments/_hatch_backend.py; frozen existing backend bridge."
+  },
+  "environment": {
+    "PYTHONDONTWRITEBYTECODE": "1",
+    "TMPDIR": "${OWNED}/tmp",
+    "XDG_CACHE_HOME": "${OWNED}/cache/xdg",
+    "PIXI_CACHE_DIR": "${OWNED}/cache/pixi",
+    "UV_CACHE_DIR": "${OWNED}/cache/uv",
+    "PIP_CACHE_DIR": "${OWNED}/cache/pip",
+    "MODAL_IMAGE_BUILDER_VERSION": "2025.06"
+  },
+  "environment_rules": [
+    "Keep credentials live in existing selected SDK configuration; do not copy home, print environment or put credential values in this manifest.",
+    "No PYTHONPATH source overlay, editable install, copied or borrowed installed prefix.",
+    "Build/install commands require the existing local subtree supervisor, a finite deadline, the same root/tmpfs guards and explicit closure before removing scratch. This manifest is not an arbitrary-command executor.",
+    "No automatic retry or next phase after an unexpected failure."
+  ],
+  "preparation": [
+    {
+      "id": "builder-prepare",
+      "timeout_seconds": 300,
+      "argv": [
+        "${PIXI}",
+        "run",
+        "--locked",
+        "--manifest-path",
+        "${CHECKOUT}/pyproject.toml",
+        "-e",
+        "dev",
+        "python",
+        "-c",
+        "import sys; from pathlib import Path; from artisan.execution.environments.native import _prepare_builder, native_platform; target = _prepare_builder(Path(sys.argv[1]), native_platform()); Path(sys.argv[2]).write_text(target.model_dump_json(indent=2) + \"\\n\")",
+        "${OWNED}/cache",
+        "${OWNED}/builder.json"
+      ]
+    },
+    {
+      "id": "core-wheel",
+      "timeout_seconds": 120,
+      "argv": [
+        "${BUILDER_PYTHON}",
+        "${BACKEND_SCRIPT}",
+        "build",
+        "${CORE_SOURCE}",
+        "--output",
+        "${PROFILE}/wheels"
+      ]
+    },
+    {
+      "id": "provider-wheel",
+      "timeout_seconds": 120,
+      "argv": [
+        "${BUILDER_PYTHON}",
+        "${BACKEND_SCRIPT}",
+        "build",
+        "${PROVIDER_SOURCE}",
+        "--output",
+        "${PROFILE}/wheels"
+      ]
+    },
+    {
+      "id": "application-wheel",
+      "timeout_seconds": 120,
+      "argv": [
+        "${BUILDER_PYTHON}",
+        "${BACKEND_SCRIPT}",
+        "build",
+        "${APPLICATION_SOURCE}",
+        "--output",
+        "${PROFILE}/wheels"
+      ]
+    },
+    {
+      "id": "canonical-lock",
+      "timeout_seconds": 300,
+      "argv": ["${PIXI}", "lock", "--manifest-path", "${PROFILE}/pixi.toml"]
+    },
+    {
+      "id": "controller-install",
+      "timeout_seconds": 600,
+      "argv": [
+        "${PIXI}",
+        "install",
+        "--locked",
+        "--manifest-path",
+        "${PROFILE}/pixi.toml",
+        "-e",
+        "controller"
+      ]
+    }
+  ],
+  "freeze_gate": [
+    "Record the fresh builder canonical manifest/lock, verified prefix inventory, Hatchling1.31.0 RECORD/payload and exact existing backend bridge SHA256; never install Hatchling into the assigned prefix or borrow another builder environment.",
+    "Review exact source diffs/inventories, all three ordinary wheel hashes, canonical manifest/lock, pinned builder/base/Pixi, controller executable/import paths, and every installed core/provider/application/SDK RECORD payload file.",
+    "Populate LaunchInputs files with all those local files plus the unchanged qualification harness; wheel paths must remain inside the canonical profile root.",
+    "Verify the exact source hash mapping before and after every individual phase. Preserve earlier receipts and prefixes; never update a measured image in place.",
+    "Use the installed controller interpreter directly for launch, so runtime cannot solve or install. Canonical worker startup/tool activation still uses the pinned Pixi run contract."
+  ],
+  "launches": [
+    {
+      "id": "image",
+      "argv": [
+        "${PYTHON}",
+        "${HARNESS}/final_launch.py",
+        "--inputs",
+        "${INPUTS}",
+        "--phase",
+        "image"
+      ]
+    },
+    {
+      "id": "activation",
+      "argv": [
+        "${PYTHON}",
+        "${HARNESS}/final_launch.py",
+        "--inputs",
+        "${INPUTS}",
+        "--phase",
+        "activation"
+      ]
+    },
+    {
+      "id": "cpu",
+      "argv": [
+        "${PYTHON}",
+        "${HARNESS}/final_launch.py",
+        "--inputs",
+        "${INPUTS}",
+        "--phase",
+        "cpu"
+      ]
+    },
+    {
+      "id": "redelivery",
+      "argv": [
+        "${PYTHON}",
+        "${HARNESS}/final_launch.py",
+        "--inputs",
+        "${INPUTS}",
+        "--phase",
+        "redelivery"
+      ]
+    },
+    {
+      "id": "gpu",
+      "argv": [
+        "${PYTHON}",
+        "${HARNESS}/final_launch.py",
+        "--inputs",
+        "${INPUTS}",
+        "--phase",
+        "gpu"
+      ]
+    },
+    {
+      "id": "unknown",
+      "argv": [
+        "${PYTHON}",
+        "${HARNESS}/final_launch.py",
+        "--inputs",
+        "${INPUTS}",
+        "--phase",
+        "unknown"
+      ]
+    }
+  ],
+  "outer_limits": {
+    "work_seconds": 900,
+    "local_owner_cleanup_seconds": 10,
+    "independent_watchdog_at_seconds": 1030,
+    "watchdog_remote_cleanup_seconds": 90,
+    "parent_wait_total_seconds": 1140,
+    "host_root_reserve_MiB": 500,
+    "initial_tmpfs_headroom_MiB": 8192,
+    "running_tmpfs_headroom_MiB": 2048,
+    "owned_guard_MiB": 5632,
+    "owned_hard_budget_MiB": 6144,
+    "app_creation_bound": 4
+  },
+  "remote_limits": {
+    "image_build_cpus": 2,
+    "image_build_memory_MiB": 4096,
+    "image_build_seconds": 900,
+    "startup_cpus": 1,
+    "startup_memory_MiB": 1024,
+    "startup_input_seconds": 60,
+    "startup_seconds": 300,
+    "activation_input_seconds": 90,
+    "science_cpus": 1,
+    "science_memory_MiB": 1024,
+    "science_input_seconds": 180,
+    "science_containers": 1,
+    "retries": 0,
+    "gpu": "one A10G in GPU group only",
+    "shared_store_cpus": 1,
+    "shared_store_memory_MiB": 1024,
+    "shared_store_input_seconds": 1200,
+    "shared_store_internal_seconds": 1080,
+    "shared_store_data_MiB": 32
+  },
+  "remote_inputs": {
+    "cpu": {
+      "scientific": 3,
+      "units_each": 2
+    },
+    "redelivery": {
+      "scientific": 2,
+      "units_each": 2
+    },
+    "gpu": {
+      "fixed_probe": 3,
+      "scientific": 3,
+      "max_units_each": 2
+    },
+    "unknown": {
+      "scientific": 1,
+      "queued_units": 2
+    }
+  },
+  "completion": "Actual core unit/shared closure, output collection, independently stopped exact Apps with zero tasks, tunnel/queue/server cleanup and unchanged source are separate assertions. SDK stop alone never upgrades UNKNOWN. Expected UNKNOWN groups retain scratch; any unexpected failure stops qualification.",
+  "canonical_manifest": {
+    "source": "final_profile.toml",
+    "destination": "${PROFILE}/pixi.toml",
+    "state": "Unresolved template; copy unchanged after wheel builds, then execute the explicit canonical-lock command. No lock or installed profile is claimed by this source checkpoint."
+  }
+}

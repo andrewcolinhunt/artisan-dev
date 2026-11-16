@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from contextlib import nullcontext
+from dataclasses import replace
 from datetime import UTC, datetime
 from typing import Any, cast
 
@@ -31,18 +33,29 @@ from artisan.execution.recording.recorder import (
 )
 from artisan.execution.recording.replay_snapshot import replay_recording_fields
 from artisan.execution.recording.stream_recorder import StreamRecorder
+from artisan.schemas.execution.curator_cache import CURATOR_CACHE_PROOF_KEY
+from artisan.schemas.execution.curator_carriers import CURATOR_CARRIER_INVENTORY_KEY
 from artisan.schemas.execution.curator_result import (
     ArtifactEmission,
     ArtifactResult,
     ArtifactStreamResult,
 )
 from artisan.schemas.execution.execution_context import ExecutionContext
+from artisan.storage.cache.curator_dependencies import CuratorReadRecorder
 from artisan.utils.command_supervisor import check_command_scope, close_command_scope
 from artisan.utils.json import artisan_json_default
 from artisan.utils.traceback import format_error
 
 logger = logging.getLogger(__name__)
-_RESERVED_METADATA = {"timings", "skip_reason", "status", "cancelled", "skipped"}
+_RESERVED_METADATA = {
+    "timings",
+    "skip_reason",
+    "status",
+    "cancelled",
+    "skipped",
+    CURATOR_CACHE_PROOF_KEY,
+    CURATOR_CARRIER_INVENTORY_KEY,
+}
 
 
 def _snapshot_metadata(result: ArtifactStreamResult) -> dict[str, Any]:
@@ -97,6 +110,7 @@ def _stage_emission(
     for ids in emission.sources.values():
         for source_id in ids:
             require_artifact_type(source_id, artifact_types)
+    emission.artifact.origin_step_number = session.context.step_number
     finalized = emission.artifact.finalize()
     assert finalized.artifact_id is not None
     previous_type = artifact_types.get(finalized.artifact_id)
@@ -132,6 +146,8 @@ def handle_artifact_stream(
     params: dict[str, Any],
     user_overrides: dict[str, Any] | None,
     failure_logs_root: str | None,
+    *,
+    read_recorder: CuratorReadRecorder | None = None,
 ) -> StagingResult:
     """Consume and seal one complete stream, containing every failure fallback."""
     session = None
@@ -150,18 +166,26 @@ def handle_artifact_stream(
         while True:
             check_command_scope()
             try:
-                emission = next(result.items)
+                with (
+                    read_recorder.authored()
+                    if read_recorder is not None
+                    else nullcontext()
+                ):
+                    emission = next(result.items)
             except StopIteration:
                 break
             _stage_emission(emission, session, inputs, input_sets, types)
             del emission
         iterator_closed = True
-        _close_iterator(result)
+        with read_recorder.authored() if read_recorder is not None else nullcontext():
+            _close_iterator(result)
         for role, spec in context.operation.outputs.items():
             if spec.required and not session.output_ids.get(role):
                 msg = f"Missing required output role: {role}"
                 raise ArtifactValidationError(msg)
         close_command_scope()
+        if read_recorder is not None:
+            context = replace(context, curator_cache_proof=read_recorder.finish())
         timings["execute"] = round(time.perf_counter() - execute_start, 4)
         record_start = time.perf_counter()
         session.prepare()
@@ -188,6 +212,8 @@ def handle_artifact_stream(
             result_metadata={**metadata, "timings": dict(timings)},
             user_overrides=user_overrides,
             step_run_id=context.step_run_id,
+            curator_cache_proof=context.curator_cache_proof,
+            curator_carriers=session.finish_carriers(),
         )
         if not execution_is_sealed(context):
             msg = "Stream success seal was not confirmed"
@@ -203,6 +229,12 @@ def handle_artifact_stream(
             close_command_scope(exc)
         except Exception as cleanup:
             error += f" | Command scope close failed: {format_error(cleanup)}"
+        if session is not None:
+            try:
+                if not execution_is_sealed(context):
+                    session.abort_carriers()
+            except Exception as cleanup:
+                error += f" | Carrier cleanup failed: {format_error(cleanup)}"
         if session is not None and not session.promotion_started:
             try:
                 session.close()

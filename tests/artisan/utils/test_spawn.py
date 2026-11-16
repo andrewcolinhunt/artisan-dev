@@ -4,18 +4,28 @@ from __future__ import annotations
 
 import sys
 import threading
+from types import ModuleType
 
 import pytest
 
 from artisan.utils.spawn import suppress_main_reimport
 
 
+@pytest.fixture
+def main_module(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
+    """Provide a script main module independently of the pytest launcher."""
+    module = ModuleType("__main__")
+    module.__file__ = "synthetic_main.py"
+    monkeypatch.setitem(sys.modules, "__main__", module)
+    return module
+
+
 class TestSuppressMainReimport:
     """Tests for the suppress_main_reimport context manager."""
 
-    def test_neuters_main_file(self) -> None:
+    def test_neuters_main_file(self, main_module: ModuleType) -> None:
         """__main__.__file__ is None inside the context."""
-        main_mod = sys.modules["__main__"]
+        main_mod = main_module
         original = main_mod.__file__
 
         with suppress_main_reimport():
@@ -23,9 +33,9 @@ class TestSuppressMainReimport:
 
         assert main_mod.__file__ == original
 
-    def test_restores_main_file(self) -> None:
+    def test_restores_main_file(self, main_module: ModuleType) -> None:
         """Original __main__.__file__ is restored after exit."""
-        main_mod = sys.modules["__main__"]
+        main_mod = main_module
         original = main_mod.__file__
 
         guard = suppress_main_reimport()
@@ -35,9 +45,9 @@ class TestSuppressMainReimport:
         guard.__exit__(None, None, None)
         assert main_mod.__file__ == original
 
-    def test_restores_on_exception(self) -> None:
+    def test_restores_on_exception(self, main_module: ModuleType) -> None:
         """__main__.__file__ is restored even when the body raises."""
-        main_mod = sys.modules["__main__"]
+        main_mod = main_module
         original = main_mod.__file__
 
         with pytest.raises(ValueError, match="boom"), suppress_main_reimport():
@@ -46,9 +56,11 @@ class TestSuppressMainReimport:
 
         assert main_mod.__file__ == original
 
-    def test_overlapping_contexts_restore_after_last_exit(self) -> None:
+    def test_overlapping_contexts_restore_after_last_exit(
+        self, main_module: ModuleType
+    ) -> None:
         """One router exiting must not restore while another remains active."""
-        main_mod = sys.modules["__main__"]
+        main_mod = main_module
         original = main_mod.__file__
         first_entered = threading.Event()
         second_entered = threading.Event()

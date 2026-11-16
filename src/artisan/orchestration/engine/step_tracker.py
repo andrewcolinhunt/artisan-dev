@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import threading
-from dataclasses import dataclass
+from abc import ABC, abstractmethod
 from datetime import UTC, datetime
 from itertools import pairwise
 from typing import Any, Literal, cast
@@ -15,7 +15,7 @@ from fsspec import AbstractFileSystem
 from polars.datatypes import DataType, DataTypeClass
 
 from artisan.errors import PersistenceIntegrityError
-from artisan.schemas.enums import CachePolicy, TablePath
+from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_lifecycle import (
     TERMINAL_STEP_STATUSES,
     CancellationAcknowledgement,
@@ -30,31 +30,18 @@ from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.schemas.orchestration.step_state import StepState
 from artisan.storage.core.committed_scan import (
     filter_committed_rows,
-    read_logical_commits,
 )
 from artisan.storage.core.curator_result import (
     dynamic_output_roles,
-    read_result_evidence,
     validate_dynamic_result,
 )
-from artisan.storage.core.run_scope import load_execution_membership
-from artisan.storage.core.store_format import assert_store_format
 from artisan.storage.core.table_schemas import STEPS_SCHEMA, get_physical_schema
 from artisan.utils.path import uri_join
 
 WRITER_PROPS = WriterProperties(compression="ZSTD")
 
 
-@dataclass(frozen=True, slots=True)
-class _WholeStepCacheHit:
-    """Private whole-step hit flattened to actual persisted executions."""
-
-    result: StepResult
-    source_step_run_id: str
-    execution_run_ids: tuple[str, ...]
-
-
-class StepTracker:
+class StepTracker(ABC):
     """Guard and persist every state snapshot for one Delta store."""
 
     def __init__(
@@ -75,7 +62,15 @@ class StepTracker:
         self._pipeline_run_id = pipeline_run_id
         self._storage_options = storage_options
         self._lock = threading.RLock()
-        assert_store_format(delta_root, self._fs, self._storage_options)
+        self._validate_store()
+
+    @abstractmethod
+    def _validate_store(self) -> None:
+        """Validate storage authority before any lifecycle read or mutation."""
+
+    @abstractmethod
+    def _read_controls(self) -> pl.DataFrame:
+        """Read validated completion decisions from the concrete store owner."""
 
     def create_attempt(self, record: StepStartRecord) -> StepState:
         """Persist sequence zero as pending, idempotently."""
@@ -138,7 +133,36 @@ class StepTracker:
         metadata: dict[str, Any] | None = None,
     ) -> pl.DataFrame:
         """Build but do not persist a terminal snapshot for a commit plan."""
-        if target not in {StepStatus.SUCCEEDED, StepStatus.PARTIAL, StepStatus.FAILED}:
+        return self._terminal_candidate(
+            step_run_id,
+            expected,
+            target,
+            step_spec_id=step_spec_id,
+            result=result,
+            error=error,
+            metadata=metadata,
+        )
+
+    def _terminal_candidate(
+        self,
+        step_run_id: str,
+        expected: StepStatus,
+        target: StepStatus,
+        *,
+        step_spec_id: str | None,
+        result: StepResult,
+        error: str | None = None,
+        metadata: dict[str, Any] | None = None,
+        rows: pl.DataFrame | None = None,
+        controls: pl.DataFrame | None = None,
+    ) -> pl.DataFrame:
+        """Validate a candidate against supplied finite-read evidence when present."""
+        if target not in {
+            StepStatus.SUCCEEDED,
+            StepStatus.PARTIAL,
+            StepStatus.FAILED,
+            StepStatus.CANCELLED,
+        }:
             msg = f"{target.value} is not a commit-controlled terminal status"
             raise PersistenceIntegrityError(msg)
         with self._lock:
@@ -150,6 +174,8 @@ class StepTracker:
                 result=result,
                 error=error,
                 metadata=metadata,
+                rows=rows,
+                controls=controls,
             )
             candidate = self._state_to_row(current) if row is None else row
             return pl.DataFrame([candidate], schema=STEPS_SCHEMA)
@@ -164,13 +190,18 @@ class StepTracker:
         result: StepResult | None,
         error: str | None,
         metadata: dict[str, Any] | None,
+        rows: pl.DataFrame | None = None,
+        controls: pl.DataFrame | None = None,
     ) -> tuple[dict[str, Any] | None, StepState]:
         """Validate a transition and return its unpersisted ownerless row."""
-        rows = self._rows_for_attempt(step_run_id)
+        rows = self._rows_for_attempt(step_run_id) if rows is None else rows
         if rows.is_empty():
             msg = f"Unknown step attempt {step_run_id}"
             raise PersistenceIntegrityError(msg)
-        current = self._validate_attempt_rows(rows)
+        current = self._validate_attempt_rows(rows, controls=controls)
+        if current.step_run_id != step_run_id:
+            msg = "Transition evidence belongs to another step attempt"
+            raise PersistenceIntegrityError(msg)
         if current.status in TERMINAL_STEP_STATUSES:
             if current.status == target and self._terminal_retry_matches(
                 current,
@@ -201,6 +232,8 @@ class StepTracker:
         if step_spec_id is not None:
             row["step_spec_id"] = step_spec_id
         if target == StepStatus.RUNNING:
+            if metadata is not None:
+                row["metadata"] = json.dumps(metadata)
             self._validate_nonterminal_row(row)
         else:
             self._apply_terminal_result(row, target, result, error, metadata)
@@ -259,7 +292,15 @@ class StepTracker:
         self, pipeline_run_id: str | None = None
     ) -> list[StepState]:
         """Load the latest authoritative attempt at every logical position."""
-        states = self._current_states(self._read_rows())
+        return self._select_current_states(
+            self._current_states(self._read_rows()), pipeline_run_id
+        )
+
+    @classmethod
+    def _select_current_states(
+        cls, states: list[StepState], pipeline_run_id: str | None = None
+    ) -> list[StepState]:
+        """Select current positions from already validated lifecycle snapshots."""
         if not states:
             return []
         run_id = (
@@ -268,74 +309,18 @@ class StepTracker:
         )
         run_states = [state for state in states if state.pipeline_run_id == run_id]
         return sorted(
-            self._latest_by_position(run_states), key=lambda state: state.step_number
+            cls._latest_by_position(run_states), key=lambda state: state.step_number
         )
 
     def load_all_current_states(self) -> list[StepState]:
         """Load the authoritative current snapshot for every exact attempt."""
         return self._current_states(self._read_rows())
 
-    def load_resumable_steps(
-        self, pipeline_run_id: str | None = None
-    ) -> list[StepState]:
-        """Load usable terminal states and reject unresolved attempts."""
-        states = self.load_current_states(pipeline_run_id)
-        unresolved = [
-            state
-            for state in states
-            if state.status in {StepStatus.PENDING, StepStatus.RUNNING}
-        ]
-        if unresolved:
-            ids = [state.step_run_id for state in unresolved]
-            msg = f"Pipeline run has unresolved step attempts: {ids!r}"
-            raise PersistenceIntegrityError(msg)
-        resumable = {
-            StepStatus.SUCCEEDED,
-            StepStatus.PARTIAL,
-            StepStatus.SKIPPED,
-        }
-        return [state for state in states if state.status in resumable]
-
-    def check_cache(
-        self,
-        step_spec_id: str,
-        cache_policy: CachePolicy = CachePolicy.ALL_SUCCEEDED,
-    ) -> _WholeStepCacheHit | None:
-        """Return the newest eligible step attempt for a spec."""
-        states = [
-            state
-            for state in self._current_states(self._read_rows())
-            if state.step_spec_id == step_spec_id
-        ]
-        eligible = {StepStatus.SUCCEEDED}
-        if cache_policy == CachePolicy.STEP_COMPLETED:
-            eligible.add(StepStatus.PARTIAL)
-        states = [
-            state
-            for state in states
-            if state.status in eligible and state.replay_of_execution_run_id is None
-        ]
-        if not states:
-            return None
-        state = max(states, key=lambda candidate: candidate.timestamp)
-        membership = load_execution_membership(
-            self._delta_root,
-            fs=self._fs,
-            storage_options=self._storage_options,
-            step_run_id=state.step_run_id,
-        )
-        execution_run_ids = tuple(sorted(set(membership["execution_run_id"].to_list())))
-        if not execution_run_ids:
-            msg = f"Whole-step cache source {state.step_run_id} has no executions"
-            raise PersistenceIntegrityError(msg)
-        return _WholeStepCacheHit(
-            result=state.to_step_result(),
-            source_step_run_id=state.step_run_id,
-            execution_run_ids=execution_run_ids,
-        )
-
-    def list_runs(self) -> pl.DataFrame:
-        """Roll up runs from authoritative lifecycle snapshots."""
+    @classmethod
+    def _summarize_runs(
+        cls, rows: pl.DataFrame, states: list[StepState]
+    ) -> pl.DataFrame:
+        """Roll up one captured history using its already validated current attempts."""
         schema: dict[str, DataType | DataTypeClass] = {
             "pipeline_run_id": pl.String,
             "step_count": pl.UInt32,
@@ -343,13 +328,11 @@ class StepTracker:
             "started_at": pl.Datetime("us", "UTC"),
             "ended_at": pl.Datetime("us", "UTC"),
         }
-        rows = self._read_rows()
         if rows.is_empty():
             return pl.DataFrame(schema=schema)
-        states = self._current_states(rows)
         result: list[dict[str, Any]] = []
         for run_id in {state.pipeline_run_id for state in states}:
-            latest_positions = self._latest_by_position(
+            latest_positions = cls._latest_by_position(
                 [state for state in states if state.pipeline_run_id == run_id]
             )
             latest = max(latest_positions, key=lambda state: state.timestamp)
@@ -393,6 +376,12 @@ class StepTracker:
         rows = pl.scan_delta(
             self._steps_path, storage_options=self._storage_options
         ).collect()
+        self._validate_physical_rows(rows)
+        return rows
+
+    @staticmethod
+    def _validate_physical_rows(rows: pl.DataFrame) -> None:
+        """Validate the physical lifecycle contract before selecting an attempt."""
         if dict(rows.schema) != get_physical_schema(TablePath.STEPS):
             msg = "Steps table has an unexpected physical schema"
             raise PersistenceIntegrityError(msg)
@@ -408,7 +397,6 @@ class StepTracker:
         except (TypeError, ValueError) as exc:
             msg = f"Steps table contains an unknown lifecycle status: {exc}"
             raise PersistenceIntegrityError(msg) from exc
-        return rows
 
     def _current_states(self, rows: pl.DataFrame) -> list[StepState]:
         """Validate all attempts and return one current state per attempt."""
@@ -424,6 +412,7 @@ class StepTracker:
         rows: pl.DataFrame,
         *,
         result_evidence: dict[str, pl.DataFrame] | None = None,
+        controls: pl.DataFrame | None = None,
     ) -> StepState:
         """Validate sequence/history invariants and select the current row."""
         physical_sequences = sorted(set(rows["state_sequence"].to_list()))
@@ -439,11 +428,7 @@ class StepTracker:
                 )
                 raise PersistenceIntegrityError(msg)
 
-        controls = read_logical_commits(
-            self._delta_root,
-            fs=self._fs,
-            storage_options=self._storage_options,
-        )
+        controls = self._read_controls() if controls is None else controls
         authoritative = filter_committed_rows(
             rows,
             TablePath.STEPS.value,
@@ -470,15 +455,14 @@ class StepTracker:
                 if row["status"] not in {"succeeded", "partial"}:
                     continue
                 if result_evidence is None:
-                    result_evidence = read_result_evidence(
-                        self._delta_root,
-                        fs=self._fs,
-                        storage_options=self._storage_options,
-                        step_run_id=row["step_run_id"],
-                    )
+                    result_evidence = self._read_result_evidence(row["step_run_id"])
                 validate_dynamic_result(row, result_evidence)
         states = [self._validated_snapshot(row) for row in snapshots]
         return states[-1]
+
+    @abstractmethod
+    def _read_result_evidence(self, step_run_id: str) -> dict[str, pl.DataFrame]:
+        """Read dynamic result membership through accepted store authority."""
 
     @classmethod
     def _validated_snapshot(cls, row: dict[str, Any]) -> StepState:

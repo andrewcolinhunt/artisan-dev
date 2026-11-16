@@ -25,23 +25,28 @@ from unittest.mock import patch
 
 import polars as pl
 import pytest
-from fixtures.cache_isolation_store import build_cache_isolation_store
-from fixtures.logical_commit_store import commit_test_inputs, commit_test_step
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.interactive_store import (
+    commit_interactive_case,
+    launch_test_curator,
+    resolve_test_curator,
+)
+from fixtures.retained_cache_isolation_store import CacheIsolationStore
+from fixtures.retained_cache_isolation_store import (
+    build_cache_isolation_store as _build_cache_isolation_store,
+)
+from fixtures.retained_inspection import commit_inspection_attempt, inspection_store
 
 from artisan.operations.curator.interactive_filter import (
     FilterSummary,
     InteractiveFilter,
 )
+from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import TablePath
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.storage.core.table_schemas import (
     ARTIFACT_EDGES_SCHEMA,
     ARTIFACT_INDEX_SCHEMA,
-    EXECUTION_EDGES_SCHEMA,
-    EXECUTIONS_SCHEMA,
     STEPS_SCHEMA,
 )
 
@@ -49,160 +54,100 @@ from artisan.storage.core.table_schemas import (
 # Helpers
 # ---------------------------------------------------------------------------
 
+
+def build_cache_isolation_store(
+    tmp_path: Path, *, repeat_metric_membership: bool = False
+) -> CacheIsolationStore:
+    store = _build_cache_isolation_store(
+        tmp_path, recorded_pipeline_defaults=True, with_lineage=True
+    )
+    if repeat_metric_membership:
+        commit_inspection_attempt(
+            store.root,
+            run_id=store.current_run,
+            number=6,
+            name="repeated_metric",
+            reused_execution_id=store.source_metric_execution,
+            recorded_pipeline_defaults=True,
+        )
+    return store
+
+
 _ID_REWRITES: dict[str, str] = {}
-_PENDING_INDEX: dict[Path, list[dict]] = {}
+_PENDING_TABLES: dict[Path, dict[str, list[dict]]] = {}
+
+
+@pytest.fixture(autouse=True)
+def _reset_scenario_ids() -> None:
+    _ID_REWRITES.clear()
+    _PENDING_TABLES.clear()
+
+
+@pytest.fixture(autouse=True)
+def _synchronous_curator_transport(monkeypatch: pytest.MonkeyPatch) -> None:
+    from artisan.orchestration.runners.local import LocalRunner
+
+    monkeypatch.setattr(LocalRunner, "resolve_curator", resolve_test_curator)
+    monkeypatch.setattr(LocalRunner, "launch_curator", launch_test_curator)
 
 
 def _write_delta(
     delta_root: Path, rel_path: str, rows: list[dict], schema: dict
 ) -> None:
-    normalized = [
-        {
-            key: _ID_REWRITES.get(value, value)
-            if key.endswith("artifact_id") and isinstance(value, str)
-            else value
-            for key, value in row.items()
-        }
-        for row in rows
-    ]
-    if schema is MetricArtifact.POLARS_SCHEMA:
-        for row in normalized:
-            old_id = row["artifact_id"]
-            artifact = MetricArtifact(
-                artifact_id=None,
-                origin_step_number=row["origin_step_number"],
-                content=row["content"],
-                original_name=row["original_name"],
-                extension=row["extension"],
-                metadata=json.loads(row["metadata"]),
-            ).finalize()
-            row["artifact_id"] = artifact.artifact_id
-            _ID_REWRITES[old_id] = artifact.artifact_id
-        _rewrite_existing_ids(delta_root)
-
-    if schema is ARTIFACT_INDEX_SCHEMA:
-        _PENDING_INDEX.setdefault(delta_root, []).extend(normalized)
-        publish_test_store(str(delta_root), LocalFileSystem())
+    """Interpret legacy scenario data as real artifacts and completed attempts."""
+    inspection_store(delta_root)
+    tables = _PENDING_TABLES.setdefault(delta_root, {})
+    tables.setdefault(rel_path, []).extend(rows)
+    if schema is not STEPS_SCHEMA:
         return
-    if schema is STEPS_SCHEMA:
-        _flush_pending_index(delta_root)
-        _write_run_membership(delta_root, normalized)
-        return
-    tables = {rel_path: pl.DataFrame(normalized, schema=schema)}
-    pending = _PENDING_INDEX.pop(delta_root, [])
-    if pending:
-        tables[TablePath.ARTIFACT_INDEX.value] = pl.DataFrame(
-            pending, schema=ARTIFACT_INDEX_SCHEMA
-        )
-    commit_test_inputs(delta_root, delta_root.parent / "staging", tables)
-
-
-def _rewrite_existing_ids(delta_root: Path) -> None:
-    """Apply newly concrete artifact IDs to deferred index rows."""
-    for row in _PENDING_INDEX.get(delta_root, []):
-        row["artifact_id"] = _ID_REWRITES.get(row["artifact_id"], row["artifact_id"])
-
-
-def _flush_pending_index(delta_root: Path) -> None:
-    """Commit any deferred index rows after metric IDs are finalized."""
-    pending = _PENDING_INDEX.pop(delta_root, [])
-    if pending:
-        commit_test_inputs(
-            delta_root,
-            delta_root.parent / "staging",
-            {
-                TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
-                    pending, schema=ARTIFACT_INDEX_SCHEMA
-                )
-            },
-        )
-
-
-def _write_run_membership(delta_root: Path, step_rows: list[dict]) -> None:
-    """Derive direct execution/output fixtures for the auto-detected run."""
-    selected_run = max(step_rows, key=lambda row: row["timestamp"])["pipeline_run_id"]
-    selected_steps = {
-        row["step_number"]: row
-        for row in step_rows
-        if row["pipeline_run_id"] == selected_run and row["status"] == "succeeded"
-    }
-    from artisan.storage.core.committed_scan import read_committed
-
-    fs = LocalFileSystem()
-    index = read_committed(str(delta_root), TablePath.ARTIFACT_INDEX, fs=fs)
-    artifact_edges_path = delta_root / "provenance/artifact_edges"
-    artifact_edges = (
-        read_committed(str(delta_root), TablePath.ARTIFACT_EDGES, fs=fs)
-        if artifact_edges_path.exists()
-        else pl.DataFrame(schema=ARTIFACT_EDGES_SCHEMA)
-    )
-    execution_owners: dict[str, dict] = {}
-    output_edges: list[dict] = []
-    for artifact in index.iter_rows(named=True):
-        step = selected_steps.get(artifact["origin_step_number"])
-        if step is None:
+    artifacts = {}
+    for row in tables.get("artifacts/metrics", []):
+        artifact = MetricArtifact(
+            artifact_id=None,
+            origin_step_number=row["origin_step_number"],
+            content=row["content"],
+            original_name=row["original_name"],
+            extension=row["extension"],
+            metadata=json.loads(row["metadata"]),
+        ).finalize()
+        artifacts[row["artifact_id"]] = artifact
+        _ID_REWRITES[row["artifact_id"]] = artifact.artifact_id
+    for row in tables.get("artifacts/index", []):
+        if row["artifact_type"] != "csv":
             continue
-        producers = artifact_edges.filter(
-            pl.col("target_artifact_id") == artifact["artifact_id"]
-        )["execution_run_id"].unique()
-        execution_ids = producers.to_list() or [_pad(f"direct{step['step_number']}")]
-        for execution_id in execution_ids:
-            execution_owners.setdefault(execution_id, step)
-            output_edges.append(
-                {
-                    "execution_run_id": execution_id,
-                    "direction": "output",
-                    "role": "output",
-                    "artifact_id": artifact["artifact_id"],
-                }
-            )
-
-    now = datetime.now(UTC)
-    executions = [
-        {
-            "execution_run_id": execution_id,
-            "execution_spec_id": _pad(f"spec{step['step_number']}"),
-            "step_run_id": step["step_run_id"],
-            "origin_step_number": step["step_number"],
-            "operation_name": step["step_name"],
-            "params": "{}",
-            "user_overrides": "{}",
-            "timestamp_start": now,
-            "timestamp_end": now,
-            "source_worker": 0,
-            "compute_backend": "local",
-            "success": True,
-            "error": None,
-            "error_envelope": None,
-            "tool_output": None,
-            "worker_log": None,
-            "metadata": "{}",
-        }
-        for execution_id, step in execution_owners.items()
-    ]
-    for step in step_rows:
-        step_executions = [
-            row for row in executions if row["step_run_id"] == step["step_run_id"]
-        ]
-        execution_ids = {row["execution_run_id"] for row in step_executions}
-        step_edges = [
-            row for row in output_edges if row["execution_run_id"] in execution_ids
-        ]
-        tables = {}
-        if step_executions:
-            tables[TablePath.EXECUTIONS.value] = pl.DataFrame(
-                step_executions, schema=EXECUTIONS_SCHEMA
-            )
-        if step_edges:
-            tables[TablePath.EXECUTION_EDGES.value] = pl.DataFrame(
-                step_edges, schema=EXECUTION_EDGES_SCHEMA
-            )
-        commit_test_step(
-            delta_root,
-            delta_root.parent / "staging",
-            [step],
-            tables,
+        artifact = CSVArtifact.draft(
+            f"sample\n{row['artifact_id']}\n".encode(),
+            f"{row['artifact_id']}.csv",
+            row["origin_step_number"],
+        ).finalize()
+        artifacts[row["artifact_id"]] = artifact
+        _ID_REWRITES[row["artifact_id"]] = artifact.artifact_id
+    parents = {}
+    for row in tables.get("provenance/artifact_edges", []):
+        parents.setdefault(artifacts[row["target_artifact_id"]].artifact_id, []).append(
+            artifacts[row["source_artifact_id"]]
         )
+    selected_run = max(rows, key=lambda row: row["timestamp"])["pipeline_run_id"]
+    # Preserve the fixture's timestamp ordering without rewriting immutable rows.
+    for row in sorted(rows, key=lambda row: row["timestamp"]):
+        output = (
+            [
+                artifact
+                for artifact in artifacts.values()
+                if artifact.origin_step_number == row["step_number"]
+            ]
+            if row["pipeline_run_id"] == selected_run
+            else []
+        )
+        commit_interactive_case(
+            delta_root,
+            output,
+            parents,
+            run=row["pipeline_run_id"],
+            number=row["step_number"],
+            name=row["step_name"],
+        )
+    _PENDING_TABLES.pop(delta_root)
 
 
 def _pad(short_id: str) -> str:
@@ -420,7 +365,7 @@ class TestLoad:
 
     def test_load_raises_on_empty_delta(self, tmp_path: Path) -> None:
         root = tmp_path / "nonexistent"
-        publish_test_store(str(root), LocalFileSystem())
+        inspection_store(root)
         filt = InteractiveFilter(root)
         with pytest.raises(ValueError, match="No primary artifacts found"):
             filt.load()
@@ -435,26 +380,9 @@ class TestLoad:
         root = tmp_path / "delta_no_metrics"
         root.mkdir()
 
-        _write_delta(
-            root,
-            "artifacts/index",
-            [
-                {
-                    "artifact_id": _pad("s0"),
-                    "artifact_type": "csv",
-                    "origin_step_number": 0,
-                    "metadata": "{}",
-                }
-            ],
-            ARTIFACT_INDEX_SCHEMA,
-        )
-
-        # Need empty edges table for the provenance walk
-        _write_delta(
-            root,
-            "provenance/artifact_edges",
-            [],
-            ARTIFACT_EDGES_SCHEMA,
+        artifact = CSVArtifact.draft(b"value\n1\n", "sample.csv", 0).finalize()
+        commit_interactive_case(
+            root, [artifact], {}, run="no-metrics", number=0, name="ingest"
         )
 
         filt = InteractiveFilter(root)
@@ -826,8 +754,8 @@ class TestCommit:
         result = filt.commit()
 
         assert result.status == StepStatus.SUCCEEDED
-        assert result.succeeded_count == 2
-        assert result.total_count == 2
+        assert result.succeeded_count == 1
+        assert result.total_count == 1
         assert "passthrough" in result.output_roles
         assert not list((delta_root / "_staging").rglob("*.parquet"))
 
@@ -843,7 +771,7 @@ class TestCommit:
         # Verify executions table was written
         exec_df = pl.read_delta(str(delta_root / "orchestration/executions"))
         assert exec_df.height >= 1
-        last_exec = exec_df.filter(pl.col("operation_name") == "filter")
+        last_exec = exec_df.filter(pl.col("operation_name") == "interactive_filter")
         assert last_exec.height >= 1
 
         # Verify execution_edges table was written
@@ -853,24 +781,26 @@ class TestCommit:
     def test_commit_failure_persists_failed_without_outputs(
         self, delta_root: Path
     ) -> None:
-        from artisan.orchestration.engine.step_tracker import StepTracker
+        from artisan.orchestration.engine.retained_step_tracker import (
+            RetainedStepTracker,
+        )
 
         filt = InteractiveFilter(delta_root)
         filt.load()
         filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
 
-        with (
-            patch(
-                "artisan.storage.io.commit.DeltaCommitter.commit_logical",
-                side_effect=OSError("storage unavailable"),
-            ),
-            pytest.raises(OSError, match="storage unavailable"),
+        with patch(
+            "artisan.orchestration.runners.local.LocalRunner.resolve_curator",
+            side_effect=OSError("storage unavailable"),
         ):
-            filt.commit()
+            result = filt.commit()
+        assert result.status == StepStatus.FAILED
 
         state = next(
             state
-            for state in StepTracker(str(delta_root)).load_all_current_states()
+            for state in RetainedStepTracker(
+                inspection_store(delta_root), ""
+            ).load_all_current_states()
             if state.step_name == "interactive_filter"
         )
         assert state.status == StepStatus.FAILED
@@ -1016,16 +946,16 @@ class TestCommit:
         result = filt.commit()
 
         exec_df = pl.read_delta(str(delta_root / "orchestration/executions")).filter(
-            pl.col("operation_name") == "filter"
+            pl.col("operation_name") == "interactive_filter"
         )
         assert exec_df.height == 1
         row = exec_df.to_dicts()[0]
 
-        assert row["operation_name"] == "filter"
+        assert row["operation_name"] == "interactive_filter"
         assert row["origin_step_number"] == result.step_number
-        assert row["params"] == json.dumps(
-            {"criteria": [c.model_dump() for c in filt.criteria]}
-        )
+        params = json.loads(row["params"])
+        assert params["criteria"] == [c.model_dump() for c in filt.criteria]
+        assert params["selected_ids"] == filt.filtered_ids
         assert row["user_overrides"] == "{}"
         assert row["source_worker"] == 0
         assert row["compute_backend"] == "local"
@@ -1033,10 +963,10 @@ class TestCommit:
         assert row["error"] is None
         assert result.step_run_id is not None
         assert row["step_run_id"] == result.step_run_id
-        assert row["metadata"] == json.dumps(
-            {"diagnostics": result.metadata["diagnostics"]}
+        assert (
+            json.loads(row["metadata"])["diagnostics"] == result.metadata["diagnostics"]
         )
-        assert row["timestamp_start"] == row["timestamp_end"]
+        assert row["timestamp_start"] <= row["timestamp_end"]
         from artisan.schemas.execution.command_record import CommandRecording
 
         assert (
@@ -1471,7 +1401,7 @@ class TestWideColumnDisambiguation:
         filt.set_criteria(
             [{"metric": "val", "operator": "gt", "value": 0.5, "step_number": 1}]
         )
-        assert filt.filtered_ids == [s_ids[0]]
+        assert filt.filtered_ids == [_ID_REWRITES[s_ids[0]]]
         assert filt.summary().criteria["mean"].to_list() == [1.0]
 
 
@@ -1677,7 +1607,7 @@ class TestTypePreservation:
         filt = InteractiveFilter(mixed_type_delta_root)
         filt.load()
 
-        wide = filt.wide_df.sort("artifact_id")
+        wide = filt.wide_df.sort("count")
         counts = wide["count"].to_list()
         assert counts == [10, 20]
         passed = wide["passed"].to_list()
@@ -2031,13 +1961,13 @@ def test_reload_rebinds_to_new_run_and_clears_failed_load(tmp_path: Path) -> Non
 def test_cached_metric_retains_multiple_current_step_memberships(
     tmp_path: Path,
 ) -> None:
-    store = build_cache_isolation_store(tmp_path, reuse_source_metric_at_step_zero=True)
+    store = build_cache_isolation_store(tmp_path, repeat_metric_membership=True)
     filt = InteractiveFilter(store.root)
     filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
     filt.set_criteria(
         [
             {"metric": "score", "operator": "gt", "value": 0.5, "step_number": number}
-            for number in [0, 5]
+            for number in [6, 5]
         ]
     )
     assert filt.filtered_ids == [store.data_id]
@@ -2058,12 +1988,12 @@ def test_unqualified_cached_metric_resolves_current_step(tmp_path: Path) -> None
 def test_unqualified_cached_metric_detects_multiple_current_steps(
     tmp_path: Path,
 ) -> None:
-    store = build_cache_isolation_store(tmp_path, reuse_source_metric_at_step_zero=True)
+    store = build_cache_isolation_store(tmp_path, repeat_metric_membership=True)
     filt = InteractiveFilter(store.root)
     filt.load(step_numbers=[0], pipeline_run_id=store.current_run)
     with pytest.raises(ValueError, match="multiple steps") as caught:
         filt.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5}])
-    assert 'step 0 ("current_data")' in str(caught.value)
+    assert 'step 6 ("repeated_metric")' in str(caught.value)
     assert 'step 5 ("current_metric_cached")' in str(caught.value)
 
 
@@ -2088,3 +2018,74 @@ def test_interactive_commit_sanitizes_criteria_and_diagnostics_copies(
     assert "good" not in str(steps.to_dicts())
     assert "good" not in str(executions.to_dicts())
     assert "label" in steps["params_json"][0]
+
+
+def test_commit_keeps_loaded_attempts_and_all_matching_occurrences_after_retry(
+    tmp_path: Path,
+) -> None:
+    from artisan.storage.io.curator_plan import read_curator_plan
+
+    root = tmp_path / "delta"
+    data = CSVArtifact.draft(b"value\noriginal\n", "original.csv", 0).finalize()
+    metric = MetricArtifact.draft({"score": 0.9}, "original.json", 1).finalize()
+    commit_interactive_case(root, [data, data], {}, run="frozen", number=0, name="data")
+    commit_interactive_case(
+        root,
+        [metric],
+        {metric.artifact_id: [data]},
+        run="frozen",
+        number=1,
+        name="metric",
+    )
+    filt = InteractiveFilter(root)
+    filt.load()
+    original = tuple(item.reference for item in filt._selected_inputs())
+    assert len(original) == len(set(original)) == 2
+
+    replacement = CSVArtifact.draft(
+        b"value\nreplacement\n", "replacement.csv", 0
+    ).finalize()
+    low = MetricArtifact.draft({"score": 0.1}, "replacement.json", 1).finalize()
+    commit_interactive_case(
+        root, [replacement], {}, run="frozen", number=0, name="data"
+    )
+    commit_interactive_case(
+        root,
+        [low],
+        {low.artifact_id: [replacement]},
+        run="frozen",
+        number=1,
+        name="metric",
+    )
+    filt.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5}])
+    assert filt.filtered_ids == [data.artifact_id]
+    result = filt.commit()
+    assert result.status == StepStatus.SUCCEEDED
+    assert result.metadata["diagnostics"]["total_input"] == 1
+    assert result.metadata["diagnostics"]["total_passed"] == 1
+    assert result.step_run_id is not None
+    committer = inspection_store(root)
+    plan = read_curator_plan(committer.delta_root, result.step_run_id, committer.fs)
+    assert plan is not None
+    selected = next(
+        item
+        for item in plan.projection.occurrences
+        if item.occurrence.artifact_id == data.artifact_id
+    )
+    assert set(selected.sources) == set(original)
+    assert not plan.projection.lineage
+
+
+def test_unreconstructable_filesystem_rejects_before_pending(delta_root: Path) -> None:
+    from fsspec.implementations.local import LocalFileSystem
+
+    class UnregisteredLocal(LocalFileSystem):
+        pass
+
+    filt = InteractiveFilter(delta_root, fs=UnregisteredLocal())
+    filt.load()
+    filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
+    before = pl.read_delta(delta_root / TablePath.STEPS.value).height
+    with pytest.raises(ValueError, match="reconstructable filesystem"):
+        filt.commit()
+    assert pl.read_delta(delta_root / TablePath.STEPS.value).height == before

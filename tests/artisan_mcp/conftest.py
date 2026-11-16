@@ -10,19 +10,13 @@ curator builtins only).
 from __future__ import annotations
 
 import asyncio
-import json
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
 
-import polars as pl
 import pytest
 from fastmcp import Client
-from fixtures.logical_commit_store import commit_test_step
-from fixtures.store_format import commit_test_tables
-from fsspec.implementations.local import LocalFileSystem
 
-from artisan.utils.hashing import digest_utf8
 from artisan_mcp import build_mcp_app
 from artisan_mcp.config import ArtisanMCPConfig
 
@@ -133,24 +127,31 @@ def tool_names() -> Callable[[Any], set[str]]:
 
 @pytest.fixture
 def seeded_run(tmp_path: Path) -> SimpleNamespace:
-    """Seed a complete single-run store and return its handles.
+    """Create accepted outputs, an exact failed curator, and unrelated content."""
+    from fixtures.inspection_curator import commit_curator_record
+    from fixtures.retained_inspection import commit_inspection_attempt
 
-    Layout: ``<tmp>/delta`` is the Delta root; failure logs live at
-    ``<tmp>/logs/failures`` (runs_dir = parent of delta_root). One run
-    ``run-1`` with a succeeded ``generate`` step (two CSV artifacts) and a
-    failed ``transform`` step with an error envelope and a failure log.
-    A separately seeded metric is outside accepted run output membership.
-    """
+    from artisan.schemas import CSVArtifact, MetricArtifact
+    from artisan.utils.log_paths import failure_log_relative_path
+
     delta_root = tmp_path / "delta"
     run_id = "run-1"
-    step_frame = _steps_frame(
-        run_id,
-        [(1, "generate", "succeeded"), (2, "transform", "failed")],
+    artifacts = [
+        CSVArtifact.draft(
+            f"value\n{index}\n".encode(),
+            f"dataset-{index}.csv",
+            1,
+            metadata={"seed": True},
+        ).finalize()
+        for index in range(2)
+    ]
+    commit_inspection_attempt(
+        delta_root,
+        run_id=run_id,
+        number=1,
+        name="generate",
+        outputs={"data": artifacts},
     )
-    index_frame = _index_frame(
-        [("a" * 32, "csv", 1), ("b" * 32, "csv", 1), ("c" * 32, "metric", 2)],
-    )
-    exec_id = "exec-2"
     envelope = {
         "error_type": "runtime",
         "code": "op_execute_failed",
@@ -159,188 +160,33 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
         "field": None,
         "suggestions": [],
     }
-    execution_frame, execution_edges = _execution_frames(run_id, exec_id, envelope)
-    from artisan.schemas.enums import TablePath
-
-    fs = LocalFileSystem()
-    staging_root = str(tmp_path / "staging")
-    for step_number in (1, 2):
-        tables = {
-            TablePath.EXECUTIONS.value: execution_frame.filter(
-                pl.col("origin_step_number") == step_number
-            ),
-        }
-        if step_number == 1:
-            tables[TablePath.ARTIFACT_INDEX.value] = index_frame.filter(
-                pl.col("origin_step_number") == step_number
-            )
-            tables[TablePath.EXECUTION_EDGES.value] = execution_edges
-        commit_test_step(
-            delta_root,
-            staging_root,
-            step_frame.filter(pl.col("step_number") == step_number)
-            .sort("state_sequence")
-            .to_dicts(),
-            tables,
-        )
-    commit_test_tables(
-        str(delta_root),
-        staging_root,
-        fs,
-        {
-            TablePath.ARTIFACT_INDEX.value: index_frame.filter(
-                pl.col("origin_step_number") == 2
-            )
-        },
-        step_run_id="seed-unscoped-metric",
-        step_number=2,
-        operation_name="seed_unscoped_metric",
+    timestamp = datetime.now(UTC)
+    exec_id = commit_curator_record(
+        delta_root,
+        run_id=run_id,
+        number=2,
+        name="transform",
+        error="transform blew up",
+        envelope=envelope,
+        timestamp=timestamp,
     )
-
-    from artisan.utils.log_paths import failure_log_relative_path
-
-    timestamp_start = execution_frame.filter(pl.col("execution_run_id") == exec_id)[
-        "timestamp_start"
-    ][0]
+    metric = MetricArtifact.draft({"score": 0.5}, "unrelated.json", 0).finalize()
+    commit_inspection_attempt(
+        delta_root,
+        run_id="unrelated-run",
+        outputs={"metrics": [metric]},
+    )
     log_path = (
-        tmp_path
-        / "logs"
-        / "failures"
-        / failure_log_relative_path(exec_id, timestamp_start)
+        tmp_path / "logs/failures" / failure_log_relative_path(exec_id, timestamp)
     )
     log_path.parent.mkdir(parents=True)
     log_path.write_text("\n".join(f"line {i}" for i in range(1, 11)))
-
     return SimpleNamespace(
         delta_root=delta_root,
         run_id=run_id,
         exec_id=exec_id,
         log_path=log_path,
         envelope=envelope,
-        data_ids={"a" * 32, "b" * 32},
-        metric_id="c" * 32,
+        data_ids={item.artifact_id for item in artifacts},
+        metric_id=metric.artifact_id,
     )
-
-
-def _steps_frame(run_id: str, steps: list[tuple[int, str, str]]) -> pl.DataFrame:
-    """Build authoritative lifecycle rows for the seeded run."""
-    from artisan.storage.core.table_schemas import STEPS_SCHEMA
-
-    rows = []
-    t0 = datetime(2026, 7, 1, tzinfo=UTC)
-    for i, (number, name, status) in enumerate(steps):
-        timestamp = t0 + timedelta(minutes=10 * i)
-        pending = {
-            "step_run_id": digest_utf8(f"{run_id}:step:{number}"),
-            "step_spec_id": None,
-            "pipeline_run_id": run_id,
-            "step_number": number,
-            "step_name": name,
-            "status": "pending",
-            "state_sequence": 0,
-            "disposition": None,
-            "cancellation_status": None,
-            "operation_class": "DataGenerator",
-            "params_json": "{}",
-            "input_refs_json": "{}",
-            "compute_backend": "local",
-            "compute_options_json": "{}",
-            "output_roles_json": "[]",
-            "output_types_json": "{}",
-            "total_count": None,
-            "succeeded_count": None,
-            "failed_count": None,
-            "timestamp": timestamp,
-            "duration_seconds": None,
-            "error": None,
-            "metadata": None,
-        }
-        running = {
-            **pending,
-            "status": "running",
-            "state_sequence": 1,
-            "timestamp": timestamp + timedelta(seconds=1),
-        }
-        terminal = {
-            **running,
-            "step_spec_id": digest_utf8(f"{run_id}:spec:{number}"),
-            "status": status,
-            "state_sequence": 2,
-            "disposition": "executed" if status == "succeeded" else None,
-            "total_count": 1,
-            "succeeded_count": 1 if status == "succeeded" else 0,
-            "failed_count": 0 if status == "succeeded" else 1,
-            "timestamp": timestamp + timedelta(seconds=2),
-            "duration_seconds": 1.5,
-            "error": "transform blew up" if status == "failed" else None,
-            "metadata": "{}",
-        }
-        rows.extend([pending, running, terminal])
-    return pl.DataFrame(rows, schema=STEPS_SCHEMA)
-
-
-def _index_frame(entries: list[tuple[str, str, int]]) -> pl.DataFrame:
-    """Build the artifact index rows for the seeded run."""
-    from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
-
-    return pl.DataFrame(
-        {
-            "artifact_id": [e[0] for e in entries],
-            "artifact_type": [e[1] for e in entries],
-            "origin_step_number": [e[2] for e in entries],
-            "metadata": ['{"seed": true}'] * len(entries),
-        },
-        schema=ARTIFACT_INDEX_SCHEMA,
-    )
-
-
-def _execution_frames(
-    run_id: str, exec_id: str, envelope: dict
-) -> tuple[pl.DataFrame, pl.DataFrame]:
-    """Build execution rows and accepted output edges for the seeded run."""
-    from artisan.storage.core.table_schemas import (
-        EXECUTION_EDGES_SCHEMA,
-        EXECUTIONS_SCHEMA,
-    )
-
-    now = datetime(2026, 7, 1, tzinfo=UTC)
-    rows = []
-    for execution_id, number, name, success in (
-        (digest_utf8("run-1:generate"), 1, "generate", True),
-        (exec_id, 2, "transform", False),
-    ):
-        row = dict.fromkeys(EXECUTIONS_SCHEMA)
-        row.update(
-            execution_run_id=execution_id,
-            execution_spec_id=digest_utf8(f"{execution_id}:spec"),
-            step_run_id=digest_utf8(f"{run_id}:step:{number}"),
-            origin_step_number=number,
-            operation_name=name,
-            params="{}",
-            user_overrides="{}",
-            timestamp_start=now,
-            timestamp_end=now,
-            source_worker=0,
-            compute_backend="local",
-            success=success,
-            error=None if success else "transform blew up",
-            error_envelope=None if success else json.dumps(envelope),
-            tool_output="",
-            worker_log="",
-            metadata="{}",
-        )
-        rows.append(row)
-    executions = pl.DataFrame(rows, schema=EXECUTIONS_SCHEMA)
-    edges = pl.DataFrame(
-        [
-            {
-                "execution_run_id": digest_utf8("run-1:generate"),
-                "direction": "output",
-                "role": "data",
-                "artifact_id": artifact_id,
-            }
-            for artifact_id in ("a" * 32, "b" * 32)
-        ],
-        schema=EXECUTION_EDGES_SCHEMA,
-    )
-    return executions, edges

@@ -10,7 +10,7 @@ import pytest
 from artisan.errors import StoreIntegrityError
 from artisan.storage.io.bounded_evidence import DiskTable
 from artisan.storage.io.bounded_io import write_parquet_rows
-from artisan.storage.io.commit_plan import canonical_table_plan_key
+from artisan.storage.io.plan_evidence import canonical_table_plan_key
 
 SCHEMA = {
     "artifact_id": pl.String,

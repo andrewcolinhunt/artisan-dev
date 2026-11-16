@@ -8,6 +8,7 @@ from pydantic import StrictInt
 
 from artisan.inspection._boundary import validate_int_range
 from artisan.inspection._pagination import paginate
+from artisan.schemas.execution.storage_config import StorageConfig
 
 
 def artifact_payload(
@@ -19,6 +20,8 @@ def artifact_payload(
     cursor: str | None,
     *,
     step_name: str | None = None,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
 ) -> dict[str, Any]:
     """Project accepted references with selected top-level metadata keys."""
     from artisan.orchestration.run_status import resolve_step_number
@@ -37,12 +40,24 @@ def artifact_payload(
         assert pipeline_run_id is not None
         args["step_name"] = step_name
         capability = "get_step_result"
-        number = resolve_step_number(root, pipeline_run_id, step_name)
+        config = storage or StorageConfig()
+        number = resolve_step_number(
+            root,
+            pipeline_run_id,
+            step_name,
+            files_root=files_root,
+            fs=config.filesystem(),
+            storage_options=config.delta_storage_options(),
+        )
     refs = (
         []
         if step_name is not None and number is None
         else query_artifacts(
-            root, artifact_type=artifact_type, pipeline_run_id=pipeline_run_id
+            root,
+            artifact_type=artifact_type,
+            pipeline_run_id=pipeline_run_id,
+            files_root=files_root,
+            storage=storage,
         )
     )
     rows = []

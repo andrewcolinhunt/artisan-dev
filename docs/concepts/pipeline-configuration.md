@@ -1,9 +1,9 @@
 # Pipeline Configuration
 
 `PipelineConfig` holds a run's identity, storage roots, trusted application
-modules, and execution defaults. Workers receive the settings they need through
-`RuntimeEnvironment`. An operation declares its compute provider separately;
-a step can override that choice for one invocation.
+modules, and execution defaults. A configured runner places the worker, and
+dispatch supplies its storage and scratch settings. Operations declare tool
+software independently through `Environment`.
 
 ## What the configuration captures
 
@@ -15,17 +15,17 @@ Run-wide settings include:
 | Storage | Delta, staging, and managed external-file roots, plus filesystem and Delta storage options. Worker sandboxes always use a local working root. |
 | Application definitions | Trusted installed modules that register custom operations and artifact types. Workers load the same resolved selection. |
 | Execution defaults | The default lifecycle runner, failure policy, and cache policy. Steps and composites can override these defaults. |
-| Recovery and debugging | Whether startup recovers finished staging, whether committed staging and sandboxes are retained, and whether caches are bypassed. |
+| Recovery and debugging | Whether selected recorded claims may finish recovery, whether committed staging and sandboxes are retained, and whether caches are bypassed. |
 
-Compute providers belong to operation configuration and explicit step overrides.
-A local lifecycle worker can therefore send its execute phase to Modal without
-changing the rest of the pipeline. See
+Providers belong to pipeline defaults and explicit step overrides. Selecting
+Modal or Slurm places the complete lifecycle there; individual commands may
+use separate prepared environments inside that worker. See
 [Configure Execution](../how-to-guides/configuring-execution.md) for runner,
-compute, and policy choices.
+environment, and policy choices.
 
 Cache policy selects acceptable prior outcomes without changing computation
 identity. Resume retains accepted steps and applies the policy to new
-submissions. Recovery controls whether startup commits eligible finished work;
+submissions. Recovery can finish previously claimed, verified work;
 see [Staging preservation and recovery](storage-and-delta-lake.md#staging-preservation).
 
 For current fields, types, and defaults, use the `PipelineConfig` entry in
@@ -39,7 +39,7 @@ Build a new configuration and manager when you need different run-wide settings.
 
 The frozen model does not freeze external state or recursively protect every
 nested dictionary. Treat nested storage options as read-only too. Credentials,
-external files, and deployed endpoints can change independently of the model.
+external files, and provider resources can change independently of the model.
 
 ## Load trusted application definitions
 

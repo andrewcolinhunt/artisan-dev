@@ -1,19 +1,8 @@
-"""Failure-persistence matrix: every failure shape lands a readable row.
+"""Closed phase failures retain public failure metadata and immutable owned logs.
 
-Asserts *through the reader* (``inspect_failures``) — the envelope-policy
-boundary — that each failure shape produces exactly one executions row with
-the right step/operation identity, the right envelope code (populated for
-ArtisanError and command-op failures, null for a plain ``ValueError``), and a
-failure log on disk. Partial-failure cells additionally assert the sibling
-SUCCESS rows survive.
-
-The cells are pruned to those that guard the two fixed mechanisms — FAIL_FAST
-committing before it aborts, and orchestrator-side synthesis when the worker
-records nothing — plus one representative per already-working mechanism
-(creator function/command phases, curator, composite, envelope populated/null).
-
-Failing ops live in the importable ``fixtures.failure_ops`` module (not
-path-loaded) so spawn workers can import them and exercise the real execute path.
+The real admitted worker/controller runs with explicit synthetic in-process
+software. Installed transport and process-death ownership have separate gates;
+unobserved crashes are never promoted into invented scientific executions.
 """
 
 from __future__ import annotations
@@ -28,20 +17,22 @@ from fixtures import failure_ops
 
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
+from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.visualization.inspect import inspect_failures
 
 from .conftest import (
     FailingTransformer,
+    create_native_pipeline,
+    get_execution_outputs,
     get_failed_executions,
     get_successful_executions,
 )
 
 
 def _pipeline(pipeline_env: dict[str, str], policy: FailurePolicy) -> PipelineManager:
-    return PipelineManager.create(
+    return create_native_pipeline(
         name="fp_matrix",
         delta_root=pipeline_env["delta_root"],
         staging_root=pipeline_env["staging_root"],
@@ -94,7 +85,6 @@ def _assert_one_failure(
         (failure_ops.FailExecuteArtisan, True),
         (failure_ops.FailPostprocessRaise, False),
         (failure_ops.FailPostprocessReturn, False),
-        (failure_ops.FailCommand, True),
     ],
     ids=[
         "preprocess",
@@ -102,7 +92,6 @@ def _assert_one_failure(
         "execute-artisanerror",
         "postprocess-raise",
         "postprocess-return-false",
-        "command-nonzero",
     ],
 )
 def test_creator_continue_records_failure(
@@ -110,7 +99,7 @@ def test_creator_continue_records_failure(
 ) -> None:
     """CONTINUE creator failure: one readable row + log, correct envelope."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
-    step = pipeline.run(op, step_runner=Runner.LOCAL)
+    step = pipeline.run(op)
     assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
@@ -127,7 +116,7 @@ def test_creator_continue_records_failure(
 def test_creator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> None:
     """FAIL_FAST publishes a readable failure row before returning."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.FAIL_FAST)
-    step = pipeline.run(failure_ops.FailExecute, step_runner=Runner.LOCAL)
+    step = pipeline.run(failure_ops.FailExecute)
     assert step.status is StepStatus.FAILED
     pipeline.finalize()
 
@@ -147,22 +136,27 @@ def test_creator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> 
 def test_creator_partial_keeps_sibling_success(
     pipeline_env: dict[str, str], policy: FailurePolicy
 ) -> None:
-    """Partial failure: the failed row is readable AND the sibling committed.
-
-    Under FAIL_FAST this is the core fix — before it, the succeeding sibling's
-    record was stranded in staging alongside the failure. Both must land.
-    """
+    """A completed sibling stays selected when the next unit fails."""
     delta_root = pipeline_env["delta_root"]
     pipeline = _pipeline(pipeline_env, policy)
 
-    gen = pipeline.run(
-        DataGenerator, params={"count": 2, "seed": 42}, step_runner=Runner.LOCAL
-    )
+    gen = pipeline.run(DataGenerator, params={"count": 2, "seed": 42})
+    assert gen.status == StepStatus.SUCCEEDED
+    store = ArtifactStore(delta_root)
+    sources = [
+        store.get_artifact(artifact_id)
+        for artifact_id in get_execution_outputs(delta_root, 0, "datasets")
+    ]
+    assert all(source is not None for source in sources)
+    ordered_ids = [
+        source.artifact_id
+        for source in sorted(sources, key=lambda source: source.original_name)
+    ]
     step1 = pipeline.run(
         FailingTransformer,
-        inputs={"dataset": gen.output("datasets")},
-        params={"fail_on_index": 0},
-        step_runner=Runner.LOCAL,
+        inputs={"dataset": ordered_ids},
+        params={"fail_on_index": 1},
+        batch_strategy={"max_workers": 1, "units_per_worker": 1},
     )
     expected = (
         StepStatus.PARTIAL if policy is FailurePolicy.CONTINUE else StepStatus.FAILED
@@ -180,6 +174,34 @@ def test_creator_partial_keeps_sibling_success(
     # The sibling success is committed too (not stranded).
     assert get_successful_executions(delta_root, 1) == 1
     assert get_failed_executions(delta_root, 1) == 1
+
+
+def test_unqualified_command_exit_does_not_claim_scientific_failure(
+    pipeline_env: dict[str, str],
+) -> None:
+    """A command without the prepared exit witness remains infrastructure evidence."""
+    from artisan.orchestration.engine.retained_execution_query import (
+        read_retained_execution_membership,
+    )
+    from artisan.schemas.execution.worker_ownership import OwnershipState
+
+    with _pipeline(pipeline_env, FailurePolicy.CONTINUE) as pipeline:
+        result = pipeline.run(failure_ops.FailCommand)
+    assert result.status is StepStatus.FAILED
+    assert "Command failed with exit code 1" in (result.error or "")
+    assert pipeline.ownership_state() is OwnershipState.CLOSED
+    assert (
+        read_retained_execution_membership(
+            pipeline.committer, pipeline_run_id=pipeline.config.pipeline_run_id
+        )
+        == ()
+    )
+    assert inspect_failures(pipeline_env["delta_root"]).is_empty()
+    handle = pipeline.executions[0].handles[0]
+    decision = pipeline.committer.journal.state(handle.attempt.assignment)
+    assert decision is not None
+    assert decision.cancelled
+    assert decision.winner is None
 
 
 # ===========================================================================
@@ -201,12 +223,8 @@ def test_curator_continue_records_failure(
 ) -> None:
     """CONTINUE curator failure: one readable row + log, correct envelope."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
-    gen = pipeline.run(
-        DataGenerator, params={"count": 2, "seed": 5}, step_runner=Runner.LOCAL
-    )
-    step1 = pipeline.run(
-        op, inputs={"passthrough": gen.output("datasets")}, step_runner=Runner.LOCAL
-    )
+    gen = pipeline.run(DataGenerator, params={"count": 2, "seed": 5})
+    step1 = pipeline.run(op, inputs={"passthrough": gen.output("datasets")})
     assert step1.status is StepStatus.FAILED
     pipeline.finalize()
 
@@ -218,13 +236,10 @@ def test_curator_continue_records_failure(
 def test_curator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> None:
     """FAIL_FAST publishes a readable curator failure row."""
     pipeline = _pipeline(pipeline_env, FailurePolicy.FAIL_FAST)
-    gen = pipeline.run(
-        DataGenerator, params={"count": 2, "seed": 5}, step_runner=Runner.LOCAL
-    )
+    gen = pipeline.run(DataGenerator, params={"count": 2, "seed": 5})
     step1 = pipeline.run(
         failure_ops.FailCuratorRaise,
         inputs={"passthrough": gen.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
     assert step1.status is StepStatus.FAILED
     pipeline.finalize()
@@ -252,61 +267,13 @@ def test_composite_internal_failure_recorded(
 ) -> None:
     """A failing internal composite step records a readable failure row."""
     pipeline = _pipeline(pipeline_env, policy)
-    result = pipeline.submit_composite(
-        failure_ops.FailingComposite, step_runner=Runner.LOCAL
-    )
-    result.wait()
+    result = pipeline.submit(failure_ops.FailingComposite)
+    assert result.result().status == StepStatus.FAILED
     pipeline.finalize()
 
     _assert_one_failure(
         pipeline_env,
-        operation=failure_ops.FailExecute.name,
+        operation=failure_ops.FailingComposite.name,
         step=0,
-        code_populated=False,
-    )
-
-
-# ===========================================================================
-# The orchestrator records hard crashes that bypass worker recording.
-# ===========================================================================
-
-
-def test_creator_worker_crash_synthesizes_record(
-    pipeline_env: dict[str, str],
-) -> None:
-    """A creator that os._exit's the worker still lands a synthesized row + log."""
-    pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
-    step = pipeline.run(failure_ops.WorkerCrash, step_runner=Runner.LOCAL)
-    assert step.status is StepStatus.FAILED
-    pipeline.finalize()
-
-    _assert_one_failure(
-        pipeline_env,
-        operation=failure_ops.WorkerCrash.name,
-        step=0,
-        code_populated=False,
-    )
-
-
-def test_curator_worker_crash_synthesizes_record(
-    pipeline_env: dict[str, str],
-) -> None:
-    """A curator that os._exit's the subprocess still lands a synthesized row + log."""
-    pipeline = _pipeline(pipeline_env, FailurePolicy.CONTINUE)
-    gen = pipeline.run(
-        DataGenerator, params={"count": 1, "seed": 5}, step_runner=Runner.LOCAL
-    )
-    step1 = pipeline.run(
-        failure_ops.CuratorWorkerCrash,
-        inputs={"passthrough": gen.output("datasets")},
-        step_runner=Runner.LOCAL,
-    )
-    assert step1.status is StepStatus.FAILED
-    pipeline.finalize()
-
-    _assert_one_failure(
-        pipeline_env,
-        operation=failure_ops.CuratorWorkerCrash.name,
-        step=1,
         code_populated=False,
     )

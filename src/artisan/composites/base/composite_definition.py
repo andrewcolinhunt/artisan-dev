@@ -39,6 +39,8 @@ class CompositeDefinition(BaseModel):
 
     # ---------- Metadata ----------
     name: ClassVar[str] = ""
+    version: ClassVar[str] = "1"
+    cacheable: ClassVar[bool] = True
     description: ClassVar[str] = ""
 
     # ---------- Inputs ----------
@@ -52,7 +54,7 @@ class CompositeDefinition(BaseModel):
         """Wire internal operations together.
 
         Args:
-            ctx: Composite context providing input(), run(), and output().
+            ctx: Composite context providing input(), call(), and output().
 
         Raises:
             NotImplementedError: If not overridden by subclass.

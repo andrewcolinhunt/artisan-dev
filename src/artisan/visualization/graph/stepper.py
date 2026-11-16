@@ -26,6 +26,8 @@ def display_provenance_stepper(
     output_dir: str | None = None,
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    files_root: str | None = None,
 ) -> ipywidgets.VBox:
     """Display an interactive widget to step through provenance graph evolution.
 
@@ -38,6 +40,7 @@ def display_provenance_stepper(
             {delta_root}/../images (e.g., runs/images alongside runs/delta).
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
 
     Returns:
         ipywidgets VBox containing the stepper widget.
@@ -61,7 +64,9 @@ def display_provenance_stepper(
         output_dir = str(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    max_step = get_max_step_number(delta_root, storage_options=storage_options, fs=fs)
+    max_step = get_max_step_number(
+        delta_root, storage_options=storage_options, fs=fs, files_root=files_root
+    )
     if max_step is None:
         label = widgets.Label(value="No pipeline steps to display.")
         return widgets.VBox([label])
@@ -72,6 +77,7 @@ def display_provenance_stepper(
         format="svg",
         storage_options=storage_options,
         fs=fs,
+        files_root=files_root,
     )
 
     if not rendered_paths:

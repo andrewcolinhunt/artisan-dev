@@ -1,4 +1,4 @@
-"""Smoke test: DeltaCommitter round-trip against MinIO.
+"""Smoke test: retained acceptance round-trip against MinIO.
 
 Exercise MinIO fixtures and `StorageConfig.delta_storage_options` together.
 Observe actual metadata requests instead of inferring them from storage latency.
@@ -12,14 +12,12 @@ from collections.abc import Iterator
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-import polars as pl
 import pytest
+from fixtures.retained_inspection import commit_inspection_attempt
 
-from artisan.schemas.enums import TablePath
-from artisan.storage.core.table_schemas import ARTIFACT_INDEX_SCHEMA
-from artisan.storage.io.commit import DeltaCommitter
-from artisan.storage.io.commit_plan import build_commit_plan
-from artisan.storage.io.staging import StagingManager
+from artisan.schemas import MetricArtifact
+from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage.io.retained_store import create_retained_store
 
 
 @pytest.fixture(autouse=True)
@@ -107,64 +105,29 @@ def test_metadata_sentinel_observes_missing_credentials(
     assert ("PUT", "/latest/api/token") in requests
 
 
-def test_delta_commit_roundtrip_on_minio(
+def test_retained_acceptance_roundtrip_on_minio(
     s3_fs, metadata_requests: tuple[str, list[tuple[str, str]]]
 ) -> None:
-    """End-to-end DeltaCommitter round-trip against per-test MinIO bucket."""
+    """Actual acceptance and hydration use only the explicit MinIO credentials."""
     import s3fs
 
     _, storage, uri_prefix = s3_fs
-    # Other S3 tests may already have initialized the fixture's cached client.
     fs = s3fs.S3FileSystem(**storage.options, skip_instance_cache=True)
-
-    delta_root = f"{uri_prefix}/delta"
-    staging_root = f"{uri_prefix}/staging"
-
-    staging_manager = StagingManager(staging_root, fs)
-    committer = DeltaCommitter(
-        delta_root,
-        staging_manager,
+    committer = create_retained_store(
+        f"{uri_prefix}/delta",
+        f"{uri_prefix}/files",
         fs=fs,
         storage_options=storage.delta_storage_options(),
     )
-    committer.initialize_tables()
-
-    df = pl.DataFrame(
-        {
-            "artifact_id": ["a" * 32, "b" * 32],
-            "artifact_type": ["csv", "metric"],
-            "origin_step_number": [0, 0],
-            "metadata": ["{}", "{}"],
-        },
-        schema=ARTIFACT_INDEX_SCHEMA,
+    metric = MetricArtifact.draft({"score": 4}, "score.json", 0).finalize()
+    commit_inspection_attempt(
+        committer.delta_root, committer=committer, outputs={"metric": [metric]}
     )
-
-    step_run_id = "c" * 32
-    staging_manager.stage_orchestrator_dataframe(
-        df,
-        TablePath.ARTIFACT_INDEX.value,
-        commit_kind="input_registration",
-        step_run_id=step_run_id,
-        step_number=0,
-        operation_name="smoke_input_registration",
-    )
-    plan = build_commit_plan(
-        delta_root=delta_root,
-        staging_root=staging_root,
+    store = ArtifactStore(
+        committer.delta_root,
         fs=fs,
-        commit_kind="input_registration",
-        step_run_id=step_run_id,
-        step_number=0,
-        operation_name="smoke_input_registration",
+        files_root=committer.files_root,
+        storage_options=storage.delta_storage_options(),
     )
-    rows = committer.commit_logical(plan)
-
-    assert rows == {"index": 2}
-
-    table_uri = f"{delta_root}/{TablePath.ARTIFACT_INDEX.value}"
-    read_back = pl.read_delta(
-        table_uri, storage_options=storage.delta_storage_options()
-    )
-    assert read_back.height == 2
-    assert set(read_back["artifact_id"].to_list()) == {"a" * 32, "b" * 32}
+    assert store.get_artifact(metric.artifact_id).to_row() == metric.to_row()
     assert metadata_requests[1] == []

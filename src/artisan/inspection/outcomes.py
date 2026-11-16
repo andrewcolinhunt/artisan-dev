@@ -6,6 +6,7 @@ from typing import Any
 
 from artisan.inspection._evidence import ensure_fits
 from artisan.inspection._pagination import paginate
+from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.visualization.comparison import ComparisonSpec, RunComparison, compare_runs
 from artisan.visualization.outcomes import (
     AssessmentSpec,
@@ -96,6 +97,8 @@ def comparison_payload(
 def assessment_inspection(
     root: str,
     *,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
     spec: AssessmentSpec,
     view: str,
     limit: int,
@@ -103,13 +106,21 @@ def assessment_inspection(
     **selection: Any,
 ) -> dict[str, Any]:
     """Read one complete selected population and project its requested view."""
-    report = assess_outcomes(root, OutcomeSelection.model_validate(selection), spec)
+    report = assess_outcomes(
+        root,
+        OutcomeSelection.model_validate(selection),
+        spec,
+        files_root=files_root,
+        storage=storage,
+    )
     return assessment_payload(report, root, view, limit, cursor)
 
 
 def comparison_inspection(
     root: str,
     *,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
     baseline: OutcomeSelection,
     candidate: OutcomeSelection,
     spec: ComparisonSpec,
@@ -118,5 +129,7 @@ def comparison_inspection(
     cursor: str | None,
 ) -> dict[str, Any]:
     """Read both complete populations and project the explicit correspondence."""
-    report = compare_runs(root, baseline, candidate, spec)
+    report = compare_runs(
+        root, baseline, candidate, spec, files_root=files_root, storage=storage
+    )
     return comparison_payload(report, root, view, limit, cursor)

@@ -22,7 +22,7 @@ Build operations, configure pipelines, and work with results.
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and runner configuration
-- [Deploy Tool Endpoints](deploying-tool-endpoints.md) -- Deploy command operations
+- [Run Remote Workers](running-remote-workers.md) -- Deploy command operations
   and configure object-store input/output delivery
 - [Debug a Recorded Execution](debugging-executions.md) -- Replay one unit and
   retain diagnostic evidence

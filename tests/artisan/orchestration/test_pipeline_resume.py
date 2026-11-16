@@ -1,473 +1,322 @@
-"""Tests for PipelineManager.resume()."""
+"""Resume selects verified attempts and requires explicit configured runners."""
 
 from __future__ import annotations
 
 import json
-from enum import StrEnum, auto
+from dataclasses import replace
 from pathlib import Path
-from typing import ClassVar
-from unittest.mock import patch
+from typing import Any
 
 import polars as pl
 import pytest
+from fixtures.composition_operations import Transform, structure
+from fixtures.curator_cache import DynamicCurator
+from fixtures.retained_pipeline import NativePipelineRunner
 
-from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.orchestration import pipeline_manager as module
+from artisan.orchestration.engine.current_outputs import read_current_step_outputs
+from artisan.orchestration.engine.retained_step_results import RetainedStepResults
 from artisan.orchestration.pipeline_manager import PipelineManager
 from artisan.orchestration.runners.local import LocalRunner
-from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import CachePolicy
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
 
 
 class ExternalRunner(LocalRunner):
-    """Concrete stand-in for a runner supplied by an external provider."""
+    """Provider identity; tests override actual work with a native fixture."""
 
     name = "external_test"
 
 
-class MockOp(OperationDefinition):
-    class InputRole(StrEnum):
-        data = auto()
-
-    class OutputRole(StrEnum):
-        data = auto()
-
-    name: ClassVar[str] = "MockOp"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.data: OutputSpec(
-            artifact_type=ArtifactTypes.CSV,
-            derives_from={"inputs": ["data"]},
-        ),
-    }
-
-    def preprocess(self, inputs):
-        return {}
-
-    def execute_function(self, inputs, output_dir):
-        pass
-
-
-class IngestMockOp(OperationDefinition):
-    class OutputRole(StrEnum):
-        file = auto()
-
-    name: ClassVar[str] = "Ingest"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    def execute_curator(self, execute_input):
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-def _mock_execute_step(**kwargs):
-    from artisan.orchestration.engine.step_executor import build_step_result
-    from artisan.schemas.enums import FailurePolicy
-
-    operation = kwargs["operation"]
-    succeeded_count = 0 if isinstance(operation, IngestMockOp) else 5
-    result = build_step_result(
-        operation=operation,
-        step_number=kwargs["step_number"],
-        succeeded_count=succeeded_count,
-        failed_count=0,
-        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
-        step_run_id=kwargs["step_run_id"],
+def _create(tmp_path: Path, **overrides: Any) -> PipelineManager:
+    return PipelineManager.create(
+        name="resume_test",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "work"),
+        **overrides,
     )
-    return kwargs["persist_result"](result, ())
 
 
-def _run_external_default_pipeline(
-    delta_root: Path,
-    staging_root: Path,
-    *,
-    local_override: bool = False,
-) -> tuple[PipelineManager, ExternalRunner]:
-    """Run steps whose effective runners can differ from an external default."""
-    runner = ExternalRunner()
-    pipeline = PipelineManager.create(
-        name="test",
-        delta_root=str(delta_root),
-        staging_root=str(staging_root),
-        default_step_runner=runner,
-    )
-    pipeline.run(IngestMockOp, inputs=None)
-    if local_override:
-        pipeline.run(
-            MockOp,
-            inputs={"data": pipeline[0].output("file")},
-            step_runner="local",
-        )
-    return pipeline, runner
-
-
-class TestResume:
-    """Tests for PipelineManager.resume()."""
-
-    @pytest.mark.parametrize("default", [None, *CachePolicy])
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_policy_default_applies_only_to_new_submissions(
-        self, mock_exec, tmp_path, default: CachePolicy | None
-    ) -> None:
-        roots = {
-            "delta_root": str(tmp_path / "delta"),
-            "staging_root": str(tmp_path / "staging"),
+def _resume(pipeline: PipelineManager, **overrides: Any) -> PipelineManager:
+    return PipelineManager.resume(
+        **{
+            "delta_root": pipeline.config.delta_root,
+            "staging_root": pipeline.config.staging_root,
+            "files_root": pipeline.config.files_root,
+            "working_root": pipeline.config.working_root,
+            "pipeline_run_id": pipeline.config.pipeline_run_id,
+            **overrides,
         }
-        original = PipelineManager.create(name="resume_policy", **roots)
-        first = original.run(IngestMockOp, cache_policy=CachePolicy.STEP_COMPLETED)
-        second = original.run(IngestMockOp, cache_policy=CachePolicy.ALL_SUCCEEDED)
-        original.finalize()
-        before = pl.read_delta(tmp_path / "delta" / "orchestration" / "steps")
-        options = {} if default is None else {"cache_policy": default}
-        resumed = PipelineManager.resume(
-            **roots, pipeline_run_id=original.config.pipeline_run_id, **options
+    )
+
+
+def _steps(pipeline: PipelineManager) -> pl.DataFrame:
+    return pl.read_delta(Path(pipeline.config.delta_root) / "orchestration/steps")
+
+
+@pytest.mark.parametrize("default", [None, *CachePolicy])
+def test_resume_policy_default_applies_only_to_new_submissions(
+    tmp_path: Path, default: CachePolicy | None
+) -> None:
+    with _create(tmp_path) as original:
+        runner = NativePipelineRunner(original.committer)
+        first = original.run(
+            Transform,
+            inputs={"structure": [structure(0)]},
+            step_runner=runner,
+            cache_policy=CachePolicy.STEP_COMPLETED,
         )
-        assert [step.step_run_id for step in resumed._step_results] == [
+        second = original.run(
+            Transform,
+            inputs={"structure": first.output("structure")},
+            step_runner=runner,
+            cache_policy=CachePolicy.ALL_SUCCEEDED,
+        )
+        assert first.status == second.status == StepStatus.SUCCEEDED
+    before = _steps(original)
+    options = {} if default is None else {"cache_policy": default}
+    with _resume(original, **options) as resumed:
+        assert [step.step_run_id for step in resumed] == [
             first.step_run_id,
             second.step_run_id,
         ]
-        assert mock_exec.call_count == 2
-        inherited = resumed.submit(IngestMockOp).result()
-        explicit = resumed.run(IngestMockOp, cache_policy=CachePolicy.STEP_COMPLETED)
-        resumed.finalize()
-        after = pl.read_delta(tmp_path / "delta" / "orchestration" / "steps")
-        assert after.filter(
-            pl.col("step_run_id").is_in([first.step_run_id, second.step_run_id])
-        ).equals(before)
-        for result, expected in (
-            (inherited, default or CachePolicy.ALL_SUCCEEDED),
-            (explicit, CachePolicy.STEP_COMPLETED),
-        ):
-            rows = after.filter(pl.col("step_run_id") == result.step_run_id)
-            assert {
-                json.loads(value)["cache_policy"]
-                for value in rows["compute_options_json"]
-            } == {expected.value}
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_reconstructs_state(self, mock_exec, tmp_path):
-        """Restore terminal results and the next step position."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-
-        # Run 2 steps
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
+        inherited = resumed.submit(Transform, inputs={"structure": []}).result()
+        explicit = resumed.run(
+            Transform, inputs={"structure": []}, cache_policy=CachePolicy.STEP_COMPLETED
         )
-        run_id = p1.config.pipeline_run_id
-        p1.run(IngestMockOp, inputs=None)
-        p1.run(MockOp, inputs={"data": p1[0].output("file")})
-
-        # Resume
-        p2 = PipelineManager.resume(
-            delta_root=str(delta),
-            staging_root=str(staging),
-            pipeline_run_id=run_id,
-        )
-        assert p2.current_step == 2
-        assert len(p2._step_results) == 2
-        restored = p2._step_tracker.load_current_states(run_id)
-        assert restored[0].step_spec_id
-        assert restored[1].step_spec_id is None
-        assert p2._step_results[1].status == StepStatus.SKIPPED
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_output_chaining(self, mock_exec, tmp_path):
-        """pipeline[N].output(role) works after resume."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        run_id = p1.config.pipeline_run_id
-        p1.run(IngestMockOp, inputs=None)
-
-        p2 = PipelineManager.resume(
-            delta_root=str(delta),
-            staging_root=str(staging),
-            pipeline_run_id=run_id,
-        )
-        ref = p2[0].output("file")
-        assert ref.source_step == 0
-        assert ref.role == "file"
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_most_recent_run(self, mock_exec, tmp_path):
-        """resume() with no run_id picks latest completed run."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-
-        # Run 1 — Ingest only
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        p1.run(IngestMockOp, inputs=None)
-
-        # Run 2 — execute two steps so it is the newest complete run.
-        p2 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        p2.run(IngestMockOp, inputs=None, skip_cache=True)
-        p2.run(
-            MockOp,
-            inputs={"data": p2[0].output("file")},
-            skip_cache=True,
-        )
-        run2_id = p2.config.pipeline_run_id
-
-        # Resume without specifying run_id — should pick run 2 (most recent completed)
-        p3 = PipelineManager.resume(delta_root=str(delta), staging_root=str(staging))
-        assert p3.config.pipeline_run_id == run2_id
-        assert p3.current_step == 2
-
-    def test_resume_no_runs_raises(self, tmp_path):
-        """ValueError on empty table."""
-        with pytest.raises(ValueError, match="No step attempts found"):
-            PipelineManager.resume(
-                delta_root=str(tmp_path / "delta"),
-                staging_root=str(tmp_path / "staging"),
-            )
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_accepts_matching_persisted_external_runner_instance(
-        self, mock_exec, tmp_path
+    after = _steps(resumed)
+    assert after.filter(
+        pl.col("step_run_id").is_in([first.step_run_id, second.step_run_id])
+    ).equals(before)
+    for result, expected in (
+        (inherited, default or CachePolicy.ALL_SUCCEEDED),
+        (explicit, CachePolicy.STEP_COMPLETED),
     ):
-        """An imported provider instance restores its persisted default."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-        p1, runner = _run_external_default_pipeline(delta, staging)
-
-        resumed = PipelineManager.resume(
-            delta_root=str(delta),
-            staging_root=str(staging),
-            pipeline_run_id=p1.config.pipeline_run_id,
-            default_step_runner=runner,
-        )
-
-        assert resumed.config.default_step_runner == "external_test"
-        assert resumed._default_step_runner is runner
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_does_not_infer_default_from_curator_or_override(
-        self, mock_exec, tmp_path
-    ):
-        """Effective local step runners cannot hide a persisted external default."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-        p1, _ = _run_external_default_pipeline(
-            delta,
-            staging,
-            local_override=True,
-        )
-
-        rows = pl.read_delta(delta / "orchestration" / "steps").filter(
-            pl.col("status") == StepStatus.SUCCEEDED.value
-        )
-        assert set(rows["compute_backend"]) == {"local"}
-        decoded_options = [
-            json.loads(options) for options in rows["compute_options_json"]
-        ]
+        rows = after.filter(pl.col("step_run_id") == result.step_run_id)
         assert {
-            options["pipeline_default_step_runner"] for options in decoded_options
-        } == {"external_test"}
-        assert all(
-            "pipeline_default_local_runner" not in options
-            for options in decoded_options
-        )
+            json.loads(value)["cache_policy"] for value in rows["compute_options_json"]
+        } == {expected.value}
 
-        with pytest.raises(ValueError, match="initialized provider runner"):
-            PipelineManager.resume(
-                delta_root=str(delta),
-                staging_root=str(staging),
-                pipeline_run_id=p1.config.pipeline_run_id,
+
+def test_resume_reconstructs_accepted_and_skipped_state(tmp_path: Path) -> None:
+    with _create(tmp_path) as original:
+        accepted = original.run(
+            Transform,
+            inputs={"structure": [structure(0)]},
+            step_runner=NativePipelineRunner(original.committer),
+        )
+        skipped = original.run(Transform, inputs={"structure": []})
+    with _resume(original) as resumed:
+        assert resumed.current_step == 2
+        assert [step.step_run_id for step in resumed] == [
+            accepted.step_run_id,
+            skipped.step_run_id,
+        ]
+        states = resumed.tracker.load_current_states(resumed.config.pipeline_run_id)
+        assert states[0].step_spec_id
+        assert states[1].step_spec_id is None
+        assert resumed[1].status == StepStatus.SKIPPED
+
+
+def test_resume_output_chaining_preserves_exact_accepted_sources(
+    tmp_path: Path,
+) -> None:
+    with _create(tmp_path) as original:
+        source = original.run(
+            Transform,
+            inputs={"structure": [structure(0)]},
+            step_runner=NativePipelineRunner(original.committer),
+        )
+        outputs = read_current_step_outputs(original.committer, source.step_run_id)
+    with _resume(original) as resumed:
+        ref = resumed[0].output("structure")
+        assert ref.source_step == 0
+        assert ref.role == "structure"
+        assert (
+            read_current_step_outputs(resumed.committer, source.step_run_id) == outputs
+        )
+        child = resumed.run(
+            Transform,
+            inputs={"structure": ref},
+            step_runner=NativePipelineRunner(resumed.committer),
+        )
+        assert child.status == StepStatus.SUCCEEDED
+        assert child.step_number == 1
+
+
+def test_resume_most_recent_run(tmp_path: Path) -> None:
+    with _create(tmp_path) as first:
+        first.run(Transform, inputs={"structure": []})
+    with _create(tmp_path) as latest:
+        latest.run(Transform, inputs={"structure": []})
+        latest.run(Transform, inputs={"structure": []})
+    with _resume(first, pipeline_run_id=None) as resumed:
+        assert resumed.config.pipeline_run_id == latest.config.pipeline_run_id
+        assert resumed.current_step == 2
+
+
+def test_resume_no_runs_raises_without_initializing(tmp_path: Path) -> None:
+    with _create(tmp_path) as original:
+        pass
+    before = _steps(original)
+    with pytest.raises(ValueError, match="No step attempts found"):
+        _resume(original)
+    assert _steps(original).equals(before)
+
+
+def _external_pipeline(
+    tmp_path: Path, *, local_override: bool = False
+) -> tuple[PipelineManager, ExternalRunner]:
+    runner = ExternalRunner()
+    with _create(tmp_path, default_step_runner=runner) as pipeline:
+        if local_override:
+            selected = pipeline.run(
+                DynamicCurator, step_runner=NativePipelineRunner(pipeline.committer)
             )
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_rejects_runner_mismatch_with_persisted_default(
-        self, mock_exec, tmp_path
-    ):
-        """An explicit runner cannot replace the persisted pipeline default."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-        p1, _ = _run_external_default_pipeline(delta, staging)
-
-        with pytest.raises(ValueError, match="does not match persisted"):
-            PipelineManager.resume(
-                delta_root=str(delta),
-                staging_root=str(staging),
-                pipeline_run_id=p1.config.pipeline_run_id,
-                default_step_runner=LocalRunner(),
-            )
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_reconstructs_configured_local_runner(self, mock_exec, tmp_path):
-        """A built-in local pool size survives an omitted resume argument."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(delta),
-            staging_root=str(staging),
-            default_step_runner=LocalRunner(default_max_workers=9),
+            assert selected.status == StepStatus.SUCCEEDED
+        skipped = pipeline.run(
+            Transform, inputs={"structure": []}, step_runner=LocalRunner()
         )
-        pipeline.run(IngestMockOp, inputs=None)
-
-        succeeded = pl.read_delta(delta / "orchestration" / "steps").filter(
-            pl.col("status") == StepStatus.SUCCEEDED.value
-        )
-        options = json.loads(succeeded.item(0, "compute_options_json"))
-        assert options["pipeline_default_step_runner"] == "local"
-        assert options["pipeline_default_local_runner"] == {"default_max_workers": 9}
-        assert succeeded.item(0, "compute_backend") == "local"
-
-        resumed = PipelineManager.resume(
-            delta_root=str(delta),
-            staging_root=str(staging),
-            pipeline_run_id=pipeline.config.pipeline_run_id,
-        )
-
-        assert type(resumed._default_step_runner) is LocalRunner
-        assert resumed._default_step_runner.default_max_workers == 9
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_retains_matching_configured_local_runner(self, mock_exec, tmp_path):
-        """An explicit compatible LocalRunner remains the runtime instance."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(delta),
-            staging_root=str(staging),
-            default_step_runner=LocalRunner(default_max_workers=9),
-        )
-        pipeline.run(IngestMockOp, inputs=None)
-        supplied = LocalRunner(default_max_workers=9)
-
-        resumed = PipelineManager.resume(
-            delta_root=str(delta),
-            staging_root=str(staging),
-            pipeline_run_id=pipeline.config.pipeline_run_id,
-            default_step_runner=supplied,
-        )
-
-        assert resumed._default_step_runner is supplied
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_rejects_incompatible_configured_local_runner(
-        self, mock_exec, tmp_path
-    ):
-        """An explicit LocalRunner must match the persisted pool size."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(delta),
-            staging_root=str(staging),
-            default_step_runner=LocalRunner(default_max_workers=9),
-        )
-        pipeline.run(IngestMockOp, inputs=None)
-
-        with pytest.raises(ValueError, match="does not match persisted"):
-            PipelineManager.resume(
-                delta_root=str(delta),
-                staging_root=str(staging),
-                pipeline_run_id=pipeline.config.pipeline_run_id,
-                default_step_runner=LocalRunner(default_max_workers=4),
-            )
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_resume_rejects_external_runner_name_without_instance(
-        self, mock_exec, tmp_path
-    ):
-        """A persisted provider name cannot be reconstructed by core alone."""
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
-        p1, _ = _run_external_default_pipeline(delta, staging)
-
-        with pytest.raises(ValueError, match="initialized provider runner"):
-            PipelineManager.resume(
-                delta_root=str(delta),
-                staging_root=str(staging),
-                pipeline_run_id=p1.config.pipeline_run_id,
-                default_step_runner="external_test",
-            )
+        assert skipped.status == StepStatus.SKIPPED
+    return pipeline, runner
 
 
-@patch(
-    "artisan.orchestration.pipeline_manager.execute_step",
-    side_effect=_mock_execute_step,
-)
-def test_resume_recovers_before_loading_accepted_results(
-    mock_exec, tmp_path, monkeypatch
-):
-    from artisan.orchestration.engine.step_tracker import StepTracker
-    from artisan.storage.io import repair
+def test_resume_accepts_matching_persisted_external_runner_instance(
+    tmp_path: Path,
+) -> None:
+    pipeline, runner = _external_pipeline(tmp_path)
+    with _resume(pipeline, default_step_runner=runner) as resumed:
+        assert resumed.config.default_step_runner == "external_test"
+        assert resumed.runner is runner
 
-    roots = {
-        "delta_root": str(tmp_path / "delta"),
-        "staging_root": str(tmp_path / "staging"),
+
+def test_resume_does_not_infer_default_from_curator_or_override(tmp_path: Path) -> None:
+    pipeline, _ = _external_pipeline(tmp_path, local_override=True)
+    rows = _steps(pipeline)
+    assert set(rows["compute_backend"]) == {"native-test", "local"}
+    options = [json.loads(value) for value in rows["compute_options_json"]]
+    assert {item["pipeline_default_step_runner"] for item in options} == {
+        "external_test"
     }
-    with PipelineManager.create(name="resume_order", **roots) as original:
-        result = original.run(IngestMockOp)
-    events = []
-    real_repair = repair.repair_store
-    real_resumable = StepTracker.load_resumable_steps
+    assert all(item["pipeline_default_runner_requires_instance"] for item in options)
+    with pytest.raises(ValueError, match="explicit matching"):
+        _resume(pipeline)
 
-    def recover(**kwargs):
+
+def test_resume_rejects_runner_name_mismatch_with_persisted_default(
+    tmp_path: Path,
+) -> None:
+    pipeline, _ = _external_pipeline(tmp_path)
+    with pytest.raises(ValueError, match="runner name differs"):
+        _resume(pipeline, default_step_runner=LocalRunner())
+
+
+def _configured_pipeline(tmp_path: Path) -> tuple[PipelineManager, LocalRunner]:
+    runner = replace(LocalRunner(), cache_root=tmp_path / "configured-cache")
+    with _create(tmp_path, default_step_runner=runner) as pipeline:
+        pipeline.run(Transform, inputs={"structure": []})
+    return pipeline, runner
+
+
+def test_resume_requires_explicit_configured_local_runner(tmp_path: Path) -> None:
+    pipeline, runner = _configured_pipeline(tmp_path)
+    options = json.loads(pipeline.executions[0].record.compute_options_json)
+    assert options["pipeline_default_step_runner"] == "local"
+    assert options["pipeline_default_runner_requires_instance"] is True
+    assert str(runner.cache_root) not in json.dumps(options)
+    assert "pipeline_default_local_runner" not in options
+    with pytest.raises(ValueError, match="explicit matching"):
+        _resume(pipeline)
+
+
+def test_resume_retains_supplied_configured_local_runner(tmp_path: Path) -> None:
+    pipeline, runner = _configured_pipeline(tmp_path)
+    with _resume(pipeline, default_step_runner=runner) as resumed:
+        assert resumed.runner is runner
+
+
+def test_resume_uses_explicit_runtime_settings_without_reconstructing_them(
+    tmp_path: Path,
+) -> None:
+    pipeline, _ = _configured_pipeline(tmp_path)
+    supplied = replace(LocalRunner(), cache_root=tmp_path / "new-explicit-cache")
+    with _resume(pipeline, default_step_runner=supplied) as resumed:
+        assert resumed.runner is supplied
+        result = resumed.run(Transform, inputs={"structure": []})
+        options = json.loads(
+            resumed.tracker.current_state(result.step_run_id).compute_options_json
+        )
+        assert options["pipeline_default_runner_requires_instance"] is True
+    with pytest.raises(ValueError, match="explicit matching"):
+        _resume(resumed)
+
+
+def test_resume_rejects_external_runner_name_without_instance(tmp_path: Path) -> None:
+    pipeline, _ = _external_pipeline(tmp_path)
+    with pytest.raises(ValueError, match="explicit matching"):
+        _resume(pipeline, default_step_runner="external_test")
+
+
+def test_resume_recovers_selected_terminal_before_exposing_results(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class ControllerInterrupted(BaseException):
+        pass
+
+    def interrupt(_self: RetainedStepResults, checkpoint: str) -> None:
+        if checkpoint == "plan":
+            raise ControllerInterrupted()
+
+    pipeline = _create(tmp_path)
+    runner = NativePipelineRunner(pipeline.committer)
+    with monkeypatch.context() as patch:
+        patch.setattr(RetainedStepResults, "_checkpoint", interrupt)
+        with pytest.raises(ControllerInterrupted):
+            pipeline.run(
+                Transform, inputs={"structure": [structure(0)]}, step_runner=runner
+            )
+    pipeline.close()
+    source = pipeline.executions[0].record.step_run_id
+    assert pipeline.tracker.current_state(source).status == StepStatus.RUNNING
+    recovery = module.recover_pipeline_results
+    events: list[str] = []
+
+    def recover(*args: Any, **kwargs: Any) -> Any:
         events.append("recover")
-        return real_repair(**kwargs)
+        return recovery(*args, **kwargs)
 
-    def accepted(tracker, run_id):
+    monkeypatch.setattr(module, "recover_pipeline_results", recover)
+    with _resume(pipeline) as resumed:
         assert events == ["recover"]
-        events.append("accepted")
-        return real_resumable(tracker, run_id)
+        assert resumed[0].status == StepStatus.SUCCEEDED
+        assert resumed[0].step_run_id == source
+        assert read_current_step_outputs(resumed.committer, source)
+    assert runner.resolutions == 1
 
-    monkeypatch.setattr(repair, "repair_store", recover)
-    monkeypatch.setattr(StepTracker, "load_resumable_steps", accepted)
-    with PipelineManager.resume(
-        **roots, pipeline_run_id=original.config.pipeline_run_id
-    ) as resumed:
-        assert resumed[0].step_run_id == result.step_run_id
-        assert events == ["recover", "accepted"]
+
+def test_resume_appends_after_failure_and_preserves_run_failure(tmp_path: Path) -> None:
+    with _create(tmp_path) as pipeline:
+        failed = pipeline.run(
+            DynamicCurator,
+            params={"fail": True},
+            step_runner=NativePipelineRunner(pipeline.committer),
+        )
+        assert failed.status == StepStatus.FAILED
+    original = _steps(pipeline)
+    with _resume(pipeline) as resumed:
+        assert resumed.current_step == 1
+        succeeded = resumed.run(
+            Transform,
+            inputs={"structure": [structure(0)]},
+            step_runner=NativePipelineRunner(resumed.committer),
+        )
+        assert succeeded.step_number == 1
+        assert succeeded.status == StepStatus.SUCCEEDED
+        assert resumed[0] == failed
+    assert resumed.finalize()["overall_success"] is False
+    assert (
+        _steps(resumed)
+        .filter(pl.col("step_run_id") == failed.step_run_id)
+        .equals(original)
+    )

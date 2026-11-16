@@ -15,7 +15,6 @@ from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -72,10 +71,6 @@ class DataGenerator(OperationDefinition):
 
     batch_strategy: BatchStrategy = BatchStrategy(  # type: ignore[call-arg]  # pydantic defaults
         units_per_worker=100, job_name="data_generator"
-    )
-
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
     )
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:

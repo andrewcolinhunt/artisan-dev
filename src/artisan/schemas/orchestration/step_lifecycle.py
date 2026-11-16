@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import StrEnum
 
+from artisan.schemas.enums import FailurePolicy
+
 
 class StepStatus(StrEnum):
     """Durable lifecycle state for one step attempt."""
@@ -32,6 +34,40 @@ class CancellationStatus(StrEnum):
     CONFIRMED = "confirmed"
     REJECTED = "rejected"
     UNKNOWN = "unknown"
+
+
+def classify_step_status(
+    succeeded: int,
+    failed: int,
+    failure_policy: FailurePolicy,
+    *,
+    infrastructure_error: bool = False,
+    cancellation_status: CancellationStatus | None = None,
+) -> StepStatus:
+    """Classify accepted unit counts, failure policy, and final cleanup evidence.
+
+    Infrastructure failures are always failed. Under ``CONTINUE``, partial is
+    reserved for a known mix whose successful subset is accepted. Confirmed
+    cancellation suppresses the step's outputs without revoking accepted units.
+    """
+    if cancellation_status == CancellationStatus.REQUESTED:
+        msg = "Step completion requires a final cancellation acknowledgement"
+        raise ValueError(msg)
+    if cancellation_status == CancellationStatus.CONFIRMED:
+        return StepStatus.CANCELLED
+    if (
+        infrastructure_error
+        or cancellation_status == CancellationStatus.UNKNOWN
+        or (failed > 0 and succeeded == 0)
+    ):
+        return StepStatus.FAILED
+    if failed > 0:
+        return (
+            StepStatus.PARTIAL
+            if failure_policy == FailurePolicy.CONTINUE
+            else StepStatus.FAILED
+        )
+    return StepStatus.SUCCEEDED
 
 
 @dataclass(frozen=True, slots=True)

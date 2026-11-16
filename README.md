@@ -58,8 +58,9 @@ cached results when the declared inputs and settings match a previous
 computation. Later investigations can build on both the methods and the
 evidence from earlier work.
 
-Artisan runs locally with worker processes. Optional runner providers and tool
-endpoints let you run the same operations in other compute environments.
+Artisan runs locally with worker processes. Optional runner providers place the
+same operation or composite lifecycle on Modal and Slurm. Tool dependencies are
+declared independently in locked Pixi projects.
 
 See the [orientation](docs/getting-started/orientation.md) for the execution and
 storage model, including its limits.
@@ -71,8 +72,8 @@ storage model, including its limits.
 
 ## Quick start
 
-**Prerequisites:** [Pixi 0.83.0](https://pixi.sh), Linux (x86_64 or aarch64) or
-macOS (Apple Silicon). Pixi supplies Python 3.12 and the other dependencies.
+**Prerequisites:** [Pixi 0.83.0](https://pixi.sh) and Linux (x86_64 or aarch64)
+for execution. Pixi supplies Python 3.12 and the other dependencies.
 
 ```bash
 # Install Pixi (if needed)

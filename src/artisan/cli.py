@@ -1,7 +1,7 @@
 """Artisan command-line interface.
 
-Expose operation discovery and execution, container builds, endpoint deployment,
-store inspection, diagnostic execution replay, and logical-commit repair.
+Expose operation discovery and execution, store inspection, diagnostic boundary
+replay, and selected-publication repair. Providers own software preparation.
 Use ``artisan --help`` and subcommand help for available commands and flags.
 
 Heavy artisan imports are deferred into the command functions so
@@ -16,11 +16,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import subprocess
 import sys
 import tempfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from artisan._cli_output import _diagnostics_to_stderr
 
@@ -29,22 +28,7 @@ if TYPE_CHECKING:
 
     from artisan.errors import ArtisanError
     from artisan.operations.base.operation_definition import OperationDefinition
-
-_CONTAINER_VIEW_FIELDS = (
-    "image",
-    "env",
-    "volumes",
-    "secrets",
-    "gpu",
-    "cpu",
-    "memory_mb",
-    "timeout",
-)
-"""``op image --json`` fields: what running the container anywhere needs.
-
-Deliberately excludes endpoint-deploy concerns (op module/qualname,
-params schema, description/input_roles, retries/scaling).
-"""
+    from artisan.schemas.execution.storage_config import StorageConfig
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -59,27 +43,6 @@ def _build_parser() -> argparse.ArgumentParser:
         prog="artisan", description="Artisan pipeline framework CLI"
     )
     sub = parser.add_subparsers(dest="command", required=True)
-
-    modal_parser = sub.add_parser("modal", help="Modal tool-endpoint commands")
-    modal_sub = modal_parser.add_subparsers(dest="modal_command", required=True)
-    deploy = modal_sub.add_parser(
-        "deploy",
-        help="Explicitly deploy an operation's declared tool endpoint to Modal",
-    )
-    deploy.add_argument(
-        "operation", help="Registered operation name (e.g. 'wait_tool')"
-    )
-    deploy.add_argument(
-        "--overlay",
-        action="append",
-        metavar="PKG",
-        help=(
-            "Dev mode: mount a local Python package source onto the worker "
-            "image, shadowing the baked version (repeatable). Production "
-            "deploys bake code into the image instead."
-        ),
-    )
-    deploy.set_defaults(func=_modal_deploy)
 
     op_parser = sub.add_parser("op", help="Operation commands")
     op_sub = op_parser.add_subparsers(dest="op_command", required=True)
@@ -101,17 +64,6 @@ def _build_parser() -> argparse.ArgumentParser:
     describe.add_argument("--json", action="store_true", help="Emit JSON")
     describe.set_defaults(func=_op_describe)
 
-    image = op_sub.add_parser(
-        "image", help="Print the container image ref an operation runs in"
-    )
-    image.add_argument("operation", help="Registered operation name")
-    image.add_argument(
-        "--json",
-        action="store_true",
-        help="Emit the container view (image, env, volumes, secrets, hardware)",
-    )
-    image.set_defaults(func=_op_image)
-
     run = op_sub.add_parser(
         "run",
         help=(
@@ -132,18 +84,6 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Directory for output files (defaults to the working directory)",
     )
     run.set_defaults(func=_op_run)
-
-    docker_parser = sub.add_parser("docker", help="Container image commands")
-    docker_sub = docker_parser.add_subparsers(dest="docker_command", required=True)
-    build = docker_sub.add_parser(
-        "build",
-        help=(
-            "Build an operation's image from docker/<image-name>/Dockerfile, "
-            "tagged with the ref its config declares (run from the repo root)"
-        ),
-    )
-    build.add_argument("operation", help="Registered operation name")
-    build.set_defaults(func=_docker_build)
 
     runs = sub.add_parser("runs", help="List persisted pipeline runs")
     _add_store_args(runs)
@@ -178,13 +118,23 @@ def _build_parser() -> argparse.ArgumentParser:
         "replay", help="Replay one committed execution unit"
     )
     replay.add_argument("execution_run_id")
+    replay.add_argument("--operation", required=True, metavar="MODULE:CLASS")
+    replay.add_argument(
+        "--definition", action="append", default=[], metavar="MODULE:CLASS"
+    )
     _add_store_args(replay)
     replay.add_argument("--debug-root", required=True)
     replay.add_argument("--staging-root")
-    replay.add_argument("--files-root")
     replay.add_argument("--local-runner", action="store_true")
     replay.add_argument(
         "--supply", action="append", default=[], metavar="POINTER=ENV_NAME"
+    )
+    replay.add_argument(
+        "--runtime",
+        action="append",
+        default=[],
+        metavar="KEY=ENV_NAME",
+        help="Supply a captured runtime value from an environment variable",
     )
     replay.add_argument("--allow-code-change", action="store_true")
     replay.set_defaults(func=_execution_replay)
@@ -197,32 +147,15 @@ def _build_parser() -> argparse.ArgumentParser:
     _add_store_args(repair)
     repair.add_argument("--staging-root", required=True, help="Worker staging root")
     repair.add_argument(
-        "--storage-config",
-        type=Path,
-        help="JSON file containing a StorageConfig object",
-    )
-    repair.add_argument(
         "--apply",
         action="store_true",
-        help="Finish pending commits and clean verified staging without a full audit",
-    )
-    repair.add_argument(
-        "--recover-staging",
-        action="store_true",
-        help="Include finished worker executions without a commit plan",
+        help="Audit and finish already selected immutable publications",
     )
     repair.add_argument(
         "--preserve-staging",
         action="store_true",
         help="Keep staged files after verified commitment",
     )
-    repair.add_argument(
-        "--files-root", help="Root for Artisan-managed external content"
-    )
-    repair.add_argument(
-        "--abandon", metavar="LOGICAL_COMMIT_ID", help="Abandon one planned commit"
-    )
-    repair.add_argument("--reason", help="Required explanation for --abandon")
     repair.set_defaults(func=_store_repair)
 
     _add_inspection_commands(sub)
@@ -283,6 +216,8 @@ def _add_store_args(parser: argparse.ArgumentParser) -> None:
         help="Delta Lake root (falls back to ARTISAN_DELTA_ROOT)",
     )
     parser.add_argument("--json", action="store_true", help="Emit JSON")
+    parser.add_argument("--files-root", help="Configured managed artifact carrier root")
+    parser.add_argument("--storage-config", type=Path, help="StorageConfig JSON file")
     parser.add_argument(
         "--load-module",
         action="append",
@@ -290,19 +225,6 @@ def _add_store_args(parser: argparse.ArgumentParser) -> None:
         metavar="MODULE",
         help="Load an installed trusted application before reading the store (repeatable)",
     )
-
-
-def _resolve_op_cls(operation: str) -> type[OperationDefinition] | None:
-    """Resolve a registered op class; print the registry error on a miss."""
-    from artisan.operations.base.operation_definition import OperationDefinition
-    from artisan.registry.discovery import discover
-
-    discover()
-    try:
-        return OperationDefinition.get(operation)
-    except KeyError as exc:
-        sys.stderr.write(f"{exc.args[0] if exc.args else exc}\n")
-        return None
 
 
 def _emit(args: argparse.Namespace, payload_fn: Callable[[], Any]) -> int:
@@ -428,7 +350,11 @@ def _runs(args: argparse.Namespace) -> int:
     def payload() -> Any:
         from artisan.orchestration.run_history import list_runs
 
-        return list_runs(_require_delta_root(args))
+        return list_runs(
+            _require_delta_root(args),
+            files_root=args.files_root,
+            storage=_storage_config(args),
+        )
 
     return _emit(args, payload)
 
@@ -439,7 +365,14 @@ def _failures(args: argparse.Namespace) -> int:
     def payload() -> Any:
         from artisan.visualization.inspect import inspect_failures
 
-        return inspect_failures(_require_delta_root(args), pipeline_run_id=args.run)
+        storage = _storage_config(args)
+        return inspect_failures(
+            _require_delta_root(args),
+            pipeline_run_id=args.run,
+            files_root=args.files_root,
+            fs=storage.filesystem(),
+            storage_options=storage.delta_storage_options(),
+        )
 
     return _emit(args, payload)
 
@@ -450,69 +383,63 @@ def _provenance(args: argparse.Namespace) -> int:
     def payload() -> Any:
         from artisan.provenance import provenance_edges
 
+        storage = _storage_config(args)
         return provenance_edges(
             _require_delta_root(args),
             args.artifact_id,
             direction=args.direction,
             depth=args.depth,
+            files_root=args.files_root,
+            storage=storage,
         )
 
     return _emit(args, payload)
 
 
 def _execution_replay(args: argparse.Namespace) -> int:
-    """Emit the durable replay outcome while reserving stdout for its JSON."""
-    from urllib.parse import urlsplit
-
+    """Emit one diagnostic boundary result using explicit trusted definitions."""
     from artisan.errors import ArtisanError, ErrorCode
     from artisan.orchestration import replay_execution
-    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-    from artisan.schemas.execution.storage_config import StorageConfig
+    from artisan.orchestration.runners import LocalRunner
+    from artisan.registry.resolve import resolve_definition
     from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
     outcome = None
 
     def payload() -> Any:
         nonlocal outcome
-        root = _require_delta_root(args)
-        protocol = urlsplit(root).scheme or "file"
-        if protocol != "file" and (not args.staging_root or not args.files_root):
+        storage = _storage_config(args)
+        if not storage.is_local and args.files_root is None:
             raise ArtisanError(
-                code=ErrorCode.REPLAY_CONFIGURATION_INVALID,
-                message="Cloud replay requires --staging-root and --files-root",
+                ErrorCode.REPLAY_CONFIGURATION_INVALID,
+                "Nonlocal replay requires --files-root",
                 error_type="config",
             )
-        replacements = {}
-        for supplied in args.supply:
-            pointer, separator, variable = supplied.partition("=")
-            if (
-                not separator
-                or not pointer.startswith("/")
-                or not variable
-                or pointer in replacements
-            ):
-                raise ArtisanError(
-                    code=ErrorCode.REPLAY_CONFIGURATION_INVALID,
-                    message="--supply requires unique POINTER=ENV_NAME entries",
-                    error_type="config",
-                )
-            replacements[pointer] = variable
-        debug = Path(args.debug_root).resolve()
-        runtime = RuntimeEnvironment(  # type: ignore[call-arg]  # Pydantic runtime defaults
-            delta_root=root,
-            application_modules=args.application_modules,
-            staging_root=args.staging_root or str(debug / "staging"),
-            files_root=args.files_root or str(debug / "files"),
-            working_root=str(debug / "work"),
-            failure_logs_root=str(debug / "logs"),
-            storage=StorageConfig(protocol=protocol),
-        )
+        replacements = _replay_replacements(args.supply, pointers=True)
+        runtime = _replay_replacements(args.runtime, pointers=False)
+        try:
+            operation = resolve_definition(args.operation)
+            definitions = tuple(resolve_definition(item) for item in args.definition)
+        except (ImportError, AttributeError, TypeError, ValueError):
+            raise ArtisanError(
+                ErrorCode.REPLAY_DEPENDENCY_UNAVAILABLE,
+                "Explicit replay definitions could not be loaded",
+                error_type="config",
+            ) from None
         outcome = replay_execution(
             args.execution_run_id,
-            runtime=runtime,
-            step_runner="local" if args.local_runner else None,
-            replacement_env=replacements,
+            delta_root=_require_delta_root(args),
+            files_root=args.files_root,
+            storage=storage,
+            operation=operation,
+            definitions=definitions,
+            application_modules=args.application_modules,
+            step_runner=LocalRunner() if args.local_runner else None,
+            runtime_replacements=runtime,
+            configuration_replacements=replacements,
             allow_code_change=args.allow_code_change,
+            working_root=Path(args.debug_root).resolve(),
+            staging_root=args.staging_root,
         )
         return outcome
 
@@ -525,43 +452,68 @@ def _execution_replay(args: argparse.Namespace) -> int:
     return code
 
 
-def _store_repair(args: argparse.Namespace) -> int:
-    """Report, replay, or explicitly abandon immutable commit evidence."""
-    if args.apply and args.abandon is not None:
-        sys.stderr.write("--apply and --abandon are separate actions\n")
-        return 2
-    if args.recover_staging and args.abandon is not None:
-        sys.stderr.write("--recover-staging and --abandon are separate actions\n")
-        return 2
-    if args.abandon is not None and not args.reason:
-        sys.stderr.write("--abandon requires --reason\n")
-        return 2
-    if args.abandon is None and args.reason is not None:
-        sys.stderr.write("--reason requires --abandon\n")
-        return 2
+def _replay_replacements(values: Sequence[str], *, pointers: bool) -> dict[str, Any]:
+    from artisan.errors import ArtisanError, ErrorCode
 
+    replacements = {}
+    for supplied in values:
+        key, separator, variable = supplied.partition("=")
+        if (
+            not separator
+            or not key
+            or not variable
+            or key in replacements
+            or (pointers and not key.startswith("/"))
+        ):
+            raise ArtisanError(
+                ErrorCode.REPLAY_CONFIGURATION_INVALID,
+                "Replacements require unique POINTER=ENV_NAME or KEY=ENV_NAME entries",
+                error_type="config",
+            )
+        if variable not in os.environ:
+            raise ArtisanError(
+                ErrorCode.REPLAY_REPLACEMENT_REQUIRED,
+                "A replacement environment variable is unset",
+                error_type="config",
+            )
+        value = os.environ[variable]
+        if pointers:
+            try:
+                replacements[key] = json.loads(value)
+            except ValueError:
+                replacements[key] = value
+        else:
+            replacements[key] = value
+    return replacements
+
+
+def _storage_config(args: argparse.Namespace) -> StorageConfig:
+    from fsspec.utils import get_protocol
+
+    from artisan.schemas.execution.storage_config import StorageConfig
+
+    if args.storage_config is not None:
+        return StorageConfig.model_validate_json(args.storage_config.read_text())
+    protocol = get_protocol(_require_delta_root(args))
+    return StorageConfig(protocol="file" if protocol == "local" else protocol)
+
+
+def _store_repair(args: argparse.Namespace) -> int:
+    """Inspect evidence or finish already selected immutable publications."""
     result: dict[str, Any] = {}
 
     def payload() -> Any:
-        from artisan.schemas.execution.storage_config import StorageConfig
         from artisan.storage.io.repair import repair_store
 
-        storage = (
-            StorageConfig.model_validate_json(args.storage_config.read_text())
-            if args.storage_config is not None
-            else StorageConfig()
-        )
+        storage = _storage_config(args)
         report = repair_store(
             delta_root=_require_delta_root(args),
             staging_root=args.staging_root,
             fs=storage.filesystem(),
             storage_options=storage.delta_storage_options(),
             apply=args.apply,
-            recover_staging=args.recover_staging,
             preserve_staging=args.preserve_staging,
             files_root=args.files_root,
-            abandon=args.abandon,
-            reason=args.reason,
         )
         result["report"] = report
         return report
@@ -571,48 +523,6 @@ def _store_repair(args: argparse.Namespace) -> int:
     if exit_code == 0 and report is not None and report.unresolved:
         return 1
     return exit_code
-
-
-def _modal_deploy(args: argparse.Namespace) -> int:
-    """Resolve the op, build its app, and deploy it as a persistent Modal app."""
-    from artisan.execution.tool_endpoint._optional import MODAL_EXTRA_MESSAGE
-    from artisan.execution.tool_endpoint.deploy import build_app
-
-    op_cls = _resolve_op_cls(args.operation)
-    if op_cls is None:
-        return 1
-    try:
-        app = build_app(op_cls, overlay=args.overlay)
-    except ImportError as exc:
-        if str(exc) != MODAL_EXTRA_MESSAGE:
-            raise
-        sys.stderr.write(MODAL_EXTRA_MESSAGE + "\n")
-        return 1
-    app.deploy()
-    sys.stdout.write(f"Deployed artisan-tool-{op_cls.name}\n")
-    return 0
-
-
-def _op_image(args: argparse.Namespace) -> int:
-    """Print the op's image ref, or the ``--json`` container view."""
-    with _diagnostics_to_stderr():
-        from artisan.execution.tool_endpoint.spec import endpoint_spec
-
-        op_cls = _resolve_op_cls(args.operation)
-        if op_cls is None:
-            return 1
-        try:
-            spec = endpoint_spec(op_cls)
-        except ValueError as exc:
-            sys.stderr.write(f"{exc}\n")
-            return 1
-        if args.json:
-            view = {field: getattr(spec, field) for field in _CONTAINER_VIEW_FIELDS}
-            rendered = json.dumps(view, indent=2)
-        else:
-            rendered = spec.image
-    sys.stdout.write(rendered + "\n")
-    return 0
 
 
 def _file_shaped(inputs: dict[str, Any]) -> dict[str, list[str]]:
@@ -680,7 +590,7 @@ def _op_run_managed(args: argparse.Namespace) -> int:
     pollutes output collection; logging that matters goes to stdout,
     which the parent ``run_command`` captures to the unit log.
     """
-    from artisan.execution.tool_endpoint.server import instantiate_op
+    from artisan.composites.base.snapshots import instantiate_parameters
     from artisan.registry.resolve import resolve_operation
     from artisan.schemas.specs.input_models import ExecuteInput
     from artisan.utils.command_supervisor import (
@@ -701,7 +611,10 @@ def _op_run_managed(args: argparse.Namespace) -> int:
     try:
         op_cls = resolve_operation(f"{module}:{qualname}")
         normalized = _file_shaped(json.loads(args.inputs))
-        op = instantiate_op(op_cls, json.loads(args.params))
+        op = cast(
+            "OperationDefinition",
+            instantiate_parameters(op_cls, json.loads(args.params)),
+        )
     except (ImportError, AttributeError, TypeError, ValueError) as exc:
         sys.stderr.write(redact_values(f"{exc}\n", attachment_sensitive_values()))
         return 1
@@ -732,25 +645,6 @@ def _op_run_managed(args: argparse.Namespace) -> int:
             )
         )
         return 1
-    return 0
-
-
-def _docker_build(args: argparse.Namespace) -> int:
-    """Build the op's image from its conventional Dockerfile."""
-    from artisan.execution.tool_endpoint.docker import build_image
-
-    op_cls = _resolve_op_cls(args.operation)
-    if op_cls is None:
-        return 1
-    try:
-        ref = build_image(op_cls, Path.cwd())
-    except (ValueError, FileNotFoundError) as exc:
-        sys.stderr.write(f"{exc}\n")
-        return 1
-    except subprocess.CalledProcessError as exc:
-        sys.stderr.write(f"docker build failed with exit code {exc.returncode}\n")
-        return 1
-    sys.stdout.write(f"{ref}\n")
     return 0
 
 

@@ -1,290 +1,78 @@
 ---
 name: composite-write
-description: Write or scaffold an Artisan composite operation. Use this skill when the user asks to create a composite, write a composite operation, scaffold a composite, compose operations, or any request involving CompositeDefinition subclasses. Trigger on phrases like "write a composite", "create a composite operation", "scaffold a composite", "compose operations", or any request to combine multiple operations into a reusable unit.
+description: Write, scaffold, or review an Artisan CompositeDefinition that connects creators under one execution and persistence boundary. Use for reusable operation compositions; use pipeline-write when intermediate steps need independent persistence or recovery.
 ---
 
 # Write an Artisan Composite
 
-Write or scaffold the composite operation described in the user's request. If
-the invoking client supplies explicit skill arguments, treat them as the
-request details.
-
-Before writing, read the example composites in the integration test
-(`tests/integration/test_composite.py`) and the base class at
-`src/artisan/composites/base/composite_definition.py` to match established patterns.
-
----
-
-## When to Use a Composite
-
-- **Reusable multi-operation sequence** — a fixed chain of operations that
-  appears in multiple pipelines
-- **Tightly coupled ops** — operations that logically belong together and are
-  named as one reusable unit
-- **Named grouping over real steps** — running a composite expands each
-  internal `ctx.run()` into its own pipeline step with independent caching,
-  batching, dispatch, and provenance
-
-If you only need a single operation, use `operation-write` instead.
-
----
-
-## Composite Template
-
-Declare metadata, inputs, outputs, parameters, and `compose()` in that order.
-
-```python
-"""One-line module docstring describing what this composite does."""
-
-from __future__ import annotations
-
-from enum import StrEnum
-from typing import ClassVar
-
-from artisan.composites import CompositeContext, CompositeDefinition
-from artisan.schemas import InputSpec, OutputSpec
-
-# Import operations used in compose()
-from artisan.operations.examples import DataTransformer, MetricCalculator
-
-
-class TransformAndScore(CompositeDefinition):
-    """Transform data then compute metrics.
-
-    Runs DataTransformer followed by MetricCalculator, exposing only the
-    final metrics as output.
-    """
-
-    name = "transform_and_score"
-    description = "Transform data then compute metrics"
-
-    class InputRole(StrEnum):
-        DATA = "data"
-
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.DATA: InputSpec(
-            artifact_type="csv",
-            required=True,
-            description="Input dataset to transform and score",
-        ),
-    }
-
-    class OutputRole(StrEnum):
-        METRICS = "metrics"
-
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.METRICS: OutputSpec(
-            artifact_type="metric",
-            description="Computed metrics from the transformed data",
-        ),
-    }
-
-    def compose(self, ctx: CompositeContext) -> None:
-        """Define the internal operation graph."""
-        transformed = ctx.run(
-            DataTransformer,
-            inputs={"dataset": ctx.input("data")},
-            params={"scale_factor": 2.0},
-        )
-        metrics = ctx.run(
-            MetricCalculator,
-            inputs={"dataset": transformed.output("dataset")},
-        )
-        ctx.output("metrics", metrics.output("metrics"))
-```
-
----
-
-## compose() Method
-
-The `compose()` method defines the internal operation graph using three
-primitives on the `CompositeContext`:
-
-| Method | Purpose |
-|---|---|
-| `ctx.input(role)` | Get a `CompositeRef` for an external input by role name |
-| `ctx.run(operation, inputs=..., params=..., ...)` | Run an internal operation, returns `CompositeStepHandle` |
-| `ctx.output(role, ref)` | Map an internal output to an external output role |
-
-`ctx.run()` returns a `CompositeStepHandle` whose `.output(role)` returns a
-`CompositeRef` for wiring to downstream internal operations or to `ctx.output()`.
-
----
-
-## Per-Operation Overrides in compose()
-
-`ctx.run()` accepts optional execution overrides applied to that step:
-
-```python
-from artisan.orchestration import Runner
-from artisan.schemas import CachePolicy
-
-ctx.run(
-    DataTransformer,
-    inputs={"dataset": ctx.input("data")},
-    params={"scale_factor": 2.0},
-    runner_resources={"cpus": 4, "memory_gb": 16},
-    batch_strategy={"artifacts_per_unit": 10},
-    step_runner=Runner.LOCAL,
-    environment="my_container",
-    tool={"executable": "/path/to/tool"},
-    cache_policy=CachePolicy.ALL_SUCCEEDED,
-)
-```
-
-Composite-level overrides passed to `run_composite`/`submit_composite` are the
-defaults for every child step; a value set on a `ctx.run()` call wins for that
-step and that knob.
-
-`cache_policy: CachePolicy | None = None` follows the same rule through nested
-composites. Omission and explicit `None` inherit the nearest enclosing explicit
-policy, then the pipeline default. Pass `CachePolicy.ALL_SUCCEEDED` to require
-a succeeded whole-step source, or `CachePolicy.STEP_COMPLETED` to also accept
-a partial source. A nested `ctx.run(InnerComposite, cache_policy=...)` changes
-the default for that subtree; a deeper leaf can override it again. Policies
-do not alter computational IDs or the reuse of successful individual units.
-Pipeline or child `skip_cache=True` and operation `cacheable=False` bypass both
-cache layers regardless of the selected policy.
-
-Core recognizes only the built-in `"local"` name. Pass an initialized runner
-from an optional provider at the pipeline boundary when creator children need
-external dispatch:
-
-```python
-from artisan_submitit import SlurmRunner
-
-pipeline.run_composite(
-    TransformAndScore,
-    inputs={"data": output("generate", "datasets")},
-    step_runner=SlurmRunner(slurm_partition="gpu"),
-)
-```
-
-That default applies to creator children. Curator children always run in an
-isolated local subprocess; do not put provider instances on curator
-`ctx.run()` calls.
-
----
-
-## Nesting Composites
-
-Composites can contain other composites via `ctx.run()`:
-
-```python
-class OuterComposite(CompositeDefinition):
-    name = "outer"
-    description = "Runs an inner composite then scores"
-
-    class OutputRole(StrEnum):
-        METRICS = "metrics"
-
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        "metrics": OutputSpec(artifact_type="metric"),
-    }
-
-    def compose(self, ctx: CompositeContext) -> None:
-        inner = ctx.run(InnerComposite)
-        metrics = ctx.run(MetricCalculator, inputs={"dataset": inner.output("dataset")})
-        ctx.output("metrics", metrics.output("metrics"))
-```
-
----
-
-## Differences from OperationDefinition
-
-Composites are **not** operations. Key differences:
-
-| Feature | OperationDefinition | CompositeDefinition |
-|---|---|---|
-| Core method | `execute_function()` / `execute_command()` or `execute_curator()` | `compose()` |
-| Lifecycle hooks | `preprocess()`, `postprocess()` | None |
-| `tool` / `environments` | Supported | Not supported (set per-op in compose) |
-| `derives_from` on outputs | Required for artifact-producing roles | Leave unset; child operations declare ancestry |
-| `runtime_defined_inputs` | Supported | Not supported |
-| `group_by` | Supported | Not supported |
-| Registry | `OperationDefinition._registry` | `CompositeDefinition._registry` |
-
----
-
-## Validation Rules
-
-The framework validates at class definition time (`__pydantic_init_subclass__`):
-
-- `compose()` must be overridden (raises `TypeError` otherwise)
-- `OutputRole(StrEnum)` values must match `outputs` keys exactly
-- `InputRole(StrEnum)` values must match `inputs` keys exactly (if inputs
-  are defined)
-- Registered automatically in `CompositeDefinition._registry` by `name`
-
----
-
-## Running Composites
-
-Composites run via `run_composite` (waits for every child) or `submit_composite`
-(returns a result handle after synchronous composition and preparation).
-Preparing children can wait for predecessors, so submission need not return
-immediately. The current manager runs steps serially; creator batches can run
-in parallel within a step. See `pipeline-write` for pipeline usage:
-
-```python
-# Blocking: expands into real pipeline steps, one per internal ctx.run()
-pipeline.run_composite(
-    TransformAndScore,
-    name="ts",
-    inputs={"data": output("generate", "datasets")},
-)
-
-# Submit and receive a CompositeResult for downstream wiring.
-result = pipeline.submit_composite(
-    TransformAndScore, name="ts", inputs={"data": output("generate", "datasets")}
-)
-pipeline.run(NextOp, inputs={"data": result.output("metrics")})
-```
-
-Application composites and their child definitions must be importable in the
-relevant processes. Declare trusted application modules at the pipeline
-boundary; see
-[application loading](../../docs/how-to-guides/configuring-execution.md#load-application-definitions-in-every-process).
-
----
-
-## Testing Patterns
-
-### Integration test
-
-```python
-def test_composite(tmp_path):
-    pipeline = PipelineManager.create(
-        name="test",
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "staging"),
-    )
-    output = pipeline.output
-
-    pipeline.run(DataGenerator, name="gen", params={"count": 2, "seed": 42})
-    pipeline.run_composite(
-        TransformAndScore, name="ts", inputs={"data": output("gen", "datasets")}
-    )
-
-    summary = pipeline.finalize()
-    # The composite expands into one step per internal operation
-    assert summary["overall_success"]
-    assert summary["total_steps"] >= 3
-```
-
----
-
-## Style Rules
-
-Follow these conventions (mirrors operation-write):
-
-- **Module docstring**: One line, describes what the composite does
-- **Class docstring**: Summary line + optional extended description
-- **Comments**: Explain non-obvious choices; omit decorative section banners.
-- **Section order**: Metadata, Inputs, Outputs, Parameters, Compose
-- **compose() docstring**: One-line imperative summary
-- **name value**: `snake_case` matching the class name's snake_case form
-- **Imports**: Group stdlib, then artisan composites, then artisan operations.
-  Use `from __future__ import annotations`
-- **No bare constants**: Put configurable values in a `Params` class or as
-  `params` in `ctx.run()` calls
+Implement the requested composition with the installed public API. Inspect the
+child operations' role, parameter, and lineage contracts before wiring them.
+Use [Write Composite Operations](../../docs/how-to-guides/writing-composite-operations.md)
+for the maintained example and [CompositeDefinition Reference](../../docs/reference/composite-definition.md)
+for public entry points. In an installed application without this source tree,
+consult the corresponding published documentation and installed docstrings.
+
+## Choose the boundary
+
+A composite runs creators and nested composites sequentially within each worker
+unit. It has one accepted result and cache boundary. Its children do not become
+pipeline steps. If an intermediate needs independent persistence, reuse, or
+recovery, make it a separate pipeline submission instead.
+
+Store-bound curators such as `Filter`, `Merge`, and ingestion operations stay at
+the pipeline level. `compose()` cannot read a store or uncommitted child results.
+
+## Declare the plan
+
+1. Define `CompositeDefinition`, matching `InputRole`/`OutputRole` enums and
+   typed `inputs`/`outputs`. Declare algorithm parameters through a nested
+   Pydantic `Params` model and matching `params` field when needed.
+2. Implement `compose(self, ctx: CompositeContext) -> None` with `ctx.input`,
+   `ctx.call`, and `ctx.output`. Import these types from `artisan.composites`.
+3. Pass scientific inputs and effective parameters to each `ctx.call`. Use a
+   unique `name` when it makes repeated calls easier to identify.
+4. Bind every declared public output exactly once. An ordered list of references
+   concatenates streams and preserves duplicate occurrences. Only optional
+   outputs may be explicitly empty.
+
+References contain wiring, not artifact values or futures. Loops and conditions
+may depend on parameters, but not on future output contents. Keep composition
+deterministic and free of provisioning, command execution, and filesystem I/O.
+Do not attach child runner, cache, retry, batching, or persistence settings.
+
+## Select what survives
+
+Choose the intended public outputs explicitly. Child operations retain their
+ordinary lineage declarations; the composite does not repeat them. Unexported
+intermediates remain temporary unless a retained artifact's semantic-reference
+policy requires support content.
+
+Export both a structure and its metric when their direct relationship should
+survive. A history metric can remain an ordinary metric associated with the
+final structure; it does not require persisting every intermediate. Preserve
+exact occurrence identity when the same artifact appears more than once.
+
+See [Composites and Composition](../../docs/concepts/composites-and-composition.md)
+for projection and retention rules. Do not invent identifier rewriting or infer
+lineage from filenames.
+
+## Execute and verify
+
+Submit through the same `pipeline.run(Definition, ...)` or
+`pipeline.submit(Definition, ...)` used for operations. Runner placement,
+resources, grouping, batching, cache, and failure policies belong to that outer
+submission. Each command child may declare its own canonical tool `Environment`;
+preparation remains explicit through the selected runner.
+
+For local authoring checks, use `ExecutionSession` from `artisan.execution` as a
+context manager and call `session.run(Definition, inputs=..., params=...)`.
+Inputs are finalized artifacts with local carriers. The session retains temporary
+artifacts across sequential calls and performs no store writes or provisioning.
+See [Prepare Execute Environments](../../docs/how-to-guides/execute-environments.md)
+when a child needs prepared software.
+
+Verify the requested behavior with a small real invocation: selected output roles,
+ordered duplicates, optional empties, and relevant lineage/reference relationships.
+For a persisted pipeline test, check one outer step and its accepted output
+membership. Do not test independent child cache entries or fabricate committed
+artifacts to make the example pass.

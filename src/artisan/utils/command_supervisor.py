@@ -70,6 +70,7 @@ class OwnershipOutcome:
 Attachment = dict[str, str]
 _current: _Invocation | None = None
 _bootstrap: _Invocation | None = None
+_attached_unit: _Invocation | None = None
 _invocation_lock = threading.RLock()
 _request_lock = threading.Lock()
 _diagnostic_invocation: ContextVar[int | None] = ContextVar(
@@ -130,13 +131,18 @@ def attachment_sensitive_values() -> tuple[str, ...]:
     return tuple(value for value in values if value)
 
 
-def reject_nested_native_scope() -> None:
-    """Reject ambient, partial or expected attachments before native startup."""
-    if (
+def has_command_scope() -> bool:
+    """Report an ambient or partial scope without attaching or claiming ownership."""
+    return (
         _current is not None
         or _bootstrap is not None
         or any(key in os.environ for key in ATTACHMENT_ENV)
-    ):
+    )
+
+
+def reject_nested_native_scope() -> None:
+    """Reject ambient, partial or expected attachments before native startup."""
+    if has_command_scope():
         msg = "Nested native execution inside managed work is unsupported"
         raise CommandOwnershipError(msg)
 
@@ -577,6 +583,36 @@ def initialize_native_worker(attachment: Attachment) -> None:
     signal.signal(signal.SIGINT, signal.SIG_IGN)
 
 
+@contextlib.contextmanager
+def attached_worker_unit(attachment: Attachment) -> Iterator[None]:
+    """Attach one sequential packed unit before loading its live payload.
+
+    The process-wide attachment covers joined operation threads. Closing a unit
+    never closes the transport owner, and does not prove Python execution stopped.
+    """
+    global _bootstrap, _attached_unit  # noqa: PLW0603 — ownership covers joined threads
+    with _invocation_lock:
+        if _current is not None or _attached_unit is not None:
+            msg = "A packed worker unit is already active"
+            raise CommandOwnershipError(msg)
+        previous = _bootstrap
+        invocation = _Invocation(_validate_attachment(attachment), bootstrap=True)
+        _bootstrap = _attached_unit = invocation
+    try:
+        yield
+    except BaseException as error:
+        invocation.close(error)
+        raise
+    finally:
+        try:
+            if not invocation.reported:
+                invocation.close()
+        finally:
+            with _invocation_lock:
+                _bootstrap, _attached_unit = previous, None
+            invocation.dispose()
+
+
 def validate_worker_attachment() -> None:
     """Validate expected worker ownership before trusted cloudpickle executes."""
     if _bootstrap is not None:
@@ -598,7 +634,7 @@ def validate_worker_attachment() -> None:
 
 
 @contextlib.contextmanager
-def managed_invocation() -> Iterator[None]:
+def managed_invocation() -> Iterator[_Invocation]:
     """Attach one unit before bootstrap; share it with joined operation threads."""
     global _current  # noqa: PLW0603 — invocation ownership is process-wide
     with _invocation_lock:
@@ -643,19 +679,28 @@ def managed_invocation() -> Iterator[None]:
             _diagnostic_invocation.get(),
             _diagnostic_tool.get(),
         )
+    failure: BaseException | None = None
     try:
-        yield
-    except BaseException as error:
-        invocation.close(error)
-        raise
-    finally:
         try:
+            yield invocation
+        except BaseException as error:
+            invocation.close(error)
+            raise
+        finally:
             if not invocation.reported:
                 invocation.close()
-        finally:
-            with _invocation_lock:
-                _current = previous
-            invocation.dispose()
+    except BaseException as error:
+        failure = error
+        raise
+    finally:
+        with _invocation_lock:
+            _current = previous
+        invocation.dispose()
+        if invocation.uncertain:
+            if failure is None:
+                raise CommandOwnershipError(_UNKNOWN)
+            if _UNKNOWN not in getattr(failure, "__notes__", ()):
+                failure.add_note(_UNKNOWN)
 
 
 def bind_scope_observer(observer: Any) -> Any:
@@ -686,8 +731,11 @@ def scope_command_diagnostics() -> tuple[int | None, Any]:
     return (None, None) if _current is None else _current.diagnostics
 
 
-def check_command_scope() -> None:
+def check_command_scope(*, expected: _Invocation | None = None) -> None:
     """Check current and bootstrap uncertainty without ending the invocation."""
+    if expected is not None and _current is not expected:
+        msg = "Session invocation scope is not current"
+        raise RuntimeError(msg)
     if _current is not None:
         _current.check()
 
@@ -805,13 +853,6 @@ class ManagedCommand:
                 fds=(0, stdout_write, stderr_write),
             )
             self._update(response)
-            if self.state == "launch_failed":
-                launch_error = response.get("launch_error")
-                error_type = {"missing": FileNotFoundError, "invalid": ValueError}.get(
-                    launch_error if isinstance(launch_error, str) else "os", OSError
-                )
-                msg = "Managed command could not be launched"
-                raise error_type(msg)
             if self.state == "rejected":
                 msg = "Managed command admission is closed"
                 raise CommandOwnershipError(msg)
@@ -826,6 +867,13 @@ class ManagedCommand:
 
     def _update(self, response: dict[str, Any]) -> None:
         self.state = response.get("state", "unknown")
+        if self.state == "launch_failed":
+            launch_error = response.get("launch_error")
+            error_type = {"missing": FileNotFoundError, "invalid": ValueError}.get(
+                launch_error if isinstance(launch_error, str) else "os", OSError
+            )
+            message = "Managed command could not be launched"
+            raise error_type(message)
         self.returncode = response.get("returncode")
         self.launch_seconds = response.get("launch_seconds", self.launch_seconds)
         deadline = response.get("deadline")

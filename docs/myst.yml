@@ -117,7 +117,8 @@ project:
         - title: Configuration
           children:
             - file: how-to-guides/configuring-execution.md
-            - file: how-to-guides/deploying-tool-endpoints.md
+            - file: how-to-guides/execute-environments.md
+            - file: how-to-guides/running-remote-workers.md
             - file: how-to-guides/debugging-executions.md
             - file: how-to-guides/configuring-s3.md
             - file: how-to-guides/op-container-images.md
@@ -149,6 +150,7 @@ project:
 
 site:
   title: Artisan
+  template: https://github.com/jupyter-book/myst-theme/releases/download/myst-to-react%401.4.1/book-theme.zip
 
   # Header navigation
   nav:

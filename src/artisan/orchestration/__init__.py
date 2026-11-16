@@ -1,38 +1,10 @@
-"""Public orchestration API for artisan pipelines.
-
-This package-level module exposes the stable entry points used by pipeline
-definitions:
-
-- PipelineManager: Main interface for defining and executing pipeline steps.
-- PipelineConfig: Frozen configuration model returned by ``pipeline.config``.
-- Runner: Namespace of built-in step runner instances (currently LOCAL).
-- RunnerBase: ABC for custom runners.
-- list_runs: Module-level function that lists pipeline runs in a Delta root.
-
-Example:
-    from artisan.orchestration import PipelineManager, Runner, list_runs
-
-    pipeline = PipelineManager.create(
-        name="my_pipeline",
-        delta_root="/data/delta",
-        staging_root="/data/staging",
-        default_step_runner=Runner.LOCAL,
-    )
-    output = pipeline.output
-
-    pipeline.run(operation=IngestCSV, name="ingest", inputs=files)
-    pipeline.run(operation=ScoreOp, name="score", inputs={"data": output("ingest", "csv")})
-    result = pipeline.finalize()
-
-    df = list_runs("/data/delta")
-"""
+"""Pipeline submission, finite results, and current run inspection."""
 
 from __future__ import annotations
 
-from artisan.orchestration.pipeline_manager import PipelineManager
-from artisan.orchestration.replay import replay_execution
+from typing import TYPE_CHECKING
+
 from artisan.orchestration.run_history import list_runs
-from artisan.orchestration.runners import Runner, RunnerBase
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
@@ -44,14 +16,16 @@ from artisan.schemas.orchestration.step_lifecycle import (
 )
 from artisan.schemas.orchestration.step_result import StepResult
 
+if TYPE_CHECKING:
+    from artisan.orchestration.pipeline_manager import PipelineManager
+    from artisan.orchestration.replay import replay_execution
+
 __all__ = [
     "CancellationStatus",
     "OutputReference",
     "PipelineConfig",
     "PipelineManager",
     "ReplayResult",
-    "Runner",
-    "RunnerBase",
     "StepDisposition",
     "StepFuture",
     "StepResult",
@@ -59,3 +33,17 @@ __all__ = [
     "list_runs",
     "replay_execution",
 ]
+
+
+def __getattr__(name: str) -> object:
+    # Worker contracts import orchestration submodules before controller startup.
+    if name == "PipelineManager":
+        from artisan.orchestration.pipeline_manager import PipelineManager
+
+        return PipelineManager
+    if name == "replay_execution":
+        from artisan.orchestration.replay import replay_execution
+
+        return replay_execution
+    msg = f"module {__name__!r} has no attribute {name!r}"
+    raise AttributeError(msg)

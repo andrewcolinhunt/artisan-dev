@@ -12,13 +12,13 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 from artisan.schemas.enums import FailurePolicy
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 from .conftest import (
     FailingTransformer,
     count_artifacts_by_step,
+    create_native_pipeline,
     get_step_status,
 )
 
@@ -27,7 +27,7 @@ def test_fail_fast_policy(pipeline_env: dict[str, str]):
     """FAIL_FAST: step fails immediately, step status is 'failed'."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_fail_fast",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -38,14 +38,13 @@ def test_fail_fast_policy(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_index": 1},
-        step_runner=Runner.LOCAL,
+        batch_strategy={"max_workers": 1},
     )
 
     assert step1.status is StepStatus.FAILED
@@ -62,7 +61,7 @@ def test_continue_policy(pipeline_env: dict[str, str]):
     """CONTINUE: partial failures proceed, successful artifacts persisted."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_continue",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -73,14 +72,13 @@ def test_continue_policy(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_index": 1},
-        step_runner=Runner.LOCAL,
+        batch_strategy={"max_workers": 1},
     )
 
     assert step1.succeeded_count == 2
@@ -96,11 +94,11 @@ def test_continue_policy(pipeline_env: dict[str, str]):
     step2 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        step_runner=Runner.LOCAL,
     )
 
     assert step2.status is StepStatus.SUCCEEDED
-    assert step2.succeeded_count == 2
+    assert step2.succeeded_count == 1
+    assert count_artifacts_by_step(delta_root, 2) == 2
 
     result = pipeline.finalize()
     # overall_success is false because step 1 is explicitly partial.
@@ -111,7 +109,7 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
     """CONTINUE with all failures: step completes, downstream skipped."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_all_fail_continue",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -122,14 +120,13 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     step1 = pipeline.run(
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_all": True},
-        step_runner=Runner.LOCAL,
+        batch_strategy={"max_workers": 1},
     )
 
     assert step1.succeeded_count == 0
@@ -139,7 +136,6 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
     step2 = pipeline.run(
         MetricCalculator,
         inputs={"dataset": pipeline.output("failing_transformer", "dataset")},
-        step_runner=Runner.LOCAL,
     )
 
     assert step2.status is StepStatus.SKIPPED
@@ -149,13 +145,13 @@ def test_all_executions_fail_continue(pipeline_env: dict[str, str]):
 
 
 def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
-    """Resume re-executes failed steps while reusing cached successful steps."""
+    """Resume appends successful work without hiding the original failed attempt."""
     delta_root = pipeline_env["delta_root"]
     staging_root = pipeline_env["staging_root"]
     working_root = pipeline_env["working_root"]
 
     # Run 1: FAIL_FAST, step 1 fails
-    p1 = PipelineManager.create(
+    p1 = create_native_pipeline(
         name="test_resume_fail",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -167,7 +163,6 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     assert step0.status is StepStatus.SUCCEEDED
 
@@ -175,22 +170,24 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
         FailingTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={"fail_on_all": True},
-        step_runner=Runner.LOCAL,
+        batch_strategy={"max_workers": 1},
     )
     assert step1.status is StepStatus.FAILED
     p1.finalize()
 
-    # Run 2: resume, replace step 1 with DataTransformer, add step 2
+    # Run 2: resume and append a working replacement plus downstream metrics.
     p2 = PipelineManager.resume(
         delta_root=delta_root,
         staging_root=staging_root,
         pipeline_run_id=run_id,
+        default_step_runner=p1.runner,
     )
 
     # Step 0 was restored from cache
-    assert p2.current_step >= 1
+    assert p2.current_step == 2
+    original = p1.tracker.current_state(step1.step_run_id)
 
-    # Re-run step 1 with a working operation
+    # Append a working replacement, preserving the failed position.
     step1b = p2.run(
         DataTransformer,
         inputs={"dataset": p2[0].output("datasets")},
@@ -200,17 +197,18 @@ def test_resume_from_failed_pipeline(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
     assert step1b.status is StepStatus.SUCCEEDED
+    assert step1b.step_number == 2
 
-    # Step 2: MetricCalculator
+    # Step 3: MetricCalculator
     step2 = p2.run(
         MetricCalculator,
         inputs={"dataset": step1b.output("dataset")},
-        step_runner=Runner.LOCAL,
     )
     assert step2.status is StepStatus.SUCCEEDED
 
     result = p2.finalize()
-    assert result["overall_success"] is True
+    assert result["overall_success"] is False
+    assert p2.tracker.current_state(step1.step_run_id) == original
+    assert p2[1].status == StepStatus.FAILED

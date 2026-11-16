@@ -8,18 +8,12 @@ from pathlib import Path
 import graphviz
 import polars as pl
 import pytest
-from fixtures.cache_isolation_store import build_cache_isolation_store
-from fixtures.execution_records import executions_df
-from fixtures.store_format import commit_test_tables, publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.retained_cache_isolation_store import build_cache_isolation_store
+from fixtures.retained_inspection import commit_inspection_attempt, inspection_store
 
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.storage.core.table_schemas import (
-    ARTIFACT_EDGES_SCHEMA,
-    ARTIFACT_INDEX_SCHEMA,
-    EXECUTION_EDGES_SCHEMA,
-)
+from artisan.utils.hashing import compute_content_digest
 from artisan.visualization.graph import (
     build_micro_graph,
     get_max_step_number,
@@ -30,130 +24,43 @@ from artisan.visualization.graph import (
 
 @pytest.fixture
 def delta_root_with_data(tmp_path: Path) -> Path:
-    """Create Delta Lake tables with test provenance data."""
-    delta_root = tmp_path / "delta"
-    delta_root.mkdir()
-
-    exec_data = {
-        "execution_run_id": ["exec_1", "exec_2"],
-        "execution_spec_id": ["spec_1", "spec_2"],
-        "step_run_id": ["seed-micro-1", "seed-micro-2"],
-        "origin_step_number": [1, 2],
-        "operation_name": ["data_parser", "metric_calc"],
-        "params": ["{}", "{}"],
-        "user_overrides": ["{}", "{}"],
-        "timestamp_start": [None, None],
-        "timestamp_end": [None, None],
-        "source_worker": [0, 0],
-        "compute_backend": ["local", "local"],
-        "success": [True, True],
-        "error": [None, None],
-        "tool_output": [None, None],
-        "worker_log": [None, None],
-        "metadata": ["{}", "{}"],
-    }
-    exec_df = executions_df(**exec_data)
-
-    artifact_data = {
-        "artifact_id": ["art_ext_1", "art_inter_1", "art_metric_1"],
-        "artifact_type": ["file_ref", "metric", "metric"],
-        "origin_step_number": [0, 1, 2],
-        "metadata": ["{}", "{}", "{}"],
-    }
-    artifact_df = pl.DataFrame(artifact_data, schema=ARTIFACT_INDEX_SCHEMA)
-
-    metric_data = {
-        "artifact_id": ["art_inter_1", "art_metric_1"],
-        "origin_step_number": [1, 2],
-        "content": [b'{"parsed": true}', b'{"energy": -100.5}'],
-        "original_name": ["parsed_result", "energy"],
-        "extension": [".json", ".json"],
-        "metadata": ["{}", "{}"],
-    }
-    metric_df = pl.DataFrame(metric_data, schema=MetricArtifact.POLARS_SCHEMA)
-
-    ext_data = {
-        "artifact_id": ["art_ext_1"],
-        "origin_step_number": [0],
-        "content_hash": ["hash123"],
-        "size_bytes": [200],
-        "metadata": ["{}"],
-        "original_name": ["sample"],
-        "extension": [".csv"],
-    }
-    ext_df = pl.DataFrame(ext_data, schema=FileRefArtifact.POLARS_SCHEMA)
-
-    exec_prov_data = {
-        "execution_run_id": ["exec_1", "exec_1", "exec_2", "exec_2"],
-        "direction": ["input", "output", "input", "output"],
-        "role": ["input_file", "parsed", "intermediate", "energy"],
-        "artifact_id": ["art_ext_1", "art_inter_1", "art_inter_1", "art_metric_1"],
-    }
-    exec_prov_df = pl.DataFrame(exec_prov_data, schema=EXECUTION_EDGES_SCHEMA)
-
-    art_prov_data = {
-        "execution_run_id": ["exec_1", "exec_2"],
-        "source_artifact_id": ["art_ext_1", "art_inter_1"],
-        "target_artifact_id": ["art_inter_1", "art_metric_1"],
-        "source_artifact_type": ["file_ref", "metric"],
-        "target_artifact_type": ["metric", "metric"],
-        "source_role": ["input_file", "intermediate"],
-        "target_role": ["parsed", "energy"],
-        "group_id": [None, None],
-        "step_boundary": [True, True],
-    }
-    art_prov_df = pl.DataFrame(art_prov_data, schema=ARTIFACT_EDGES_SCHEMA)
-    fs = LocalFileSystem()
-    staging_root = str(tmp_path / "staging")
-    commit_test_tables(
-        str(delta_root),
-        staging_root,
-        fs,
-        {
-            "artifacts/index": artifact_df.filter(pl.col("origin_step_number") == 0),
-            "artifacts/file_refs": ext_df,
-        },
-        step_run_id="seed-micro-0",
-        step_number=0,
-        operation_name="seed_file_ref",
+    """Persist two real outer deliveries with an original direct lineage chain."""
+    root = tmp_path / "delta"
+    payload = b"sample bytes"
+    source = tmp_path / "sample.csv"
+    source.write_bytes(payload)
+    external = FileRefArtifact.draft(
+        str(source),
+        compute_content_digest(payload),
+        len(payload),
+        0,
+        original_name="sample",
+    ).finalize()
+    parsed = MetricArtifact.draft({"parsed": True}, "parsed_result.json", 1).finalize()
+    energy = MetricArtifact.draft({"energy": -100.5}, "energy.json", 2).finalize()
+    commit_inspection_attempt(
+        root,
+        number=1,
+        name="data_parser",
+        inputs={"input_file": [external]},
+        outputs={"parsed": [parsed]},
     )
-    for step_number, execution_id in ((1, "exec_1"), (2, "exec_2")):
-        commit_test_tables(
-            str(delta_root),
-            staging_root,
-            fs,
-            {
-                "orchestration/executions": exec_df.filter(
-                    pl.col("origin_step_number") == step_number
-                ),
-                "artifacts/index": artifact_df.filter(
-                    pl.col("origin_step_number") == step_number
-                ),
-                "artifacts/metrics": metric_df.filter(
-                    pl.col("origin_step_number") == step_number
-                ),
-                "provenance/execution_edges": exec_prov_df.filter(
-                    pl.col("execution_run_id") == execution_id
-                ),
-                "provenance/artifact_edges": art_prov_df.filter(
-                    pl.col("execution_run_id") == execution_id
-                ),
-            },
-            step_run_id=f"seed-micro-{step_number}",
-            step_number=step_number,
-            operation_name=f"seed_micro_{step_number}",
-        )
-
-    return delta_root
+    commit_inspection_attempt(
+        root,
+        number=2,
+        name="metric_calc",
+        inputs={"intermediate": [parsed]},
+        outputs={"energy": [energy]},
+    )
+    return root
 
 
 @pytest.fixture
 def empty_delta_root(tmp_path: Path) -> Path:
-    """Create empty Delta Lake root directory."""
-    delta_root = tmp_path / "delta_empty"
-    delta_root.mkdir()
-    publish_test_store(str(delta_root), LocalFileSystem())
-    return delta_root
+    """Create an initialized store with no accepted executions or artifacts."""
+    root = tmp_path / "delta_empty"
+    inspection_store(root)
+    return root
 
 
 class TestBuildMicroGraph:
@@ -412,7 +319,7 @@ class TestMaxStepFiltering:
         assert "parsed_result" in source  # Intermediate metric from step 1
 
         assert "metric_calc" not in source
-        assert "art_metric_1" not in source
+        assert "energy" not in source
 
     def test_max_step_filters_execution_edges(self, delta_root_with_data: Path) -> None:
         """max_step filters execution provenance edges appropriately."""
@@ -420,7 +327,7 @@ class TestMaxStepFiltering:
         source = graph.source
 
         # Edges for exec_2 (step 2) should not be present
-        assert "exec_exec_2" not in source
+        assert "metric_calc" not in source
 
     def test_max_step_filters_artifact_edges(self, delta_root_with_data: Path) -> None:
         """max_step filters artifact provenance edges where target is excluded."""

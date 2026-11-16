@@ -7,7 +7,7 @@ The same environment supplies Python, Graphviz, and the notebook kernel.
 
 ## Prerequisites
 
-- **Platform:** Linux (x86_64 or aarch64) or macOS (Apple Silicon)
+- **Execution platform:** Linux (x86_64 or aarch64)
 - [Pixi](https://pixi.sh) **0.83.0**, which installs Python 3.12 and the other
   dependencies
 
@@ -15,7 +15,7 @@ The same environment supplies Python, Graphviz, and the notebook kernel.
 
 ## Before upgrading
 
-Start **fresh Delta and staging roots for store format 8**. Earlier stores and
+Start **fresh Delta and staging roots for the retained store domain**. Earlier stores and
 their staging cannot be migrated or read by this release; keep each older root
 with its matching Artisan version to inspect or export its contents before
 re-ingesting into a new store. Do not edit its manifest to force an upgrade or
@@ -28,7 +28,7 @@ The [public API index](../reference/python-api.md) links to supported imports an
 current examples; removed APIs have no compatibility aliases.
 
 Upgrade Modal clients and worker code together and
-[explicitly redeploy tool endpoints](../how-to-guides/deploying-tool-endpoints.md).
+[explicitly prepare the matched worker deployment](../how-to-guides/running-remote-workers.md).
 For SLURM, use a compatible `artisan-submitit` provider and qualify it separately
 on your cluster. Core Artisan qualification does not qualify external runner
 packages; see [step runner configuration](../how-to-guides/configuring-execution.md#choose-a-step-runner).
@@ -113,9 +113,10 @@ records package versions for each supported platform. See
 
 ## Optional cluster runners
 
-Artisan's local process-pool runner requires no orchestration server. For SLURM,
+Artisan's local worker runner requires no orchestration server. For SLURM,
 install the separate `artisan-submitit` package and follow its cluster setup
-instructions. It supplies job-array and intra-allocation runners.
+instructions. It submits one job per worker pack or one step inside an existing
+allocation; scientific units within each pack run sequentially.
 
 ---
 

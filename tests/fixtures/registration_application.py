@@ -26,6 +26,7 @@ class ApplicationNoteType(ArtifactTypeDef):
     key = "application_note"
     table_path = "artifacts/application_notes"
     model = ApplicationNote
+    required_references = None
 
 
 class ApplicationNoteGenerator(DataGenerator):

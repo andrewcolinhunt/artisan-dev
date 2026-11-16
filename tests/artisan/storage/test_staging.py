@@ -5,7 +5,7 @@ from __future__ import annotations
 import polars as pl
 import pytest
 
-from artisan.storage.io.commit_plan import PlannedFile
+from artisan.storage.io.plan_evidence import PlannedFile
 from artisan.storage.io.staging import StagingManager
 from artisan.utils.hashing import compute_content_digest
 
