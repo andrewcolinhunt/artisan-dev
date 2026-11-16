@@ -127,6 +127,19 @@ def tool_names() -> Callable[[Any], set[str]]:
 
 @pytest.fixture
 def seeded_run(tmp_path: Path) -> SimpleNamespace:
+    """Create isolated accepted outputs, a failed curator, and unrelated content."""
+    return _seed_run(tmp_path)
+
+
+@pytest.fixture(scope="module")
+def read_only_seeded_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Persist one input store per worker/module for read-only inspection tests."""
+    workspace = tmp_path_factory.mktemp("inspection-read-only")
+    _seed_run(workspace)
+    return workspace / "delta"
+
+
+def _seed_run(workspace: Path) -> SimpleNamespace:
     """Create accepted outputs, an exact failed curator, and unrelated content."""
     from fixtures.inspection_curator import commit_curator_record
     from fixtures.retained_inspection import commit_inspection_attempt
@@ -134,7 +147,7 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
     from artisan.schemas import CSVArtifact, MetricArtifact
     from artisan.utils.log_paths import failure_log_relative_path
 
-    delta_root = tmp_path / "delta"
+    delta_root = workspace / "delta"
     run_id = "run-1"
     artifacts = [
         CSVArtifact.draft(
@@ -177,7 +190,7 @@ def seeded_run(tmp_path: Path) -> SimpleNamespace:
         outputs={"metrics": [metric]},
     )
     log_path = (
-        tmp_path / "logs/failures" / failure_log_relative_path(exec_id, timestamp)
+        workspace / "logs/failures" / failure_log_relative_path(exec_id, timestamp)
     )
     log_path.parent.mkdir(parents=True)
     log_path.write_text("\n".join(f"line {i}" for i in range(1, 11)))

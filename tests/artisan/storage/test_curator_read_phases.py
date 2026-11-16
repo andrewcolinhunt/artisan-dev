@@ -92,13 +92,13 @@ def _finish(
 @pytest.mark.parametrize("kind", ["static", "dynamic"])
 @pytest.mark.parametrize("complete", [False, True])
 def test_completion_uses_one_proof_per_unchanged_phase(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
     kind: Literal["static", "dynamic"],
     complete: bool,
 ) -> None:
-    results, admission, staged, terminal = _prepare(backend_fs, tmp_path, kind=kind)
+    results, admission, staged, terminal = _prepare(raw_backend_fs, tmp_path, kind=kind)
     reference = results.admit(admission)
     assert staged.execution_run_id is not None
     if complete:
@@ -126,16 +126,16 @@ def test_completion_uses_one_proof_per_unchanged_phase(
 
 
 def test_complete_helpers_reject_another_store_binding(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    results, admission, staged, terminal = _prepare(backend_fs, tmp_path)
+    results, admission, staged, terminal = _prepare(raw_backend_fs, tmp_path)
     _finish(results, admission, staged, terminal)
     committer = results.committer
     plan = read_curator_plan(
         committer.delta_root, admission.record.step_run_id, committer.fs
     )
     assert isinstance(plan, CuratorCommitPlan)
-    other = open_committer(committer.delta_root, committer.fs, backend_fs[1])
+    other = open_committer(committer.delta_root, committer.fs, raw_backend_fs[1])
     with (
         other._read_snapshot() as read,
         pytest.raises(StoreIntegrityError, match="another store binding"),
@@ -147,10 +147,10 @@ def test_complete_helpers_reject_another_store_binding(
     "boundary", ["carriers", "planned", "table:orchestration/steps"]
 )
 def test_complete_proof_rechecks_full_published_carrier(
-    backend_fs: Backend, tmp_path: Path, boundary: str
+    raw_backend_fs: Backend, tmp_path: Path, boundary: str
 ) -> None:
     results, admission, staged, terminal = _prepare(
-        backend_fs, tmp_path, kind="appendable"
+        raw_backend_fs, tmp_path, kind="appendable"
     )
     committer = results.committer
     saved: dict[str, bytes] = {}
@@ -184,9 +184,9 @@ def test_complete_proof_rechecks_full_published_carrier(
 
 
 def test_completion_reopens_terminal_table_after_control_write(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    results, admission, staged, terminal = _prepare(backend_fs, tmp_path)
+    results, admission, staged, terminal = _prepare(raw_backend_fs, tmp_path)
     committer = results.committer
     complete = retained_curator.complete_control
     path = uri_join(committer.delta_root, TablePath.STEPS.value)
@@ -216,9 +216,9 @@ def test_completion_reopens_terminal_table_after_control_write(
 
 
 def test_cancellation_between_candidate_and_selection_is_not_hidden(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    results, admission, staged, terminal = _prepare(backend_fs, tmp_path)
+    results, admission, staged, terminal = _prepare(raw_backend_fs, tmp_path)
     stage = results.staging.stage_orchestrator_dataframe
 
     def cancel_after_stage(*args: object, **kwargs: object) -> object:

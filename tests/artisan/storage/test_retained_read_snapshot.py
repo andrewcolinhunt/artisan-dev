@@ -21,9 +21,9 @@ from artisan.utils.path import uri_join
 
 
 def test_batch_reads_open_each_effect_table_once_and_keep_duplicate_order(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     case = retained_case(tmp_path, kind="alias")
     receipts = tuple(
@@ -63,9 +63,9 @@ def test_batch_reads_open_each_effect_table_once_and_keep_duplicate_order(
 
 
 def test_one_read_uses_the_verified_table_version_and_next_read_checks_latest(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="alias")
     plan = committer.accept(receipt)
@@ -101,9 +101,9 @@ def test_one_read_uses_the_verified_table_version_and_next_read_checks_latest(
 
 @pytest.mark.parametrize("changed", ["row", "carrier", "winner"])
 def test_fresh_batch_read_rejects_changes_after_successful_read(
-    backend_fs: Backend, tmp_path: Path, changed: str
+    raw_backend_fs: Backend, tmp_path: Path, changed: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     _, receipt = admit_case(committer, tmp_path, kind="file")
     plan = committer.accept(receipt)

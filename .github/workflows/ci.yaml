@@ -72,8 +72,19 @@ jobs:
           subprocess.run(["docker", "run", "--rm", image, "--version"], check=True)
           PY
 
-      - name: Run tests
-        run: ~/.pixi/bin/pixi run --locked -e dev test
+      - name: Prepare required Docker tests
+        run: ~/.pixi/bin/pixi run --locked -e dev prepare-docker-tests
+
+      - name: Run unit tests
+        run: ~/.pixi/bin/pixi run --locked -e dev test-unit
+
+      - name: Run integration tests
+        run: >-
+          ~/.pixi/bin/pixi run --locked -e dev test-integration
+          -m 'integration and not s3 and not large_deposit'
+
+      - name: Run S3 tests
+        run: ~/.pixi/bin/pixi run --locked -e dev test-s3
 
       - name: Run offline Modal provider tests
         env:

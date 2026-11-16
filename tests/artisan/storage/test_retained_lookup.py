@@ -31,9 +31,9 @@ def _case(value: int = 1, *, owner: str = "boundary") -> RetainedCase:
 
 
 def test_both_retained_caches_preserve_current_order_without_claiming_reuse(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     _, first = admit_read_case(committer, _case(1), step_run_id="a" * 32)
@@ -83,9 +83,9 @@ def test_both_retained_caches_preserve_current_order_without_claiming_reuse(
     "change", ["parameters", "software", "noncacheable", "diagnostic", "cancelled"]
 )
 def test_both_retained_caches_reject_changed_or_ineligible_current_work(
-    backend_fs: Backend, change: str
+    raw_backend_fs: Backend, change: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     case = _case()
@@ -112,9 +112,9 @@ def test_both_retained_caches_reject_changed_or_ineligible_current_work(
 
 @pytest.mark.parametrize("source_kind", ["unclaimed", "diagnostic", "noncacheable"])
 def test_both_retained_caches_exclude_non_success_sources(
-    backend_fs: Backend, source_kind: str
+    raw_backend_fs: Backend, source_kind: str
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     case = _case()
@@ -139,9 +139,9 @@ def test_both_retained_caches_exclude_non_success_sources(
 
 
 def test_retained_cache_requires_current_journal_bound_snapshot(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     current, _ = admit_read_case(committer, _case(), step_run_id="a" * 32)
     changed = current.model_copy(update={"record_digest": "0" * 32})
@@ -150,9 +150,9 @@ def test_retained_cache_requires_current_journal_bound_snapshot(
 
 
 def test_both_retained_caches_recheck_accepted_managed_carriers(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, root = backend_fs
+    fs, storage, root = raw_backend_fs
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     case = retained_case(tmp_path / "worker", kind="file")

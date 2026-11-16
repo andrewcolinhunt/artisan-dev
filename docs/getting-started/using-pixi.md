@@ -214,8 +214,8 @@ contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 | Task | Purpose and resource needs |
 |------|----------------------------|
 | `install-hooks` | Install this repository's Git hooks |
-| `test` | Run unit, integration, S3, and local tutorial suites; requires local Docker; S3 uses MinIO or a configured endpoint |
-| `test-unit` | Unit tests in four parallel workers; no external services |
+| `test` | Run unit, integration, S3, and local tutorials together in one worker pool; requires local Docker; S3 uses MinIO or a configured endpoint |
+| `test-unit` | Unit tests with automatic workers capped at 16; no external services |
 | `test-integration` | End-to-end local pipelines and container checks; requires local Docker |
 | `test-docker` | Container cancellation and working-directory checks; requires local Docker |
 | `prepare-docker-tests` | Check the selected Docker engine and prepare or reuse the pinned test image |
@@ -229,6 +229,26 @@ contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 | `check-dist` | Validate distribution packages |
 | `upload-testpypi` | Publish built distributions to Test PyPI |
 | `upload-pypi` | Publish built distributions to PyPI |
+
+The `test` task runs all four local suites together in one worker pool. It keeps
+each notebook's cells together and schedules Python tests individually. Notebook
+kernels use the active Pixi environment. The individual suite tasks remain
+available for focused checks.
+
+These tasks use the detected physical CPU count up to 16 workers. Each task sets
+`POLARS_MAX_THREADS=4`, `OMP_NUM_THREADS=1`, and `OPENBLAS_NUM_THREADS=1` to limit
+native-library threads per process. These settings apply only to those tasks.
+
+Override the worker count with `pixi run -e dev test -n 8`, or use an individual
+suite command such as `pixi run -e dev test-unit -n 8`.
+Use `pixi run -e dev test-unit -n 0` for sequential debugging; add a path or `-k`
+to focus the selection. An explicit `-n` still respects the cap; pass
+`--maxprocesses` to change that cap. More workers can compete for CPU, memory,
+and storage, so measure on your host before increasing concurrency.
+
+CPU detection can report the host's count inside a restricted container or
+scheduled allocation. Set an explicit worker count to match the allocated CPUs
+there. Modal tasks retain their separate worker settings.
 
 To use an already-running local MinIO service for S3 checks:
 
@@ -247,7 +267,7 @@ Ad hoc `pytest` runs can still skip when storage is unavailable; add
 
 The `test`, `test-integration`, `test-docker`, and `test-seq` tasks require a
 reachable local Linux Docker engine, including Docker Desktop on macOS. The
-full `test` task checks Docker before starting unit tests. Start Docker or select
+full `test` task checks Docker before collecting tests. Start Docker or select
 a working local context if setup reports an unavailable socket or access denied.
 The selected context is preserved; `DOCKER_CONTEXT` takes precedence over
 `DOCKER_HOST`.

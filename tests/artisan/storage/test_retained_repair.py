@@ -47,8 +47,8 @@ from artisan.utils.hashing import canonical_json_bytes
 
 
 @pytest.fixture
-def committer(backend_fs) -> RetainedCommitter:
-    fs, storage, root = backend_fs
+def committer(raw_backend_fs) -> RetainedCommitter:
+    fs, storage, root = raw_backend_fs
     return create_retained_store(
         f"{root}/store",
         f"{root}/store/files",
@@ -226,14 +226,14 @@ def test_partial_and_whole_step_fences_are_resolved_by_exact_terminal_plans(
 
 def test_curator_execution_and_reuse_are_included_in_complete_inventory(
     committer: RetainedCommitter,
-    backend_fs,
+    raw_backend_fs,
 ) -> None:
     operation = DynamicCurator()
     results, admission, reference = admit_curator(
         committer, operation, {}, step_run_id="a" * 32, **STAMPS
     )
     staged, terminal, _ = stage_observed(
-        results, admission, operation, storage=backend_fs[1]
+        results, admission, operation, storage=raw_backend_fs[1]
     )
     results.finish(reference, staged.execution_run_id, terminal)
     _, _, current = admit_curator(
@@ -313,14 +313,14 @@ def test_unadmitted_unfinished_steps_are_not_reported_as_clean(
 
 @pytest.mark.parametrize("selected", [False, True])
 def test_curator_seal_inventory_distinguishes_selected_from_unclaimed(
-    committer: RetainedCommitter, backend_fs, selected: bool
+    committer: RetainedCommitter, raw_backend_fs, selected: bool
 ) -> None:
     operation = DynamicCurator()
     results, admission, reference = admit_curator(
         committer, operation, {}, step_run_id="a" * 32, **STAMPS
     )
     staged, terminal, _ = stage_observed(
-        results, admission, operation, storage=backend_fs[1]
+        results, admission, operation, storage=raw_backend_fs[1]
     )
     results.preserve_staging = True
     if selected:
@@ -365,7 +365,7 @@ def test_malformed_lifecycle_history_is_reported_as_corrupt(
 
 @pytest.mark.parametrize("kind", ["curator", "scientific"])
 def test_complete_plan_metadata_must_match_its_exact_terminal_and_sealed_rows(
-    committer: RetainedCommitter, backend_fs, tmp_path: Path, kind: str
+    committer: RetainedCommitter, raw_backend_fs, tmp_path: Path, kind: str
 ) -> None:
     step_run_id = "a" * 32
     if kind == "curator":
@@ -374,7 +374,7 @@ def test_complete_plan_metadata_must_match_its_exact_terminal_and_sealed_rows(
             committer, operation, {}, step_run_id=step_run_id, **STAMPS
         )
         staged, terminal, _ = stage_observed(
-            results, admission, operation, storage=backend_fs[1]
+            results, admission, operation, storage=raw_backend_fs[1]
         )
         results.finish(reference, staged.execution_run_id, terminal)
         original = read_curator_plan(committer.delta_root, step_run_id, committer.fs)

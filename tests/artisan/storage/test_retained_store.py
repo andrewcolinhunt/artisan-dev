@@ -118,9 +118,9 @@ def application_type(monkeypatch: pytest.MonkeyPatch) -> type[ArtifactTypeDef]:
 
 
 def test_create_and_open_validate_all_registered_tables_without_writes(
-    backend_fs: Backend, application_type: type[ArtifactTypeDef]
+    raw_backend_fs: Backend, application_type: type[ArtifactTypeDef]
 ) -> None:
-    fs, storage, base = backend_fs
+    fs, storage, base = raw_backend_fs
     root, files = f"{base}/candidate", f"{base}/custom-managed-files"
     options = storage.delta_storage_options() or {}
     created = create_retained_store(root, files, fs=fs, storage_options=options)
@@ -145,9 +145,9 @@ def test_create_and_open_validate_all_registered_tables_without_writes(
 
 
 def test_explicit_create_finishes_same_domain_interrupted_initialization(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, base = backend_fs
+    fs, storage, base = raw_backend_fs
     root, files = f"{base}/candidate", f"{base}/managed"
     initialize_retained_store(root, fs)
     AssignmentJournal(
@@ -171,9 +171,9 @@ def test_explicit_create_finishes_same_domain_interrupted_initialization(
 
 
 def test_create_does_not_repair_a_missing_table_after_lifecycle_data(
-    backend_fs: Backend,
+    raw_backend_fs: Backend,
 ) -> None:
-    fs, storage, base = backend_fs
+    fs, storage, base = raw_backend_fs
     root, files = f"{base}/candidate", f"{base}/managed"
     committer = create_retained_store(
         root, files, fs=fs, storage_options=storage.delta_storage_options()
@@ -212,9 +212,9 @@ def test_create_does_not_repair_a_missing_table_after_lifecycle_data(
 )
 @pytest.mark.parametrize("changed", ["missing", "schema"])
 def test_open_rejects_missing_or_changed_required_table_without_repair(
-    backend_fs: Backend, table: str, changed: str
+    raw_backend_fs: Backend, table: str, changed: str
 ) -> None:
-    fs, storage, base = backend_fs
+    fs, storage, base = raw_backend_fs
     root, files = f"{base}/candidate", f"{base}/managed"
     create_retained_store(
         root, files, fs=fs, storage_options=storage.delta_storage_options()
@@ -243,9 +243,9 @@ def test_open_rejects_missing_or_changed_required_table_without_repair(
 
 @pytest.mark.parametrize("kind", ["legacy", "unlabeled", "publication", "inspection"])
 def test_foreign_and_inspection_roots_reject_without_mutation(
-    backend_fs: Backend, kind: str
+    raw_backend_fs: Backend, kind: str
 ) -> None:
-    fs, storage, base = backend_fs
+    fs, storage, base = raw_backend_fs
     root = f"{base}/candidate"
     if kind == "legacy":
         fs.makedirs(uri_join(root, "_artisan"), exist_ok=True)
@@ -273,9 +273,9 @@ def test_foreign_and_inspection_roots_reject_without_mutation(
 
 
 def test_reopened_custom_files_root_preserves_scientific_and_curator_outputs(
-    backend_fs: Backend, tmp_path: Path
+    raw_backend_fs: Backend, tmp_path: Path
 ) -> None:
-    fs, storage, base = backend_fs
+    fs, storage, base = raw_backend_fs
     root, files = f"{base}/candidate", f"{base}/managed-elsewhere"
     committer = create_retained_store(
         root, files, fs=fs, storage_options=storage.delta_storage_options()
@@ -312,9 +312,9 @@ def test_reopened_custom_files_root_preserves_scientific_and_curator_outputs(
 
 
 def test_open_leaves_selected_incomplete_and_orphan_evidence_unchanged(
-    backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    raw_backend_fs: Backend, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    fs, storage, base = backend_fs
+    fs, storage, base = raw_backend_fs
     root, files = f"{base}/candidate", f"{base}/managed"
     committer = create_retained_store(
         root, files, fs=fs, storage_options=storage.delta_storage_options()

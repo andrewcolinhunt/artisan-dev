@@ -19,7 +19,8 @@ Tests cover:
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch
 
@@ -165,157 +166,92 @@ def _metric_content(values: dict) -> bytes:
 # ---------------------------------------------------------------------------
 
 
+@dataclass(frozen=True)
+class _MetricStore:
+    """One persisted metric variant with immutable expected artifact IDs."""
+
+    root: Path
+    second_metric: str
+    id_rewrites: tuple[tuple[str, str], ...]
+
+
+def _build_metric_store(root: Path, *, second_metric: str) -> _MetricStore:
+    """Persist the common metric scenario without ambient legacy row state."""
+    root.mkdir()
+    source_ids = [f"s{index}".ljust(32, "0") for index in range(4)]
+    samples = [
+        CSVArtifact.draft(
+            f"sample\n{source_id}\n".encode(), f"{source_id}.csv", 0
+        ).finalize()
+        for source_id in source_ids
+    ]
+    metrics = [
+        MetricArtifact.draft(
+            {"confidence": confidence, "accuracy": accuracy}, f"m1_{index}.json", 1
+        ).finalize()
+        for index, (confidence, accuracy) in enumerate(
+            zip([90, 70, 50, 30], [1.0, 2.0, 3.0, 4.0], strict=True)
+        )
+    ]
+    extra_metrics = [
+        MetricArtifact.draft({second_metric: score}, f"m2_{index}.json", 2).finalize()
+        for index, score in enumerate([0.9, 0.7, 0.5, 0.3])
+    ]
+    steps = (
+        ("ingest", samples),
+        ("calc_metrics", metrics),
+        ("extra_metrics", extra_metrics),
+    )
+    id_rewrites = []
+    for number, (name, artifacts) in enumerate(steps):
+        prefix = "s" if number == 0 else f"m{number}_"
+        parents = {}
+        for index, artifact in enumerate(artifacts):
+            assert artifact.artifact_id is not None
+            id_rewrites.append(
+                (f"{prefix}{index}".ljust(32, "0"), artifact.artifact_id)
+            )
+            if number:
+                parents[artifact.artifact_id] = [samples[index]]
+        commit_interactive_case(
+            root, artifacts, parents, run="test-run-001", number=number, name=name
+        )
+    return _MetricStore(root, second_metric, tuple(id_rewrites))
+
+
 @pytest.fixture
 def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
-    """Build a test delta store with known data.
+    """Give mutating and parameterized scenarios their own persisted store."""
+    store = _build_metric_store(
+        tmp_path / "delta",
+        second_metric=getattr(request, "param", {}).get("second_metric", "score"),
+    )
+    _ID_REWRITES.update(store.id_rewrites)
+    return store.root
 
-    Layout:
-      - 4 csv artifacts at step 0 (s0..s3)
-      - 2 metric steps:
-        - step 1 "calc_metrics": computes confidence and accuracy for each artifact
-        - step 2 "extra_metrics": computes score for each artifact
-      - Provenance edges: each CSV artifact -> its metrics
-    """
-    root = tmp_path / "delta"
-    root.mkdir()
 
-    s_ids = [_pad(f"s{i}") for i in range(4)]
-    m1_ids = [_pad(f"m1_{i}") for i in range(4)]
-    m2_ids = [_pad(f"m2_{i}") for i in range(4)]
+@pytest.fixture(scope="module")
+def _shared_metric_store(tmp_path_factory: pytest.TempPathFactory) -> _MetricStore:
+    """Create one immutable default-score scenario per pytest worker."""
+    return _build_metric_store(
+        tmp_path_factory.mktemp("interactive-readers") / "delta", second_metric="score"
+    )
 
-    # -- artifact_index --
-    index_rows = []
-    for sid in s_ids:
-        index_rows.append(
-            {
-                "artifact_id": sid,
-                "artifact_type": "csv",
-                "origin_step_number": 0,
-                "metadata": "{}",
-            }
-        )
-    for mid in m1_ids:
-        index_rows.append(
-            {
-                "artifact_id": mid,
-                "artifact_type": "metric",
-                "origin_step_number": 1,
-                "metadata": "{}",
-            }
-        )
-    for mid in m2_ids:
-        index_rows.append(
-            {
-                "artifact_id": mid,
-                "artifact_type": "metric",
-                "origin_step_number": 2,
-                "metadata": "{}",
-            }
-        )
-    _write_delta(root, "artifacts/index", index_rows, ARTIFACT_INDEX_SCHEMA)
 
-    # -- metrics table --
-    confidence_vals = [90, 70, 50, 30]
-    accuracy_vals = [1.0, 2.0, 3.0, 4.0]
-    score_vals = [0.9, 0.7, 0.5, 0.3]
-    second_metric = getattr(request, "param", {}).get("second_metric", "score")
+@pytest.fixture
+def read_only_delta_root(
+    _shared_metric_store: _MetricStore, _reset_scenario_ids: None
+) -> Path:
+    """Restore this store's expected IDs after the per-test legacy-state reset."""
+    _ID_REWRITES.update(_shared_metric_store.id_rewrites)
+    return _shared_metric_store.root
 
-    metric_rows = []
-    for i, mid in enumerate(m1_ids):
-        metric_rows.append(
-            {
-                "artifact_id": mid,
-                "origin_step_number": 1,
-                "content": _metric_content(
-                    {"confidence": confidence_vals[i], "accuracy": accuracy_vals[i]}
-                ),
-                "original_name": f"m1_{i}",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-        )
-    for i, mid in enumerate(m2_ids):
-        metric_rows.append(
-            {
-                "artifact_id": mid,
-                "origin_step_number": 2,
-                "content": _metric_content({second_metric: score_vals[i]}),
-                "original_name": f"m2_{i}",
-                "extension": ".json",
-                "metadata": "{}",
-                "external_path": None,
-            }
-        )
-    _write_delta(root, "artifacts/metrics", metric_rows, MetricArtifact.POLARS_SCHEMA)
 
-    # -- artifact_edges (data -> metric) --
-    edge_rows = []
-    for i in range(4):
-        edge_rows.append(
-            {
-                "execution_run_id": _pad("exec1"),
-                "source_artifact_id": s_ids[i],
-                "target_artifact_id": m1_ids[i],
-                "source_artifact_type": "csv",
-                "target_artifact_type": "metric",
-                "source_role": "samples",
-                "target_role": "metrics",
-                "group_id": None,
-            }
-        )
-        edge_rows.append(
-            {
-                "execution_run_id": _pad("exec2"),
-                "source_artifact_id": s_ids[i],
-                "target_artifact_id": m2_ids[i],
-                "source_artifact_type": "csv",
-                "target_artifact_type": "metric",
-                "source_role": "samples",
-                "target_role": "metrics",
-                "group_id": None,
-            }
-        )
-    _write_delta(root, "provenance/artifact_edges", edge_rows, ARTIFACT_EDGES_SCHEMA)
-
-    # -- steps table --
-    now = datetime.now(UTC)
-    steps_rows = []
-    for step_num, step_name, op_class in [
-        (0, "ingest", "artisan.operations.curator.ingest_files.IngestFiles"),
-        (1, "calc_metrics", "artisan.operations.examples.MetricCalculator"),
-        (2, "extra_metrics", "artisan.operations.examples.MetricCalculator"),
-    ]:
-        steps_rows.append(
-            {
-                "step_run_id": _pad(f"sr{step_num}"),
-                "step_spec_id": _pad(f"ss{step_num}"),
-                "pipeline_run_id": "test-run-001",
-                "step_number": step_num,
-                "step_name": step_name,
-                "status": "succeeded",
-                "state_sequence": 0,
-                "disposition": "executed",
-                "cancellation_status": None,
-                "logical_commit_id": None,
-                "operation_class": op_class,
-                "params_json": "{}",
-                "input_refs_json": "{}",
-                "compute_backend": "local",
-                "compute_options_json": "{}",
-                "output_roles_json": '["samples"]',
-                "output_types_json": '{"samples": "csv"}',
-                "total_count": 4,
-                "succeeded_count": 4,
-                "failed_count": 0,
-                "timestamp": now,
-                "duration_seconds": 1.0,
-                "error": None,
-                "metadata": None,
-            }
-        )
-    _write_delta(root, "orchestration/steps", steps_rows, STEPS_SCHEMA)
-
+@pytest.fixture(scope="module")
+def empty_delta_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
+    """Provide a valid empty store for pre-load errors without creating deliveries."""
+    root = tmp_path_factory.mktemp("interactive-empty") / "delta"
+    inspection_store(root)
     return root
 
 
@@ -325,8 +261,10 @@ def delta_root(tmp_path: Path, request: pytest.FixtureRequest) -> Path:
 
 
 class TestLoad:
-    def test_load_builds_tidy_and_wide_dataframes(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_load_builds_tidy_and_wide_dataframes(
+        self, read_only_delta_root: Path
+    ) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
 
         assert filt.tidy_df.height > 0
@@ -343,9 +281,9 @@ class TestLoad:
         assert "accuracy" in metric_cols
         assert "score" in metric_cols
 
-    def test_metric_uses_recorded_step_name(self, delta_root: Path) -> None:
+    def test_metric_uses_recorded_step_name(self, read_only_delta_root: Path) -> None:
         """Metric names resolve through authoritative lifecycle state."""
-        filt = InteractiveFilter(delta_root)
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
 
         row = filt.tidy_df.filter(
@@ -356,22 +294,22 @@ class TestLoad:
         assert row["step_name"] == "calc_metrics"
 
     def test_load_with_step_numbers_filters_primary_artifacts(
-        self, delta_root: Path
+        self, read_only_delta_root: Path
     ) -> None:
-        filt = InteractiveFilter(delta_root)
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load(step_numbers=[0])
 
         assert filt.wide_df.height == 4
 
-    def test_load_raises_on_empty_delta(self, tmp_path: Path) -> None:
-        root = tmp_path / "nonexistent"
-        inspection_store(root)
-        filt = InteractiveFilter(root)
+    def test_load_raises_on_empty_delta(self, empty_delta_root: Path) -> None:
+        filt = InteractiveFilter(empty_delta_root)
         with pytest.raises(ValueError, match="No primary artifacts found"):
             filt.load()
 
-    def test_load_raises_on_no_matching_artifacts(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_load_raises_on_no_matching_artifacts(
+        self, read_only_delta_root: Path
+    ) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         with pytest.raises(ValueError, match="No primary artifacts found"):
             filt.load(step_numbers=[99])
 
@@ -396,8 +334,10 @@ class TestLoad:
 
 
 class TestSetCriteria:
-    def test_set_criteria_validates_metric_names(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_set_criteria_validates_metric_names(
+        self, read_only_delta_root: Path
+    ) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
 
         with pytest.raises(ValueError, match="not found in loaded data"):
@@ -405,8 +345,10 @@ class TestSetCriteria:
                 [{"metric": "nonexistent.col", "operator": "gt", "value": 0}]
             )
 
-    def test_set_criteria_validates_via_pydantic(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_set_criteria_validates_via_pydantic(
+        self, read_only_delta_root: Path
+    ) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
 
         with pytest.raises(Exception):  # Pydantic ValidationError
@@ -420,8 +362,8 @@ class TestSetCriteria:
                 ]
             )
 
-    def test_set_criteria_before_load(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_set_criteria_before_load(self, empty_delta_root: Path) -> None:
+        filt = InteractiveFilter(empty_delta_root)
         with pytest.raises(ValueError, match="No data loaded"):
             filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
 
@@ -432,8 +374,10 @@ class TestSetCriteria:
 
 
 class TestFiltering:
-    def test_filtered_ids_applies_all_criteria(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_filtered_ids_applies_all_criteria(
+        self, read_only_delta_root: Path
+    ) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         filt.set_criteria(
             [
@@ -447,8 +391,10 @@ class TestFiltering:
         # AND: s0, s1 pass
         assert len(filt.filtered_ids) == 2
 
-    def test_filtered_wide_df_matches_filtered_ids(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_filtered_wide_df_matches_filtered_ids(
+        self, read_only_delta_root: Path
+    ) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         filt.set_criteria([{"metric": "confidence", "operator": "ge", "value": 70}])
 
@@ -457,13 +403,13 @@ class TestFiltering:
         assert ids_from_property == ids_from_df
         assert len(ids_from_property) == 2  # s0 (90) and s1 (70)
 
-    def test_filtered_raises_before_load(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_filtered_raises_before_load(self, empty_delta_root: Path) -> None:
+        filt = InteractiveFilter(empty_delta_root)
         with pytest.raises(ValueError, match="No data loaded"):
             _ = filt.filtered_ids
 
-    def test_filtered_raises_before_criteria(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_filtered_raises_before_criteria(self, read_only_delta_root: Path) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         with pytest.raises(ValueError, match="No criteria set"):
             _ = filt.filtered_ids
@@ -640,8 +586,8 @@ class TestFiltering:
 
 
 class TestSummary:
-    def test_summary_returns_filter_summary(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_summary_returns_filter_summary(self, read_only_delta_root: Path) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
 
@@ -663,9 +609,9 @@ class TestSummary:
         assert s.funnel["count"][0] == 4  # "All evaluated" row
         assert s.funnel["count"][1] == 2  # after confidence > 50
 
-    def test_summary_full_golden(self, delta_root: Path) -> None:
+    def test_summary_full_golden(self, read_only_delta_root: Path) -> None:
         """Full summary criteria/funnel/header are stable (multi-criterion)."""
-        filt = InteractiveFilter(delta_root)
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         filt.set_criteria(
             [
@@ -705,8 +651,8 @@ class TestSummary:
         ]
         assert s._header == "2 / 4 pass (50.0%)"
 
-    def test_summary_repr_html(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_summary_repr_html(self, read_only_delta_root: Path) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
 
@@ -722,10 +668,10 @@ class TestSummary:
 
 
 class TestPlot:
-    def test_plot_returns_matplotlib_figure(self, delta_root: Path) -> None:
+    def test_plot_returns_matplotlib_figure(self, read_only_delta_root: Path) -> None:
         import matplotlib.pyplot as plt
 
-        filt = InteractiveFilter(delta_root)
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         filt.set_criteria(
             [
@@ -986,8 +932,8 @@ class TestCommit:
         assert set(outputs["artifact_id"].to_list()) == set(filt.filtered_ids)
         assert set(edges["role"].unique().to_list()) == {"passthrough"}
 
-    def test_commit_raises_before_load(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_commit_raises_before_load(self, empty_delta_root: Path) -> None:
+        filt = InteractiveFilter(empty_delta_root)
         with pytest.raises(ValueError, match="No data loaded"):
             filt.commit()
 
@@ -1800,8 +1746,8 @@ class TestRunScopedStepNames:
 class TestExistingFloatMetricsStillWork:
     """Verify the original fixture (float-only metrics) still works."""
 
-    def test_load_builds_tidy_and_wide(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_load_builds_tidy_and_wide(self, read_only_delta_root: Path) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
 
         assert filt.wide_df.height == 4
@@ -1810,8 +1756,8 @@ class TestExistingFloatMetricsStillWork:
         assert filt.wide_df["accuracy"].dtype == pl.Float64
         assert filt.wide_df["score"].dtype == pl.Float64
 
-    def test_filtering_still_works(self, delta_root: Path) -> None:
-        filt = InteractiveFilter(delta_root)
+    def test_filtering_still_works(self, read_only_delta_root: Path) -> None:
+        filt = InteractiveFilter(read_only_delta_root)
         filt.load()
         filt.set_criteria(
             [
@@ -1895,7 +1841,8 @@ def test_selected_values_reach_plot_and_new_criteria(delta_root: Path) -> None:
         {"metric": "confidence", "operator": "gt", "value": 0.8, "step_number": 2}
     ]
     filt.set_criteria(criteria)
-    with patch("matplotlib.axes.Axes.hist") as hist:
+    # Import pyplot before replacing a method whose metadata it copies at import.
+    with patch("matplotlib.pyplot.Axes.hist") as hist:
         figure = filt.plot()
     assert sorted(hist.call_args.args[0]) == [0.3, 0.5, 0.7, 0.9]
     assert figure.axes[0].get_title() == "confidence"
@@ -1915,8 +1862,10 @@ def test_selected_values_reach_plot_and_new_criteria(delta_root: Path) -> None:
     assert "__criterion_0" not in filt.tidy_df["metric_name"].to_list()
 
 
-def test_interactive_step_selectors_and_failed_update(delta_root: Path) -> None:
-    filt = InteractiveFilter(delta_root)
+def test_interactive_step_selectors_and_failed_update(
+    read_only_delta_root: Path,
+) -> None:
+    filt = InteractiveFilter(read_only_delta_root)
     filt.load()
     criterion = {"metric": "confidence", "operator": "gt", "value": 60}
     filt.set_criteria([{**criterion, "step": "calc_metrics", "step_number": 1}])
