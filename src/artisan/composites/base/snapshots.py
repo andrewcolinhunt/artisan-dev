@@ -82,7 +82,9 @@ def parameter_class(definition: Definition) -> type[BaseModel] | None:
     """Reject split or malformed parameter declarations before compiling a plan."""
     if issubclass(
         definition, CompositeDefinition
-    ) and definition.model_fields.keys() - {"params"}:
+    ) and definition.model_fields.keys() - (
+        CompositeDefinition.model_fields.keys() | {"params"}
+    ):
         msg = f"{definition.__name__} must declare scientific fields inside Params"
         raise TypeError(msg)
     model = getattr(definition, "Params", None)
@@ -229,12 +231,14 @@ def execution_contract(instance: Instance) -> ExecutionContract:
 
 def invocation_policy(instance: Instance) -> InvocationPolicy:
     """Capture scientific invocation defaults without transport packing."""
-    if isinstance(instance, CompositeDefinition):
-        return InvocationPolicy()
     return InvocationPolicy(
         group_by=instance.group_by,
-        independent_input_streams=instance.independent_input_streams,
-        per_artifact_dispatch=instance.per_artifact_dispatch,
+        independent_input_streams=instance.independent_input_streams
+        if isinstance(instance, OperationDefinition)
+        else False,
+        per_artifact_dispatch=instance.per_artifact_dispatch
+        if isinstance(instance, OperationDefinition)
+        else True,
         artifacts_per_unit=instance.batch_strategy.artifacts_per_unit,
         max_artifacts_per_unit=instance.batch_strategy.max_artifacts_per_unit,
     )

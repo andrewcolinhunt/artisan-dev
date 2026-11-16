@@ -161,6 +161,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "execute_admitted_curator",
         "execute_inert_call",
         "launch_inert_calls",
+        "merge_runner_resources",
         "observed_controller_sources",
         "observed_definition_sources",
         "prepare_command_witness",

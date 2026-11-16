@@ -95,7 +95,10 @@ from artisan.schemas.execution.worker_transport import (
     WorkerTransportHeader,
 )
 from artisan.schemas.operation_config.environment import Environment
-from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.operation_config.runner_resources import (
+    RunnerResources,
+    merge_runner_resources,
+)
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
@@ -168,6 +171,7 @@ __all__ = [
     "execute_admitted_curator",
     "execute_inert_call",
     "launch_inert_calls",
+    "merge_runner_resources",
     "observed_controller_sources",
     "observed_definition_sources",
     "prepare_command_witness",
