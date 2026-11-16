@@ -3,6 +3,9 @@
 Set up a development environment, make a focused change, and run the relevant
 checks before opening a pull request.
 
+Follow the [committed-content policy](AGENTS.md#committed-content) for source,
+documentation, examples, and generated artifacts.
+
 ---
 
 ## Before you start
