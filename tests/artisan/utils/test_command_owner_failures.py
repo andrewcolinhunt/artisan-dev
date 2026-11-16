@@ -939,6 +939,51 @@ def test_completed_invocation_close_is_local_and_idempotent(
         owner.finish(time.monotonic() + 2)
 
 
+@pytest.mark.parametrize(
+    "failure_type", [None, ValueError, client.CommandOwnershipError]
+)
+def test_owned_scope_closure_survives_later_persistence(
+    monkeypatch: pytest.MonkeyPatch, failure_type: type[Exception] | None
+) -> None:
+    failure = None if failure_type is None else failure_type("persistence failure")
+    expectation = (
+        contextlib.nullcontext()
+        if failure is None
+        else pytest.raises(type(failure), match="persistence failure")
+    )
+    with expectation, client.managed_invocation() as invocation:
+        monkeypatch.setattr(client, "CLEANUP_SECONDS", 1.0)
+        assert client.close_command_scope()
+        owner = invocation.owner
+        assert owner is not None
+        deadline = invocation.deadline
+        assert deadline is not None
+        closed_before_persistence = owner.process.poll()
+        time.sleep(max(0, deadline - time.monotonic()) + 0.05)
+        if failure is not None:
+            raise failure
+    assert closed_before_persistence == 0
+    assert owner.deadline == deadline
+    assert owner.finish(deadline).state == "closed"
+    assert not invocation.uncertain
+    assert not getattr(failure, "__notes__", ())
+
+
+def test_nested_scope_close_keeps_shared_owner_available() -> None:
+    with client.managed_invocation() as outer:
+        owner = outer.owner
+        assert owner is not None
+        with client.managed_invocation() as inner:
+            assert inner.owner is None
+            assert client.close_command_scope()
+        assert owner.process.poll() is None
+        outer.check()
+        with client.managed_invocation() as following:
+            assert following.owner is None
+            following.check()
+    assert owner.process.returncode == 0
+
+
 def test_worker_loss_waives_unfinished_invocation_completion() -> None:
     owner = client.CommandSupervisor.start()
     invocation = client._Invocation(owner.attachment)

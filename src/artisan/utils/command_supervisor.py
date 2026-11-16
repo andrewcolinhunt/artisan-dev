@@ -525,7 +525,9 @@ class _Invocation:
 
     def close(self, error: BaseException | None = None) -> bool:
         if self.closed and not self.uncertain:
-            return True
+            self._finish_owner()
+            if not self.uncertain:
+                return True
         if isinstance(error, CommandOwnershipError):
             self.uncertain = True
             _record_uncertainty(self.attachment, error, self.deadline)
@@ -556,6 +558,9 @@ class _Invocation:
             except CommandOwnershipError:
                 self.uncertain = True
             self.closed = True
+        if not self.uncertain:
+            # Finish owned cleanup before later persistence consumes its deadline.
+            self._finish_owner()
         if self.uncertain:
             self.reported = True
             if error is not None:
@@ -566,6 +571,9 @@ class _Invocation:
 
     def dispose(self) -> None:
         self.connection.close()
+        self._finish_owner()
+
+    def _finish_owner(self) -> None:
         if self.owner is not None:
             outcome = self.owner.finish(
                 self.deadline or time.monotonic() + CLEANUP_SECONDS
