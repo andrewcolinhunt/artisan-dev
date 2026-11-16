@@ -8,8 +8,9 @@ from pathlib import Path
 
 import pytest
 from fixtures.composition_operations import Transform
+from fixtures.output_references import SYNTHETIC_STORE, output_reference
 
-from artisan.orchestration import OutputReference, PipelineManager
+from artisan.orchestration import PipelineManager
 from artisan.orchestration.engine.pipeline_inputs import normalize_pipeline_inputs
 
 
@@ -39,21 +40,19 @@ def test_run_and_attempt_identities_are_unique_and_names_are_explicit(
 
 
 def test_named_input_snapshots_bind_attempt_identity_and_preserve_duplicates() -> None:
-    reference = OutputReference(source_step=2, role="data", artifact_type="csv")
+    reference = output_reference("a" * 32, artifact_type="csv")
     source = {"data": [reference, reference]}
-    inputs = normalize_pipeline_inputs(source, step_run_ids={2: "a" * 32})
+    inputs = normalize_pipeline_inputs(source, store_identity=SYNTHETIC_STORE)
     source["data"].clear()
     assert inputs.dependency_step_run_ids == ("a" * 32,)
     assert json.loads(json.dumps(inputs.diagnostic_data())) == {
         "data": [
             {
-                "source_step": 2,
                 "step_run_id": "a" * 32,
                 "role": "data",
                 "artifact_type": "csv",
             },
             {
-                "source_step": 2,
                 "step_run_id": "a" * 32,
                 "role": "data",
                 "artifact_type": "csv",
@@ -65,22 +64,22 @@ def test_named_input_snapshots_bind_attempt_identity_and_preserve_duplicates() -
 def test_unnamed_reference_streams_keep_source_order() -> None:
     inputs = normalize_pipeline_inputs(
         [
-            OutputReference(source_step=3, role="data"),
-            OutputReference(source_step=1, role="score"),
+            output_reference("c" * 32),
+            output_reference("b" * 32, role="score"),
         ],
-        step_run_ids={1: "b" * 32, 3: "c" * 32},
+        store_identity=SYNTHETIC_STORE,
     )
     assert inputs.dependency_step_run_ids == ("c" * 32, "b" * 32)
     assert [
-        value["source_step"] for value in inputs.diagnostic_data()["_merged_streams"]
-    ] == [3, 1]
+        value["step_run_id"] for value in inputs.diagnostic_data()["_merged_streams"]
+    ] == ["c" * 32, "b" * 32]
 
 
 @pytest.mark.parametrize(
     "value", [None, {"data": ["a" * 32, "b" * 32]}, ["/data/a.csv", "/data/b.csv"]]
 )
 def test_literal_inputs_do_not_invent_step_dependencies(value: object) -> None:
-    inputs = normalize_pipeline_inputs(value, step_run_ids={})
+    inputs = normalize_pipeline_inputs(value, store_identity=SYNTHETIC_STORE)
     assert inputs.dependency_step_run_ids == ()
     if value is None:
         assert inputs.diagnostic_data() == {}
@@ -94,4 +93,4 @@ def test_literal_inputs_do_not_invent_step_dependencies(value: object) -> None:
 
 def test_arbitrary_objects_are_rejected_without_string_coercion() -> None:
     with pytest.raises(TypeError):
-        normalize_pipeline_inputs(42, step_run_ids={})
+        normalize_pipeline_inputs(42, store_identity=SYNTHETIC_STORE)

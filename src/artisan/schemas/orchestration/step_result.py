@@ -5,10 +5,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-from pydantic import BaseModel, Field, field_serializer, model_validator
+from pydantic import BaseModel, Field, PrivateAttr, field_serializer, model_validator
 
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.output_reference import OutputReference, StepSource
 from artisan.schemas.orchestration.step_lifecycle import (
     TERMINAL_STEP_STATUSES,
     CancellationStatus,
@@ -56,30 +56,49 @@ class StepResult(BaseModel):
         description="Unique ID for this step execution attempt.",
     )
 
+    _source: StepSource | None = PrivateAttr(default=None)
+
+    def _bind_source(self, source: StepSource) -> StepResult:
+        """Attach live source context to a copy, leaving durable facts unchanged."""
+        if self.step_run_id != source.step_run_id:
+            msg = "Result does not match the selected source attempt"
+            raise ValueError(msg)
+        bound = self.model_copy(deep=True)
+        bound._source = source
+        return bound
+
     @field_serializer("output_roles", when_used="json")
     def _serialize_output_roles(self, roles: frozenset[str]) -> list[str]:
         """Keep durable result identity independent of Python's randomized set order."""
         return sorted(roles)
 
     def output(self, role: str) -> OutputReference:
-        """Return a lazy reference to outputs for the given role.
+        """Reference this exact attempt's output role without accessing the store.
 
         Args:
             role: Output role name to reference.
 
         Returns:
-            An ``OutputReference`` resolved at dispatch time.
+            A source-bound reference usable by runs in the same store.
 
         Raises:
-            ValueError: If role is not in ``output_roles``.
+            ValueError: If the role is unavailable or the result was not loaded
+                from its authoritative store.
         """
         if role not in self.output_roles:
             available = ", ".join(sorted(self.output_roles)) or "(none)"
             msg = f"Output role '{role}' not available. Available roles: {available}"
             raise ValueError(msg)
 
+        if self._source is None:
+            msg = "Result is not bound to a source store; load it with pipeline.get_step()"
+            raise ValueError(msg)
+        if self.step_run_id != self._source.step_run_id:
+            msg = "Result does not match its bound source attempt"
+            raise ValueError(msg)
+
         return OutputReference(
-            source_step=self.step_number,
+            source=self._source,
             role=role,
             artifact_type=self.output_types.get(role) or ArtifactTypes.ANY,
         )

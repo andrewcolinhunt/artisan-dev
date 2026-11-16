@@ -565,7 +565,7 @@ def test_empty_upstream_wrong_type_fails_before_empty_skip(
         assert source.status == StepStatus.SUCCEEDED
         inputs = {
             "structure": OutputReference(
-                source_step=source.step_number,
+                source=source.output("metrics").source,
                 role="metrics",
                 artifact_type=declared,
             )
@@ -654,7 +654,7 @@ def test_empty_curator_source_reference_type_is_verified_before_skip(
             Merge,
             inputs=[
                 OutputReference(
-                    source_step=source.step_number,
+                    source=source.output("structure").source,
                     role="structure",
                     artifact_type="metric",
                 )

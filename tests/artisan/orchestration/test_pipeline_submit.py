@@ -47,7 +47,8 @@ def test_pending_future_exposes_output_and_timeout_before_completion(
     assert not future.done
     assert future.status == StepStatus.PENDING
     reference = future.output("structure")
-    assert reference.source_step == 0
+    assert reference.source.step_run_id == manager.executions[0].record.step_run_id
+    assert reference.source.store == manager.committer.store_identity
     assert reference.role == "structure"
     with pytest.raises(TimeoutError):
         future.result(timeout=0.01)

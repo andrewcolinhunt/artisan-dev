@@ -1,24 +1,53 @@
-"""Lazy output reference resolved at pipeline dispatch time."""
+"""Immutable source identities for exact pipeline output selection."""
 
 from __future__ import annotations
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.execution.assignment import ContentDigest
+
+
+class StoreIdentity(BaseModel):
+    """Identify a configured retained store without its access credentials."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+    delta_root: str = Field(min_length=1, strict=True)
+    files_root: str = Field(min_length=1, strict=True)
+    steps_table_id: str = Field(min_length=1, strict=True)
+
+
+class StepSource(BaseModel):
+    """Identify one exact step attempt in its authoritative store."""
+
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )
+
+    store: StoreIdentity
+    step_run_id: ContentDigest
 
 
 class OutputReference(BaseModel):
-    """Lazy reference to outputs from a pipeline step.
+    """Select an output role from one exact step attempt.
 
-    OutputReference is returned by StepResult.output(). It acts as a placeholder
-    that is resolved to concrete artifact IDs at dispatch time.
+    Results and futures populate the source automatically. The reference may
+    be used by another pipeline run in the same store; resolution never follows
+    the receiving run's step positions or a later retry of the source.
     """
 
-    source_step: int = Field(..., description="Step number that produced outputs.")
-    role: str = Field(..., description='Output role name (for example "data").')
+    source: StepSource
+    role: str = Field(
+        min_length=1, strict=True, description='Output role name (for example "data").'
+    )
     artifact_type: str = Field(
         default=ArtifactTypes.ANY,
         description="Artifact type for validation (ArtifactTypes.ANY = any type).",
     )
 
-    model_config = {"frozen": True}
+    model_config = ConfigDict(
+        frozen=True, extra="forbid", revalidate_instances="always"
+    )

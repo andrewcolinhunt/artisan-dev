@@ -141,10 +141,8 @@ def test_dynamic_result_commit_reopen_resume(
         assert result.output_types == expected
         assert result.output_roles == frozenset(expected)
         assert result.metadata["authored"] == {"selection": ["exact-source"]}
-        assert (
-            pipeline.tracker.current_state(result.step_run_id).to_step_result()
-            == result
-        )
+        persisted = pipeline.tracker.current_state(result.step_run_id).to_step_result()
+        assert persisted.model_dump() == result.model_dump()
         accepted = read_current_step_outputs(pipeline.committer, result.step_run_id)
         assert {group.role for group in accepted} == set(expected)
     rows = pl.read_delta(tmp_path / "delta/orchestration/steps").sort("state_sequence")
@@ -193,10 +191,8 @@ def test_dynamic_cache_preserves_metadata_and_exact_source(
         assert read_current_step_outputs(
             pipeline.committer, reused.step_run_id
         ) == read_current_step_outputs(pipeline.committer, original.step_run_id)
-        assert (
-            pipeline.tracker.current_state(reused.step_run_id).to_step_result()
-            == reused
-        )
+        persisted = pipeline.tracker.current_state(reused.step_run_id).to_step_result()
+        assert persisted.model_dump() == reused.model_dump()
 
 
 def test_static_curator_retains_empty_roles_and_metadata(tmp_path: Path) -> None:
@@ -260,10 +256,8 @@ def test_ingest_public_result_preserves_exact_source_metadata(tmp_path: Path) ->
             "include_prior_steps": False,
             "step_run_ids": [source_step],
         }
-        assert (
-            pipeline.tracker.current_state(result.step_run_id).to_step_result()
-            == result
-        )
+        persisted = pipeline.tracker.current_state(result.step_run_id).to_step_result()
+        assert persisted.model_dump() == result.model_dump()
         assert IngestPipelineStep.cacheable is False
 
 

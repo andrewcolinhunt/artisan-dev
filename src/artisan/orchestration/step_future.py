@@ -10,7 +10,8 @@ from __future__ import annotations
 from collections.abc import Callable
 from concurrent.futures import Future
 
-from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.orchestration.output_reference import OutputReference, StepSource
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 
@@ -31,6 +32,8 @@ class StepFuture:
         output_types: dict[str, str | None],
         future: Future[StepResult],
         status_reader: Callable[[], StepStatus],
+        *,
+        source: StepSource,
     ) -> None:
         """Initialize with step metadata and an underlying future.
 
@@ -41,6 +44,7 @@ class StepFuture:
             output_types: Mapping of role name to artifact type (or None).
             future: Underlying concurrent future driving execution.
             status_reader: Manager-owned reader updated after durable snapshots.
+            source: Exact pending attempt and its authoritative store.
         """
         self.step_number = step_number
         self.step_name = step_name
@@ -48,6 +52,7 @@ class StepFuture:
         self._output_types = output_types
         self._future = future
         self._status_reader = status_reader
+        self._source = source
 
     @property
     def output_roles(self) -> frozenset[str]:
@@ -60,7 +65,10 @@ class StepFuture:
         return dict(self._output_types)
 
     def output(self, role: str) -> OutputReference:
-        """Create a lazy reference to a step output without blocking.
+        """Reference this attempt's declared output without blocking or store I/O.
+
+        Dynamic curator roles are available on ``result().output(role)`` after
+        completion. Waiting for pending work is managed by its owning pipeline.
 
         Args:
             role: Output role name to reference.
@@ -76,9 +84,9 @@ class StepFuture:
             msg = f"Output role '{role}' not available. Available roles: {available}"
             raise ValueError(msg)
         return OutputReference(
-            source_step=self.step_number,
+            source=self._source,
             role=role,
-            artifact_type=self._output_types.get(role),  # type: ignore[arg-type]  # narrowed at construction; absent roles caught above
+            artifact_type=self._output_types.get(role) or ArtifactTypes.ANY,
         )
 
     @property
@@ -110,10 +118,11 @@ class StepFuture:
             Exception: The original exception if the step failed.
         """
         try:
-            return self._future.result(timeout=timeout)
+            result = self._future.result(timeout=timeout)
         except TimeoutError:
             msg = (
                 f"Step {self.step_number} ({self.step_name}) "
                 f"did not complete within {timeout}s"
             )
             raise TimeoutError(msg) from None
+        return result._bind_source(self._source)

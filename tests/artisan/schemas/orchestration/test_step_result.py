@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from fixtures.output_references import output_reference
 from pydantic import ValidationError
 
 from artisan.schemas.orchestration.output_reference import OutputReference
@@ -201,10 +202,11 @@ class TestStepResult:
             disposition=StepDisposition.EXECUTED,
             output_roles=frozenset(["data"]),
             output_types={"data": "csv"},
-        )
+            step_run_id="a" * 32,
+        )._bind_source(output_reference("a" * 32).source)
         ref = result.output("data")
         assert isinstance(ref, OutputReference)
-        assert ref.source_step == 0
+        assert ref.source.step_run_id == result.step_run_id
         assert ref.role == "data"
         assert ref.artifact_type == "csv"
 
@@ -340,3 +342,29 @@ class TestStepResultBuilder:
 
         with pytest.raises(TypeError, match="status"):
             builder.build()  # type: ignore[call-arg]
+
+
+def test_binding_copies_result_without_changing_durable_payload() -> None:
+    result = _result(
+        step_run_id="a" * 32,
+        output_roles=frozenset({"data"}),
+        output_types={"data": "csv"},
+    )
+    before = result.model_dump_json()
+    bound = result._bind_source(output_reference("a" * 32).source)
+    assert bound is not result
+    assert bound.model_dump_json() == result.model_dump_json() == before
+    assert bound.output("data").source.step_run_id == "a" * 32
+    for unbound in (result, StepResult.model_validate_json(before)):
+        with pytest.raises(ValueError, match="not bound to a source store"):
+            unbound.output("data")
+
+
+def test_result_rejects_another_attempt_binding() -> None:
+    result = _result(step_run_id="a" * 32, output_roles=frozenset({"data"}))
+    with pytest.raises(ValueError, match="does not match"):
+        result._bind_source(output_reference("b" * 32).source)
+    bound = result._bind_source(output_reference("a" * 32).source)
+    changed = bound.model_copy(update={"step_run_id": "b" * 32})
+    with pytest.raises(ValueError, match="does not match"):
+        changed.output("data")

@@ -201,7 +201,6 @@ def test_cache_current_membership_and_downstream_exact_selection(
         assert not cached.handles
         selected = resolve_retained_output(
             final.output("structure"),
-            step_run_id=cached.record.step_run_id,
             results=cached.results,
         )
         downstream = _execution(

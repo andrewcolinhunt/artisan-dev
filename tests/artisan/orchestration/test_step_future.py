@@ -6,6 +6,7 @@ import time
 from concurrent.futures import Future
 
 import pytest
+from fixtures.output_references import output_reference
 
 from artisan.orchestration.step_future import StepFuture
 from artisan.schemas.orchestration.output_reference import OutputReference
@@ -17,6 +18,7 @@ def _make_result(step_number: int = 0) -> StepResult:
     return StepResult(
         step_name="TestOp",
         step_number=step_number,
+        step_run_id="a" * 32,
         status=StepStatus.SUCCEEDED,
         disposition=StepDisposition.EXECUTED,
         total_count=5,
@@ -48,6 +50,7 @@ def _make_future(
         output_types=output_types,
         future=cf_future,
         status_reader=lambda: status,
+        source=output_reference("a" * 32).source,
     )
 
 
@@ -78,11 +81,11 @@ class TestOutput:
     """Tests for StepFuture.output()."""
 
     def test_output_returns_reference(self):
-        """Correct source_step, role, artifact_type."""
+        """The exact source, role and artifact type are available before completion."""
         future = _make_future(step_number=3)
         ref = future.output("data")
         assert isinstance(ref, OutputReference)
-        assert ref.source_step == 3
+        assert ref.source.step_run_id == "a" * 32
         assert ref.role == "data"
         assert ref.artifact_type == "csv"
 
@@ -162,7 +165,12 @@ class TestResult:
         result = _make_result()
         cf.set_result(result)
         future = _make_future(cf_future=cf)
-        assert future.result() == result
+        returned = future.result()
+        assert returned is not result
+        assert returned.model_dump() == result.model_dump()
+        assert returned.output("data") == future.output("data")
+        with pytest.raises(ValueError, match="not bound"):
+            result.output("data")
 
     def test_result_timeout(self):
         """TimeoutError with descriptive message."""
@@ -178,3 +186,15 @@ class TestResult:
         future = _make_future(cf_future=cf)
         with pytest.raises(ValueError, match="bad input"):
             future.result()
+
+
+def test_dynamic_roles_are_available_on_completed_result() -> None:
+    underlying: Future[StepResult] = Future()
+    future = _make_future(
+        output_roles=frozenset(), output_types={}, cf_future=underlying
+    )
+    underlying.set_result(_make_result())
+    with pytest.raises(ValueError, match="not available"):
+        future.output("data")
+    assert future.result().output("data").source.step_run_id == "a" * 32
+    assert future.output_roles == frozenset()
