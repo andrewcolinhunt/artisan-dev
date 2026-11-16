@@ -23,6 +23,13 @@ STORE_MANIFEST = {
 STORE_MANIFEST_PATH = "_artisan/store.json"
 
 
+def assert_writable_store(delta_root: str, fs: AbstractFileSystem) -> None:
+    """Reject pipeline writes and repairs to a labeled inspection export."""
+    if fs.exists(uri_join(delta_root, "_artisan", "publication.json")):
+        msg = "Publication stores are for inspection; start a new pipeline root"
+        raise IncompatibleStoreError(msg)
+
+
 def assert_store_format(
     delta_root: str,
     fs: AbstractFileSystem,
@@ -61,6 +68,7 @@ def prepare_store_initialization(
         True when initialization must publish a new manifest after creating
         tables; False when the supported manifest already exists.
     """
+    assert_writable_store(delta_root, fs)
     manifest_path = uri_join(delta_root, STORE_MANIFEST_PATH)
     if fs.exists(manifest_path):
         assert_store_format(delta_root, fs, storage_options)

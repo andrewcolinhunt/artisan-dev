@@ -125,6 +125,7 @@ project:
           children:
             - file: how-to-guides/inspecting-evidence.md
             - file: how-to-guides/exporting-evidence.md
+            - file: how-to-guides/exporting-publication-stores.md
             - file: how-to-guides/connecting-mcp.md
             - file: how-to-guides/inspecting-provenance.md
             - file: how-to-guides/exporting-results.md
