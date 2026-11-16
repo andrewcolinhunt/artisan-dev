@@ -80,11 +80,14 @@ def test_invalid_attachment_rejected_before_environment_hooks_or_log_open(
 
 def test_revoked_invocation_rejected_before_environment_hooks() -> None:
     environment = Mock(env={}, public_env=())
-    with managed_invocation():
+    with managed_invocation() as invocation:
         close_command_scope()
         with pytest.raises(CommandOwnershipError):
             run_command(environment, ["not-launched"])
+        assert invocation.closed
+        assert not invocation.uncertain
     environment.wrap_command.assert_not_called()
+    environment.prepare_env.assert_not_called()
 
 
 def test_unknown_parent_command_rejected_before_environment_hooks(

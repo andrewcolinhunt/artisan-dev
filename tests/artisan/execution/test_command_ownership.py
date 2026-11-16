@@ -101,6 +101,7 @@ def _lose_owner(session: ExecutionSession | None = None) -> None:
     scope = session._invocation if session is not None else command_supervisor._current
     assert scope is not None
     assert scope.owner is not None
+    assert scope.owner.process.poll() is None
     scope.owner.process.kill()
     scope.owner.process.wait(timeout=5)
     with pytest.raises(command_supervisor.CommandOwnershipError):
@@ -253,21 +254,52 @@ def test_curator_owner_loss_forbids_success_handlers(
             assert "primary curator failure" in row["error"]
 
 
-@pytest.mark.parametrize("result_kind", ["artifact", "passthrough"])
-def test_curator_closed_science_does_not_prove_later_supervisor_closure(
-    runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, result_kind: str
-) -> None:
+def _curator_result_hook(monkeypatch: pytest.MonkeyPatch, result_kind: str) -> str:
     if result_kind == "passthrough":
         monkeypatch.setattr(
             _OwnedCurator,
             "execute_curator",
             lambda *a, **k: PassthroughResult(passthrough={"metrics": ["a" * 32]}),
         )
-    hook_name = (
+    return (
         "finalize_artifacts"
         if result_kind == "artifact"
         else "validate_passthrough_result"
     )
+
+
+@pytest.mark.parametrize("result_kind", ["artifact", "passthrough"])
+def test_curator_finishes_owned_supervisor_before_result_processing(
+    runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, result_kind: str
+) -> None:
+    hook_name = _curator_result_hook(monkeypatch, result_kind)
+    original = getattr(curator, hook_name)
+
+    def check_owner_before_result_processing(*args: Any, **kwargs: Any) -> Any:
+        scope = command_supervisor._current
+        assert scope is not None
+        assert scope.closed
+        assert not scope.uncertain
+        assert scope.owner is not None
+        assert scope.owner.process.poll() == 0
+        assert scope.owner.poll().state == "closed"
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(curator, hook_name, check_owner_before_result_processing)
+    result = curator.run_curator_flow(
+        ExecutionUnit(operation=_OwnedCurator(), inputs={}, step_number=1), runtime
+    )
+    assert result.success
+    records = list(Path(runtime.staging_root).rglob("executions.parquet"))
+    assert len(records) == 1
+    assert pl.read_parquet(records[0])["success"].to_list() == [True]
+
+
+@pytest.mark.parametrize("result_kind", ["artifact", "passthrough"])
+def test_curator_closed_scope_does_not_prove_shared_owner_closure(
+    runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch, result_kind: str
+) -> None:
+    hook_name = _curator_result_hook(monkeypatch, result_kind)
     original = getattr(curator, hook_name)
 
     def lose_owner_during_result_processing(*args: Any, **kwargs: Any) -> Any:
@@ -276,15 +308,24 @@ def test_curator_closed_science_does_not_prove_later_supervisor_closure(
         assert scope is not None
         assert scope.closed
         assert not scope.uncertain
-        _lose_owner()
+        assert scope.owner is None
+        assert outer.owner is not None
+        assert outer.owner.process.poll() is None
+        outer.owner.process.kill()
+        outer.owner.process.wait(timeout=5)
         return result
 
     monkeypatch.setattr(curator, hook_name, lose_owner_during_result_processing)
-    with pytest.raises(command_supervisor.CommandOwnershipError):
-        curator.run_curator_flow(
+    with (
+        pytest.raises(command_supervisor.CommandOwnershipError),
+        command_supervisor.managed_invocation() as outer,
+    ):
+        result = curator.run_curator_flow(
             ExecutionUnit(operation=_OwnedCurator(), inputs={}, step_number=1), runtime
         )
-    # A seal can precede outer owner loss; it cannot make that entry return success.
+        assert result.success
+    assert outer.uncertain
+    # A successful science seal cannot prove shared-owner closure.
     records = list(Path(runtime.staging_root).rglob("executions.parquet"))
     assert len(records) == 1
     assert pl.read_parquet(records[0])["success"].to_list() == [True]
