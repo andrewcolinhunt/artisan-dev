@@ -1,8 +1,8 @@
 """Artifact type definition registry.
 
 Each artifact type is described by a concrete ``ArtifactTypeDef`` subclass
-that carries three pieces of metadata: ``key``, ``table_path``, and ``model``.
-Registration is automatic via ``__init_subclass__``.
+with storage/model metadata and a semantic-reference policy. Registration is
+automatic via ``__init_subclass__``; invocation admission requires the policy.
 
 Example::
 
@@ -10,6 +10,7 @@ Example::
         key = "csv"
         table_path = "artifacts/csvs"
         model = CSVArtifact
+        required_references = None
 """
 
 from __future__ import annotations
@@ -20,6 +21,11 @@ from typing import Any, ClassVar, cast
 from artisan.errors import ApplicationRegistrationError
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import TablePath
+from artisan.schemas.provenance.occurrence import (
+    ReferenceContext,
+    RequiredReference,
+    RequiredReferencePolicy,
+)
 
 
 class ArtifactTypeDef:
@@ -33,6 +39,8 @@ class ArtifactTypeDef:
         key: Unique string identifier (e.g. "csv").
         table_path: Delta Lake table path (e.g. "artifacts/csvs").
         model: The artifact model class (must have POLARS_SCHEMA, to_row, from_row).
+        required_references: Explicitly None or a resolver of exact semantic
+            referents from finalized content and validated direct relationships.
     """
 
     _registry: ClassVar[dict[str, type[ArtifactTypeDef]]] = {}
@@ -40,6 +48,7 @@ class ArtifactTypeDef:
     key: ClassVar[str]
     table_path: ClassVar[str]
     model: ClassVar[type]
+    required_references: ClassVar[RequiredReferencePolicy | None]
 
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
@@ -143,6 +152,44 @@ class ArtifactTypeDef:
         return PurePosixPath(cls.table_path).name + ".parquet"
 
     @classmethod
+    def reference_policy(cls) -> RequiredReferencePolicy | None:
+        """Require an explicit semantic-reference declaration for admission.
+
+        Existing type registration remains independent of invocation admission.
+        A type used by an occurrence-aware invocation must declare either a
+        resolver or explicitly no required referents.
+        """
+        if not hasattr(cls, "required_references"):
+            msg = f"Artifact type {cls.key!r} has no required-reference policy"
+            raise TypeError(msg)
+        policy: object = cls.required_references
+        if policy is not None and not callable(policy):
+            msg = "Required-reference policy must be callable or None"
+            raise TypeError(msg)
+        return cast(RequiredReferencePolicy | None, policy)
+
+    @classmethod
+    def resolve_required_references(
+        cls, artifact: Artifact, context: ReferenceContext
+    ) -> tuple[RequiredReference, ...]:
+        """Resolve declared referents and validate exact admitted targets."""
+        if artifact.artifact_type != cls.key or artifact.artifact_id is None:
+            msg = "Reference policies require a finalized artifact of their type"
+            raise ValueError(msg)
+        artifact.finalize()
+        policy = cls.reference_policy()
+        references = () if policy is None else tuple(policy(artifact, context))
+        artifact.finalize()
+        addresses = set()
+        for reference in references:
+            context.validate(reference)
+            if reference.address in addresses:
+                msg = "Reference policy returned a duplicate occurrence"
+                raise ValueError(msg)
+            addresses.add(reference.address)
+        return references
+
+    @classmethod
     def polars_schema(cls) -> dict[str, Any]:
         """Return the Polars column schema from the model."""
         return cast("dict[str, Any]", cls.model.POLARS_SCHEMA)  # type: ignore[attr-defined]
@@ -214,6 +261,7 @@ class ArtifactTypeDef:
 # class-definition time. The models are fully defined before this
 # module's bottom-of-file code executes.
 
+from artisan.schemas.artifact.base import Artifact  # noqa: E402
 from artisan.schemas.artifact.execution_config import (  # noqa: E402
     ExecutionConfigArtifact,
 )
@@ -227,6 +275,37 @@ class MetricTypeDef(ArtifactTypeDef):
     key = "metric"
     table_path = "artifacts/metrics"
     model = MetricArtifact
+    required_references = None
+
+
+def _configuration_references(
+    artifact: Artifact, context: ReferenceContext
+) -> tuple[RequiredReference, ...]:
+    """Resolve only the configuration's explicit artifact-reference markers."""
+    if not isinstance(artifact, ExecutionConfigArtifact) or artifact.content is None:
+        msg = "Configuration reference resolution requires hydrated content"
+        raise ValueError(msg)
+    references = []
+    for artifact_id in dict.fromkeys(artifact.get_artifact_references()):
+        matches = [
+            (address, candidate)
+            for address, candidate in context.artifacts.items()
+            if candidate.artifact_id == artifact_id
+        ]
+        direct = [item for item in matches if item[0] in context.direct_parents]
+        selected = direct or matches
+        if len(selected) != 1:
+            msg = "Configuration referent is missing or ambiguous"
+            raise ValueError(msg)
+        address, candidate = selected[0]
+        references.append(
+            RequiredReference(
+                address=address,
+                artifact_id=artifact_id,
+                artifact_type=candidate.artifact_type,
+            )
+        )
+    return tuple(references)
 
 
 class ConfigTypeDef(ArtifactTypeDef):
@@ -235,6 +314,7 @@ class ConfigTypeDef(ArtifactTypeDef):
     key = "config"
     table_path = "artifacts/configs"
     model = ExecutionConfigArtifact
+    required_references = staticmethod(_configuration_references)
 
 
 class FileRefTypeDef(ArtifactTypeDef):
@@ -243,3 +323,4 @@ class FileRefTypeDef(ArtifactTypeDef):
     key = "file_ref"
     table_path = "artifacts/file_refs"
     model = FileRefArtifact
+    required_references = None

@@ -15,32 +15,26 @@ Pass `protocol="s3"` to use credentials from an IAM role,
 `~/.aws/credentials`, or `AWS_*` environment variables:
 
 ```python
-from uuid import uuid4
-
-from artisan.orchestration import PipelineConfig, PipelineManager
+from artisan.orchestration import PipelineManager
 from artisan.schemas import StorageConfig
 
-pipeline = PipelineManager(
-    PipelineConfig(
-        name="prod-ingest",
-        pipeline_run_id=str(uuid4()),
-        delta_root="s3://my-bucket/delta",
-        staging_root="s3://my-bucket/staging",
-        files_root="s3://my-bucket/files",
-        working_root="runs/working",  # local sandboxes and failure logs
-        storage=StorageConfig(protocol="s3"),
-    )
+pipeline = PipelineManager.create(
+    name="prod-ingest",
+    delta_root="s3://my-bucket/delta",
+    staging_root="s3://my-bucket/staging",
+    files_root="s3://my-bucket/files",
+    working_root="runs/working",  # local sandboxes
+    storage=StorageConfig(protocol="s3"),
 )
 ```
 
-Direct `PipelineConfig` construction needs an explicit run ID; the UUID above
-keeps this run separate from other runs in the same store. Call
-`pipeline.finalize()` when you finish submitting work.
+`create()` assigns a fresh run ID while keeping this run's history in the
+selected store. Call `pipeline.finalize()` when you finish submitting work.
 
-Keep `working_root` and `failure_logs_root` local for sandboxes and failure logs.
-For cloud storage, Artisan derives `failure_logs_root` from `working_root`:
-`<working_root>/logs/failures/YYYYMMDD/YYYYMMDDTHHMMSSffffffZ_executionID.log`,
-using each source execution's UTC start time.
+Keep `working_root` local for worker sandboxes. Failure logs are published
+through the configured filesystem under `<parent of delta_root>/logs/failures/`,
+using each source execution's UTC start time in the filename. If `delta_root`
+is a bare bucket URI, the logs directory remains inside that bucket.
 
 Pipeline session file logging is disabled for cloud stores, so
 `pipeline.log_path` is `None`; console logging remains available. Local stores
@@ -81,7 +75,7 @@ storage = StorageConfig(
 )
 ```
 
-Pass this object to `PipelineConfig(storage=storage, ...)`. On AWS, leave
+Pass this object to `PipelineManager.create(..., storage=storage)`. On AWS, leave
 `delta_options={}` (the default) to use environment credential discovery.
 
 ---
@@ -124,14 +118,19 @@ those files with the source's client first, then pass their local paths.
 
 Point `files_root` at a cloud URI to store generated `FileRefArtifact` and
 `AppendableArtifact` content there. Creators still write to local
-`inputs.files_dir`; Artisan uploads finalized files to `files_root`. References
-to existing files outside `files_dir` keep their original locations.
-Function creators can write there during execute; command creators copy selected
-outputs there during postprocess, after endpoint downloads complete. See
+`inputs.files_dir`. Artisan captures and verifies each complete external carrier
+when staging the result, then publishes a managed copy under `files_root` before
+acceptance. This includes retained references to files outside `files_dir`; the
+accepted result no longer depends on those original locations.
+
+Function creators can write files during execute; command creators copy selected
+outputs into `files_dir` during postprocess. See
 [Retain command-generated files](writing-creator-operations.md#retain-command-files).
 
-If an upload fails, the unit fails with a postprocess-style error and the
-local sandbox is preserved so the bytes are recoverable.
+Upload or verification failure prevents acceptance of that result. Set
+`preserve_working=True` when creating the pipeline to keep local sandbox files
+for debugging. Otherwise, workers remove temporary working files after confirmed
+closure; unresolved ownership retains its evidence.
 
 See [Storage and Delta Lake](../concepts/storage-and-delta-lake.md) for external
 file storage.

@@ -60,11 +60,12 @@ and reader that uses it must load the definition; see
 (glossary-backend)=
 ## Step runner
 
-An execution component that controls where and how creator workers run. Artisan
-core ships the `local` process-pool runner. External packages can add runners
-such as `SlurmRunner` and `SlurmIntraRunner` from `artisan-submitit`. Each runner
-defines `WorkerTraits` (worker-side I/O behavior) and `OrchestratorTraits`
-(post-dispatch behavior on the orchestrator).
+An execution component that places scientific or curator workers and owns their
+transport and process resources. Core supplies `LocalRunner`; external packages
+supply runners such as `SlurmRunner` and `SlurmIntraRunner` from `artisan-submitit`.
+Providers implement software resolution and worker launch using the contracts
+exported by `artisan.orchestration.runner_api`. Unit result handles and the shared
+worker's ownership state distinguish result delivery from confirmed closure.
 
 ---
 
@@ -105,20 +106,20 @@ See [cancellation](../concepts/error-handling.md#cancellation-and-uncertain-clea
 
 A reusable composition of operations with declared inputs and outputs. Defined
 by subclassing `CompositeDefinition` and implementing `compose()`. Running a
-composite with `pipeline.run_composite()` expands it into real pipeline steps —
-each internal `ctx.run()` becomes its own step with independent caching,
-dispatch, and provenance.
+composite with `pipeline.run()` executes its children in one worker per unit.
+Each `ctx.call()` declares internal wiring; `ctx.output()` chooses the outputs
+retained at the outer persistence and cache boundary.
 
 ---
 
 (glossary-compute-provider)=
 ## Compute provider
 
-The target for an operation's execute phase, selected with `compute_provider`.
-`"local"` runs on the worker's host; `"modal"` invokes a deployed tool endpoint
-and requires a command operation. The [step runner](#glossary-backend) separately
-places the worker process. See
-[Compute routing](../concepts/execution-flow.md#compute-routing).
+Infrastructure that places an Artisan worker, selected through a configured
+[step runner](#glossary-backend). Local, Modal, and Slurm workers use the same
+operation/composite contract. A command's declared environment selects its
+software independently of placement. See
+[Run Remote Workers](../how-to-guides/running-remote-workers.md).
 
 ---
 
@@ -206,10 +207,11 @@ A stored record of one execution attempt, with a deterministic cache key
 (glossary-execution-unit)=
 ## Execution unit
 
-The work package dispatched to a worker. An `ExecutionUnit` carries a fully
-configured operation instance, a batch of input artifact IDs keyed by
-[role](#glossary-role), the cache key, and the step number. The number of
-artifacts per unit is controlled by `batch_strategy.artifacts_per_unit`.
+One independently admitted invocation of an operation or composite. It binds
+the compiled recipe, exact inputs, selected software, and attempt identity.
+`batch_strategy.artifacts_per_unit` controls scientific partitioning;
+`units_per_worker` packs compatible units sequentially without combining their
+persistence or cache boundaries.
 
 ---
 

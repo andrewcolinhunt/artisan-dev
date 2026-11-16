@@ -28,6 +28,7 @@ from artisan.schemas.artifact.csv import (
 )
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.specs.input_models import FrozenInputContext
 
 __all__ = ["run_operation_lifecycle"]
 
@@ -161,6 +162,7 @@ def run_operation_lifecycle(
         input_artifacts=input_artifacts,
         step_number=1,
         postprocess_dir=postprocess_dir_str,
+        _context=FrozenInputContext("example-lifecycle", input_artifacts),
     )
     return operation.postprocess(postprocess_input)
 

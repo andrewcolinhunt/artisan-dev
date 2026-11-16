@@ -48,8 +48,8 @@ for identity and finalization rules.
 
 An **operation** is a Python class that consumes artifacts and produces
 artifacts. Operations declare typed input and output specifications via
-`InputSpec` and `OutputSpec`. Runner settings control where creator workers run;
-compute settings control where their execute phase runs.
+`InputSpec` and `OutputSpec`. The runner selects worker placement; a command's
+`Environment` selects its tool software independently.
 
 There are two kinds:
 
@@ -57,8 +57,8 @@ There are two kinds:
   three-phase lifecycle: `preprocess`, an execute function or command, and
   `postprocess`. Each execution uses a working directory for its files.
 - **Curator operations** perform metadata work (filtering, merging,
-  ingesting) through `execute_curator` in a local subprocess, without a creator
-  working directory.
+  ingesting) through `execute_curator` in a provider-placed worker, without the
+  creator's three-phase working directories.
 
 The framework ships with example creators (`DataGenerator`, `DataTransformer`,
 `MetricCalculator`) and built-in curators (`Filter`, `Merge`, `IngestFiles`,
@@ -67,8 +67,9 @@ for exploratory filtering in notebooks, though it is not a pipeline operation.
 
 Bundle operations you repeatedly run together, such as transform followed by
 scoring, into a **composite**. A `CompositeDefinition` declares inputs and outputs
-and connects its operations through `compose()`. Each internal operation runs
-as its own pipeline step.
+and connects its creators through `compose()`. Their calls share one worker per
+input unit. Only the composite's selected outputs and required support persist,
+under one outer cache and provenance boundary.
 
 See [Operations Model](../concepts/operations-model.md) and
 [Composites and Composition](../concepts/composites-and-composition.md).

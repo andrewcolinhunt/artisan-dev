@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.storage.core.artifact_store import ArtifactStore
+
+if TYPE_CHECKING:
+    from artisan.storage.core.curator_view import CuratorView
 
 
 def build_execution_context(
@@ -19,6 +23,7 @@ def build_execution_context(
     runtime_env: RuntimeEnvironment,
     operation: OperationDefinition,
     step_run_id: str | None = None,
+    curator_view: CuratorView | None = None,
 ) -> ExecutionContext:
     """Build an execution context for a creator or curator operation.
 
@@ -31,6 +36,7 @@ def build_execution_context(
         operation: Fully configured operation this context describes.
         step_run_id: Identifier of the owning pipeline step run, or None
             for a standalone execution.
+        curator_view: Verified fixed store view for an admitted curator.
 
     Returns:
         The assembled ExecutionContext for the operation.
@@ -41,6 +47,7 @@ def build_execution_context(
         fs=fs,
         storage_options=runtime_env.storage.delta_storage_options(),
         files_root=runtime_env.files_root,
+        _view=curator_view,
     )
     return ExecutionContext(
         execution_run_id=execution_run_id,

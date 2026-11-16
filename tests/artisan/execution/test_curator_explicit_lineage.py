@@ -15,8 +15,14 @@ from artisan.execution.exceptions import (
     LineageCompletenessError,
     LineageIntegrityError,
 )
-from artisan.execution.executors.creator_phases import PreppedUnit, post_unit
 from artisan.execution.executors.curator import _handle_artifact_result
+from artisan.execution.invocation import (
+    InvocationPaths,
+    PreparedInvocation,
+    postprocess_invocation,
+)
+from artisan.execution.lineage.builder import build_edges
+from artisan.execution.lineage.enrich import build_artifact_edges_from_types
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.csv import CSVArtifact
@@ -27,8 +33,8 @@ from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
+from artisan.schemas.specs.input_models import FrozenInputContext
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -83,6 +89,40 @@ def _mapping(source: str = "a" * 32, **kwargs) -> LineageMapping:
     )
 
 
+def test_curator_assigns_draft_origins_and_preserves_finalized_owners(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        _TestOp,
+        "outputs",
+        {"data": OutputSpec(artifact_type="csv", derives_from={"inputs": []})},
+    )
+    artifacts = [
+        CSVArtifact.draft(b"value\n1\n", "first.csv"),
+        CSVArtifact.draft(b"value\n2\n", "second.csv", step_number=99),
+        CSVArtifact.draft(b"value\n3\n", "prior.csv", step_number=2).finalize(),
+    ]
+    with patch(
+        "artisan.execution.executors.curator.record_execution_success"
+    ) as record:
+        _handle_artifact_result(
+            result=ArtifactResult(artifacts={"data": artifacts}, lineage={"data": []}),
+            operation=_TestOp(),
+            artifact_store=MagicMock(),
+            execution_context=MagicMock(
+                spec=ExecutionContext, execution_run_id="f" * 32, step_number=7
+            ),
+            inputs={},
+            timestamp_end=datetime.now(UTC),
+            command_recording=CommandRecording.empty(),
+            replay_snapshot=ReplaySnapshot.unavailable("direct_recorder_fixture"),
+            replay_of_execution_run_id=None,
+        )
+    recorded = record.call_args.kwargs["artifacts"]["data"]
+    assert [artifact.origin_step_number for artifact in recorded] == [7, 7, 2]
+    assert all(not artifact.is_draft for artifact in recorded)
+
+
 @pytest.fixture(params=["creator", "curator"])
 def execute_declared_result(request, tmp_path, monkeypatch):
     """Exercise real validation/resolution, replacing only final persistence."""
@@ -103,7 +143,7 @@ def execute_declared_result(request, tmp_path, monkeypatch):
                     operation=operation,
                     artifact_store=store,
                     execution_context=MagicMock(
-                        spec=ExecutionContext, execution_run_id="f" * 32
+                        spec=ExecutionContext, execution_run_id="f" * 32, step_number=1
                     ),
                     inputs=inputs,
                     timestamp_end=datetime.now(UTC),
@@ -114,28 +154,33 @@ def execute_declared_result(request, tmp_path, monkeypatch):
                     replay_of_execution_run_id=None,
                 )
             return record.call_args.kwargs["lineage_edges"]
-        prepped = PreppedUnit(
-            unit=MagicMock(step_number=1),
-            execution_run_id="f" * 32,
-            sandbox_path=str(tmp_path),
-            postprocess_dir=str(tmp_path),
-            log_path=str(tmp_path / "missing.log"),
-            files_dir=None,
+        prepared = PreparedInvocation(
             operation=operation,
-            input_artifacts={
-                role: [CSVArtifact(artifact_id=aid) for aid in ids]
-                for role, ids in inputs.items()
-            },
-            associated={},
-        )
-        runtime = RuntimeEnvironment(
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-            working_root=str(tmp_path),
-            preserve_working=True,
+            context=FrozenInputContext(
+                "f" * 32,
+                {
+                    role: [CSVArtifact(artifact_id=aid) for aid in ids]
+                    for role, ids in inputs.items()
+                },
+            ),
+            paths=InvocationPaths.create(tmp_path, files_enabled=False),
+            step_number=1,
         )
         with patch.object(_TestOp, "postprocess", return_value=result):
-            return post_unit(prepped, [], runtime).edges
+            finalized = postprocess_invocation(prepared, [])
+        artifact_types = {
+            artifact.artifact_id: artifact.artifact_type
+            for values in [
+                *prepared.context.artifacts.values(),
+                *finalized.artifacts.values(),
+            ]
+            for artifact in values
+        }
+        return build_artifact_edges_from_types(
+            build_edges(finalized.lineage, finalized.artifacts, artifact_types),
+            prepared.context.invocation_id,
+            artifact_types,
+        )
 
     execute.store = store
     execute.kind = request.param

@@ -8,10 +8,11 @@ import sys
 import time
 from collections.abc import Iterator
 from pathlib import Path
+from typing import ClassVar
 
 import pytest
 
-from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
+from artisan.execution.environments.container_runtime import DockerRuntime
 from artisan.utils.command_supervisor import (
     CommandOwnershipError,
     CommandSupervisor,
@@ -23,6 +24,7 @@ from artisan.utils.external_tools import run_command
 _FAKE = r"""
 import json, os, signal, sys, time
 from pathlib import Path
+from typing import ClassVar
 root = Path(ROOT)
 mode = MODE
 args = sys.argv[1:]
@@ -108,8 +110,32 @@ def owner() -> Iterator[CommandSupervisor]:
         controller.finish(time.monotonic() + 2)
 
 
+class DockerCommandAdapter:
+    """Exercise the container supervisor protocol without software qualification."""
+
+    cancellation_scope = "external"
+    env: ClassVar[dict[str, str]] = {}
+    public_env: tuple[str, ...] = ()
+
+    def wrap_command(self, command: list[str], cwd: str | None = None) -> list[str]:
+        return ["docker", "run", "--rm", "test-image", *command]
+
+    def _managed_container_command(self, wrapped: list[str]) -> list[str]:
+        return ["docker", "create", *wrapped[3:]]
+
+    def prepare_env(self) -> dict[str, str]:
+        return {
+            key: value
+            for key, value in {
+                **os.environ,
+                "DOCKER_HOST": "unix:///fake-engine",
+            }.items()
+            if key != "DOCKER_CONTEXT"
+        }
+
+
 def _launch(owner: CommandSupervisor) -> ManagedCommand:
-    environment = DockerEnvironmentSpec(image="test-image")
+    environment = DockerCommandAdapter()
     wrapped = environment.wrap_command(["synthetic-payload"])
     return ManagedCommand(
         owner.attachment,
@@ -192,7 +218,7 @@ def test_stalled_control_cli_uses_original_deadline_and_remains_unknown(
 def test_attach_success_without_terminal_container_evidence_is_not_success(fake_docker):
     root = fake_docker("bad-inspect")
     with pytest.raises(CommandOwnershipError):
-        run_command(DockerEnvironmentSpec(image="test-image"), ["payload"])
+        run_command(DockerCommandAdapter(), ["payload"])
     assert (root / "removed").exists()
     assert "--force" in json.loads((root / "rm-args").read_text())
 
@@ -200,23 +226,14 @@ def test_attach_success_without_terminal_container_evidence_is_not_success(fake_
 def test_missing_container_before_positive_removal_proof_is_unknown(fake_docker):
     fake_docker("missing-container")
     with pytest.raises(CommandOwnershipError):
-        run_command(DockerEnvironmentSpec(image="test-image"), ["payload"])
+        run_command(DockerCommandAdapter(), ["payload"])
 
 
-def test_remote_docker_endpoint_retains_external_obligation(
-    fake_docker, owner, monkeypatch
-):
+def test_remote_docker_endpoint_rejected_before_command_launch(fake_docker):
     root = fake_docker("natural")
-    monkeypatch.setenv("DOCKER_HOST", "tcp://remote.example:2376")
-    command = _launch(owner)
-    try:
-        assert command.communicate()[0] == "external\n"
-        deadline = time.monotonic() + 2
-        owner.request_close(deadline)
-        assert owner.finish(deadline).state == "unknown"
-        assert not (root / "create-args").exists()
-    finally:
-        command.dispose()
+    with pytest.raises(ValueError, match="local Unix"):
+        DockerRuntime(root / "docker", endpoint="tcp://remote.example:2376")
+    assert not (root / "create-args").exists()
 
 
 def test_control_children_keep_helper_env_without_forwarding_host_secrets_to_container(
@@ -224,10 +241,7 @@ def test_control_children_keep_helper_env_without_forwarding_host_secrets_to_con
 ):
     root = fake_docker("natural")
     monkeypatch.setenv("UNRELATED_HOST_SECRET", "dummy-sensitive-value")
-    assert (
-        run_command(DockerEnvironmentSpec(image="test-image"), ["payload"]).stdout
-        == "payload\n"
-    )
+    assert run_command(DockerCommandAdapter(), ["payload"]).stdout == "payload\n"
     for stage in ("create", "start", "inspect", "rm"):
         keys = set(json.loads((root / f"{stage}-environment").read_text()))
         assert not keys.intersection(COMMAND_ATTACHMENT_ENV)
@@ -235,23 +249,6 @@ def test_control_children_keep_helper_env_without_forwarding_host_secrets_to_con
     create = json.loads((root / "create-args").read_text())
     assert "--env" not in create
     assert "dummy-sensitive-value" not in repr(create)
-
-
-def test_private_create_plan_reuses_exact_wrapped_configuration(monkeypatch):
-    from artisan.schemas.operation_config import environment_spec
-
-    calls = []
-    monkeypatch.setattr(
-        environment_spec, "_find_free_port", lambda: calls.append(1) or 12345
-    )
-    environment = DockerEnvironmentSpec(image="test-image", gpu=True)
-    wrapped = environment.wrap_command(["payload"], "/execution")
-    assert environment._managed_container_command(wrapped) == [
-        "docker",
-        "create",
-        *wrapped[3:],
-    ]
-    assert len(calls) == 1
 
 
 def test_control_launch_immediately_reserves_identity_before_later_group_probe(
@@ -351,18 +348,15 @@ def test_cancellation_during_create_removes_late_identity_without_start(
         command.dispose()
 
 
-def test_resolved_context_is_frozen_and_default_platform_is_preserved(
+def test_explicit_endpoint_is_frozen_and_control_environment_is_preserved(
     fake_docker, monkeypatch
 ):
     root = fake_docker("natural")
     monkeypatch.delenv("DOCKER_HOST")
     monkeypatch.setenv("DOCKER_CONTEXT", "chosen-context")
     monkeypatch.setenv("DOCKER_DEFAULT_PLATFORM", "linux/amd64")
-    assert (
-        run_command(DockerEnvironmentSpec(image="test-image"), ["payload"]).stdout
-        == "payload\n"
-    )
-    assert "chosen-context" in json.loads((root / "context-args").read_text())
+    assert run_command(DockerCommandAdapter(), ["payload"]).stdout == "payload\n"
+    assert not (root / "context-args").exists()
     for stage in ("create", "start", "inspect", "rm"):
         assert (root / f"{stage}-host").read_text() == "unix:///fake-engine"
         assert (root / f"{stage}-platform").read_text() == "linux/amd64"

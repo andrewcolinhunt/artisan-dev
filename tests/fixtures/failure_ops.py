@@ -1,12 +1,7 @@
-"""Importable failing operations for the failure-persistence matrix.
+"""Authored phase failures for real admitted-worker and controller integration.
 
-Lives in the ``fixtures`` package (on ``sys.path`` via ``pythonpath = ["tests"]``,
-which ``multiprocessing`` spawn inherits) so spawn workers can import each op by
-its qualified name ``fixtures.failure_ops.<Op>`` — exercising the *real* worker
-execute path. This is the whole point: ops loaded via
-``importlib.spec_from_file_location`` in a parent process are NOT importable by
-spawn workers, which is itself a failure-to-record trigger. Do not path-load
-these.
+The integration runner supplies explicit synthetic software in one process;
+these definitions do not claim installed application or transport qualification.
 """
 
 from __future__ import annotations
@@ -18,7 +13,6 @@ from enum import StrEnum, auto
 from typing import Any, ClassVar
 
 import polars as pl
-from pydantic import BaseModel
 
 from artisan.composites.base.composite_context import CompositeContext
 from artisan.composites.base.composite_definition import CompositeDefinition
@@ -166,21 +160,8 @@ class FailCommand(_GenBase):
         return ["false"]
 
 
-class WorkerCrash(_GenBase):
-    """Creator whose execute hard-kills the worker (models OOM/segfault).
-
-    ``os._exit`` bypasses the executor's own failure recording, so the record
-    must be synthesized by the orchestrator.
-    """
-
-    name = "fp_worker_crash"
-
-    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
-        os._exit(1)  # deliberate hard kill of the worker
-
-
 # ---------------------------------------------------------------------------
-# Curator ops: run in a spawned subprocess.
+# Curator operations exercise the admitted curator path.
 # ---------------------------------------------------------------------------
 
 
@@ -248,20 +229,6 @@ class FailCuratorReturn(_CuratorBase):
         )
 
 
-class CuratorWorkerCrash(_CuratorBase):
-    """Curator whose subprocess hard-exits (BrokenProcessPool -> synthesized)."""
-
-    name = "fp_curator_worker_crash"
-
-    def execute_curator(
-        self,
-        inputs: Mapping[str, pl.DataFrame],
-        step_number: int,
-        artifact_store: ArtifactStore,
-    ) -> Any:
-        os._exit(1)  # deliberate hard kill of the subprocess
-
-
 # ---------------------------------------------------------------------------
 # Composite whose only internal step is a failing creator.
 # ---------------------------------------------------------------------------
@@ -280,9 +247,6 @@ class FailingComposite(CompositeDefinition):
         OutputRole.datasets: OutputSpec(artifact_type="csv", description="out"),
     }
 
-    class Params(BaseModel):
-        pass
-
     def compose(self, ctx: CompositeContext) -> None:
-        step = ctx.run(FailExecute)
+        step = ctx.call(FailExecute, name="failure", inputs={})
         ctx.output("datasets", step.output("datasets"))

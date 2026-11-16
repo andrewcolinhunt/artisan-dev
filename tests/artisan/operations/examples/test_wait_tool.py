@@ -7,10 +7,11 @@ from pathlib import Path
 from typing import ClassVar
 
 import pytest
+from fixtures.commands import execute_command
 
-from artisan.execution.compute.invoke import invoke_op_work
 from artisan.operations.examples import WaitTool
 from artisan.schemas import CSVArtifact, ExecuteInput, PostprocessInput
+from artisan.schemas.specs.input_models import FrozenInputContext
 
 pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not on PATH")
 
@@ -18,12 +19,12 @@ pytestmark = pytest.mark.skipif(shutil.which("bash") is None, reason="bash not o
 class TestWaitTool:
     def test_build_command_counts_and_writes_marker(self):
         op = WaitTool(params=WaitTool.Params(seconds=3))
-        cmd = op.execute_command({"dataset": "/inputs/sample.csv"})
+        cmd = op.execute_command({"dataset": "/inputs/sample.csv", "input_index": 0})
         assert cmd[0] == "bash"
         assert cmd[1] == "-c"
         assert "seq 1 3" in cmd[2]
         assert "tick" in cmd[2]
-        assert "_waited.csv" in cmd[2]  # named after the input stem for lineage
+        assert "_waited.csv" in cmd[2]
         assert "sample.csv" in cmd[2]
 
     def test_execute_ticks_and_emits_marker(self, tmp_path: Path):
@@ -34,17 +35,17 @@ class TestWaitTool:
         log_path = tmp_path / "tool_output.log"
 
         op = WaitTool(params=WaitTool.Params(seconds=1))
-        result = invoke_op_work(
+        result = execute_command(
             op,
             ExecuteInput(
-                inputs={"dataset": str(source)},
+                inputs={"dataset": str(source), "input_index": 0},
                 execute_dir=str(execute_dir),
                 log_path=str(log_path),
             ),
         )
 
         assert result is None
-        marker = (execute_dir / "sample_waited.csv").read_text()
+        marker = (execute_dir / "0_waited.csv").read_text()
         assert marker.startswith("seconds,host,source\n1,")
         assert marker.rstrip().endswith("sample.csv")
         assert "tick 1 / 1" in log_path.read_text()
@@ -68,7 +69,7 @@ class TestWaitTool:
     def test_postprocess_builds_one_artifact_per_marker(self, tmp_path: Path):
         markers = []
         sources = []
-        for host in ("host-a", "host-b"):
+        for index, host in enumerate(("host-a", "host-b")):
             source = CSVArtifact.draft(
                 content=f"value\n{host}\n".encode(),
                 original_name=f"{host}.csv",
@@ -76,7 +77,7 @@ class TestWaitTool:
             ).finalize()
             source.materialized_path = str(tmp_path / f"{source.artifact_id}.csv")
             sources.append(source)
-            path = tmp_path / f"{source.artifact_id}_waited.csv"
+            path = tmp_path / f"{index}_waited.csv"
             path.write_text(f"seconds,host,source\n1,{host},x.csv\n")
             markers.append(str(path))
 
@@ -85,6 +86,7 @@ class TestWaitTool:
                 file_outputs=markers,
                 memory_outputs=None,
                 input_artifacts={"dataset": sources},
+                _context=FrozenInputContext("wait", {"dataset": sources}),
                 step_number=1,
                 postprocess_dir=str(tmp_path / "post"),
             )

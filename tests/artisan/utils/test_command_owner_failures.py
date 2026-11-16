@@ -17,8 +17,8 @@ from typing import Any
 from unittest.mock import Mock
 
 import pytest
+from fixtures.commands import IdentityCommandEnvironment
 
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.utils import _command_supervisor as owner_runtime
 from artisan.utils import command_supervisor as client
 from artisan.utils._command_supervisor import encode, receive, send
@@ -422,7 +422,7 @@ def test_external_nested_interruption_prevents_parent_success(tmp_path: Path) ->
     marker = tmp_path / "nested-ready"
     code = """
 import os, pathlib, sys, time
-from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
+from fixtures.commands import ExternalCommandEnvironment
 from artisan.utils.external_tools import run_command
 nested = '''import os, pathlib, signal, sys, time
 signal.signal(signal.SIGTERM, signal.SIG_IGN)
@@ -432,13 +432,15 @@ time.sleep(12)
 '''
 child = os.fork()
 if not child:
-    run_command(EnvironmentSpec(), [sys.executable, '-c', nested, sys.argv[1]])
+    run_command(ExternalCommandEnvironment(), [sys.executable, '-c', nested, sys.argv[1]])
     os._exit(0)
 while not pathlib.Path(sys.argv[1]).exists(): time.sleep(.01)
 os._exit(0)
 """
     with pytest.raises(client.CommandOwnershipError):
-        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", code, str(marker)])
+        run_command(
+            IdentityCommandEnvironment(), [sys.executable, "-c", code, str(marker)]
+        )
     pid = int(marker.read_text())
     limit = time.monotonic() + 3
     while time.monotonic() < limit:
@@ -473,7 +475,7 @@ def test_caught_command_status_failure_poisoned_unit_cannot_seal(
         invocation = client._current
         assert invocation is not None
         with pytest.raises(client.CommandOwnershipError):
-            run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+            run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
         assert invocation.uncertain
         assert invocation.connection.request("check")["uncertain"]
         client.close_command_scope()
@@ -504,7 +506,7 @@ def test_caught_bootstrap_failure_blocks_first_unit_when_report_is_lost(
     monkeypatch.setattr(client._Connection, "request", lose_command_evidence)
     try:
         with pytest.raises(client.CommandOwnershipError):
-            run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+            run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
         assert bootstrap.uncertain
         assert not bootstrap.connection.request("check")["uncertain"]
         with pytest.raises(client.CommandOwnershipError):
@@ -522,7 +524,7 @@ def test_caught_raw_nested_status_failure_reaches_parent_command(
     marker = tmp_path / "caught-nested-failure"
     code = """
 import pathlib, sys
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from fixtures.commands import IdentityCommandEnvironment
 from artisan.utils import command_supervisor as client
 from artisan.utils.external_tools import run_command
 request = client._Connection.request
@@ -537,7 +539,7 @@ def lose_one_response(connection, kind, **kwargs):
     return response
 client._Connection.request = lose_one_response
 try:
-    run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+    run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
 except client.CommandOwnershipError:
     pathlib.Path(sys.argv[1]).write_text("caught")
 else:
@@ -557,7 +559,9 @@ else:
 
     monkeypatch.setattr(client._Connection, "request", observe_after_nested_catch)
     with pytest.raises(client.CommandOwnershipError):
-        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", code, str(marker)])
+        run_command(
+            IdentityCommandEnvironment(), [sys.executable, "-c", code, str(marker)]
+        )
     assert marker.read_text() == "caught"
 
 
@@ -848,7 +852,7 @@ def test_caught_raw_nested_collection_failure_survives_lost_report(
     marker = tmp_path / "caught-missing-collection"
     code = """
 import pathlib, sys
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
+from fixtures.commands import IdentityCommandEnvironment
 from artisan.utils import command_supervisor as client
 from artisan.utils.external_tools import run_command
 request = client._Connection.request
@@ -862,7 +866,7 @@ def lose_collection(connection, kind, **kwargs):
 client._Connection.request = lose_report
 client._Connection.notify = lose_collection
 try:
-    run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+    run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
 except client.CommandOwnershipError:
     pathlib.Path(sys.argv[1]).write_text("caught")
 else:
@@ -882,7 +886,9 @@ else:
 
     monkeypatch.setattr(client._Connection, "request", wait_for_nested_catch)
     with pytest.raises(client.CommandOwnershipError):
-        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", code, str(marker)])
+        run_command(
+            IdentityCommandEnvironment(), [sys.executable, "-c", code, str(marker)]
+        )
     assert marker.read_text() == "caught"
 
 
@@ -907,7 +913,9 @@ except client.CommandOwnershipError:
     pathlib.Path(sys.argv[1]).write_text("caught")
 """
     with pytest.raises(client.CommandOwnershipError):
-        run_command(LocalEnvironmentSpec(), [sys.executable, "-c", code, str(marker)])
+        run_command(
+            IdentityCommandEnvironment(), [sys.executable, "-c", code, str(marker)]
+        )
     assert marker.read_text() == "caught"
 
 
@@ -929,6 +937,51 @@ def test_completed_invocation_close_is_local_and_idempotent(
     finally:
         invocation.connection.close()
         owner.finish(time.monotonic() + 2)
+
+
+@pytest.mark.parametrize(
+    "failure_type", [None, ValueError, client.CommandOwnershipError]
+)
+def test_owned_scope_closure_survives_later_persistence(
+    monkeypatch: pytest.MonkeyPatch, failure_type: type[Exception] | None
+) -> None:
+    failure = None if failure_type is None else failure_type("persistence failure")
+    expectation = (
+        contextlib.nullcontext()
+        if failure is None
+        else pytest.raises(type(failure), match="persistence failure")
+    )
+    with expectation, client.managed_invocation() as invocation:
+        monkeypatch.setattr(client, "CLEANUP_SECONDS", 1.0)
+        assert client.close_command_scope()
+        owner = invocation.owner
+        assert owner is not None
+        deadline = invocation.deadline
+        assert deadline is not None
+        closed_before_persistence = owner.process.poll()
+        time.sleep(max(0, deadline - time.monotonic()) + 0.05)
+        if failure is not None:
+            raise failure
+    assert closed_before_persistence == 0
+    assert owner.deadline == deadline
+    assert owner.finish(deadline).state == "closed"
+    assert not invocation.uncertain
+    assert not getattr(failure, "__notes__", ())
+
+
+def test_nested_scope_close_keeps_shared_owner_available() -> None:
+    with client.managed_invocation() as outer:
+        owner = outer.owner
+        assert owner is not None
+        with client.managed_invocation() as inner:
+            assert inner.owner is None
+            assert client.close_command_scope()
+        assert owner.process.poll() is None
+        outer.check()
+        with client.managed_invocation() as following:
+            assert following.owner is None
+            following.check()
+    assert owner.process.returncode == 0
 
 
 def test_worker_loss_waives_unfinished_invocation_completion() -> None:

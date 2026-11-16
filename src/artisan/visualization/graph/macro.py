@@ -17,9 +17,8 @@ import graphviz
 import polars as pl
 from fsspec import AbstractFileSystem
 
-from artisan.schemas.enums import TablePath
-from artisan.storage.core.store_format import assert_store_format
-from artisan.utils.path import uri_join
+from artisan.orchestration.engine.retained_step_tracker import RetainedStepTracker
+from artisan.storage.io.retained_store import open_configured_store
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
     PASSTHROUGH_STYLE,
@@ -35,36 +34,21 @@ def _load_usable_steps(
     fs: AbstractFileSystem | None = None,
     *,
     pipeline_run_id: str | None = None,
+    files_root: str | None = None,
 ) -> pl.DataFrame:
     """Return current succeeded/partial steps for one pipeline run."""
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
-    assert_store_format(delta_root, fs, storage_options)
-    empty = pl.DataFrame(
-        schema={
-            "step_number": pl.Int32,
-            "step_name": pl.String,
-            "output_roles_json": pl.String,
-            "output_types_json": pl.String,
-            "input_refs_json": pl.String,
-        }
-    )
-    table_path = uri_join(delta_root, TablePath.STEPS)
-    if not fs.exists(table_path):
-        return empty
-
-    from artisan.orchestration.engine.step_tracker import StepTracker
     from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
-    states = StepTracker(
-        delta_root,
-        storage_options=storage_options,
-        fs=fs,
-    ).load_current_states(pipeline_run_id)
+    committer = open_configured_store(
+        delta_root, files_root=files_root, fs=fs, storage_options=storage_options
+    )
+    with committer._read_snapshot() as snapshot:
+        tracker = RetainedStepTracker(committer, "")
+        _, attempts = tracker._read_lifecycle(snapshot)
+        states = tracker._select_current_states(attempts, pipeline_run_id)
     rows = [
         {
+            "step_run_id": state.step_run_id,
             "step_number": state.step_number,
             "step_name": state.step_name,
             "output_roles_json": json.dumps(sorted(state.output_roles)),
@@ -74,36 +58,33 @@ def _load_usable_steps(
         for state in states
         if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
     ]
-    return pl.DataFrame(rows) if rows else empty
+    return pl.DataFrame(
+        rows,
+        schema={
+            "step_run_id": pl.String,
+            "step_number": pl.Int32,
+            "step_name": pl.String,
+            "output_roles_json": pl.String,
+            "output_types_json": pl.String,
+            "input_refs_json": pl.String,
+        },
+    )
 
 
-def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str]]:
-    """Extract (source_step, source_role) pairs from serialised input refs.
-
-    Handles two JSON shapes produced by ``_serialize_input_refs``:
-
-    - **dict** (most operations):
-      ``{"role": {"type": "output_ref", "source_step": 0, "role": "data"}}``
-    - **list** (Merge list-style, IngestCSV):
-      ``[{"type": "output_ref", "source_step": 0, "role": "data"}]``
-
-    Literal entries and nulls are silently skipped.
-    """
-    if not input_refs_json:
-        return []
-
-    parsed = json.loads(input_refs_json)
-    if parsed is None:
-        return []
-
-    if isinstance(parsed, dict):
-        parsed = list(parsed.values())
-    if not isinstance(parsed, list):
+def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str, str]]:
+    """Read exact submitted output references from sanitized input descriptors."""
+    parsed = json.loads(input_refs_json) if input_refs_json else None
+    if not isinstance(parsed, dict):
         return []
     return [
-        (value["source_step"], value["role"])
-        for value in parsed
-        if isinstance(value, dict) and value.get("type") == "output_ref"
+        (member["source_step"], member["role"], member["step_run_id"])
+        for group in parsed.values()
+        if isinstance(group, list)
+        for member in group
+        if isinstance(member, dict)
+        and type(member.get("source_step")) is int
+        and isinstance(member.get("role"), str)
+        and isinstance(member.get("step_run_id"), str)
     ]
 
 
@@ -113,6 +94,7 @@ def build_macro_graph(
     fs: AbstractFileSystem | None = None,
     *,
     pipeline_run_id: str | None = None,
+    files_root: str | None = None,
 ) -> graphviz.Digraph:
     """Create a step-level pipeline graph from the steps table.
 
@@ -126,6 +108,7 @@ def build_macro_graph(
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
         pipeline_run_id: Pipeline run to render. None selects the latest run.
 
     Returns:
@@ -136,8 +119,14 @@ def build_macro_graph(
         storage_options=storage_options,
         fs=fs,
         pipeline_run_id=pipeline_run_id,
+        files_root=files_root,
     )
 
+    return _build_macro_graph(steps_df)
+
+
+def _build_macro_graph(steps_df: pl.DataFrame) -> graphviz.Digraph:
+    """Render already selected steps without reading lifecycle or store state."""
     graph = graphviz.Digraph("pipeline", format="svg")
     apply_default_layout(graph)
 
@@ -195,6 +184,7 @@ def build_macro_graph(
 
         data_by_step[step_num] = step_data_nodes
 
+    current_attempts = dict(steps_df.select("step_number", "step_run_id").iter_rows())
     for row in steps_df.iter_rows(named=True):
         step_num = row["step_number"]
         refs_json = row["input_refs_json"]
@@ -204,8 +194,11 @@ def build_macro_graph(
         input_refs = _parse_input_refs(refs_json)
         exec_node_id = f"exec_{step_num}"
 
-        for source_step, source_role in input_refs:
+        for source_step, source_role, source_attempt in input_refs:
             data_node_id = f"data_{source_step}_{source_role}"
+            if current_attempts.get(source_step) != source_attempt:
+                data_node_id = f"data_{source_step}_{source_attempt}_{source_role}"
+                graph.node(data_node_id, label=f"{source_role} (prior attempt)")
             graph.edge(data_node_id, exec_node_id)
 
     # Strict column ordering using anchor nodes (same pattern as micro)
@@ -245,6 +238,8 @@ def render_macro_graph(
     format: Literal["svg", "png"] = "svg",
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    files_root: str | None = None,
 ) -> str:
     """Build and render the macro (step-level) pipeline graph to a file.
 
@@ -254,9 +249,12 @@ def render_macro_graph(
         format: Output format ("svg" or "png").
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
 
     Returns:
         Path to the rendered file.
     """
-    graph = build_macro_graph(delta_root, storage_options=storage_options, fs=fs)
+    graph = build_macro_graph(
+        delta_root, storage_options=storage_options, fs=fs, files_root=files_root
+    )
     return render_graph(graph, output_path, format)

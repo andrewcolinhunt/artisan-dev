@@ -62,10 +62,9 @@ dict and a working directory. It can write output files, call external tools,
 or run inference. Artisan passes its return value to postprocess without
 inspecting it and records exceptions as failures.
 
-Operations whose work should ship to a remote backend implement `execute_command`
-instead, returning an argv the framework runs as a subprocess or on a deployed
-tool endpoint. See [Command operations and tool
-endpoints](#command-operations-and-tool-endpoints).
+Operations that invoke a command implement `execute_command`, returning an argv
+for a managed subprocess. Both function and command operations can run in local
+or remote workers. See [Command operations and tool environments](#command-operations-and-tool-environments).
 
 You can test the method directly with an `ExecuteInput`. Such a test exercises
 the computation; a pipeline test also checks dispatch and artifact handling.
@@ -93,24 +92,25 @@ You can test each phase independently and inspect its files in the matching
 ordinary files; preprocess and postprocess handle their integration with
 artifacts and lineage.
 
-(command-operations-and-tool-endpoints)=
-### Command operations and tool endpoints
+(command-operations-and-tool-environments)=
+### Command operations and tool environments
 
 A **function op** runs `execute_function` in the lifecycle worker. A **command
 op** declares a `tool` and returns an argv from `execute_command`. Artisan runs
-that command as a local subprocess or through a deployed tool endpoint, such
-as a Modal endpoint.
+that command in its prepared environment inside the selected worker's host or
+container. `Environment.from_pixi(...)` supplies software independently of the
+runner that places the worker.
 
 A Python-body op opts into the same path by setting `execute_as_tool=True`: the
 framework supplies the argv (`artisan op run <module:Qualname>`), runs it as a
-subprocess locally, and deploys it as a tool endpoint remotely. The operation
+managed subprocess in the selected environment. The operation
 must satisfy the file-based command contract: prepared file inputs, file
 outputs, and no Python return-value transport.
 
 See [Writing Creator Operations — Python body as a
 command](../how-to-guides/writing-creator-operations.md#execute-as-tool) and
 [Op Container Images](../how-to-guides/op-container-images.md) for the
-deployment mechanics.
+preparation mechanics.
 
 ---
 
@@ -122,8 +122,9 @@ of artifact metadata (each with at least an
 collection (`ArtifactResult`) or stream (`ArtifactStreamResult`), or route
 existing artifact IDs (`PassthroughResult`).
 
-They run in an isolated local subprocess without creator sandbox phases,
-input materialization, or configurable creator-runner dispatch.
+They run in a provider-placed worker with an admitted store view, without the
+creator's sandbox phases or input materialization. They remain top-level
+pipeline operations; creator composites do not invoke store-bound curators.
 
 ### Three result shapes
 
@@ -283,15 +284,13 @@ Built-in fields control how the framework runs the operation:
   settings such as a scheduler partition
 - **`batch_strategy`** — batching and scheduling: artifacts per unit, units per
   worker, max workers, estimated seconds per unit
-- **`compute_provider`** — where the execute phase runs: local, or a Modal tool
-  endpoint
-- **`compute_resources`** — hardware requested from the compute provider (Modal)
 - **`tool`** — external executable specification: path, interpreter, subcommand
-- **`environments`** — execution environment selection: local, Docker,
-  Apptainer, or Pixi
+- **`environment`** — the locked Pixi project defining a command's software
 
 Override `runner_resources` and `batch_strategy` per step to adapt the
 operation's defaults to the available infrastructure.
+The configured step runner chooses worker placement and the tool launcher.
+Preprocess, postprocess, and native Python execution use the worker's environment.
 
 ### Algorithm parameters
 

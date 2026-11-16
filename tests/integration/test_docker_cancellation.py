@@ -10,19 +10,10 @@ import subprocess
 import time
 from collections.abc import Iterator
 from pathlib import Path
-from typing import Any
 
 import pytest
-from pydantic import Field
+from fixtures.docker_commands import DockerCommandProbe
 
-from artisan.operations.examples import DataGenerator
-from artisan.orchestration import PipelineManager, replay_execution
-from artisan.schemas.enums import TablePath
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.operation_config.environment_spec import DockerEnvironmentSpec
-from artisan.schemas.orchestration.step_lifecycle import CancellationStatus, StepStatus
-from artisan.schemas.specs.input_models import ExecuteInput
-from artisan.storage.core.committed_scan import read_committed
 from artisan.utils.command_supervisor import (
     CommandOwnershipError,
     CommandSupervisor,
@@ -65,7 +56,7 @@ class DockerWork:
         self.owner = CommandSupervisor.start()
         self.command: ManagedCommand | None = None
         self.identity: str | None = None
-        self.environment = DockerEnvironmentSpec(
+        self.environment = DockerCommandProbe(
             image=image, binds=[(str(root), "/evidence")]
         )
 
@@ -136,9 +127,47 @@ def test_docker_cancel_closes_term_resistant_tree(docker_work: DockerWork) -> No
 def test_docker_attach_client_loss_still_removes_container(
     docker_work: DockerWork,
 ) -> None:
+    import sys
+
     command = docker_work.launch()
     status = command.connection.request("command", id=command.identity)
-    os.kill(status["pid"], signal.SIGKILL)
+    assert status["state"] == "running"
+    client_pid = status["pid"]
+    if sys.platform == "linux":
+        tree = Path(f"/proc/{client_pid}")
+        assert tree.stat().st_uid == os.getuid()
+        assert (tree / "cmdline").read_bytes().split(b"\0")[1:3] == [
+            b"-m",
+            b"artisan.utils._command_tree",
+        ]
+        initial = (tree / "stat").read_text().rsplit(")", 1)[1].split()
+        assert int(initial[1]) == docker_work.owner.process.pid
+        try:
+            # Stop the reaper so its direct client's PID stays reserved until signaled.
+            os.kill(client_pid, signal.SIGSTOP)
+            deadline = time.monotonic() + 1
+            while True:
+                current = (tree / "stat").read_text().rsplit(")", 1)[1].split()
+                assert current[19] == initial[19]
+                if current[0] == "T":
+                    break
+                assert time.monotonic() < deadline, "Command reaper did not stop"
+                time.sleep(0.01)
+            (child,) = (tree / f"task/{client_pid}/children").read_text().split()
+            child_argv = (
+                (Path("/proc") / child / "cmdline").read_bytes().split(b"\0")[:-1]
+            )
+            assert Path(os.fsdecode(child_argv[0])).name == "docker"
+            assert [os.fsdecode(value) for value in child_argv[-3:]] == [
+                "start",
+                "--attach",
+                docker_work.identity,
+            ]
+            os.kill(int(child), signal.SIGKILL)
+        finally:
+            os.kill(client_pid, signal.SIGCONT)
+    else:
+        os.kill(client_pid, signal.SIGKILL)
     command.communicate()
     assert command.returncode == -signal.SIGKILL
     assert docker_work.owner.finish(time.monotonic() + 5).state == "closed"
@@ -203,7 +232,7 @@ def test_docker_removed_identity_rejects_delayed_start(
     command = None
     identity = None
     try:
-        environment = DockerEnvironmentSpec(image=docker_image)
+        environment = DockerCommandProbe(image=docker_image)
         wrapped = environment.wrap_command(["sh", "-c", "echo should-not-start"])
         env = _docker_environment()
         env["PATH"] = f"{wrapper}{os.pathsep}{env['PATH']}"
@@ -269,7 +298,7 @@ def test_docker_natural_result_preserves_output_and_exit(
     streaming: bool,
     exit_code: int,
 ) -> None:
-    environment = DockerEnvironmentSpec(image=docker_image)
+    environment = DockerCommandProbe(image=docker_image)
     cmd = ["sh", "-c", f"echo out; echo err >&2; exit {exit_code}"]
     if exit_code:
         with pytest.raises(ExternalToolError) as failure:
@@ -285,7 +314,7 @@ def test_docker_natural_result_preserves_output_and_exit(
 
 
 def test_docker_large_output_env_and_cwd(docker_image: str, tmp_path: Path) -> None:
-    environment = DockerEnvironmentSpec(
+    environment = DockerCommandProbe(
         image=docker_image, env={"PUBLIC_MESSAGE": "hello world"}
     )
     result = run_command(
@@ -299,144 +328,3 @@ def test_docker_large_output_env_and_cwd(docker_image: str, tmp_path: Path) -> N
     )
     assert result.stdout == "x" * 200000
     assert (tmp_path / "value").read_text() == "hello world\n"
-
-
-class DockerCreator(DataGenerator):
-    """Produce ordinary artifacts only after a real container command closes."""
-
-    name = "managed_docker_cancellation_creator"
-
-    class Params(DataGenerator.Params):
-        image: str = Field(description="Existing immutable qualification image.")
-        marker_root: str = Field(description="Independent container observation files.")
-        wait_for_cancel: bool = Field(
-            default=False, description="Hold a resistant child."
-        )
-
-    params: Params
-
-    def execute_function(self, inputs: ExecuteInput) -> Any:
-        environment = DockerEnvironmentSpec(
-            image=self.params.image, binds=[(self.params.marker_root, "/evidence")]
-        )
-        command = (
-            _TREE
-            if self.params.wait_for_cancel
-            else "hostname > /evidence/identity; echo finished"
-        )
-        run_command(environment, ["sh", "-c", command])
-        return super().execute_function(inputs)
-
-
-def test_docker_pipeline_cancellation_preserves_only_completed_output(
-    docker_image: str, tmp_path: Path
-) -> None:
-    markers = tmp_path / "markers"
-    markers.mkdir(mode=0o777)
-    markers.chmod(0o777)
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "staging"),
-        working_root=str(tmp_path / "work"),
-    )
-    identity = None
-    try:
-        with PipelineManager.create(
-            "owned-docker-cancel",
-            delta_root=runtime.delta_root,
-            staging_root=runtime.staging_root,
-            working_root=runtime.working_root,
-        ) as pipeline:
-            completed = pipeline.run(
-                DataGenerator, params={"count": 1, "rows_per_file": 1}, compact=False
-            )
-            assert completed.status is StepStatus.SUCCEEDED
-            before = read_committed(
-                runtime.delta_root,
-                TablePath.EXECUTIONS,
-                fs=runtime.storage.filesystem(),
-            )
-            future = pipeline.submit(
-                DockerCreator,
-                params={
-                    "image": docker_image,
-                    "marker_root": str(markers),
-                    "wait_for_cancel": True,
-                    "count": 1,
-                    "rows_per_file": 1,
-                },
-                compact=False,
-            )
-            try:
-                deadline = time.monotonic() + 15
-                marker = markers / "identity"
-                while (
-                    not marker.exists() or not marker.read_text().strip()
-                ) and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                identity = json.loads(
-                    _docker("inspect", marker.read_text().strip()).stdout
-                )[0]["Id"]
-            finally:
-                pipeline.cancel()
-            result = future.result(timeout=15)
-        assert result.status is StepStatus.CANCELLED
-        assert result.cancellation_status is CancellationStatus.CONFIRMED
-        assert _docker("inspect", identity).returncode != 0
-        after = read_committed(
-            runtime.delta_root, TablePath.EXECUTIONS, fs=runtime.storage.filesystem()
-        )
-        assert after.equals(before)
-    finally:
-        if identity is not None:
-            _docker("rm", "--force", identity)
-
-
-def test_docker_replay_creates_fresh_container_and_keeps_source(
-    docker_image: str, tmp_path: Path
-) -> None:
-    markers = tmp_path / "markers"
-    markers.mkdir(mode=0o777)
-    markers.chmod(0o777)
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "debug" / "staging"),
-        working_root=str(tmp_path / "debug" / "work"),
-        files_root=str(tmp_path / "debug" / "files"),
-        failure_logs_root=str(tmp_path / "debug" / "logs"),
-    )
-    with PipelineManager.create(
-        "owned-docker-replay",
-        delta_root=runtime.delta_root,
-        staging_root=str(tmp_path / "staging"),
-        working_root=str(tmp_path / "work"),
-    ) as pipeline:
-        source = pipeline.run(
-            DockerCreator,
-            params={
-                "image": docker_image,
-                "marker_root": str(markers),
-                "count": 1,
-                "rows_per_file": 1,
-            },
-            compact=False,
-        )
-    assert source.status is StepStatus.SUCCEEDED
-    before = read_committed(
-        runtime.delta_root, TablePath.EXECUTIONS, fs=runtime.storage.filesystem()
-    )
-    original = before.row(0, named=True)
-    first = (markers / "identity").read_text().strip()
-    replay = replay_execution(
-        original["execution_run_id"], runtime=runtime, operation_class=DockerCreator
-    )
-    assert replay.step_result.status is StepStatus.SUCCEEDED
-    assert replay.diagnostic_status == "complete"
-    assert (markers / "identity").read_text().strip() != first
-    after = read_committed(
-        runtime.delta_root, TablePath.EXECUTIONS, fs=runtime.storage.filesystem()
-    )
-    assert after.filter(
-        after["execution_run_id"] == original["execution_run_id"]
-    ).equals(before)
-    assert first not in original["replay_snapshot"]

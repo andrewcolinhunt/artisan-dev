@@ -12,17 +12,23 @@ For a higher-level step-based view, see ``artisan.visualization.graph.macro``.
 from __future__ import annotations
 
 import os
-from typing import Any, Literal, cast
+from typing import Literal, cast
 
 import graphviz
 import polars as pl
 from fsspec import AbstractFileSystem
 
+from artisan.orchestration.engine.retained_execution_query import _execution_membership
+from artisan.orchestration.engine.retained_step_tracker import RetainedStepTracker
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.committed_scan import scan_committed
-from artisan.storage.core.store_format import assert_store_format
-from artisan.utils.path import uri_join
+from artisan.storage.core.execution_source import (
+    CuratorExecutionSource,
+    FailedScientificExecutionSource,
+)
+from artisan.storage.io.retained_read import RetainedReadSnapshot
+from artisan.storage.io.retained_store import open_configured_store
+from artisan.visualization._read import read_view, registered_rows
 from artisan.visualization.graph._styles import (
     EXECUTION_STYLE,
     apply_default_layout,
@@ -31,161 +37,79 @@ from artisan.visualization.graph._styles import (
 )
 
 
-def _scan_or_empty(
-    delta_root: str,
-    table: TablePath,
-    columns: list[str],
-    empty_schema: dict[str, Any],
-    storage_options: dict[str, str] | None = None,
-    fs: AbstractFileSystem | None = None,
+def _execution_rows(
+    snapshot: RetainedReadSnapshot, pipeline_run_id: str | None
 ) -> pl.DataFrame:
-    """Scan a Delta table, returning an empty DataFrame if it doesn't exist."""
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
-    assert_store_format(delta_root, fs, storage_options)
-    table_path = uri_join(delta_root, table)
-    if not fs.exists(table_path):
-        return pl.DataFrame(schema=empty_schema)
-    return (
-        scan_committed(
-            delta_root,
-            table,
-            fs=fs,
-            storage_options=storage_options,
-        )
-        .select(columns)
-        .collect()
+    tracker = RetainedStepTracker(snapshot.committer, "")
+    _, attempts = tracker._read_lifecycle(snapshot)
+    states = (
+        tracker._select_current_states(attempts, pipeline_run_id)
+        if pipeline_run_id is not None
+        else [state for state in attempts if state.replay_of_execution_run_id is None]
     )
-
-
-def _load_executions(
-    delta_root: str,
-    storage_options: dict[str, str] | None = None,
-    fs: AbstractFileSystem | None = None,
-) -> pl.DataFrame:
-    """Return execution records from the executions Delta table."""
-    return _scan_or_empty(
-        delta_root,
-        TablePath.EXECUTIONS,
-        ["execution_run_id", "operation_name", "origin_step_number"],
-        {
+    rows = []
+    for member in _execution_membership(snapshot, states):
+        source = member.source
+        if isinstance(source, CuratorExecutionSource):
+            execution_id = str(source.execution_record["execution_run_id"])
+            operation = source.admission.operation_name
+            origin = source.admission.record.step_number
+        else:
+            if isinstance(source, FailedScientificExecutionSource):
+                assert source.unit.failed_delivery is not None
+                execution_id = source.unit.failed_delivery.delivery_id
+            else:
+                execution_id = source.plan.receipt.delivery.delivery_id
+            operation = source.admission.recipe.definition.name
+            origin = source.admission.step_number
+        rows.append(
+            {
+                "actual_execution_run_id": execution_id,
+                "execution_run_id": f"{member.state.step_run_id}_{execution_id}"
+                if pipeline_run_id is not None
+                else execution_id,
+                "operation_name": operation,
+                "origin_step_number": member.state.step_number
+                if pipeline_run_id is not None
+                else origin,
+            }
+        )
+    return pl.DataFrame(
+        rows,
+        schema={
+            "actual_execution_run_id": pl.String,
             "execution_run_id": pl.String,
             "operation_name": pl.String,
             "origin_step_number": pl.Int32,
         },
-        storage_options=storage_options,
-        fs=fs,
-    )
-
-
-def _load_artifact_index(
-    delta_root: str,
-    storage_options: dict[str, str] | None = None,
-    fs: AbstractFileSystem | None = None,
-) -> pl.DataFrame:
-    """Return artifact index records from the artifact_index Delta table."""
-    return _scan_or_empty(
-        delta_root,
-        TablePath.ARTIFACT_INDEX,
-        ["artifact_id", "artifact_type", "origin_step_number"],
-        {
-            "artifact_id": pl.String,
-            "artifact_type": pl.String,
-            "origin_step_number": pl.Int32,
-        },
-        storage_options=storage_options,
-        fs=fs,
-    )
+    ).unique(maintain_order=True)
 
 
 def _load_artifact_labels(
-    delta_root: str,
-    storage_options: dict[str, str] | None = None,
-    fs: AbstractFileSystem | None = None,
+    snapshot: RetainedReadSnapshot, index: pl.DataFrame
 ) -> dict[str, str]:
-    """Map artifact IDs to human-readable labels from type-specific tables.
-
-    Iterates registered ArtifactTypeDefs, loading ``original_name`` (or
-    ``path``) from each type's table when available and returning the
-    stem as the display label.
-    """
-    if fs is None:
-        from fsspec.implementations.local import LocalFileSystem
-
-        fs = LocalFileSystem()
+    """Read only selected registered name fields, never external carrier bytes."""
     labels: dict[str, str] = {}
-
-    for _key, typedef in ArtifactTypeDef.get_all().items():
-        schema = cast("dict[str, Any]", typedef.model.POLARS_SCHEMA)  # type: ignore[attr-defined]
-        table_path = uri_join(delta_root, typedef.table_path)
-
-        if not fs.exists(table_path):
-            continue
-
-        if "original_name" in schema:
-            name_column = "original_name"
-        elif "path" in schema:
-            name_column = "path"
-        else:
-            continue
-        df = (
-            scan_committed(
-                delta_root,
-                typedef.table_path,
-                fs=fs,
-                storage_options=storage_options,
-            )
-            .select(["artifact_id", name_column])
-            .collect()
+    for kind in sorted(set(index["artifact_type"])):
+        definition = ArtifactTypeDef.get(kind)
+        schema = snapshot.snapshot(definition.table_path).schema
+        column = (
+            "original_name"
+            if "original_name" in schema
+            else "path"
+            if "path" in schema
+            else None
         )
-        for row in df.iter_rows(named=True):
-            name = row[name_column]
-            if name:
-                labels[row["artifact_id"]] = os.path.splitext(os.path.basename(name))[0]
-
+        if column is None:
+            continue
+        ids = set(index.filter(pl.col("artifact_type") == kind)["artifact_id"])
+        rows = registered_rows(snapshot, definition.table_path, ids, columns=[column])
+        for row in rows.iter_rows(named=True):
+            if row[column]:
+                labels[row["artifact_id"]] = os.path.splitext(
+                    os.path.basename(row[column])
+                )[0]
     return labels
-
-
-def _load_execution_edges(
-    delta_root: str,
-    storage_options: dict[str, str] | None = None,
-    fs: AbstractFileSystem | None = None,
-) -> pl.DataFrame:
-    """Return execution-to-artifact provenance edges."""
-    return _scan_or_empty(
-        delta_root,
-        TablePath.EXECUTION_EDGES,
-        ["execution_run_id", "direction", "artifact_id"],
-        {
-            "execution_run_id": pl.String,
-            "direction": pl.String,
-            "artifact_id": pl.String,
-        },
-        storage_options=storage_options,
-        fs=fs,
-    )
-
-
-def _load_artifact_edges(
-    delta_root: str,
-    storage_options: dict[str, str] | None = None,
-    fs: AbstractFileSystem | None = None,
-) -> pl.DataFrame:
-    """Return artifact-to-artifact lineage edges."""
-    return _scan_or_empty(
-        delta_root,
-        TablePath.ARTIFACT_EDGES,
-        ["execution_run_id", "source_artifact_id", "target_artifact_id"],
-        {
-            "execution_run_id": pl.String,
-            "source_artifact_id": pl.String,
-            "target_artifact_id": pl.String,
-        },
-        storage_options=storage_options,
-        fs=fs,
-    )
 
 
 def _build_artifact_labels(
@@ -207,6 +131,7 @@ def build_micro_graph(
     fs: AbstractFileSystem | None = None,
     *,
     pipeline_run_id: str | None = None,
+    files_root: str | None = None,
 ) -> graphviz.Digraph:
     """Build a Graphviz Digraph from Delta Lake provenance tables.
 
@@ -225,6 +150,7 @@ def build_micro_graph(
             Useful for step-by-step visualization of pipeline execution.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
         pipeline_run_id: Exact run to project, or all origin steps if None.
             Reused executions get a distinct participation node at every
             current logical step in a run-scoped graph.
@@ -232,44 +158,25 @@ def build_micro_graph(
     Returns:
         Graphviz Digraph object (renders inline in Jupyter).
     """
-    executions = _load_executions(delta_root, storage_options=storage_options, fs=fs)
-    artifact_index = _load_artifact_index(
-        delta_root, storage_options=storage_options, fs=fs
+    committer = open_configured_store(
+        delta_root, files_root=files_root, fs=fs, storage_options=storage_options
     )
-    name_labels = _load_artifact_labels(
-        delta_root, storage_options=storage_options, fs=fs
-    )
-    exec_edges = _load_execution_edges(
-        delta_root, storage_options=storage_options, fs=fs
-    )
-    artifact_edges = _load_artifact_edges(
-        delta_root, storage_options=storage_options, fs=fs
-    )
-
-    if pipeline_run_id is not None:
-        if fs is None:
-            from fsspec.implementations.local import LocalFileSystem
-
-            fs = LocalFileSystem()
-        from artisan.storage.core.run_scope import load_execution_membership
-
-        membership = load_execution_membership(
-            delta_root,
-            fs=fs,
-            storage_options=storage_options,
-            pipeline_run_id=pipeline_run_id,
-        ).unique(subset=["current_step_run_id", "execution_run_id"])
-        participation = membership.select(
-            pl.col("execution_run_id").alias("actual_execution_run_id"),
-            pl.concat_str(
-                "current_step_run_id", "execution_run_id", separator="_"
-            ).alias("execution_run_id"),
-            "operation_name",
-            pl.col("current_step_number").alias("origin_step_number"),
-        )
+    with read_view(committer) as (snapshot, view):
+        participation = _execution_rows(snapshot, pipeline_run_id)
         executions = participation.select(
             "execution_run_id", "operation_name", "origin_step_number"
         )
+        selected_ids = set(
+            view.scan(TablePath.ARTIFACT_INDEX)
+            .select("artifact_id")
+            .collect()["artifact_id"]
+        )
+        artifact_index = registered_rows(
+            snapshot, TablePath.ARTIFACT_INDEX.value, selected_ids
+        )
+        exec_edges = view.scan(TablePath.EXECUTION_EDGES).collect()
+        artifact_edges = view.artifact_edges(direct=False).collect()
+        actual_ids = set(participation["actual_execution_run_id"])
         exec_edges = (
             exec_edges.rename({"execution_run_id": "actual_execution_run_id"})
             .join(
@@ -279,18 +186,19 @@ def build_micro_graph(
             )
             .select("execution_run_id", "direction", "artifact_id")
         )
-        actual_ids = set(participation["actual_execution_run_id"].to_list())
         artifact_edges = artifact_edges.filter(
             pl.col("execution_run_id").is_in(actual_ids)
         )
-        included_artifact_ids = set(exec_edges["artifact_id"].to_list())
-        artifact_index = artifact_index.filter(
-            pl.col("artifact_id").is_in(included_artifact_ids)
-        )
-        artifact_edges = artifact_edges.filter(
-            pl.col("source_artifact_id").is_in(included_artifact_ids)
-            & pl.col("target_artifact_id").is_in(included_artifact_ids)
-        )
+        if pipeline_run_id is not None:
+            included_ids = set(exec_edges["artifact_id"])
+            artifact_index = artifact_index.filter(
+                pl.col("artifact_id").is_in(included_ids)
+            )
+            artifact_edges = artifact_edges.filter(
+                pl.col("source_artifact_id").is_in(included_ids)
+                & pl.col("target_artifact_id").is_in(included_ids)
+            )
+        name_labels = _load_artifact_labels(snapshot, artifact_index)
 
     if max_step is not None:
         executions = executions.filter(pl.col("origin_step_number") <= max_step)
@@ -498,6 +406,7 @@ def render_micro_graph(
     fs: AbstractFileSystem | None = None,
     *,
     pipeline_run_id: str | None = None,
+    files_root: str | None = None,
 ) -> str:
     """Build and render the micro (artifact-level) provenance graph to a file.
 
@@ -508,6 +417,7 @@ def render_micro_graph(
         max_step: If provided, only include steps 0 through max_step (inclusive).
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
         pipeline_run_id: Optional exact run to project.
 
     Returns:
@@ -519,6 +429,7 @@ def render_micro_graph(
         storage_options=storage_options,
         fs=fs,
         pipeline_run_id=pipeline_run_id,
+        files_root=files_root,
     )
     return render_graph(graph, output_path, format)
 
@@ -529,6 +440,7 @@ def get_max_step_number(
     fs: AbstractFileSystem | None = None,
     *,
     pipeline_run_id: str | None = None,
+    files_root: str | None = None,
 ) -> int | None:
     """Return the highest origin or run-scoped logical execution step.
 
@@ -536,32 +448,18 @@ def get_max_step_number(
         delta_root: Path to Delta Lake root directory.
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
         pipeline_run_id: Exact run whose current execution positions to
             inspect. None uses origin steps across all executions.
 
     Returns:
         Maximum step number, or None if the selected scope has no executions.
     """
-    if pipeline_run_id is None:
-        executions = _load_executions(
-            delta_root, storage_options=storage_options, fs=fs
-        )
-    else:
-        if fs is None:
-            from fsspec.implementations.local import LocalFileSystem
-
-            fs = LocalFileSystem()
-        from artisan.storage.core.run_scope import load_execution_membership
-
-        membership = load_execution_membership(
-            delta_root,
-            fs=fs,
-            storage_options=storage_options,
-            pipeline_run_id=pipeline_run_id,
-        )
-        executions = membership.select(
-            pl.col("current_step_number").alias("origin_step_number")
-        )
+    committer = open_configured_store(
+        delta_root, files_root=files_root, fs=fs, storage_options=storage_options
+    )
+    with committer._read_snapshot() as snapshot:
+        executions = _execution_rows(snapshot, pipeline_run_id)
     if executions.is_empty():
         return None
     return cast("int | None", executions["origin_step_number"].max())
@@ -573,6 +471,8 @@ def render_micro_graph_steps(
     format: Literal["svg", "png"] = "svg",
     storage_options: dict[str, str] | None = None,
     fs: AbstractFileSystem | None = None,
+    *,
+    files_root: str | None = None,
 ) -> list[str]:
     """Render provenance graphs for each step (cumulative).
 
@@ -585,6 +485,7 @@ def render_micro_graph_steps(
         format: Output format ("svg" or "png").
         storage_options: Delta-rs storage options for cloud backends.
         fs: Filesystem for existence checks.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
 
     Returns:
         List of paths to rendered files, in step order.
@@ -592,7 +493,9 @@ def render_micro_graph_steps(
     output_dir = str(output_dir)
     os.makedirs(output_dir, exist_ok=True)
 
-    max_step = get_max_step_number(delta_root, storage_options=storage_options, fs=fs)
+    max_step = get_max_step_number(
+        delta_root, storage_options=storage_options, fs=fs, files_root=files_root
+    )
     if max_step is None:
         return []
 
@@ -608,6 +511,7 @@ def render_micro_graph_steps(
             max_step=step,
             storage_options=storage_options,
             fs=fs,
+            files_root=files_root,
         )
         rendered_paths.append(rendered)
 

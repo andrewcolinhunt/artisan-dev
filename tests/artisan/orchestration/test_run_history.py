@@ -2,19 +2,14 @@
 
 from __future__ import annotations
 
-from enum import StrEnum, auto
-from typing import ClassVar
-from unittest.mock import patch
+from pathlib import Path
 
 import polars as pl
 import pytest
+from fixtures.inspection_curator import commit_curator_record
 
-from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration import PipelineManager, list_runs
-from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.orchestration import list_runs
 from artisan.schemas.execution.storage_config import StorageConfig
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
 
 
 @pytest.fixture
@@ -26,38 +21,6 @@ def pipeline_env(tmp_path):
     }
 
 
-class _IngestMockOp(OperationDefinition):
-    """Minimal curator op for list_runs tests."""
-
-    class OutputRole(StrEnum):
-        file = auto()
-
-    name: ClassVar[str] = "ingest_for_run_history_tests"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    def execute_curator(self, *args, **kwargs):
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-def _mock_execute_step(**kwargs):
-    """Mock that returns a successful StepResult via build_step_result."""
-    from artisan.orchestration.engine.step_executor import build_step_result
-    from artisan.schemas.enums import FailurePolicy
-
-    return build_step_result(
-        operation=kwargs["operation"],
-        step_number=kwargs["step_number"],
-        succeeded_count=1,
-        failed_count=0,
-        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
-    )
-
-
 class TestListRuns:
     """Tests for the module-level list_runs() function."""
 
@@ -67,22 +30,15 @@ class TestListRuns:
         assert isinstance(runs, pl.DataFrame)
         assert len(runs) == 0
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_list_runs_single_run(self, mock_exec, pipeline_env):
+    def test_list_runs_single_run(self, pipeline_env: dict[str, str]) -> None:
         """One pipeline produces one row."""
-        pipeline = PipelineManager.create(
-            name="single_run_test",
-            delta_root=pipeline_env["delta"],
-            staging_root=pipeline_env["staging"],
+        commit_curator_record(
+            Path(pipeline_env["delta"]), run_id="single-run", success=True
         )
-        pipeline.run(_IngestMockOp, inputs=None)
 
         runs = list_runs(pipeline_env["delta"])
         assert len(runs) == 1
-        assert "pipeline_run_id" in runs.columns
+        assert runs["pipeline_run_id"].to_list() == ["single-run"]
 
     def test_list_runs_with_custom_storage(self, pipeline_env):
         """Custom StorageConfig is plumbed through correctly."""
@@ -96,19 +52,12 @@ class TestListRuns:
         with pytest.raises(TypeError):
             list_runs(pipeline_env["delta"], StorageConfig())  # type: ignore[misc]
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_list_runs_multiple_runs(self, mock_exec, pipeline_env):
+    def test_list_runs_multiple_runs(self, pipeline_env: dict[str, str]) -> None:
         """Three runs produce three rows with documented columns and ordering."""
         for i in range(3):
-            pipeline = PipelineManager.create(
-                name=f"multi_run_test_{i}",
-                delta_root=pipeline_env["delta"],
-                staging_root=pipeline_env["staging"],
+            commit_curator_record(
+                Path(pipeline_env["delta"]), run_id=f"run-{i}", success=True
             )
-            pipeline.run(_IngestMockOp, inputs=None, skip_cache=True)
 
         runs = list_runs(pipeline_env["delta"])
         assert len(runs) == 3

@@ -15,7 +15,6 @@ from artisan.operations.base.per_artifact import PerArtifact
 from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -99,10 +98,6 @@ class DataTransformer(OperationDefinition):
 
     batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer")  # type: ignore[call-arg]  # pydantic defaults
 
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
-    )
-
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Carry each dataset's path, identity, and human name together."""
         return {
@@ -111,10 +106,11 @@ class DataTransformer(OperationDefinition):
                     {
                         "path": artifact.materialized_path,
                         "artifact_id": artifact.artifact_id,
+                        "input_index": index,
                         "original_name": artifact.original_name,
                     }
-                    for artifact in cast(
-                        list[CSVArtifact], inputs.input_artifacts["dataset"]
+                    for index, artifact in enumerate(
+                        cast(list[CSVArtifact], inputs.input_artifacts["dataset"])
                     )
                 ]
             )
@@ -153,7 +149,8 @@ class DataTransformer(OperationDefinition):
                     f"_{self.params.output_prefix}" if self.params.output_prefix else ""
                 )
                 output_path = os.path.join(
-                    output_dir, f"{stem}_{variant_idx}{suffix}.csv"
+                    output_dir,
+                    f"{dataset['input_index']}_{stem}_{variant_idx}{suffix}.csv",
                 )
                 with open(output_path, "w", newline="") as f:
                     writer = csv.DictWriter(f, fieldnames=headers)
@@ -178,6 +175,7 @@ class DataTransformer(OperationDefinition):
                         "path": output_path,
                         "original_name": f"{dataset['original_name']}_{variant_idx}{suffix}.csv",
                         "source_artifact_id": dataset["artifact_id"],
+                        "source_input_index": dataset["input_index"],
                     }
                 )
 
@@ -207,7 +205,13 @@ class DataTransformer(OperationDefinition):
                     step_number=inputs.step_number,
                 )
             result.add_artifact(
-                "dataset", draft, sources={"dataset": [output["source_artifact_id"]]}
+                "dataset",
+                draft,
+                sources={
+                    "dataset": [
+                        inputs.ref("dataset", index=output["source_input_index"])
+                    ]
+                },
             )
         return result
 

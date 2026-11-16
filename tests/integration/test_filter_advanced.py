@@ -17,10 +17,9 @@ from artisan.operations.examples import (
     DataTransformer,
     MetricCalculator,
 )
-from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 
 from .conftest import (
+    create_native_pipeline,
     get_execution_outputs,
 )
 
@@ -29,7 +28,7 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
     """Filter with multiple AND criteria narrows the artifact set."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_multi_criterion",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -40,14 +39,12 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Compute metrics
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Filter with 3 AND criteria
@@ -61,7 +58,6 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
                 {"metric": "summary.row_count", "operator": "eq", "value": 10},
             ],
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -77,7 +73,7 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
     """passthrough_failures=True passes all artifacts regardless of criteria."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_passthrough_failures",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -87,14 +83,12 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Compute metrics (needed for filter evaluation)
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     # Impossible criterion (median > 999) with passthrough_failures=True
@@ -107,7 +101,6 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
             ],
             "passthrough_failures": True,
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -122,7 +115,7 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
     """Filter criterion with step_number targets metrics from a specific step."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_step_targeted",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -133,7 +126,6 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Transform datasets
@@ -146,21 +138,18 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
             "variants": 1,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Metrics on originals
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 3: Metrics on transformed
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Filter passthrough step 1 artifacts using step 3 metrics
@@ -177,7 +166,6 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
                 },
             ],
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -201,7 +189,7 @@ def test_multi_source_filter_with_colliding_field_names(
     """
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_multi_source_collision",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -212,14 +200,12 @@ def test_multi_source_filter_with_colliding_field_names(
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 5, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Compute nested metrics (distribution.range, summary.row_count)
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Filter on criteria from BOTH metric sources
@@ -232,7 +218,6 @@ def test_multi_source_filter_with_colliding_field_names(
                 {"metric": "distribution.range", "operator": "lt", "value": 0.95},
             ],
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()

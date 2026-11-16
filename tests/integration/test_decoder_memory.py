@@ -202,6 +202,8 @@ def test_legacy_decoder_rss_scales_with_largest_region_not_total_payload(
     for results in measured.values():
         assert results[1]["peak_bytes"] - results[0]["peak_bytes"] < 2 * region
     assert large["payload_bytes"] - small["payload_bytes"] > 10 * region
+    (root / "1.parquet").unlink()
+    (root / f"{_LARGE_GROUPS}.parquet").unlink()
 
 
 if __name__ == "__main__":

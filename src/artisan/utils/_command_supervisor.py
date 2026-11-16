@@ -22,7 +22,10 @@ import time
 from contextlib import suppress
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from artisan.utils._command_tree import CommandTree
 
 from artisan.utils.configuration_secrets import COMMAND_ATTACHMENT_ENV as ATTACHMENT_ENV
 
@@ -184,6 +187,9 @@ class Command:
     external_uncertain: bool = False
     collection: str = "pending"
     client_channel: Channel | None = None
+    tree: CommandTree | None = None
+    tree_complete: bool = False
+    tool_returncode: int | None = None
 
     def settle_collection(self, *, waive: bool = False) -> str:
         if self.collection == "pending" and (
@@ -212,6 +218,14 @@ class Command:
         self, argv: list[str], env: dict[str, str], cwd: str | None, fds: list[int]
     ) -> None:
         """Launch one native child without retaining its sensitive arguments."""
+        if sys.platform == "linux":
+            self._launch_tree(argv, env, cwd, fds)
+        else:
+            self._launch_group(argv, env, cwd, fds)
+
+    def _launch_group(
+        self, argv: list[str], env: dict[str, str], cwd: str | None, fds: list[int]
+    ) -> None:
         started = time.perf_counter()
         try:
             self.process = subprocess.Popen(
@@ -239,6 +253,87 @@ class Command:
             self.state = "running"
             self.register_watch()
 
+    def _launch_tree(
+        self, argv: list[str], env: dict[str, str], cwd: str | None, fds: list[int]
+    ) -> None:
+        from artisan.utils._command_tree import CommandTree
+
+        try:
+            self.tree = CommandTree(fds)
+            self.process = self.tree.process
+            self.process.args = ()
+            self.register_watch()
+            self.tree.launch(argv, env, cwd)
+        except (OSError, ValueError):
+            if self.process is None:
+                self.state, self.launch_error = "launch_failed", "os"
+            else:
+                self.observation_error = True
+                self.stop(time.monotonic() + CLEANUP_SECONDS, immediate=True)
+
+    def _tree_messages(self) -> None:
+        assert self.tree is not None
+        if self.tree_complete:
+            return
+        try:
+            for message in self.tree.messages():
+                kind = message.get("type")
+                if kind == "launched":
+                    self.launch_seconds = message["launch_seconds"]
+                    if self.state == "starting":
+                        self.state = "running"
+                elif kind == "exited":
+                    self.tool_returncode = message["returncode"]
+                    self.stop(message["finished_at"] + CLEANUP_SECONDS, immediate=True)
+                elif kind == "launch_failed":
+                    self.launch_error = message["error"]
+                    self.tree_complete = True
+                elif kind == "closed" and self.tool_returncode is not None:
+                    self.tree_complete = True
+                else:
+                    error = "Invalid subtree outcome"
+                    raise ValueError(error)
+        except (OSError, EOFError, ValueError, KeyError, TypeError):
+            self.observation_error = True
+            self.stop(time.monotonic() + CLEANUP_SECONDS, immediate=True)
+
+    def _tick_tree(self) -> None:
+        assert self.tree is not None
+        self._tree_messages()
+        now = time.monotonic()
+        if self.kill_at is not None and now >= self.kill_at and not self.final_signal:
+            self._signal(signal.SIGKILL)
+        assert self.process is not None
+        try:
+            waited, status = os.waitpid(self.pid, os.WNOHANG)
+        except ChildProcessError:
+            self.observation_error = True
+            waited, status = self.pid, 0
+        if waited:
+            self.reaped = True
+            self.observation_error |= self.deadline is not None and now >= self.deadline
+            self._tree_messages()
+            self.process.returncode = (
+                self.tool_returncode
+                if self.tool_returncode is not None
+                else os.waitstatus_to_exitcode(status)
+            )
+            if (
+                not self.tree_complete
+                or self.observation_error
+                or os.waitstatus_to_exitcode(status) != 0
+            ):
+                self.state = "unknown"
+            else:
+                self.state = "launch_failed" if self.launch_error else "closed"
+            self._close_watch()
+            self.tree.close()
+        elif self.deadline is not None and now >= self.deadline:
+            self.state = "unknown"
+            self.observation_error = True
+            # Keep the exact reaper alive and owned after the observation deadline.
+            # Later cleanup cannot promote this outcome back to CLOSED.
+
     def register_watch(self) -> None:
         try:
             self.watch = ExitWatch(self.pid)
@@ -262,9 +357,14 @@ class Command:
             accepted_at + (0 if immediate else TERM_SECONDS),
             deadline,
         )
+        if self.tree is not None and not self.tree_complete and not self.reaped:
+            try:
+                self.tree.stop(self.deadline, self.kill_at)
+            except (OSError, ValueError):
+                self.observation_error = True
         if self.state != "stopping":
             self.state = "stopping"
-            if not immediate:
+            if not immediate and self.tree is None:
                 self._signal(signal.SIGTERM)
 
     def _signal(self, sig: int) -> None:
@@ -272,6 +372,19 @@ class Command:
             message = "Destructive signal after final signal or identity release"
             raise RuntimeError(message)
         if self.process is None:
+            return
+        if self.tree is not None:
+            if self.tree_complete:
+                self.final_signal |= sig == signal.SIGKILL
+                return
+            try:
+                assert self.deadline is not None
+                assert self.kill_at is not None
+                self.tree.stop(self.deadline, self.kill_at)
+            except (OSError, ValueError):
+                self.observation_error = True
+            if sig == signal.SIGKILL:
+                self.final_signal = True
             return
         # A failed signal proves neither liveness nor closure. Exact reaping
         # and subsequent positive group absence still determine the outcome.
@@ -281,6 +394,10 @@ class Command:
             self.final_signal = True
 
     def tick(self, reserved: dict[int, str]) -> None:
+        if self.tree is not None:
+            if not self.reaped:
+                self._tick_tree()
+            return
         if self.state in {"closed", "unknown", "launch_failed", "starting"}:
             return
         now = time.monotonic()
@@ -959,7 +1076,10 @@ class Supervisor:
                 command.tick(reserved)
                 self.external |= command.external
                 command.settle_collection()
-                if previous == "running" and command.state != "running":
+                if previous in {"starting", "running"} and command.state not in {
+                    "starting",
+                    "running",
+                }:
                     self.stop_command(
                         command,
                         command.deadline or time.monotonic() + CLEANUP_SECONDS,
@@ -973,6 +1093,11 @@ class Supervisor:
             )
             settled &= all(
                 scope.settle_completion() != "pending" for scope in self.scopes.values()
+            )
+            settled &= all(
+                child.tree is None or child.reaped
+                for command in self.commands.values()
+                for child in command.owned_commands()
             )
             flushed = not any(channel.outgoing for channel in self.channels.values())
             expired = self.deadline is not None and time.monotonic() >= self.deadline

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, MetricCalculator
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
+from artisan.orchestration.runners import LocalRunner
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
@@ -38,7 +38,7 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         assert len(pipeline) == 1
 
@@ -55,12 +55,12 @@ class TestPipelineDunderMethods:
         step0 = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         results = list(pipeline)
@@ -81,11 +81,11 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         assert pipeline[0].step_name == "data_generator"
-        assert pipeline[-1] is pipeline[0]
+        assert pipeline[-1] == pipeline[0]
 
         with pytest.raises(IndexError):
             pipeline[5]
@@ -103,12 +103,12 @@ class TestPipelineDunderMethods:
         step0 = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         sliced = pipeline[0:1]
@@ -128,7 +128,7 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         assert pipeline
@@ -156,7 +156,7 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
             name="my_generator",
         )
 
@@ -179,7 +179,7 @@ class TestPipelineDunderMethods:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         assert "1 steps" in str(pipeline)
@@ -207,7 +207,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
             name="gen_step",
         )
 
@@ -229,7 +229,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         ref = pipeline.output("data_generator", "datasets")
@@ -245,7 +245,7 @@ class TestOutputNameLookup:
             working_root=pipeline_env["working_root"],
         )
 
-        with pytest.raises(ValueError, match="No step named"):
+        with pytest.raises(ValueError, match="No current step named"):
             pipeline.output("nonexistent", "role")
 
         pipeline.finalize()
@@ -261,7 +261,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         with pytest.raises(ValueError, match="Output role .* not available"):
@@ -281,13 +281,13 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
             name="gen",
         )
         pipeline.run(
             DataGenerator,
             params={"count": 3, "seed": 99},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
             name="gen",
         )
 
@@ -303,6 +303,10 @@ class TestOutputNameLookup:
 
     def test_output_wires_to_downstream(self, pipeline_env: dict[str, str]):
         """pipeline.output() reference can be used to wire downstream steps."""
+        from artisan.orchestration.engine.current_outputs import (
+            read_current_step_outputs,
+        )
+
         pipeline = PipelineManager.create(
             name="test_output_wiring",
             delta_root=pipeline_env["delta_root"],
@@ -313,7 +317,7 @@ class TestOutputNameLookup:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
             name="gen",
         )
 
@@ -322,11 +326,14 @@ class TestOutputNameLookup:
         step1 = pipeline.run(
             MetricCalculator,
             inputs={"dataset": ref},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         assert step1.status is StepStatus.SUCCEEDED
-        assert step1.succeeded_count == 2
+        assert step1.total_count == step1.succeeded_count == 1
+        (outputs,) = read_current_step_outputs(pipeline.committer, step1.step_run_id)
+        assert outputs.role == "metrics"
+        assert len(outputs.occurrences) == 2
 
         pipeline.finalize()
 
@@ -350,7 +357,7 @@ class TestStepFutureProperties:
         future = pipeline.submit(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         ref = future.output("datasets")
@@ -372,7 +379,7 @@ class TestStepFutureProperties:
         future = pipeline.submit(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         result = future.result(timeout=30)
@@ -394,13 +401,13 @@ class TestStepFutureProperties:
         future0 = pipeline.submit(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         future1 = pipeline.submit(
             MetricCalculator,
             inputs={"dataset": future0.output("datasets")},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         result0 = future0.result(timeout=30)
@@ -432,12 +439,12 @@ class TestFinalizeOrdering:
         step0 = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": step0.output("datasets")},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
 
         summary = pipeline.finalize()
@@ -481,14 +488,14 @@ class TestPipelineProperties:
         pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         assert pipeline.current_step == 1
 
         pipeline.run(
             DataGenerator,
             params={"count": 3, "seed": 99},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
         )
         assert pipeline.current_step == 2
 
@@ -514,7 +521,7 @@ class TestCustomStepName:
         result = pipeline.run(
             DataGenerator,
             params={"count": 2, "seed": 42},
-            step_runner=Runner.LOCAL,
+            step_runner=LocalRunner(),
             name="my_generation_step",
         )
 

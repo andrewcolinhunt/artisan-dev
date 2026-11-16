@@ -29,7 +29,6 @@ from artisan.schemas.execution.command_record import (
     MissingInvocation,
     MissingReason,
 )
-from artisan.schemas.operation_config.endpoint_policy import safe_uri_display
 from artisan.utils.command_supervisor import (
     _diagnostic_invocation,
     _diagnostic_tool,
@@ -43,9 +42,9 @@ from artisan.utils.command_supervisor import (
 from artisan.utils.configuration_secrets import (
     credential_name,
     credential_url,
+    safe_uri_display,
     sensitive_environment,
 )
-from artisan.utils.env_file import env_or_dotenv
 from artisan.utils.external_tools import CommandAttempt, command_observer, redact_values
 
 _FLAGS = {
@@ -200,42 +199,9 @@ class CommandRecorder:
             return tuple(self._values)
 
     def add_operation(self, operation: Any) -> None:
-        """Register explicit selected environment and endpoint credentials."""
-        if operation is None:
-            return
-        environments = getattr(operation, "environments", None)
-        environment = getattr(environments, getattr(environments, "active", ""), None)
-        self.add_environment(
-            sensitive_environment(
-                getattr(environment, "env", {}), getattr(environment, "public_env", ())
-            )
-        )
-        provider = getattr(operation, "compute_provider", None)
-        selected = (
-            "modal" if self.location == "endpoint" else getattr(provider, "active", "")
-        )
-        config = getattr(provider, selected, None)
-        self.add_environment(
-            sensitive_environment(
-                getattr(config, "env", {}), getattr(config, "public_env", ())
-            )
-        )
-        self._learn_model_fields(operation, {"environments", "compute_provider"})
-        self._learn_model_fields(environment, {"env", "public_env"})
-        self._learn_model_fields(
-            config,
-            {"env", "public_env", "auth_secret", "secrets", "image_registry_secret"},
-        )
-        if not hasattr(config, "auth_secret"):
-            return
-        prefix = getattr(config, "auth_secret", None) or "MODAL_PROXY"
-        self.add_environment(
-            {
-                name: value
-                for suffix in ("TOKEN_ID", "TOKEN_SECRET")
-                if (value := env_or_dotenv(name := f"{prefix}_{suffix}"))
-            }
-        )
+        """Register private values from the current operation's typed configuration."""
+        if operation is not None:
+            self._learn_model_fields(operation, set())
 
     def reserve(self, count: int = 1) -> list[int]:
         """Allocate invocation slots in dispatch order."""
@@ -629,40 +595,6 @@ class CommandRecorder:
         )
         return clean
 
-    def merge(self, recording: CommandRecording, invocation: int) -> None:
-        """Redact and remap worker evidence before the client handles its result."""
-        with self._lock:
-            if recording.unavailable_reason is not None:
-                msg = "endpoint must supply observed worker evidence"
-                raise ValueError(msg)
-            remote_invocations = {c.invocation for c in recording.commands} | {
-                m.invocation for m in recording.missing_invocations
-            }
-            if len(remote_invocations) > 1:
-                msg = "endpoint request must use one invocation"
-                raise ValueError(msg)
-            for command in recording.commands:
-                clean = self._redact_command(command)
-                clean.update(invocation=invocation, location="endpoint")
-                self._add(CommandRecord.model_validate(clean))
-            for marker in recording.missing_invocations:
-                self._add(
-                    MissingInvocation(invocation=invocation, reason=marker.reason)
-                )
-            self._omitted_commands += recording.omitted_commands
-            self._omitted_missing += recording.omitted_missing_invocations
-            if recording.omitted_commands or recording.omitted_missing_invocations:
-                last_sequence = (
-                    recording.commands[-1].sequence if recording.commands else -1
-                )
-                cutoff = (
-                    (invocation, last_sequence + 1)
-                    if recording.omitted_commands
-                    else (invocation, float("inf"))
-                )
-                self._drop_suffix(cutoff)
-            self._trim()
-
     def sanitize_recording(self, recording: CommandRecording) -> CommandRecording:
         """Apply final known sensitivity to copied evidence under the same byte cap."""
         if recording.unavailable_reason is not None:
@@ -710,7 +642,7 @@ def _changed_paths(original: Any, clean: Any, path: str = "$") -> list[str]:
 
 
 def current_recorder() -> CommandRecorder | None:
-    """Return the observer owned by the current execution or endpoint request."""
+    """Return the observer owned by the current execution."""
     return _current.get()
 
 

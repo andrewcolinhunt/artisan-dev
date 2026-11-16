@@ -19,7 +19,6 @@ from artisan.schemas import ArtifactResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import ExecuteInput, PostprocessInput
 from artisan.schemas.specs.output_spec import OutputSpec
@@ -69,9 +68,6 @@ class FileGenerator(OperationDefinition):
     params: Params = Params()
     runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
     batch_strategy: BatchStrategy = BatchStrategy(job_name="file_generator")  # type: ignore[call-arg]  # pydantic defaults
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
-    )
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Generate binary files in files_dir, reproducible with an explicit seed."""

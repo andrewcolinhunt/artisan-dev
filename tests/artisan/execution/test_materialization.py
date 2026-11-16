@@ -1,20 +1,19 @@
-"""Tests for materialize_inputs() format threading and endpoint routing."""
+"""Input materialization uses captured context and explicit source filesystems."""
 
 from __future__ import annotations
 
 from pathlib import Path
-from unittest.mock import ANY, MagicMock, patch
+from unittest.mock import ANY, MagicMock
 
 import pytest
 from fsspec.implementations.local import LocalFileSystem
+from fsspec.implementations.memory import MemoryFileSystem
 
 from artisan.errors import ArtifactIntegrityError
 from artisan.execution.inputs.materialization import (
-    _is_remote,
     materialize_inputs,
     resolve_input_references,
 )
-from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
@@ -277,230 +276,7 @@ class TestMaterializeAsForwarded:
         ordinary.materialize_to.assert_not_called()
 
 
-class TestIsRemote:
-    """``_is_remote`` reuses the ``://``-means-URI convention pack_inputs uses."""
-
-    def test_cloud_uri_is_remote(self):
-        assert _is_remote("s3://bucket/key.bin") is True
-
-    def test_local_file_uri_is_not_remote(self):
-        assert _is_remote("file:///tmp/x") is False
-
-    def test_bare_local_path_is_not_remote(self):
-        assert _is_remote("/tmp/x") is False
-
-    def test_none_is_not_remote(self):
-        assert _is_remote(None) is False
-
-
-class TestEndpointRoutedSkip:
-    """Endpoint-routed steps ship cloud inputs by reference (no download)."""
-
-    def test_remote_file_ref_skipped_when_endpoint_routed(self, tmp_path: Path):
-        destination = tmp_path / "inputs"
-        destination.mkdir()
-        art = FileRefArtifact.draft(
-            path="s3://bucket/inputs/source.bin",
-            content_hash="a" * 32,
-            size_bytes=2_000_000_000,  # Far above the inline content limit.
-            step_number=0,
-            original_name="source",
-            extension=".bin",
-        ).finalize()
-
-        with patch.object(FileRefArtifact, "verify_external_content") as verify:
-            result = materialize_inputs(
-                {"source": [art]},
-                {"source": InputSpec(artifact_type="file_ref")},
-                str(destination),
-                MagicMock(),
-                endpoint_routed=True,
-            )
-
-        verify.assert_called_once_with(fs=ANY)
-        assert art.materialized_path == "s3://bucket/inputs/source.bin"
-        assert list(destination.iterdir()) == []
-        assert result == {"source": [art]}
-
-    def test_appendable_record_materializes_when_endpoint_routed(self, tmp_path: Path):
-        art = AppendableArtifact.draft(
-            record_id="record-1",
-            content_hash="a" * 32,
-            size_bytes=4,
-            step_number=0,
-            external_path="s3://bucket/shared/records.jsonl",
-        ).finalize()
-        materialized = str(tmp_path / "record.json")
-
-        with patch.object(
-            AppendableArtifact,
-            "materialize_to",
-            return_value=materialized,
-        ) as write:
-            result = materialize_inputs(
-                {"record": [art]},
-                {"record": InputSpec(artifact_type="appendable")},
-                str(tmp_path),
-                MagicMock(),
-                endpoint_routed=True,
-            )
-
-        write.assert_called_once_with(str(tmp_path), format=None, fs=ANY)
-        assert result == {"record": [art]}
-
-    def test_cloud_input_downloads_by_default(self, tmp_path: Path):
-        # endpoint_routed defaults False — the cloud input materializes
-        # exactly as today (materialize_to is called)
-        art = MagicMock(spec=Artifact)
-        art.is_hydrated = True
-        art.artifact_id = "a" * 32
-        art.external_path = "s3://bucket/weights/model.bin"
-        art.EXTERNALLY_BACKED = True
-        art.LOCATOR_FIELDS = frozenset({"external_path"})
-        art.materialize_to.return_value = str(tmp_path / "model.bin")
-        specs = {"weights": InputSpec(materialize=True)}
-
-        result = materialize_inputs(
-            {"weights": [art]}, specs, str(tmp_path), MagicMock()
-        )
-
-        art.materialize_to.assert_called_once_with(str(tmp_path), format=None, fs=ANY)
-        assert result == {"weights": [art]}
-
-    def test_cloud_input_downloads_when_endpoint_routed_false(self, tmp_path: Path):
-        art = MagicMock(spec=Artifact)
-        art.is_hydrated = True
-        art.artifact_id = "a" * 32
-        art.external_path = "s3://bucket/weights/model.bin"
-        art.EXTERNALLY_BACKED = True
-        art.LOCATOR_FIELDS = frozenset({"external_path"})
-        art.materialize_to.return_value = str(tmp_path / "model.bin")
-        specs = {"weights": InputSpec(materialize=True)}
-
-        materialize_inputs(
-            {"weights": [art]},
-            specs,
-            str(tmp_path),
-            MagicMock(),
-            endpoint_routed=False,
-        )
-
-        art.materialize_to.assert_called_once()
-
-    def test_local_external_path_downloads_even_when_endpoint_routed(
-        self, tmp_path: Path
-    ):
-        # a local (bare/file://) external_path is not remote — the skip
-        # does not fire, so a local-file input still materializes on an
-        # endpoint step (local-file-over-cap stays out of scope for v1)
-        art = MagicMock(spec=Artifact)
-        art.is_hydrated = True
-        art.artifact_id = "b" * 32
-        art.external_path = str(tmp_path / "src.bin")
-        art.EXTERNALLY_BACKED = True
-        art.LOCATOR_FIELDS = frozenset({"external_path"})
-        art.materialize_to.return_value = str(tmp_path / "src.bin")
-        specs = {"weights": InputSpec(materialize=True)}
-
-        materialize_inputs(
-            {"weights": [art]},
-            specs,
-            str(tmp_path),
-            MagicMock(),
-            endpoint_routed=True,
-        )
-
-        art.materialize_to.assert_called_once()
-
-    def test_inline_data_artifact_materializes_in_both_modes(self, tmp_path: Path):
-        # a CSVArtifact carries no external_path — the inline path is
-        # unchanged whether or not the step is endpoint-routed
-        for routed in (True, False):
-            sub = tmp_path / f"routed_{routed}"
-            sub.mkdir()
-            art = CSVArtifact.draft(
-                content=b"a,b\n1,2\n", original_name="d.csv", step_number=0
-            ).finalize()
-            specs = {"data": InputSpec(artifact_type="csv")}
-
-            result = materialize_inputs(
-                {"data": [art]},
-                specs,
-                str(sub),
-                MagicMock(),
-                endpoint_routed=routed,
-            )
-
-            assert art.materialized_path is not None
-            assert Path(art.materialized_path).exists()
-            assert Path(art.materialized_path).read_bytes() == b"a,b\n1,2\n"
-            assert result == {"data": [art]}
-
-    def test_config_artifact_unaffected_by_flag(self, tmp_path: Path):
-        # config artifacts resolve through resolved_paths, not the skip —
-        # the flag must not change their materialization
-        from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-
-        config = ExecutionConfigArtifact.draft(
-            content={"threshold": 5}, original_name="config.json", step_number=1
-        ).finalize()
-        specs = {"config": InputSpec(materialize=True)}
-
-        result = materialize_inputs(
-            {"config": [config]},
-            specs,
-            str(tmp_path),
-            MagicMock(),
-            endpoint_routed=True,
-        )
-
-        assert result == {"config": [config]}
-        assert config.materialized_path is not None
-        assert Path(config.materialized_path).exists()
-
-
-@pytest.mark.parametrize("remote", [False, True])
-def test_endpoint_config_references_fail_before_input_side_effects(
-    tmp_path: Path, remote: bool
-) -> None:
-    from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-
-    ref = FileRefArtifact.draft(
-        path="s3://bucket/input.bin" if remote else str(tmp_path / "input.bin"),
-        content_hash="a" * 32,
-        size_bytes=4,
-        step_number=0,
-    ).finalize()
-    config = ExecutionConfigArtifact.draft(
-        {"input": {"$artifact": ref.artifact_id}}, "config.json", 1
-    ).finalize()
-    ordinary = MagicMock(spec=Artifact)
-    ordinary.is_hydrated = True
-    ordinary.artifact_id = "b" * 32
-    ordinary.EXTERNALLY_BACKED = False
-    store = MagicMock()
-    store.get_artifact.return_value = ref
-
-    before = set(tmp_path.iterdir())
-    with (
-        patch.object(FileRefArtifact, "verify_external_content") as verify,
-        pytest.raises(ValueError, match="Endpoint.*artifact references"),
-    ):
-        materialize_inputs(
-            {"data": [ordinary], "config": [config]},
-            {"data": InputSpec(), "config": InputSpec()},
-            str(tmp_path),
-            store,
-            endpoint_routed=True,
-        )
-
-    store.get_artifact.assert_not_called()
-    verify.assert_not_called()
-    ordinary.materialize_to.assert_not_called()
-    assert set(tmp_path.iterdir()) == before
-
-
-def test_non_materialized_endpoint_config_keeps_references(tmp_path: Path) -> None:
+def test_non_materialized_config_keeps_references(tmp_path: Path) -> None:
     from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 
     config = ExecutionConfigArtifact.draft(
@@ -513,7 +289,6 @@ def test_non_materialized_endpoint_config_keeps_references(tmp_path: Path) -> No
         {"config": InputSpec(materialize=False)},
         str(tmp_path),
         store,
-        endpoint_routed=True,
     )
     assert result == {"config": [config]}
     assert config.materialized_path is None
@@ -556,3 +331,126 @@ def test_embedded_artifact_materializes_without_origin_metadata(
     assert result == {"data": [artifact, shell]}
     assert Path(artifact.materialized_path).read_bytes() == b"value\n1\n"
     assert shell.materialized_path is None
+
+
+def test_captured_references_materialize_without_store_access(tmp_path: Path) -> None:
+    from artisan.execution.inputs.materialization import (
+        capture_input_references,
+        materialize_captured_inputs,
+        materialize_captured_references,
+    )
+
+    artifact = CSVArtifact.draft(b"value\n1\n", "input.csv", 1).finalize()
+    config = ExecutionConfigArtifact.draft(
+        {"input": {"$artifact": artifact.artifact_id}}, "config.json", 1
+    ).finalize()
+    artifacts = {"config": [config]}
+    specs = {"config": _typed_spec()}
+    store = MagicMock()
+    store.get_artifact.return_value = artifact
+    captured = capture_input_references(artifacts, specs, store)
+    store.get_artifact.side_effect = AssertionError("store access after capture")
+
+    materialize_captured_inputs(artifacts, specs, str(tmp_path), captured)
+    references = materialize_captured_references(
+        artifacts, specs, str(tmp_path), captured
+    )
+
+    assert references == {config.artifact_id: {artifact.artifact_id: artifact}}
+    assert Path(artifact.materialized_path).read_bytes() == artifact.content
+    assert store.get_artifact.call_count == 1
+
+
+@pytest.mark.parametrize("captured_empty", [False, True])
+def test_captured_empty_config_is_distinct_from_missing_context(
+    tmp_path: Path, captured_empty: bool
+) -> None:
+    from artisan.execution.inputs.materialization import materialize_captured_inputs
+
+    config = ExecutionConfigArtifact.draft({}, "empty.json", 1).finalize()
+    references = {config.artifact_id: {}} if captured_empty else {}
+    before = set(tmp_path.iterdir())
+    if not captured_empty:
+        with pytest.raises(ValueError, match="not captured"):
+            materialize_captured_inputs(
+                {"config": [config]}, {"config": InputSpec()}, str(tmp_path), references
+            )
+        assert set(tmp_path.iterdir()) == before
+        return
+    materialize_captured_inputs(
+        {"config": [config]}, {"config": InputSpec()}, str(tmp_path), references
+    )
+    assert Path(config.materialized_path).read_text() == "{}"
+
+
+def test_captured_dependency_membership_fails_before_writing(tmp_path: Path) -> None:
+    from artisan.execution.inputs.materialization import materialize_captured_inputs
+
+    before = set(tmp_path.iterdir())
+    artifact = CSVArtifact.draft(b"value\n1\n", "input.csv", 1).finalize()
+    config = ExecutionConfigArtifact.draft(
+        {"input": {"$artifact": artifact.artifact_id}}, "config.json", 1
+    ).finalize()
+    with pytest.raises(ValueError, match="do not match"):
+        materialize_captured_inputs(
+            {"data": [artifact], "config": [config]},
+            {"data": InputSpec(), "config": InputSpec()},
+            str(tmp_path),
+            {config.artifact_id: {}},
+        )
+    assert set(tmp_path.iterdir()) == before
+
+
+def test_equal_content_distinct_inputs_share_bytes_but_both_receive_paths(
+    tmp_path: Path,
+) -> None:
+    from artisan.execution.inputs.materialization import materialize_captured_inputs
+
+    first = CSVArtifact.draft(b"value\n1\n", "input.csv").finalize()
+    second = CSVArtifact.draft(b"value\n1\n", "input.csv").finalize()
+    assert first is not second
+    assert first.artifact_id == second.artifact_id
+    materialize_captured_inputs(
+        {"data": [first, second]}, {"data": InputSpec()}, str(tmp_path), {}
+    )
+    assert first.materialized_path == second.materialized_path
+    assert Path(second.materialized_path).read_bytes() == first.content
+
+
+@pytest.mark.parametrize("remote", [False, True])
+def test_external_inputs_are_verified_and_materialized_with_selected_filesystem(
+    tmp_path: Path, remote: bool
+) -> None:
+    payload = b"bounded carrier bytes"
+    fs = MemoryFileSystem() if remote else LocalFileSystem()
+    source = (
+        f"memory://{tmp_path.name}/source.bin"
+        if remote
+        else str(tmp_path / "source.bin")
+    )
+    with fs.open(source, "wb") as stream:
+        stream.write(payload)
+    artifact = FileRefArtifact.draft(
+        source, compute_content_digest(payload), len(payload), 0
+    ).finalize()
+    store = MagicMock()
+    store._fs = fs
+    result = materialize_inputs(
+        {"source": [artifact]},
+        {"source": InputSpec(artifact_type="file_ref")},
+        str(tmp_path / "materialized"),
+        store,
+    )
+    assert result == {"source": [artifact]}
+    assert artifact.materialized_path is not None
+    assert "://" not in artifact.materialized_path
+    assert Path(artifact.materialized_path).read_bytes() == payload
+    with fs.open(source, "wb") as stream:
+        stream.write(b"changed carrier bytes")
+    with pytest.raises(ArtifactIntegrityError):
+        materialize_inputs(
+            {"source": [artifact]},
+            {"source": InputSpec(artifact_type="file_ref")},
+            str(tmp_path / "second-materialization"),
+            store,
+        )

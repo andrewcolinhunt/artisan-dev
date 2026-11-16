@@ -15,7 +15,6 @@ from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import ComputeProvider, ModalComputeConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -74,10 +73,6 @@ class MetricCalculator(OperationDefinition):
         job_name="metric_calculator", artifacts_per_unit=10000
     )  # type: ignore[call-arg]  # pydantic defaults
 
-    compute_provider: ComputeProvider = ComputeProvider(
-        modal=ModalComputeConfig(),
-    )
-
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Carry each dataset's path, identity, and human name together."""
         return {
@@ -86,10 +81,11 @@ class MetricCalculator(OperationDefinition):
                     {
                         "path": artifact.materialized_path,
                         "artifact_id": artifact.artifact_id,
+                        "input_index": index,
                         "original_name": artifact.original_name,
                     }
-                    for artifact in cast(
-                        list[CSVArtifact], inputs.input_artifacts["dataset"]
+                    for index, artifact in enumerate(
+                        cast(list[CSVArtifact], inputs.input_artifacts["dataset"])
                     )
                 ]
             )
@@ -117,6 +113,7 @@ class MetricCalculator(OperationDefinition):
                 {
                     "input": input_path,
                     "source_artifact_id": dataset["artifact_id"],
+                    "source_input_index": dataset["input_index"],
                     "metric_key": metric_key,
                     **metrics,
                 }
@@ -150,7 +147,11 @@ class MetricCalculator(OperationDefinition):
                     original_name=metric_data["metric_key"],
                     step_number=inputs.step_number,
                 ),
-                sources={"dataset": [metric_data["source_artifact_id"]]},
+                sources={
+                    "dataset": [
+                        inputs.ref("dataset", index=metric_data["source_input_index"])
+                    ]
+                },
             )
 
         return result

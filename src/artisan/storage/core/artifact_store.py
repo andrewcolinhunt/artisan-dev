@@ -9,7 +9,7 @@ preparation for the artifact_index.
 from __future__ import annotations
 
 from collections.abc import Iterator, Mapping
-from typing import cast
+from typing import TYPE_CHECKING, cast
 
 import polars as pl
 from fsspec import AbstractFileSystem
@@ -17,19 +17,27 @@ from fsspec import AbstractFileSystem
 from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external import sanitized_uri, validate_persistable_uri
+from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
-from artisan.storage.core.committed_scan import (
-    filter_committed_rows,
-    read_logical_commits,
-    scan_committed,
-)
+from artisan.storage.core.committed_scan import filter_committed_rows
+from artisan.storage.core.curator_view import CuratorView
 from artisan.storage.core.provenance_store import ProvenanceStore
-from artisan.storage.core.store_format import assert_store_format
+from artisan.storage.core.store_read_scope import (
+    RetainedStoreReadScope,
+    with_read_scope,
+)
 from artisan.storage.core.table_schemas import get_physical_schema_for_path, get_schema
 from artisan.storage.io.bounded_evidence import DiskTable
 from artisan.storage.io.delta_files import DeltaSnapshot
+from artisan.storage.io.retained_store import (
+    open_retained_store,
+    resolve_store_files_root,
+)
 from artisan.utils.path import uri_join
+
+if TYPE_CHECKING:
+    from artisan.storage.core.query_view import QueryScope, QueryView
 
 
 class ArtifactStore:
@@ -46,7 +54,9 @@ class ArtifactStore:
         fs: AbstractFileSystem | None = None,
         storage_options: dict[str, str] | None = None,
         files_root: str | None = None,
-    ):
+        _view: QueryView | None = None,
+        _read_scope: QueryScope | None = None,
+    ) -> None:
         """Initialize with the Delta Lake root directory.
 
         Args:
@@ -57,7 +67,8 @@ class ArtifactStore:
                 etc.). Defaults to ``LocalFileSystem()`` when None.
             storage_options: Credentials/config passed to delta-rs calls.
             files_root: Root URI/path for Artisan-managed external files.
-                None when external file storage is not configured.
+                Defaults to the sibling ``files`` directory for local stores;
+                nonlocal stores require an explicit root.
         """
         if fs is None:
             from fsspec.implementations.local import LocalFileSystem
@@ -66,32 +77,81 @@ class ArtifactStore:
         self.base_path = base_path
         self._fs = fs
         self._storage_options = storage_options or {}
-        self.files_root = files_root
         self._provenance: ProvenanceStore | None = None
-        assert_store_format(self.base_path, self._fs, self._storage_options)
+        if _view is not None and _read_scope is not None:
+            msg = "A store cannot combine fixed and fresh retained visibility"
+            raise ValueError(msg)
+        source = _view if _view is not None else _read_scope
+        if source is None:
+            files_root = resolve_store_files_root(
+                base_path, files_root, protocols=fs.protocol
+            )
+            _read_scope = RetainedStoreReadScope(
+                open_retained_store(
+                    base_path, files_root, fs=fs, storage_options=storage_options
+                )
+            )
+            source = _read_scope
+        source.validate_binding(self.base_path, self._fs, self._storage_options)
+        if files_root != source.files_root:
+            msg = "Artifact store has another managed files root"
+            raise ArtifactIntegrityError(msg)
+        self.files_root = files_root
+        self._fixed_view = _view
+        self._read_scope = _read_scope
+
+    @property
+    def _view(self) -> QueryView | None:
+        return (
+            self._read_scope.view if self._read_scope is not None else self._fixed_view
+        )
+
+    def _scan(
+        self,
+        table: str | TablePath,
+        *,
+        direct: bool = False,
+    ) -> pl.LazyFrame:
+        view = self._view
+        if view is None:
+            msg = "Table reads require an active query scope"
+            raise RuntimeError(msg)
+        if direct and table == TablePath.ARTIFACT_EDGES:
+            return view.artifact_edges(direct=True)
+        return view.scan(table)
+
+    def _read_controls(self) -> pl.DataFrame:
+        if isinstance(self._view, CuratorView):
+            return self._view.controls.clone()
+        msg = "Commit controls require an active retained store view"
+        raise ValueError(msg)
 
     @property
     def provenance(self) -> ProvenanceStore:
         """Lazy-initialized provenance store for graph queries."""
         if self._provenance is None:
             self._provenance = ProvenanceStore(
-                self.base_path, fs=self._fs, storage_options=self._storage_options
+                self.base_path,
+                fs=self._fs,
+                storage_options=self._storage_options,
+                files_root=self.files_root,
+                _view=self._fixed_view,
+                _read_scope=self._read_scope,
             )
         return self._provenance
 
     @property
     def filesystem(self) -> AbstractFileSystem:
         """Return the configured filesystem used for artifact I/O."""
+        if isinstance(self._view, CuratorView):
+            self._view.exclude_cache("untracked_filesystem_access")
         return self._fs
-
-    def _table_path(self, table: TablePath) -> str:
-        """Resolve the URI for a Delta table."""
-        return uri_join(self.base_path, table)
 
     # -------------------------------------------------------------------------
     # Read operations
     # -------------------------------------------------------------------------
 
+    @with_read_scope
     def get_artifact(
         self,
         artifact_id: str,
@@ -136,18 +196,9 @@ class ArtifactStore:
             )
 
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
-        table_path = uri_join(self.base_path, table_path_str)
-
-        if not self._fs.exists(table_path):
-            return None
 
         result = (
-            scan_committed(
-                self.base_path,
-                table_path_str,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(table_path_str)
             .filter(pl.col("artifact_id") == artifact_id)
             .limit(1)
             .collect()
@@ -162,6 +213,7 @@ class ArtifactStore:
         self._attach_verified_location(artifact)
         return artifact
 
+    @with_read_scope
     def get_artifacts_by_type(
         self,
         artifact_ids: list[str],
@@ -186,18 +238,9 @@ class ArtifactStore:
             return {}
 
         table_path_str = ArtifactTypeDef.get_table_path(artifact_type)
-        table_path = uri_join(self.base_path, table_path_str)
-
-        if not self._fs.exists(table_path):
-            return {}
 
         result = (
-            scan_committed(
-                self.base_path,
-                table_path_str,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(table_path_str)
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .collect()
         )
@@ -226,6 +269,25 @@ class ArtifactStore:
 
         return artifacts
 
+    def _ingest_file_descriptors(self, artifact_ids: list[str]) -> dict[str, Artifact]:
+        """Resolve framework ingestion inputs without exposing untracked carriers.
+
+        IngestFiles owns the subsequent verified capture and supported filesystem
+        read scope. Ordinary artifact hydration continues to exclude reuse.
+        """
+        if not isinstance(self._view, CuratorView):
+            msg = "Captured ingestion requires a frozen curator view"
+            raise ValueError(msg)
+        rows = (
+            self._scan(ArtifactTypeDef.get_table_path("file_ref"))
+            .filter(pl.col("artifact_id").is_in(artifact_ids))
+            .collect()
+        )
+        return {
+            row["artifact_id"]: FileRefArtifact.from_row(row)
+            for row in rows.iter_rows(named=True)
+        }
+
     def validate_staged_artifacts(
         self,
         tables: dict[str, DiskTable],
@@ -235,9 +297,16 @@ class ArtifactStore:
         committed_snapshots: dict[str, DeltaSnapshot] | None = None,
     ) -> dict[str, str]:
         """Check worker eligibility before hydrating each selected artifact alone."""
-        controls = read_logical_commits(
-            self.base_path, fs=self._fs, storage_options=self._storage_options
-        )
+        if (
+            self._fixed_view is not None
+            and not isinstance(self._fixed_view, CuratorView)
+        ) or (
+            self._read_scope is not None
+            and not isinstance(self._read_scope, RetainedStoreReadScope)
+        ):
+            msg = "Inspection views cannot validate staged writes"
+            raise ValueError(msg)
+        controls = self._read_controls()
         referenced_ids = set().union(*references.values())
         for table in tables.values():
             if "artifact_id" in table.schema:
@@ -410,6 +479,7 @@ class ArtifactStore:
             msg = f"Missing staged content for {sorted(ids - seen)!r}"
             raise ArtifactIntegrityError(msg)
 
+    @with_read_scope
     def artifact_exists(self, artifact_id: str) -> bool:
         """Check whether an artifact exists via the artifact_index.
 
@@ -418,6 +488,7 @@ class ArtifactStore:
         """
         return self.get_artifact_type(artifact_id) is not None
 
+    @with_read_scope
     def get_artifact_type(self, artifact_id: str) -> str | None:
         """Look up the type string for an artifact from the index.
 
@@ -427,17 +498,8 @@ class ArtifactStore:
         Returns:
             Artifact type string, or None if not in the index.
         """
-        index_path = self._table_path(TablePath.ARTIFACT_INDEX)
-        if not self._fs.exists(index_path):
-            return None
-
         result = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_INDEX,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(TablePath.ARTIFACT_INDEX)
             .filter(pl.col("artifact_id") == artifact_id)
             .select("artifact_type")
             .collect()
@@ -454,17 +516,13 @@ class ArtifactStore:
             raise ArtifactIntegrityError(msg)
         return cast("str", next(iter(stored_types)))
 
+    @with_read_scope
     def load_type_map(self, artifact_ids: list[str]) -> dict[str, str]:
         """Bulk-load and validate unique type assignments for artifact IDs."""
         if not artifact_ids:
             return {}
         result = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_INDEX,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(TablePath.ARTIFACT_INDEX)
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(["artifact_id", "artifact_type"])
             .collect()
@@ -486,26 +544,20 @@ class ArtifactStore:
         """Select and verify a deterministic location for an external artifact."""
         if not artifact.EXTERNALLY_BACKED:
             return
+        if isinstance(self._view, CuratorView):
+            self._view.exclude_cache("untracked_external_content")
         assert artifact.artifact_id is not None
-        locations_path = self._table_path(TablePath.ARTIFACT_LOCATIONS)
         if candidate_locations is not None:
             rows = candidate_locations.filter(
                 pl.col("artifact_id") == artifact.artifact_id
             ).select("uri")
-        elif self._fs.exists(locations_path):
+        else:
             rows = (
-                scan_committed(
-                    self.base_path,
-                    TablePath.ARTIFACT_LOCATIONS,
-                    fs=self._fs,
-                    storage_options=self._storage_options,
-                )
+                self._scan(TablePath.ARTIFACT_LOCATIONS)
                 .filter(pl.col("artifact_id") == artifact.artifact_id)
                 .select("uri")
                 .collect()
             )
-        else:
-            rows = pl.DataFrame(schema={"uri": pl.String})
         locations = sorted(
             set(rows["uri"].to_list()),
             key=lambda uri: (not self._is_managed_location(uri), uri),
@@ -540,6 +592,7 @@ class ArtifactStore:
         root = self.files_root.rstrip("/")
         return uri == root or uri.startswith(f"{root}/")
 
+    @with_read_scope
     def capture_associated(
         self, requests: Mapping[str, tuple[str, ...]]
     ) -> dict[tuple[str, str], tuple[str, ...]]:
@@ -557,17 +610,8 @@ class ArtifactStore:
         }
         if not pairs:
             return {}
-        controls = read_logical_commits(
-            self.base_path, fs=self._fs, storage_options=self._storage_options
-        )
         edges = (
-            scan_committed(
-                self.base_path,
-                TablePath.ARTIFACT_EDGES,
-                fs=self._fs,
-                storage_options=self._storage_options,
-                controls=controls,
-            )
+            self._scan(TablePath.ARTIFACT_EDGES, direct=True)
             .filter(
                 pl.col("source_artifact_id").is_in(sorted(requests)),
                 pl.col("target_artifact_type").is_in(
@@ -583,6 +627,7 @@ class ArtifactStore:
                 captured[(primary, kind)].add(target)
         return {pair: tuple(sorted(captured[pair])) for pair in sorted(captured)}
 
+    @with_read_scope
     def get_associated(
         self,
         artifact_ids: set[str],
@@ -623,6 +668,7 @@ class ArtifactStore:
                 result[source_id] = artifacts
         return result
 
+    @with_read_scope
     def load_metrics_df(self, artifact_ids: list[str]) -> pl.DataFrame:
         """Load metric artifacts as a two-column DataFrame.
 
@@ -642,18 +688,9 @@ class ArtifactStore:
             return empty
 
         table_path_str = ArtifactTypeDef.get_table_path("metric")
-        table_path = uri_join(self.base_path, table_path_str)
-
-        if not self._fs.exists(table_path):
-            return empty
 
         result = (
-            scan_committed(
-                self.base_path,
-                table_path_str,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            )
+            self._scan(table_path_str)
             .filter(pl.col("artifact_id").is_in(artifact_ids))
             .select(["artifact_id", "content"])
             .collect()
@@ -661,6 +698,7 @@ class ArtifactStore:
 
         return result if not result.is_empty() else empty
 
+    @with_read_scope
     def load_original_names(self, artifact_ids: list[str]) -> dict[str, str]:
         """Bulk-load ``original_name`` values for the given artifact IDs.
 
@@ -700,19 +738,8 @@ class ArtifactStore:
             if "original_name" not in schema:
                 continue
 
-            table_path = uri_join(
-                self.base_path, ArtifactTypeDef.get_table_path(artifact_type)
-            )
-            if not self._fs.exists(table_path):
-                continue
-
             df = (
-                scan_committed(
-                    self.base_path,
-                    ArtifactTypeDef.get_table_path(artifact_type),
-                    fs=self._fs,
-                    storage_options=self._storage_options,
-                )
+                self._scan(ArtifactTypeDef.get_table_path(artifact_type))
                 .filter(pl.col("artifact_id").is_in(ids))
                 .select(["artifact_id", "original_name"])
                 .collect()

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import json
 import os
 import secrets
@@ -335,7 +336,16 @@ def test_owner_natural_exit_closes_child_holding_stdout_without_grace(
 
 def test_owner_cancel_is_independent_of_blocked_output_reader(proof: Proof) -> None:
     launched = proof.launch(
-        "import os, signal; signal.alarm(30); os.write(2, b'ready\\n');\nwhile True: os.write(1, b'x' * 65536)"
+        "import os, signal\n"
+        "signal.alarm(30)\n"
+        "os.set_blocking(1, False)\n"
+        "try:\n"
+        "    while True: os.write(1, b'x' * 65536)\n"
+        "except BlockingIOError:\n"
+        "    pass\n"
+        "os.set_blocking(1, True)\n"
+        "os.write(2, b'ready\\n')\n"
+        "while True: os.write(1, b'x' * 65536)"
     )
     assert read_until(launched.stderr, newline=True) == b"ready\n"
     proof.control("cancel", deadline=time.monotonic() + 5)
@@ -556,17 +566,19 @@ def test_owner_destruction_is_missing_evidence_not_empty_success(proof: Proof) -
         "import signal, sys; signal.alarm(25); print('ready', flush=True); sys.stdin.read()"
     )
     read_until(launched.stdout, newline=True)
-    try:
-        proof.process.kill()
-        proof.process.wait(timeout=3)
-        with pytest.raises((BrokenPipeError, EOFError, ConnectionResetError)):
-            proof.control("cancel", deadline=time.monotonic() + 1)
-        assert not group_absent(launched.response["pid"])
-    finally:
-        # Independent, cooperative cleanup. Never signal an ID whose owner died.
-        launched.close_stdin()
-        assert read_until(launched.stdout) == b""
-        await_condition(lambda: group_absent(launched.response["pid"]))
+    with orphan_reaper():
+        try:
+            proof.process.kill()
+            proof.process.wait(timeout=3)
+            with pytest.raises((BrokenPipeError, EOFError, ConnectionResetError)):
+                proof.control("cancel", deadline=time.monotonic() + 1)
+            assert not group_absent(launched.response["pid"])
+        finally:
+            # The killed owner cannot reap its child. This test adopts only its
+            # own orphan and closes stdin; missing owner evidence stays missing.
+            launched.close_stdin()
+            assert read_until(launched.stdout) == b""
+            await_condition(lambda: reaped_group_absent(launched.response["pid"]))
 
 
 def test_owner_accepted_creation_remains_unresolved_during_cancel(proof: Proof) -> None:
@@ -622,26 +634,61 @@ def test_owner_rejection_closes_transferred_descriptors(
 
 
 @contextmanager
+def orphan_reaper() -> Iterator[None]:
+    """Keep deliberately orphaned test children out of an enclosing owner."""
+    if sys.platform != "linux":
+        yield
+        return
+    libc = ctypes.CDLL(None, use_errno=True)
+    previous = ctypes.c_int()
+    if libc.prctl(37, ctypes.byref(previous), 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "Cannot read test subreaper state")
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
+        raise OSError(ctypes.get_errno(), "Cannot adopt test orphans")
+    try:
+        yield
+    finally:
+        if libc.prctl(36, previous.value, 0, 0, 0) != 0:
+            raise OSError(ctypes.get_errno(), "Cannot restore test subreaper state")
+
+
+def reaped_group_absent(pgid: int) -> bool:
+    """Reap this test's adopted group while retaining the exact absence check."""
+    if sys.platform == "linux":
+        while True:
+            try:
+                waited, _status = os.waitpid(-pgid, os.WNOHANG)
+            except ChildProcessError:
+                break
+            if not waited:
+                break
+    return group_absent(pgid)
+
+
+@contextmanager
 def direct_child(code: str) -> Iterator[subprocess.Popen[bytes]]:
     """Keep a direct-child identity pinned for independent failure cleanup."""
-    process = subprocess.Popen(
-        [sys.executable, "-c", code],
-        stdin=subprocess.PIPE,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        process_group=0,
-    )
-    try:
-        yield process
-    finally:
-        if process.returncode is None:
-            with suppress(ProcessLookupError):
-                os.killpg(process.pid, signal.SIGKILL)
-            process.wait(timeout=3)
-        await_condition(lambda: group_absent(process.pid), timeout=3)
-        for stream in (process.stdin, process.stdout, process.stderr):
-            assert stream is not None
-            stream.close()
+    with orphan_reaper():
+        process = subprocess.Popen(
+            [sys.executable, "-c", code],
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            process_group=0,
+        )
+        try:
+            yield process
+        finally:
+            try:
+                if process.returncode is None:
+                    with suppress(ProcessLookupError):
+                        os.killpg(process.pid, signal.SIGKILL)
+                    process.wait(timeout=3)
+                await_condition(lambda: reaped_group_absent(process.pid), timeout=3)
+            finally:
+                for stream in (process.stdin, process.stdout, process.stderr):
+                    assert stream is not None
+                    stream.close()
 
 
 def test_owner_does_not_signal_unrelated_group(proof: Proof) -> None:

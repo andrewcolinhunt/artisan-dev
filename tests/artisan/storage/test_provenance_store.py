@@ -1,389 +1,129 @@
-"""Tests for ProvenanceStore transitive walk methods."""
+"""Provenance queries walk real accepted chain, branch and diamond relations."""
 
 from __future__ import annotations
 
-import polars as pl
-import pytest
-from fixtures.logical_commit_store import commit_test_tables as _commit_tables
+from fixtures.retained_inspection import commit_inspection_attempt
 
-from artisan.schemas.enums import TablePath
+from artisan.schemas import CSVArtifact, MetricArtifact
 from artisan.storage.core.provenance_store import ProvenanceStore
-from artisan.storage.core.table_schemas import (
-    ARTIFACT_EDGES_SCHEMA,
-    ARTIFACT_INDEX_SCHEMA,
-)
+from artisan.storage.io.retained_commit import RetainedCommitter
 
 
-def _make_edges(pairs: list[tuple[str, str, str]]) -> pl.DataFrame:
-    """Build an edges DataFrame from (source, target, target_type) triples."""
-    n = len(pairs)
-    return pl.DataFrame(
-        {
-            "execution_run_id": ["run"] * n,
-            "source_artifact_id": [p[0] for p in pairs],
-            "target_artifact_id": [p[1] for p in pairs],
-            "source_artifact_type": ["csv"] * n,
-            "target_artifact_type": [p[2] for p in pairs],
-            "source_role": ["input"] * n,
-            "target_role": ["output"] * n,
-            "group_id": [None] * n,
-            "step_boundary": [True] * n,
-        },
-        schema=ARTIFACT_EDGES_SCHEMA,
+def _store(committer: RetainedCommitter) -> ProvenanceStore:
+    return ProvenanceStore(
+        committer.delta_root,
+        fs=committer.fs,
+        storage_options=committer.storage_options,
+        files_root=committer.files_root,
     )
 
 
-def _make_index(entries: list[tuple[str, str, int]]) -> pl.DataFrame:
-    """Build an artifact_index DataFrame from (id, type, step) triples."""
-    return pl.DataFrame(
-        {
-            "artifact_id": [e[0] for e in entries],
-            "artifact_type": [e[1] for e in entries],
-            "origin_step_number": [e[2] for e in entries],
-            "metadata": ["{}"] * len(entries),
-        },
-        schema=ARTIFACT_INDEX_SCHEMA,
+def test_diamond_walks_deduplicate_and_filter_actual_artifact_types(
+    backend_committer: RetainedCommitter,
+) -> None:
+    root = backend_committer.delta_root
+    a, b, c = [
+        CSVArtifact.draft(f"x\n{i}\n".encode(), f"data-{i}.csv", i).finalize()
+        for i in range(3)
+    ]
+    d = MetricArtifact.draft({"score": 4}, "score.json", 3).finalize()
+    for number, item, parents in ((0, a, []), (1, b, [a]), (2, c, [a]), (3, d, [b, c])):
+        commit_inspection_attempt(
+            root,
+            committer=backend_committer,
+            number=number,
+            inputs={"data": parents} if parents else {},
+            outputs={"output": [item]},
+        )
+    store = _store(backend_committer)
+    assert set(store.get_ancestor_ids(d.artifact_id)) == {
+        a.artifact_id,
+        b.artifact_id,
+        c.artifact_id,
+    }
+    assert set(store.get_descendant_ids(a.artifact_id)) == {
+        b.artifact_id,
+        c.artifact_id,
+        d.artifact_id,
+    }
+    assert set(store.get_ancestor_ids(d.artifact_id, ancestor_type="csv")) == {
+        a.artifact_id,
+        b.artifact_id,
+        c.artifact_id,
+    }
+    assert store.get_ancestor_ids(d.artifact_id, ancestor_type="metric") == []
+    assert store.get_descendant_ids(a.artifact_id, descendant_type="metric") == [
+        d.artifact_id
+    ]
+    assert set(store.get_direct_ancestors(d.artifact_id)) == {
+        b.artifact_id,
+        c.artifact_id,
+    }
+    assert set(store.get_direct_descendants({a.artifact_id})[a.artifact_id]) == {
+        b.artifact_id,
+        c.artifact_id,
+    }
+    assert {key: set(value) for key, value in store.load_backward_map().items()} == {
+        b.artifact_id: {a.artifact_id},
+        c.artifact_id: {a.artifact_id},
+        d.artifact_id: {b.artifact_id, c.artifact_id},
+    }
+    forward = store.load_forward_map()
+    assert set(forward[a.artifact_id]) == {b.artifact_id, c.artifact_id}
+    assert forward[b.artifact_id] == forward[c.artifact_id] == [d.artifact_id]
+    assert store.get_ancestor_ids("f" * 32) == []
+    assert store.get_descendant_ids("f" * 32) == []
+    assert store.get_ancestor_ids(a.artifact_id) == []
+    assert store.get_descendant_ids(d.artifact_id) == []
+
+
+def test_index_maps_filter_ids_types_steps_and_use_latest_authoritative_names(
+    backend_committer: RetainedCommitter,
+) -> None:
+    root = backend_committer.delta_root
+    a = CSVArtifact.draft(b"x\n1\n", "data.csv", 1).finalize()
+    b = MetricArtifact.draft({"score": 4}, "score.json", 2).finalize()
+    commit_inspection_attempt(
+        root,
+        committer=backend_committer,
+        number=1,
+        name="import",
+        outputs={"data": [a]},
     )
+    commit_inspection_attempt(
+        root,
+        committer=backend_committer,
+        number=2,
+        name="measure",
+        outputs={"metric": [b]},
+    )
+    store = _store(backend_committer)
+    assert store.load_type_map() == {a.artifact_id: "csv", b.artifact_id: "metric"}
+    assert store.load_type_map([a.artifact_id, "f" * 32]) == {a.artifact_id: "csv"}
+    assert store.load_step_map() == {a.artifact_id: 1, b.artifact_id: 2}
+    assert store.get_artifact_step_number(b.artifact_id) == 2
+    assert store.get_artifact_step_number("f" * 32) is None
+    assert store.get_step_range([a.artifact_id, b.artifact_id, "f" * 32]) == (1, 2)
+    assert store.get_step_range([]) is None
+    assert store.load_artifact_ids_by_type("csv", step_numbers=[1]) == {a.artifact_id}
+    assert store.load_artifact_ids_by_type("csv", step_numbers=[2]) == set()
+    assert (
+        store.load_artifact_ids_by_type("metric", artifact_ids=[a.artifact_id]) == set()
+    )
+    assert store.load_step_name_map("source-run") == {1: "import", 2: "measure"}
+    commit_inspection_attempt(
+        root, committer=backend_committer, number=2, name="retry", status="pending"
+    )
+    assert store.load_step_name_map("source-run") == {1: "import", 2: "retry"}
 
 
-# Artifact IDs
-A = "a" * 32
-B = "b" * 32
-C = "c" * 32
-D = "d" * 32
-E = "e" * 32
-
-
-@pytest.fixture
-def prov_env(backend_fs):
-    """Yield ``(store, fs, storage_options, root)`` per ``backend_fs`` param.
-
-    Shared by ``TestGetAncestorIds`` and ``TestGetDescendantIds`` so every
-    test runs twice — once against ``LocalFileSystem``, once against MinIO.
-    """
-    fs, storage, root = backend_fs
-    opts = storage.delta_storage_options()
-    store = ProvenanceStore(root, fs=fs, storage_options=opts)
-    return store, fs, opts, root
-
-
-class TestGetAncestorIds:
-    """Tests for ProvenanceStore.get_ancestor_ids."""
-
-    def test_empty_edges_table(self, prov_env):
-        """Return an empty list when the artifact edges table is empty."""
-        store, _fs, _opts, _root = prov_env
-        assert store.get_ancestor_ids(A) == []
-
-    def test_linear_chain(self, prov_env):
-        """A -> B -> C: ancestors of C are [A, B]."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges(
-            [
-                (A, B, "csv"),
-                (B, C, "csv"),
-            ]
-        )
-        index = _make_index(
-            [
-                (A, "csv", 1),
-                (B, "csv", 2),
-                (C, "csv", 3),
-            ]
-        )
-        _commit_tables(
-            root,
-            _fs,
-            opts,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        result = store.get_ancestor_ids(C)
-        assert set(result) == {A, B}
-
-    def test_no_ancestors(self, prov_env):
-        """Root node has no ancestors."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "csv")])
-        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
-
-        assert store.get_ancestor_ids(A) == []
-
-    def test_diamond_graph(self, prov_env):
-        """A -> B, A -> C, B -> D, C -> D: ancestors of D are [A, B, C]."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges(
-            [
-                (A, B, "csv"),
-                (A, C, "csv"),
-                (B, D, "csv"),
-                (C, D, "csv"),
-            ]
-        )
-        index = _make_index(
-            [
-                (A, "csv", 1),
-                (B, "csv", 2),
-                (C, "csv", 2),
-                (D, "csv", 3),
-            ]
-        )
-        _commit_tables(
-            root,
-            _fs,
-            opts,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        result = store.get_ancestor_ids(D)
-        assert set(result) == {A, B, C}
-
-    def test_ancestor_type_filter(self, prov_env):
-        """Filter ancestors by type returns only matching types."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges(
-            [
-                (A, B, "metric"),
-                (B, C, "csv"),
-            ]
-        )
-        index = _make_index(
-            [
-                (A, "csv", 1),
-                (B, "metric", 2),
-                (C, "csv", 3),
-            ]
-        )
-        _commit_tables(
-            root,
-            _fs,
-            opts,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        # All ancestors
-        assert set(store.get_ancestor_ids(C)) == {A, B}
-
-        # Only data ancestors
-        result = store.get_ancestor_ids(C, ancestor_type="csv")
-        assert result == [A]
-
-        # Only metric ancestors
-        result = store.get_ancestor_ids(C, ancestor_type="metric")
-        assert result == [B]
-
-    def test_unknown_artifact(self, prov_env):
-        """Artifact not in any edge returns empty list."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "csv")])
-        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
-
-        assert store.get_ancestor_ids(C) == []
-
-
-class TestGetDescendantIds:
-    """Tests for ProvenanceStore.get_descendant_ids."""
-
-    def test_empty_edges_table(self, prov_env):
-        """Return an empty list when the artifact edges table is empty."""
-        store, _fs, _opts, _root = prov_env
-        assert store.get_descendant_ids(A) == []
-
-    def test_linear_chain(self, prov_env):
-        """A -> B -> C: descendants of A are [B, C]."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges(
-            [
-                (A, B, "csv"),
-                (B, C, "csv"),
-            ]
-        )
-        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
-
-        result = store.get_descendant_ids(A)
-        assert set(result) == {B, C}
-
-    def test_no_descendants(self, prov_env):
-        """Leaf node has no descendants."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "csv")])
-        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
-
-        assert store.get_descendant_ids(B) == []
-
-    def test_branching_graph(self, prov_env):
-        """A -> B, A -> C, B -> D: descendants of A are [B, C, D]."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges(
-            [
-                (A, B, "csv"),
-                (A, C, "metric"),
-                (B, D, "csv"),
-            ]
-        )
-        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
-
-        result = store.get_descendant_ids(A)
-        assert set(result) == {B, C, D}
-
-    def test_descendant_type_filter(self, prov_env):
-        """Filter descendants by type returns only matching types."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges(
-            [
-                (A, B, "csv"),
-                (A, C, "metric"),
-                (B, D, "csv"),
-            ]
-        )
-        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
-
-        # Only metric descendants
-        result = store.get_descendant_ids(A, descendant_type="metric")
-        assert result == [C]
-
-        # Only data descendants
-        result = store.get_descendant_ids(A, descendant_type="csv")
-        assert set(result) == {B, D}
-
-    def test_unknown_artifact(self, prov_env):
-        """Artifact not in any edge returns empty list."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "csv")])
-        _commit_tables(root, _fs, opts, {TablePath.ARTIFACT_EDGES.value: edges})
-
-        assert store.get_descendant_ids(C) == []
-
-
-class TestLoadEdgesDf:
-    """Tests for ProvenanceStore.load_edges_df, especially the optional flags."""
-
-    def test_returns_empty_when_tables_empty(self, prov_env):
-        """Return an empty frame with the expected schema for empty tables."""
-        store, _fs, _opts, _root = prov_env
-        result = store.load_edges_df(0, 10)
-        assert result.is_empty()
-        assert result.columns == ["source_artifact_id", "target_artifact_id"]
-
-    def test_returns_base_columns_by_default(self, prov_env):
-        """Default call returns only source/target IDs, no roles or types."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "csv")])
-        index = _make_index([(A, "csv", 1), (B, "csv", 2)])
-        _commit_tables(
-            root,
-            _fs,
-            opts,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        result = store.load_edges_df(0, 10)
-        assert result.columns == ["source_artifact_id", "target_artifact_id"]
-        assert result.height == 1
-        assert result["source_artifact_id"][0] == A
-        assert result["target_artifact_id"][0] == B
-
-    def test_include_target_type_adds_column(self, prov_env):
-        """include_target_type=True adds target_artifact_type."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "metric")])
-        index = _make_index([(A, "csv", 1), (B, "metric", 2)])
-        _commit_tables(
-            root,
-            _fs,
-            opts,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        result = store.load_edges_df(0, 10, include_target_type=True)
-        assert "target_artifact_type" in result.columns
-        assert result["target_artifact_type"][0] == "metric"
-
-    def test_include_roles_adds_role_and_group_columns(self, prov_env):
-        """include_roles=True surfaces source_role, target_role, group_id."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "csv")])
-        index = _make_index([(A, "csv", 1), (B, "csv", 2)])
-        _commit_tables(
-            root,
-            _fs,
-            opts,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        result = store.load_edges_df(0, 10, include_roles=True)
-        assert {"source_role", "target_role", "group_id"} <= set(result.columns)
-        # _make_edges seeds source_role='input', target_role='output'.
-        assert result["source_role"][0] == "input"
-        assert result["target_role"][0] == "output"
-        assert result["group_id"][0] is None
-
-    def test_include_both_flags_returns_all_extra_columns(self, prov_env):
-        """Combining include_target_type and include_roles returns all extras."""
-        store, _fs, opts, root = prov_env
-        edges = _make_edges([(A, B, "csv")])
-        index = _make_index([(A, "csv", 1), (B, "csv", 2)])
-        _commit_tables(
-            root,
-            _fs,
-            opts,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        result = store.load_edges_df(
-            0, 10, include_target_type=True, include_roles=True
-        )
-        assert {
-            "target_artifact_type",
-            "source_role",
-            "target_role",
-            "group_id",
-        } <= set(result.columns)
-
-
-class TestProvenanceStoreBackendParametrized:
-    """Test both traversal directions against each storage backend."""
-
-    def test_seed_and_walk(self, backend_fs):
-        """Seed A -> B -> C, then walk both directions via the store."""
-        fs, storage_config, root = backend_fs
-        storage_options = storage_config.delta_storage_options()
-
-        edges = _make_edges([(A, B, "csv"), (B, C, "csv")])
-        index = _make_index([(A, "csv", 1), (B, "csv", 2), (C, "csv", 3)])
-
-        _commit_tables(
-            root,
-            fs,
-            storage_options,
-            {
-                TablePath.ARTIFACT_EDGES.value: edges,
-                TablePath.ARTIFACT_INDEX.value: index,
-            },
-        )
-
-        store = ProvenanceStore(root, fs=fs, storage_options=storage_options)
-
-        assert set(store.get_ancestor_ids(C)) == {A, B}
-        assert set(store.get_descendant_ids(A)) == {B, C}
+def test_empty_provenance_queries_are_empty(
+    backend_committer: RetainedCommitter,
+) -> None:
+    store = _store(backend_committer)
+    assert store.load_backward_map() == store.load_forward_map() == {}
+    assert store.load_type_map() == store.load_step_map() == {}
+    assert store.get_direct_ancestors("f" * 32) == []
+    assert store.get_direct_descendants({"f" * 32}) == {}
+    assert store.load_step_name_map() == {}
+    assert store.load_artifact_ids_by_type("metric") == set()

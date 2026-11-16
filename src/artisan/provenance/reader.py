@@ -8,6 +8,7 @@ command and MCP provenance tool to shape.
 
 from __future__ import annotations
 
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Literal
 
 from pydantic import BaseModel
@@ -42,14 +43,14 @@ def provenance_edges(
     direction: Literal["backward", "forward"] = "backward",
     depth: int = 3,
     storage: StorageConfig | None = None,
+    files_root: str | None = None,
 ) -> ProvenanceEdges:
     """Walk the provenance graph around one artifact, bounded by depth.
 
     Loads the full adjacency for ``direction`` in one Delta scan
     (``ProvenanceStore.load_backward_map`` / ``load_forward_map``) and
-    BFS-walks up to ``depth`` hops from ``artifact_id``. A missing
-    ``artifact_edges`` table or unknown artifact yields empty edges, not
-    an error.
+    BFS-walks up to ``depth`` hops from ``artifact_id``. An unknown artifact
+    yields empty edges; incomplete stores fail validation.
 
     Args:
         delta_root: Root path for Delta Lake tables.
@@ -59,6 +60,7 @@ def provenance_edges(
         depth: Maximum hops from ``artifact_id``. Defaults to 3.
         storage: Storage configuration for cloud backends. Defaults to
             local filesystem.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
 
     Returns:
         ``ProvenanceEdges`` with the traversed edges and a ``truncated``
@@ -72,6 +74,7 @@ def provenance_edges(
         delta_root,
         fs=storage.filesystem(),
         storage_options=storage.delta_storage_options(),
+        files_root=files_root,
     )
     adjacency = (
         store.load_backward_map()
@@ -79,6 +82,17 @@ def provenance_edges(
         else store.load_forward_map()
     )
 
+    return _walk_edges(adjacency, artifact_id, direction=direction, depth=depth)
+
+
+def _walk_edges(
+    adjacency: Mapping[str, Sequence[str]],
+    artifact_id: str,
+    *,
+    direction: Literal["backward", "forward"],
+    depth: int,
+) -> ProvenanceEdges:
+    """Walk already selected adjacency without reopening its source store."""
     edges: list[dict[str, str]] = []
     seen_edges: set[tuple[str, str]] = set()
     visited = {artifact_id}

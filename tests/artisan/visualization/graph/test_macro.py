@@ -1,512 +1,211 @@
-"""Tests for macro-level (step-level) pipeline graph."""
+"""Macro layout is pure; public acquisition uses exact retained attempts."""
 
 from __future__ import annotations
 
 import json
-import os
-from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Literal
 
 import graphviz
+import polars as pl
 import pytest
-from fixtures.logical_commit_store import commit_test_step
-from fixtures.store_format import publish_test_store
-from fsspec.implementations.local import LocalFileSystem
+from fixtures.retained_inspection import commit_inspection_attempt, inspection_store
 
 from artisan.visualization.graph import build_macro_graph, render_macro_graph
-from artisan.visualization.graph.macro import _parse_input_refs
-
-# Helpers
-
-
-def _write_steps(delta_root: Path, rows: list[dict]) -> None:
-    """Write steps rows to a Delta table under *delta_root*."""
-    publish_test_store(str(delta_root), LocalFileSystem())
-    defaults = {
-        "step_run_id": "run_0",
-        "step_spec_id": "spec_0",
-        "pipeline_run_id": "pipe_0",
-        "status": "succeeded",
-        "state_sequence": 2,
-        "disposition": "executed",
-        "cancellation_status": None,
-        "operation_class": "test.Op",
-        "params_json": "{}",
-        "input_refs_json": "null",
-        "compute_backend": "local",
-        "compute_options_json": "{}",
-        "output_roles_json": "[]",
-        "output_types_json": "{}",
-        "total_count": 1,
-        "succeeded_count": 1,
-        "failed_count": 0,
-        "timestamp": datetime(2026, 1, 1, tzinfo=UTC),
-        "duration_seconds": 0.1,
-        "error": None,
-        "metadata": "{}",
-    }
-    terminals = []
-    for index, row in enumerate(rows):
-        terminal = {
-            **defaults,
-            "timestamp": defaults["timestamp"] + timedelta(seconds=index),
-            **row,
-        }
-        if "step_run_id" not in row:
-            terminal["step_run_id"] = (
-                f"{terminal['pipeline_run_id']}:{terminal['step_number']}"
-            )
-        if "step_spec_id" not in row:
-            terminal["step_spec_id"] = (
-                f"{terminal['pipeline_run_id']}:spec:{terminal['step_number']}"
-            )
-        terminals.append(terminal)
-    for terminal in terminals:
-        commit_test_step(
-            delta_root,
-            delta_root.parent / "staging",
-            [terminal],
-            {},
-        )
+from artisan.visualization.graph._styles import render_graph
+from artisan.visualization.graph.macro import _build_macro_graph, _parse_input_refs
 
 
-# Fixtures
+def _ref(number: int, role: str) -> dict[str, object]:
+    return {"source_step": number, "step_run_id": f"attempt-{number}", "role": role}
 
 
-@pytest.fixture
-def empty_delta_root(tmp_path: Path) -> Path:
-    """Initialize a store without step or execution records."""
-    delta_root = tmp_path / "delta"
-    delta_root.mkdir()
-    publish_test_store(str(delta_root), LocalFileSystem())
-    return delta_root
-
-
-@pytest.fixture
-def simple_pipeline(tmp_path: Path) -> Path:
-    """Three-step pipeline: Ingest → Transform → Metrics.
-
-    Step 0 (Ingest): no inputs, outputs [file] (file_ref)
-    Step 1 (Transform): input from step 0/file, outputs [data] (data)
-    Step 2 (Metrics): input from step 1/data, outputs [metrics] (metric)
-    """
-    delta_root = tmp_path / "delta"
-    delta_root.mkdir()
-
-    _write_steps(
-        delta_root,
+def _frame(*, passthrough: bool = False, multiple: bool = False) -> pl.DataFrame:
+    """Supply valid rendering inputs, independently of acceptance authority."""
+    return pl.DataFrame(
         [
             {
-                "step_run_id": "run_0",
-                "step_spec_id": "spec_0",
+                "step_run_id": "attempt-0",
                 "step_number": 0,
                 "step_name": "Ingest",
-                "input_refs_json": "null",
-                "output_roles_json": json.dumps(["file"]),
-                "output_types_json": json.dumps({"file": "file_ref"}),
+                "input_refs_json": "{}",
+                "output_roles_json": '["file"]',
+                "output_types_json": '{"file":"file_ref"}',
             },
             {
-                "step_run_id": "run_1",
-                "step_spec_id": "spec_1",
+                "step_run_id": "attempt-1",
                 "step_number": 1,
-                "step_name": "Transform",
-                "input_refs_json": json.dumps(
-                    {
-                        "input": {
-                            "type": "output_ref",
-                            "source_step": 0,
-                            "role": "file",
-                            "artifact_type": "file_ref",
-                        }
-                    }
+                "step_name": "Filter" if passthrough else "Transform",
+                "input_refs_json": json.dumps({"input": [_ref(0, "file")]}),
+                "output_roles_json": '["data"]',
+                "output_types_json": json.dumps(
+                    {"data": None if passthrough else "csv"}
                 ),
-                "output_roles_json": json.dumps(["data"]),
-                "output_types_json": json.dumps({"data": "csv"}),
             },
             {
-                "step_run_id": "run_2",
-                "step_spec_id": "spec_2",
+                "step_run_id": "attempt-2",
                 "step_number": 2,
-                "step_name": "Metrics",
+                "step_name": "Merge" if multiple else "Metrics",
                 "input_refs_json": json.dumps(
                     {
-                        "input": {
-                            "type": "output_ref",
-                            "source_step": 1,
-                            "role": "data",
-                            "artifact_type": "csv",
-                        }
+                        "input": [_ref(0, "file"), _ref(1, "data")]
+                        if multiple
+                        else [_ref(1, "data")]
                     }
                 ),
-                "output_roles_json": json.dumps(["metrics"]),
-                "output_types_json": json.dumps({"metrics": "metric"}),
+                "output_roles_json": '["metrics"]',
+                "output_types_json": '{"metrics":"metric"}',
             },
-        ],
-    )
-    return delta_root
-
-
-@pytest.fixture
-def passthrough_pipeline(tmp_path: Path) -> Path:
-    """Pipeline with a passthrough step (null output type)."""
-    delta_root = tmp_path / "delta"
-    delta_root.mkdir()
-
-    _write_steps(
-        delta_root,
-        [
-            {
-                "step_run_id": "run_0",
-                "step_spec_id": "spec_0",
-                "step_number": 0,
-                "step_name": "Ingest",
-                "output_roles_json": json.dumps(["file"]),
-                "output_types_json": json.dumps({"file": "file_ref"}),
-            },
-            {
-                "step_run_id": "run_1",
-                "step_spec_id": "spec_1",
-                "step_number": 1,
-                "step_name": "Filter",
-                "input_refs_json": json.dumps(
-                    {
-                        "input": {
-                            "type": "output_ref",
-                            "source_step": 0,
-                            "role": "file",
-                            "artifact_type": "file_ref",
-                        }
-                    }
-                ),
-                "output_roles_json": json.dumps(["passthrough"]),
-                "output_types_json": json.dumps({"passthrough": None}),
-            },
-        ],
-    )
-    return delta_root
-
-
-@pytest.fixture
-def multi_input_pipeline(tmp_path: Path) -> Path:
-    """Pipeline with a step consuming two upstream outputs."""
-    delta_root = tmp_path / "delta"
-    delta_root.mkdir()
-
-    _write_steps(
-        delta_root,
-        [
-            {
-                "step_run_id": "run_0",
-                "step_spec_id": "spec_0",
-                "step_number": 0,
-                "step_name": "Ingest",
-                "output_roles_json": json.dumps(["file"]),
-                "output_types_json": json.dumps({"file": "file_ref"}),
-            },
-            {
-                "step_run_id": "run_1",
-                "step_spec_id": "spec_1",
-                "step_number": 1,
-                "step_name": "Design",
-                "input_refs_json": json.dumps(
-                    {
-                        "input": {
-                            "type": "output_ref",
-                            "source_step": 0,
-                            "role": "file",
-                            "artifact_type": "file_ref",
-                        }
-                    }
-                ),
-                "output_roles_json": json.dumps(["data"]),
-                "output_types_json": json.dumps({"data": "csv"}),
-            },
-            {
-                "step_run_id": "run_2",
-                "step_spec_id": "spec_2",
-                "step_number": 2,
-                "step_name": "Merge",
-                "input_refs_json": json.dumps(
-                    [
-                        {
-                            "type": "output_ref",
-                            "source_step": 0,
-                            "role": "file",
-                            "artifact_type": "file_ref",
-                        },
-                        {
-                            "type": "output_ref",
-                            "source_step": 1,
-                            "role": "data",
-                            "artifact_type": "csv",
-                        },
-                    ]
-                ),
-                "output_roles_json": json.dumps(["merged"]),
-                "output_types_json": json.dumps({"merged": "csv"}),
-            },
-        ],
-    )
-    return delta_root
-
-
-# Tests: _parse_input_refs
-
-
-class TestParseInputRefs:
-    """Tests for the _parse_input_refs helper."""
-
-    def test_dict_format(self) -> None:
-        """Dict-style input_refs produces (source_step, role) tuples."""
-        refs_json = json.dumps(
-            {
-                "data": {
-                    "type": "output_ref",
-                    "source_step": 1,
-                    "role": "data",
-                    "artifact_type": "csv",
-                }
-            }
-        )
-        result = _parse_input_refs(refs_json)
-        assert result == [(1, "data")]
-
-    def test_list_format(self) -> None:
-        """List-style input_refs produces (source_step, role) tuples."""
-        refs_json = json.dumps(
-            [
-                {
-                    "type": "output_ref",
-                    "source_step": 0,
-                    "role": "file",
-                    "artifact_type": "file_ref",
-                },
-                {
-                    "type": "output_ref",
-                    "source_step": 1,
-                    "role": "data",
-                    "artifact_type": "csv",
-                },
-            ]
-        )
-        result = _parse_input_refs(refs_json)
-        assert result == [(0, "file"), (1, "data")]
-
-    def test_literals_skipped(self) -> None:
-        """Literal entries (e.g. Ingest paths) are silently skipped."""
-        refs_json = json.dumps(
-            [
-                {"type": "literal", "value": "/data/input.csv"},
-            ]
-        )
-        result = _parse_input_refs(refs_json)
-        assert result == []
-
-    def test_null_json(self) -> None:
-        """JSON 'null' produces empty list."""
-        assert _parse_input_refs("null") == []
-
-    def test_empty_string(self) -> None:
-        """Empty string produces empty list."""
-        assert _parse_input_refs("") == []
-
-    def test_mixed_dict_with_literal(self) -> None:
-        """Dict with both output_ref and literal values."""
-        refs_json = json.dumps(
-            {
-                "data": {
-                    "type": "output_ref",
-                    "source_step": 0,
-                    "role": "data",
-                    "artifact_type": "csv",
-                },
-                "config": {"type": "literal", "value": "some_value"},
-            }
-        )
-        result = _parse_input_refs(refs_json)
-        assert result == [(0, "data")]
-
-
-# Tests: build_macro_graph
-
-
-class TestBuildMacroGraph:
-    """Tests for build_macro_graph function."""
-
-    def test_returns_digraph(self, simple_pipeline: Path) -> None:
-        """Returns a graphviz.Digraph object."""
-        graph = build_macro_graph(simple_pipeline)
-        assert isinstance(graph, graphviz.Digraph)
-
-    def test_empty_pipeline(self, empty_delta_root: Path) -> None:
-        """Empty delta root produces a graph with no real nodes."""
-        graph = build_macro_graph(empty_delta_root)
-        assert isinstance(graph, graphviz.Digraph)
-        source = graph.source
-        assert "digraph" in source
-
-    def test_has_execution_nodes(self, simple_pipeline: Path) -> None:
-        """Graph contains execution nodes with step numbers and names."""
-        graph = build_macro_graph(simple_pipeline)
-        source = graph.source
-        assert "(0) Ingest" in source
-        assert "(1) Transform" in source
-        assert "(2) Metrics" in source
-
-    def test_has_data_nodes(self, simple_pipeline: Path) -> None:
-        """Graph contains data nodes labelled by output role."""
-        graph = build_macro_graph(simple_pipeline)
-        source = graph.source
-        assert "data_0_file" in source
-        assert "data_1_data" in source
-        assert "data_2_metrics" in source
-
-    def test_has_edges(self, simple_pipeline: Path) -> None:
-        """Graph has directed edges."""
-        graph = build_macro_graph(simple_pipeline)
-        source = graph.source
-        assert "->" in source
-
-    def test_execution_nodes_grey(self, simple_pipeline: Path) -> None:
-        """Execution nodes use grey fill."""
-        graph = build_macro_graph(simple_pipeline)
-        source = graph.source
-        assert "fillcolor=lightgray" in source
-
-    def test_data_nodes_coloured_by_type(self, simple_pipeline: Path) -> None:
-        """Data nodes are coloured with blue shades from the registry palette."""
-        graph = build_macro_graph(simple_pipeline)
-        source = graph.source
-        # All typed data nodes should get a blue shade from the palette
-        assert '"#' in source  # At least one hex color present
-
-    def test_left_to_right_layout(self, simple_pipeline: Path) -> None:
-        """Graph uses LR layout."""
-        graph = build_macro_graph(simple_pipeline)
-        assert "rankdir=LR" in graph.source
-
-    def test_column_ordering(self, simple_pipeline: Path) -> None:
-        """Graph uses anchor nodes for strict column ordering."""
-        graph = build_macro_graph(simple_pipeline)
-        source = graph.source
-        assert "_anchor_exec_" in source
-        assert "style=invis" in source
-
-    def test_pipeline_run_id_excludes_other_runs(self, tmp_path: Path) -> None:
-        """Run-scoped graphs filter before deduplicating shared step numbers."""
-        delta_root = tmp_path / "delta"
-        delta_root.mkdir()
-        _write_steps(
-            delta_root,
-            [
-                {
-                    "pipeline_run_id": "pipe-a",
-                    "step_number": 0,
-                    "step_name": "RunAIngest",
-                },
-                {
-                    "pipeline_run_id": "pipe-a",
-                    "step_number": 1,
-                    "step_name": "RunATransform",
-                },
-                {
-                    "pipeline_run_id": "pipe-b",
-                    "step_number": 0,
-                    "step_name": "RunBIngest",
-                },
-                {
-                    "pipeline_run_id": "pipe-b",
-                    "step_number": 1,
-                    "step_name": "RunBTransform",
-                },
-            ],
-        )
-
-        run_a = build_macro_graph(delta_root, pipeline_run_id="pipe-a").source
-        run_b = build_macro_graph(delta_root, pipeline_run_id="pipe-b").source
-
-        assert "RunAIngest" in run_a
-        assert "RunATransform" in run_a
-        assert "RunBIngest" not in run_a
-        assert "RunBTransform" not in run_a
-        assert "RunBIngest" in run_b
-        assert "RunBTransform" in run_b
-        assert "RunAIngest" not in run_b
-        assert "RunATransform" not in run_b
-
-
-class TestPassthroughStyling:
-    """Tests for passthrough (null output_type) data nodes."""
-
-    def test_passthrough_node_uses_passthrough_colour(
-        self, passthrough_pipeline: Path
-    ) -> None:
-        """Data nodes with null artifact type get passthrough styling."""
-        graph = build_macro_graph(passthrough_pipeline)
-        source = graph.source
-        assert "#E0F0FF" in source  # PASSTHROUGH_STYLE colour
-
-
-class TestMultiInputOperations:
-    """Tests for steps with multiple input references."""
-
-    def test_multiple_edges_into_execution(self, multi_input_pipeline: Path) -> None:
-        """Multi-input step has edges from each source data node."""
-        graph = build_macro_graph(multi_input_pipeline)
-        source = graph.source
-        # Merge (step 2) should receive edges from data_0_file and data_1_data
-        assert "data_0_file" in source
-        assert "data_1_data" in source
-
-        # Count visible edges involving exec_2 (exclude invisible anchor edges)
-        lines = source.split("\n")
-        edges_to_exec_2 = [
-            line
-            for line in lines
-            if "->" in line and "exec_2" in line and "invis" not in line
         ]
-        # Two input edges (data_0_file → exec_2, data_1_data → exec_2)
-        # plus one output edge (exec_2 → data_2_merged)
-        assert len(edges_to_exec_2) == 3
+    )
 
 
-# Tests: render_macro_graph
+@pytest.mark.parametrize(
+    ("encoded", "expected"),
+    [
+        (json.dumps({"data": [_ref(1, "data")]}), [(1, "data", "attempt-1")]),
+        (
+            json.dumps({"data": [_ref(0, "file"), _ref(1, "data")]}),
+            [(0, "file", "attempt-0"), (1, "data", "attempt-1")],
+        ),
+        (
+            json.dumps({"data": [_ref(0, "file")], "config": ["artifact-id"]}),
+            [(0, "file", "attempt-0")],
+        ),
+        (json.dumps({"paths": ["/data/input.csv"]}), []),
+        ("null", []),
+        ("", []),
+    ],
+)
+def test_parse_input_refs_keeps_exact_attempts(
+    encoded: str, expected: list[tuple[int, str, str]]
+) -> None:
+    assert _parse_input_refs(encoded) == expected
 
 
-class TestRenderMacroGraph:
-    """Tests for render_macro_graph function."""
+def test_empty_pipeline_has_no_real_nodes() -> None:
+    graph = _build_macro_graph(_frame().clear())
+    assert isinstance(graph, graphviz.Digraph)
+    assert "digraph" in graph.source
+    assert "exec_0" not in graph.source
 
-    def test_renders_svg(self, simple_pipeline: Path, tmp_path: Path) -> None:
-        """Renders graph to an SVG file."""
-        output_path = tmp_path / "output" / "macro"
-        result = render_macro_graph(str(simple_pipeline), output_path, format="svg")
 
-        assert os.path.exists(result)
-        assert result.endswith(".svg")
+@pytest.mark.parametrize(
+    "expected",
+    [
+        "(0) Ingest",
+        "(1) Transform",
+        "(2) Metrics",
+        "data_0_file",
+        "data_1_data",
+        "data_2_metrics",
+        "->",
+        "fillcolor=lightgray",
+        '"#',
+        "rankdir=LR",
+        "_anchor_exec_",
+        "style=invis",
+    ],
+)
+def test_macro_layout_preserves_nodes_roles_and_columns(expected: str) -> None:
+    assert expected in _build_macro_graph(_frame()).source
 
-    def test_renders_png(self, simple_pipeline: Path, tmp_path: Path) -> None:
-        """Renders graph to a PNG file."""
-        output_path = tmp_path / "output" / "macro"
-        result = render_macro_graph(str(simple_pipeline), output_path, format="png")
 
-        assert os.path.exists(result)
-        assert result.endswith(".png")
-        with open(result, "rb") as f:
-            content = f.read()
-        assert content[:8] == b"\x89PNG\r\n\x1a\n"
+def test_passthrough_node_uses_passthrough_colour() -> None:
+    assert "#E0F0FF" in _build_macro_graph(_frame(passthrough=True)).source
 
-    def test_creates_output_directory(
-        self, simple_pipeline: Path, tmp_path: Path
-    ) -> None:
-        """Creates parent directories if they don't exist."""
-        output_path = tmp_path / "nested" / "deep" / "macro"
-        result = render_macro_graph(str(simple_pipeline), output_path)
 
-        assert os.path.exists(result)
-        assert os.path.exists(os.path.dirname(result))
+def test_multiple_inputs_keep_two_incoming_edges() -> None:
+    lines = _build_macro_graph(_frame(multiple=True)).source.splitlines()
+    assert (
+        len(
+            [
+                line
+                for line in lines
+                if "->" in line and "exec_2" in line and "invis" not in line
+            ]
+        )
+        == 3
+    )
 
-    def test_returns_str(self, simple_pipeline: Path, tmp_path: Path) -> None:
-        """Returns a str path."""
-        output_path = tmp_path / "macro"
-        result = render_macro_graph(str(simple_pipeline), output_path)
-        assert isinstance(result, str)
+
+def test_prior_attempt_reference_never_points_to_current_output() -> None:
+    rows = _frame().with_columns(
+        pl.when(pl.col("step_number") == 0)
+        .then(pl.lit("new-attempt"))
+        .otherwise(pl.col("step_run_id"))
+        .alias("step_run_id")
+    )
+    graph = _build_macro_graph(rows).source
+    assert '"data_0_attempt-0_file" -> exec_1' in graph
+    assert "data_0_file -> exec_1" not in graph
+    assert "file (prior attempt)" in graph
+
+
+@pytest.mark.parametrize("format", ["svg", "png"])
+def test_render_preserves_format_and_creates_directories(
+    tmp_path: Path, format: Literal["svg", "png"]
+) -> None:
+    path = render_graph(
+        _build_macro_graph(_frame()), str(tmp_path / "nested" / "macro"), format
+    )
+    assert isinstance(path, str)
+    assert Path(path).is_file()
+    assert path.endswith(f".{format}")
+    if format == "png":
+        assert Path(path).read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+
+
+def test_public_macro_selects_current_run_and_exact_prior_reference(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "delta"
+    first, _ = commit_inspection_attempt(
+        root,
+        run_id="one",
+        name="old",
+        outputs={"data": []},
+        output_types={"data": "csv"},
+    )
+    commit_inspection_attempt(
+        root,
+        run_id="one",
+        number=1,
+        name="consumer",
+        input_refs={
+            "input": [{"source_step": 0, "step_run_id": first, "role": "data"}]
+        },
+    )
+    commit_inspection_attempt(
+        root,
+        run_id="one",
+        name="new",
+        outputs={"data": []},
+        output_types={"data": "csv"},
+    )
+    commit_inspection_attempt(root, run_id="other", name="unrelated")
+    source = build_macro_graph(str(root), pipeline_run_id="one").source
+    assert "(0) new" in source
+    assert "consumer" in source
+    assert "unrelated" not in source
+    assert f"data_0_{first}_data -> exec_1" in source
+    assert "data_0_data -> exec_1" not in source
+    assert "unrelated" in build_macro_graph(str(root)).source
+
+
+def test_public_macro_masks_previous_success_with_pending_attempt(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "delta"
+    commit_inspection_attempt(root, name="previous")
+    commit_inspection_attempt(root, name="pending", status="pending")
+    source = build_macro_graph(str(root)).source
+    assert "previous" not in source
+    assert "pending" not in source
+
+
+def test_public_render_accepts_initialized_empty_store(tmp_path: Path) -> None:
+    root = tmp_path / "delta"
+    inspection_store(root)
+    output = render_macro_graph(str(root), str(tmp_path / "graph"))
+    assert Path(output).is_file()

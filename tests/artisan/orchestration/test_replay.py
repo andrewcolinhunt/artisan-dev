@@ -1,488 +1,359 @@
-"""Driver preflight rejects incomplete evidence before creating an attempt."""
+"""Public replay preflight preserves trusted code, private values and source ownership."""
 
 from __future__ import annotations
 
 import importlib
 import json
+from collections.abc import Mapping
+from dataclasses import dataclass, replace
+from pathlib import Path
+from typing import cast
 from unittest.mock import Mock
 
 import polars as pl
 import pytest
-from fixtures.reference_ops import ReferenceConsumer
-from fixtures.run_outputs import commit_outputs
-from pydantic import ValidationError
+from fixtures.retained_pipeline import NativePipelineRunner
+from pydantic import BaseModel, Field, SecretStr, ValidationError
 
-from artisan.errors import ArtifactIntegrityError, ArtisanError, StoreIntegrityError
-from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.recording.replay_snapshot import build_replay_snapshot
-from artisan.operations.examples.data_generator import DataGenerator
-from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
-from artisan.schemas.artifact.file_ref import FileRefArtifact
+from artisan.errors import ArtisanError, StoreIntegrityError
+from artisan.execution.recording.commands import CommandRecorder
+from artisan.operations.base import OperationDefinition
+from artisan.operations.examples import DataGenerator
+from artisan.orchestration import PipelineManager
+from artisan.orchestration.curator_replay import prepare_curator_replay
+from artisan.schemas import ArtifactResult, MetricArtifact
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
-from artisan.schemas.operation_config.environments import Environments
-from artisan.utils.hashing import (
-    CacheInputIdentity,
-    compute_content_digest,
-    compute_execution_spec_id,
-    effective_config_payload,
-    serialize_params,
+from artisan.schemas.orchestration.step_lifecycle import StepStatus
+from artisan.storage import ArtifactStore
+from artisan.storage.core.execution_source import (
+    CuratorExecutionSource,
+    read_execution_source,
 )
+from artisan.storage.io.retained_commit import RetainedCommitter
 
 replay = importlib.import_module("artisan.orchestration.replay")
+curator_replay = importlib.import_module("artisan.orchestration.curator_replay")
 
 
-def test_reference_delivery_behavior_requires_replay_compatibility(
-    tmp_path, monkeypatch
-):
-    snapshot, _ = _snapshot(tmp_path, ReferenceConsumer())
-    specs = {
-        "config": ReferenceConsumer.inputs["config"].model_copy(
-            update={"resolve_references": False}
+class PrivateCurator(OperationDefinition):
+    name = "public_replay_private_curator"
+
+    class Params(BaseModel):
+        """Private credential and ordinary configuration.
+
+        Attributes:
+            password: A caller-supplied private credential.
+            count: An ordinary scientific setting.
+        """
+
+        password: SecretStr = Field(validation_alias="supplied_password")
+        count: int = 3
+
+    params: Params
+
+    def execute_curator(
+        self,
+        inputs: Mapping[str, pl.DataFrame],
+        step_number: int,
+        artifact_store: ArtifactStore,
+    ) -> ArtifactResult:
+        result = ArtifactResult()
+        result.add_artifact(
+            "metrics",
+            MetricArtifact.draft(
+                {"value": self.params.count}, "metric.json", step_number
+            ),
+            sources={},
         )
-    }
-    monkeypatch.setattr(ReferenceConsumer, "inputs", specs)
-    with pytest.raises(ArtisanError) as caught:
-        replay._restore_operation(snapshot, ReferenceConsumer, {}, False)
-    assert caught.value.code == "replay_code_changed"
+        return result
 
 
-def test_reference_operation_version_changes_cache_identity(monkeypatch):
-    operation = ReferenceConsumer()
-    before = compute_execution_spec_id(
-        operation.name, {}, {}, effective_config_payload(operation)
-    )
-    monkeypatch.setattr(ReferenceConsumer, "version", "2")
-    after = compute_execution_spec_id(
-        operation.name, {}, {}, effective_config_payload(operation)
-    )
-    assert before != after
+@dataclass(frozen=True)
+class Case:
+    committer: RetainedCommitter
+    source: CuratorExecutionSource
+    execution_id: str
+    pipeline_run_id: str
+    root: Path
 
-
-@pytest.mark.parametrize("reference", ["a" * 32, "malformed", "corrupt"])
-def test_replay_rejects_unavailable_typed_reference_before_attempt(
-    tmp_path, monkeypatch, reference
-):
-    dependencies = []
-    if reference == "corrupt":
-        path = tmp_path / "source.txt"
-        path.write_bytes(b"original")
-        dependency = FileRefArtifact.draft(
-            path=str(path),
-            content_hash=compute_content_digest(b"original"),
-            size_bytes=8,
-            step_number=0,
+    @property
+    def snapshot(self) -> ReplaySnapshot:
+        return ReplaySnapshot.model_validate_json(
+            cast("str", self.source.execution_record["replay_snapshot"])
         )
-        dependency.finalize()
-        dependencies.append(dependency)
-        reference = dependency.artifact_id
-    config = ExecutionConfigArtifact.draft(
-        {"source": {"$artifact": reference}}, "config.json", step_number=0
-    )
-    config.finalize()
-    snapshot, runtime = _snapshot(tmp_path, ReferenceConsumer())
-    commit_outputs(runtime.delta_root, artifacts=[config, *dependencies])
-    if dependencies:
-        path.write_bytes(b"modified")
-    snapshot = snapshot.model_copy(
-        update={
-            "inputs": {
-                "config": [
-                    CacheInputIdentity("config", None, 0, "config", config.artifact_id)
-                ]
-            }
-        }
-    )
-    monkeypatch.setattr(replay, "_source_snapshot", lambda *args: snapshot)
-    manager = Mock(side_effect=AssertionError("preflight created an attempt"))
-    monkeypatch.setattr(replay, "PipelineManager", manager)
-    with pytest.raises(ArtifactIntegrityError):
-        replay.replay_execution(
-            "source", runtime=runtime, operation_class=ReferenceConsumer
+
+
+@pytest.fixture
+def case(tmp_path: Path) -> Case:
+    with PipelineManager.create(
+        "replay-preflight",
+        str(tmp_path / "replay-store"),
+        str(tmp_path / "source-staging"),
+        working_root=str(tmp_path / "source-work"),
+    ) as manager:
+        result = manager.run(
+            PrivateCurator,
+            params={"supplied_password": "source-private-value"},
+            step_runner=NativePipelineRunner(manager.committer),
         )
-    manager.assert_not_called()
-    assert not (tmp_path / "debug").exists()
+        assert result.status == StepStatus.SUCCEEDED, result.error
+        staged = manager.executions[0].handles[0].result()
+        assert staged.execution_run_id is not None
+        source = read_execution_source(manager.committer, staged.execution_run_id)
+        assert isinstance(source, CuratorExecutionSource)
+    return Case(
+        manager.committer,
+        source,
+        staged.execution_run_id,
+        manager.config.pipeline_run_id,
+        tmp_path,
+    )
 
 
-def _snapshot(tmp_path, operation=None):
-    operation = operation or DataGenerator()
-    runtime = RuntimeEnvironment(
-        delta_root=str(tmp_path / "delta"),
-        staging_root=str(tmp_path / "debug" / "staging"),
-        working_root=str(tmp_path / "debug" / "work"),
-        files_root=str(tmp_path / "debug" / "files"),
-        failure_logs_root=str(tmp_path / "debug" / "logs"),
+def _prepare(case: Case) -> OperationDefinition:
+    return prepare_curator_replay(
+        case.committer,
+        case.execution_id,
+        operation_class=PrivateCurator,
+        configuration_replacements={"/params/password": "replacement-private-value"},
+        runtime_replacements={},
+    ).operation
+
+
+def _replace_optional_snapshot(
+    case: Case, monkeypatch: pytest.MonkeyPatch, encoded: str | None
+) -> None:
+    source = replace(
+        case.source,
+        execution_record={**case.source.execution_record, "replay_snapshot": encoded},
     )
-    spec = compute_execution_spec_id(
-        operation.name,
-        {},
-        serialize_params(operation),
-        effective_config_payload(operation),
+    monkeypatch.setattr(curator_replay, "read_execution_source", lambda *_: source)
+
+
+def test_typed_private_replacement_runs_without_disclosure(case: Case) -> None:
+    restored = _prepare(case)
+    assert isinstance(restored, PrivateCurator)
+    assert restored.params.password.get_secret_value() == "replacement-private-value"
+    outcome = replay.replay_execution(
+        case.execution_id,
+        delta_root=case.committer.delta_root,
+        operation=PrivateCurator,
+        step_runner=NativePipelineRunner(case.committer),
+        configuration_replacements={"/params/password": "replacement-private-value"},
+        working_root=case.root / "diagnostic-work",
+        staging_root=str(case.root / "diagnostic-staging"),
     )
-    unit = ExecutionUnit(operation=operation, execution_spec_id=spec, step_number=7)
-    return build_replay_snapshot(unit, runtime, {}), runtime
+    assert outcome.step_result.status == StepStatus.SUCCEEDED
+    assert outcome.execution_run_id != case.execution_id
+    assert "replacement-private-value" not in outcome.model_dump_json()
+    for document in Path(case.committer.delta_root).rglob("*.json"):
+        assert "replacement-private-value" not in document.read_text()
 
 
 @pytest.mark.parametrize("bad", [None, "{}", "not-json"])
-def test_malformed_snapshot_integrity_error_has_no_unsafe_cause(
-    tmp_path, monkeypatch, bad
-):
-    snapshot, runtime = _snapshot(tmp_path)
-    monkeypatch.setattr(
-        replay,
-        "_read_executions",
-        lambda runtime: pl.DataFrame(
-            {
-                "execution_run_id": ["id"],
-                "execution_spec_id": [snapshot.source.execution_spec_id],
-                "replay_snapshot": [bad],
-            }
-        ),
-    )
-    with pytest.raises(StoreIntegrityError) as caught:
-        replay.replay_execution("id", runtime=runtime)
-    assert caught.value.__cause__ is None
-    assert not (tmp_path / "debug").exists()
-
-
-def test_unavailable_manual_snapshot_rejected_before_manager(tmp_path, monkeypatch):
-    _, runtime = _snapshot(tmp_path)
-    monkeypatch.setattr(
-        replay,
-        "_read_executions",
-        lambda runtime: pl.DataFrame(
-            {
-                "execution_run_id": ["id"],
-                "execution_spec_id": ["spec"],
-                "replay_snapshot": [
-                    ReplaySnapshot.unavailable(
-                        "manual_interactive_commit"
-                    ).model_dump_json()
-                ],
-            }
-        ),
-    )
+def test_malformed_optional_snapshot_is_sanitized_before_attempt(
+    case: Case, monkeypatch: pytest.MonkeyPatch, bad: str | None
+) -> None:
+    _replace_optional_snapshot(case, monkeypatch, bad)
     manager = Mock(side_effect=AssertionError("preflight created an attempt"))
     monkeypatch.setattr(replay, "PipelineManager", manager)
-    with pytest.raises(ArtisanError, match="manual_interactive_commit") as caught:
-        replay.replay_execution("id", runtime=runtime)
-    assert caught.value.code == "replay_evidence_unavailable"
+    with pytest.raises((ArtisanError, StoreIntegrityError)) as caught:
+        replay.replay_execution(
+            case.execution_id,
+            delta_root=case.committer.delta_root,
+            operation=PrivateCurator,
+            step_runner=NativePipelineRunner(case.committer),
+        )
+    assert caught.value.__cause__ is None
     manager.assert_not_called()
 
 
-def test_duplicate_execution_id_rejected(tmp_path, monkeypatch):
-    snapshot, runtime = _snapshot(tmp_path)
-    monkeypatch.setattr(
-        replay,
-        "_read_executions",
-        lambda runtime: pl.DataFrame(
-            {
-                "execution_run_id": ["id", "id"],
-                "replay_snapshot": [snapshot.model_dump_json()] * 2,
-            }
-        ),
+def test_unavailable_snapshot_remains_unavailable(
+    case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _replace_optional_snapshot(
+        case,
+        monkeypatch,
+        ReplaySnapshot.unavailable("capture_failed").model_dump_json(),
     )
-    with pytest.raises(StoreIntegrityError, match="Duplicate"):
-        replay._source_snapshot("id", runtime)
+    with pytest.raises(ArtisanError) as caught:
+        _prepare(case)
+    assert caught.value.code == "replay_evidence_unavailable"
 
 
-def test_explicit_environment_replacements_decode_before_concrete_validation(
-    tmp_path, monkeypatch
-):
-    operation = DataGenerator(
-        environments=Environments(
-            local=LocalEnvironmentSpec(env={"TOKEN": "old-token"})
-        )
-    )
-    snapshot, _ = _snapshot(tmp_path, operation)
-    pointer = "/environments/local/env/TOKEN"
+@pytest.mark.parametrize("field", ["step_run_id", "execution_spec_id"])
+def test_optional_snapshot_must_match_required_source(
+    case: Case, monkeypatch: pytest.MonkeyPatch, field: str
+) -> None:
+    payload = case.snapshot.model_dump(mode="json")
+    payload["source"][field] = "f" * 32
+    _replace_optional_snapshot(case, monkeypatch, json.dumps(payload))
+    with pytest.raises(StoreIntegrityError, match="required source admission"):
+        _prepare(case)
+
+
+def test_nested_defaults_cannot_be_silently_added(
+    case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    payload = case.snapshot.model_dump(mode="json")
+    del payload["operation"]["configuration"]["params"]["count"]
+    _replace_optional_snapshot(case, monkeypatch, json.dumps(payload))
     with pytest.raises(ArtisanError) as caught:
-        replay._restore_operation(snapshot, None, {}, False)
-    assert caught.value.code == "replay_replacement_required"
-    monkeypatch.setenv("FRESH_TOKEN", '"null"')
-    restored, redactor = replay._restore_operation(
-        snapshot, None, {pointer: "FRESH_TOKEN"}, False
-    )
-    assert restored.environments.local.env["TOKEN"] == "null"
-    assert "null" not in redactor.sanitize("received null")
-    monkeypatch.setenv("FRESH_TOKEN", "42")
-    with pytest.raises(ArtisanError) as caught:
-        replay._restore_operation(snapshot, None, {pointer: "FRESH_TOKEN"}, False)
+        _prepare(case)
     assert caught.value.code == "replay_configuration_invalid"
-    assert "42" not in json.dumps(caught.value.to_dict())
-
-
-def test_nested_defaults_never_silently_added(tmp_path):
-    snapshot, _ = _snapshot(tmp_path)
-    payload = snapshot.model_dump(mode="json")
-    del payload["operation"]["configuration"]["params"]["rows_per_file"]
-    changed = ReplaySnapshot.model_validate(payload)
-    with pytest.raises(ArtisanError, match="defaults"):
-        replay._restore_operation(changed, None, {}, True)
-
-
-def test_changed_code_requires_explicit_allowance(tmp_path):
-    snapshot, _ = _snapshot(tmp_path)
-    payload = snapshot.model_dump(mode="json")
-    payload["operation"]["identity"]["module_digest"] = "old"
-    changed = ReplaySnapshot.model_validate(payload)
-    with pytest.raises(ArtisanError) as caught:
-        replay._restore_operation(changed, None, {}, False)
-    assert caught.value.code == "replay_code_changed"
-    restored, _ = replay._restore_operation(changed, None, {}, True)
-    assert restored == DataGenerator()
-
-
-def test_diagnostic_roots_fresh_and_caller_failure_root_retained(tmp_path):
-    snapshot, runtime = _snapshot(tmp_path)
-    one = replay._diagnostic_runtime(runtime, snapshot)
-    two = replay._diagnostic_runtime(runtime, snapshot)
-    assert one.failure_logs_root.startswith(runtime.failure_logs_root + "/")
-    assert one.working_root != two.working_root
-    assert one.preserve_working
-    assert one.preserve_staging
-    with pytest.raises(ArtisanError, match="overlap"):
-        replay._diagnostic_runtime(
-            runtime.model_copy(update={"working_root": runtime.delta_root}), snapshot
-        )
-
-
-def test_malformed_group_length_is_validation_error(tmp_path):
-    snapshot, _ = _snapshot(tmp_path)
-    payload = snapshot.model_dump(mode="json")
-    payload["inputs"] = {
-        "data": [
-            {
-                "role": "data",
-                "group_id": "group",
-                "position": 0,
-                "artifact_type": "csv",
-                "artifact_id": "a" * 32,
-            }
-        ]
-    }
-    payload["group_ids"] = []
-    with pytest.raises(ValidationError, match="group IDs"):
-        ReplaySnapshot.model_validate(payload)
-
-
-def test_structured_and_scalar_replacement_values_are_redacted():
-    from artisan.execution.recording.commands import CommandRecorder
-
-    redactor = CommandRecorder()
-    redactor.add_sensitive_data(
-        {"key": "fresh-object-secret", "codes": [784219, False]}
-    )
-    assert redactor.sanitize_data(
-        {"credentials": {"key": "fresh-object-secret", "codes": [784219, False]}}
-    ) == {"credentials": {"key": "<redacted>", "codes": ["<redacted>", "<redacted>"]}}
-
-
-def test_snapshot_owner_must_match_physical_execution_row(tmp_path, monkeypatch):
-    snapshot, runtime = _snapshot(tmp_path)
-    row = {
-        "execution_run_id": "id",
-        "execution_spec_id": snapshot.source.execution_spec_id,
-        "replay_snapshot": snapshot.model_dump_json(),
-        "origin_step_number": 99,
-        "step_run_id": "other-step",
-        "compute_backend": "local",
-        "operation_name": "data_generator",
-    }
-    monkeypatch.setattr(replay, "_read_executions", lambda runtime: pl.DataFrame([row]))
-    with pytest.raises(StoreIntegrityError, match="owner"):
-        replay._source_snapshot("id", runtime)
 
 
 @pytest.mark.parametrize(
     "pointer", ["/params/missing/value", "/params/count", "/params/~2invalid"]
 )
-def test_snapshot_replacement_must_own_redacted_value(tmp_path, pointer):
-    snapshot, _ = _snapshot(tmp_path)
-    payload = snapshot.model_dump(mode="json")
+def test_replacement_slot_requires_an_existing_redacted_value(
+    case: Case, pointer: str
+) -> None:
+    payload = case.snapshot.model_dump(mode="json")
     payload["required_replacements"] = [{"pointer": pointer}]
     with pytest.raises(ValidationError, match="redacted"):
         ReplaySnapshot.model_validate(payload)
 
 
-def test_unknown_and_wrong_identifier_are_structured(tmp_path, monkeypatch):
-    _, runtime = _snapshot(tmp_path)
-    monkeypatch.setattr(
-        replay,
-        "_read_executions",
-        lambda runtime: pl.DataFrame(schema={"execution_run_id": pl.String}),
-    )
-    monkeypatch.setattr(
-        replay,
-        "read_committed",
-        lambda *args, **kwargs: pl.DataFrame(
-            {"step_run_id": ["step-id"], "pipeline_run_id": ["run-id"]}
-        ),
-    )
-    for identifier in ("unknown", "step-id", "run-id"):
-        with pytest.raises(ArtisanError) as caught:
-            replay._source_snapshot(identifier, runtime)
-        assert caught.value.code == "replay_execution_not_found"
-        if identifier != "unknown":
-            assert "not an execution-unit" in str(caught.value)
-
-
-def test_missing_operation_module_is_dependency_error(tmp_path, monkeypatch):
-    snapshot, _ = _snapshot(tmp_path)
-    monkeypatch.setattr(
-        replay,
-        "resolve_operation",
-        Mock(side_effect=ImportError("private import detail")),
-    )
-    with pytest.raises(ArtisanError) as caught:
-        replay._restore_operation(snapshot, None, {}, False)
-    assert caught.value.code == "replay_dependency_unavailable"
-    assert "private import detail" not in json.dumps(caught.value.to_dict())
-
-
-def test_runner_rejection_precedes_attempt_and_diagnostic_roots(tmp_path, monkeypatch):
-    snapshot, runtime = _snapshot(tmp_path)
-    monkeypatch.setattr(replay, "_source_snapshot", lambda *args: snapshot)
-    monkeypatch.setattr(replay, "_verify_artifacts", lambda *args: None)
-    runner = Mock(name="runner")
-    runner.validate_operation.side_effect = ValueError("Unsupported operation")
-    monkeypatch.setattr(replay, "resolve_runner", lambda value: runner)
-    manager = Mock(side_effect=AssertionError("preflight created an attempt"))
-    monkeypatch.setattr(replay, "PipelineManager", manager)
-    with pytest.raises(ArtisanError) as caught:
-        replay.replay_execution("id", runtime=runtime)
-    assert caught.value.code == "replay_dependency_unavailable"
-    runner.validate_operation.assert_called_once()
-    manager.assert_not_called()
-    assert not (tmp_path / "debug").exists()
-
-
-def test_complete_association_evidence_requires_explicit_empty_owner(tmp_path):
-    snapshot, _ = _snapshot(tmp_path)
-    payload = snapshot.model_dump(mode="json")
-    payload["operation"]["behavior"]["inputs"] = {
-        "dataset": {"with_associated": ["metric"]}
-    }
-    payload["inputs"] = {
-        "dataset": [
-            {
-                "role": "dataset",
-                "group_id": None,
-                "position": 0,
-                "artifact_type": "csv",
-                "artifact_id": "a" * 32,
-            }
-        ]
-    }
-    with pytest.raises(ValidationError, match="every declared primary/type"):
-        ReplaySnapshot.model_validate(payload)
-    payload["associated"] = [
-        {"primary_id": "a" * 32, "artifact_type": "metric", "artifact_ids": []}
-    ]
-    assert ReplaySnapshot.model_validate(payload).associated_complete
-
-
-@pytest.mark.parametrize("allow_code_change", [False, True])
-@pytest.mark.parametrize("module", ["untrusted.module", "trusted_application_evil.ops"])
-def test_recorded_operation_module_never_authorizes_import(
-    tmp_path, monkeypatch, module, allow_code_change
-):
-    from artisan.errors import ApplicationRegistrationError
-
-    snapshot, _ = _snapshot(tmp_path)
-    payload = snapshot.model_dump(mode="json")
-    payload["operation"]["identity"]["module"] = module
-    changed = ReplaySnapshot.model_validate(payload)
-    resolver = Mock(side_effect=AssertionError("untrusted import"))
-    monkeypatch.setattr(replay, "resolve_operation", resolver)
-    with pytest.raises(ApplicationRegistrationError, match="not authorized"):
-        replay._restore_operation(
-            changed, None, {}, allow_code_change, ("trusted_application",)
-        )
-    resolver.assert_not_called()
-
-
-def test_explicit_operation_class_does_not_import_recorded_module(
-    tmp_path, monkeypatch
-):
-    snapshot, _ = _snapshot(tmp_path)
-    resolver = Mock(side_effect=AssertionError("unexpected import"))
-    monkeypatch.setattr(replay, "resolve_operation", resolver)
-    operation, _ = replay._restore_operation(snapshot, DataGenerator, {}, False)
-    assert operation == DataGenerator()
-    resolver.assert_not_called()
-
-
-def test_replay_requirements_checked_without_importing_store_names(
-    tmp_path, monkeypatch
-):
-    from artisan.errors import ApplicationRegistrationError
-
-    snapshot, runtime = _snapshot(tmp_path)
-    source = snapshot.source.model_copy(
-        update={"application_modules": ("untrusted_requirement",)}
-    )
-    snapshot = snapshot.model_copy(update={"source": source})
-    monkeypatch.setattr(replay, "_source_snapshot", lambda *_: snapshot)
-    restore = Mock(side_effect=AssertionError("restoration before requirements"))
-    monkeypatch.setattr(replay, "_restore_operation", restore)
-    with pytest.raises(ApplicationRegistrationError, match="untrusted_requirement"):
-        replay.replay_execution("id", runtime=runtime, operation_class=DataGenerator)
-    restore.assert_not_called()
-
-
-def test_snapshot_application_evidence_distinguishes_empty_from_historical_absence(
-    tmp_path,
-):
-    snapshot, _ = _snapshot(tmp_path)
-    assert snapshot.source.application_modules == ()
-    payload = snapshot.model_dump(mode="json")
-    del payload["source"]["application_modules"]
-    assert ReplaySnapshot.model_validate(payload).source.application_modules is None
-
-
-@pytest.mark.parametrize("allow_code_change", [False, True])
-def test_historical_ready_snapshot_missing_public_env_cannot_add_defaults(
-    tmp_path, allow_code_change
-):
-    snapshot, _ = _snapshot(tmp_path)
-    payload = snapshot.model_dump(mode="json")
-    del payload["operation"]["configuration"]["environments"]["local"]["public_env"]
-    changed = ReplaySnapshot.model_validate(payload)
-    with pytest.raises(ArtisanError, match="defaults"):
-        replay._restore_operation(changed, None, {}, allow_code_change)
-
-
-def test_invalid_public_env_replacement_has_sanitized_nested_error_before_attempt(
-    tmp_path, monkeypatch
-):
-    operation = DataGenerator(
-        environments=Environments(
-            local=LocalEnvironmentSpec(
-                env={"ROOT": "initial-sensitive-alias"}, public_env=("ROOT",)
-            )
-        )
-    )
-    snapshot, runtime = _snapshot(tmp_path, operation)
-    payload = snapshot.model_dump(mode="json")
-    payload["operation"]["configuration"]["environments"]["local"]["env"]["ROOT"] = None
-    pointer = "/environments/local/env/ROOT"
-    payload["required_replacements"] = [
-        {"pointer": pointer, "suggested_environment": None}
-    ]
-    changed = ReplaySnapshot.model_validate(payload)
-    monkeypatch.setenv("REPLAY_VALUE", "https://user:nested-sensitive-value@host/path")
-    monkeypatch.setattr(replay, "_source_snapshot", lambda *args: changed)
-    manager = Mock(side_effect=AssertionError("preflight created an attempt"))
+@pytest.mark.parametrize(
+    "replacement", [{}, {"/params/password": "private", "/params/count": 8}]
+)
+def test_replacement_keys_are_exact_before_any_new_owner(
+    case: Case, replacement: dict[str, object], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    manager = Mock(side_effect=AssertionError("replacement validation created owner"))
     monkeypatch.setattr(replay, "PipelineManager", manager)
     with pytest.raises(ArtisanError) as caught:
         replay.replay_execution(
-            "source-id", runtime=runtime, replacement_env={pointer: "REPLAY_VALUE"}
+            case.execution_id,
+            delta_root=case.committer.delta_root,
+            operation=PrivateCurator,
+            step_runner=NativePipelineRunner(case.committer),
+            configuration_replacements=replacement,
+        )
+    assert caught.value.code == "replay_replacement_required"
+    manager.assert_not_called()
+
+
+def test_invalid_typed_replacement_has_no_private_validation_cause(case: Case) -> None:
+    value = {"private": "replacement-must-not-appear"}
+    with pytest.raises(ArtisanError) as caught:
+        prepare_curator_replay(
+            case.committer,
+            case.execution_id,
+            operation_class=PrivateCurator,
+            configuration_replacements={"/params/password": value},
+            runtime_replacements={},
         )
     assert caught.value.code == "replay_configuration_invalid"
-    assert "nested-sensitive-value" not in str(caught.value)
-    assert "nested-sensitive-value" not in repr(caught.value)
-    assert "nested-sensitive-value" not in json.dumps(caught.value.to_dict())
+    assert "replacement-must-not-appear" not in json.dumps(caught.value.to_dict())
     assert caught.value.__cause__ is None
-    manager.assert_not_called()
+
+
+def test_explicit_live_root_does_not_import_its_recorded_module(
+    case: Case, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    original = importlib.import_module
+
+    def checked_import(name: str, package: str | None = None) -> object:
+        assert name != PrivateCurator.__module__
+        return original(name, package)
+
+    monkeypatch.setattr(importlib, "import_module", checked_import)
+    assert isinstance(_prepare(case), PrivateCurator)
+
+
+@pytest.mark.parametrize("allow_code_change", [False, True])
+def test_recorded_module_cannot_change_required_code_authority(
+    case: Case, monkeypatch: pytest.MonkeyPatch, allow_code_change: bool
+) -> None:
+    payload = case.snapshot.model_dump(mode="json")
+    payload["operation"]["identity"]["module"] = "untrusted.application.ops"
+    _replace_optional_snapshot(case, monkeypatch, json.dumps(payload))
+    with pytest.raises(StoreIntegrityError, match="required source admission"):
+        prepare_curator_replay(
+            case.committer,
+            case.execution_id,
+            operation_class=PrivateCurator,
+            configuration_replacements={"/params/password": "private"},
+            runtime_replacements={},
+            allow_code_change=allow_code_change,
+        )
+
+
+@pytest.mark.parametrize("identifier", ["unknown", "step", "pipeline"])
+def test_nonexecution_selectors_are_structured_not_new_attempts(
+    case: Case, identifier: str
+) -> None:
+    identity = {
+        "unknown": "missing-execution",
+        "step": case.source.admission.record.step_run_id,
+        "pipeline": case.pipeline_run_id,
+    }[identifier]
+    with pytest.raises(ArtisanError) as caught:
+        replay.replay_execution(
+            identity,
+            delta_root=case.committer.delta_root,
+            operation=PrivateCurator,
+            step_runner=NativePipelineRunner(case.committer),
+        )
+    assert caught.value.code == "replay_execution_not_found"
+
+
+def test_omitted_remote_runner_never_silently_selects_local(case: Case) -> None:
+    with pytest.raises(ArtisanError, match="configured provider") as caught:
+        replay.replay_execution(
+            case.execution_id,
+            delta_root=case.committer.delta_root,
+            operation=PrivateCurator,
+        )
+    assert caught.value.code == "replay_dependency_unavailable"
+
+
+@pytest.mark.parametrize("which", ["working", "staging"])
+def test_replay_roots_cannot_overlap_managed_store(case: Case, which: str) -> None:
+    arguments = (
+        {"working_root": Path(case.committer.files_root)}
+        if which == "working"
+        else {"staging_root": case.committer.delta_root}
+    )
+    with pytest.raises(ValueError, match="separate"):
+        replay.replay_execution(
+            case.execution_id,
+            delta_root=case.committer.delta_root,
+            operation=PrivateCurator,
+            step_runner=NativePipelineRunner(case.committer),
+            **arguments,
+        )
+
+
+def test_live_root_is_required_before_opening_store(tmp_path: Path) -> None:
+    path = tmp_path / "absent-store"
+    with pytest.raises(ArtisanError, match="already imported"):
+        replay.replay_execution(
+            "unknown", delta_root=str(path), operation="untrusted.ops.Root"
+        )
+    assert not path.exists()
+
+
+def test_wrong_curator_root_cannot_be_replaced_by_supplied_nested_definition(
+    case: Case,
+) -> None:
+    with pytest.raises(ArtisanError):
+        replay.replay_execution(
+            case.execution_id,
+            delta_root=case.committer.delta_root,
+            operation=DataGenerator,
+            definitions=(PrivateCurator,),
+            step_runner=NativePipelineRunner(case.committer),
+        )
+
+
+def test_structured_and_scalar_replacement_values_are_redacted() -> None:
+    recorder = CommandRecorder()
+    values = {"key": "fresh-object-secret", "codes": [784219, False]}
+    recorder.add_sensitive_data(values)
+    assert recorder.sanitize_data(values) == {
+        "key": "<redacted>",
+        "codes": ["<redacted>", "<redacted>"],
+    }

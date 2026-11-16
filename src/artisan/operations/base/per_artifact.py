@@ -2,7 +2,7 @@
 
 Operations whose ``preprocess()`` returns per-artifact lists must wrap them
 in ``PerArtifact(...)``. The framework slices a ``PerArtifact`` value once
-per artifact in ``_split_prepared_inputs``; raw lists pass through as shared
+per artifact in ``split_prepared_inputs``; raw lists pass through as shared
 data regardless of length.
 """
 

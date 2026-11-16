@@ -5,41 +5,30 @@ from __future__ import annotations
 from pathlib import Path
 from types import SimpleNamespace
 
-import polars as pl
-from fixtures.store_format import commit_test_tables, publish_test_store
+from fixtures.retained_inspection import commit_inspection_attempt
+from fixtures.store_format import publish_test_store
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.schemas.enums import TablePath
-from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA
+from artisan.schemas import CSVArtifact
 
-A, B, C = "a" * 32, "b" * 32, "c" * 32
+_CHAIN = tuple(
+    CSVArtifact.draft(
+        f"value\n{index}\n".encode(), f"chain-{index}.csv", index
+    ).finalize()
+    for index in range(3)
+)
+A, B, C = (artifact.artifact_id for artifact in _CHAIN)
 
 
 def _seed_edges(root: Path, pairs: list[tuple[str, str]]) -> None:
-    n = len(pairs)
-    commit_test_tables(
-        str(root),
-        str(root / "staging"),
-        LocalFileSystem(),
-        {
-            TablePath.ARTIFACT_EDGES.value: pl.DataFrame(
-                {
-                    "execution_run_id": ["run"] * n,
-                    "source_artifact_id": [p[0] for p in pairs],
-                    "target_artifact_id": [p[1] for p in pairs],
-                    "source_artifact_type": ["csv"] * n,
-                    "target_artifact_type": ["csv"] * n,
-                    "source_role": ["input"] * n,
-                    "target_role": ["output"] * n,
-                    "group_id": [None] * n,
-                    "step_boundary": [True] * n,
-                },
-                schema=ARTIFACT_EDGES_SCHEMA,
-            )
-        },
-        step_run_id="seed-provenance-edges",
-        operation_name="seed_provenance",
-    )
+    assert pairs == [(A, B), (B, C)]
+    for index, artifact in enumerate(_CHAIN):
+        commit_inspection_attempt(
+            root,
+            number=index,
+            outputs={"data": [artifact]},
+            inputs={} if not index else {"source": [_CHAIN[index - 1]]},
+        )
 
 
 class TestProvenanceTool:
@@ -49,8 +38,8 @@ class TestProvenanceTool:
         result = invoke(app, "artisan_get_provenance_graph", {"artifact_id": C})
         assert result["direction"] == "backward"
         assert result["edges"]["items"] == [
-            {"source_artifact_id": A, "target_artifact_id": B},
             {"source_artifact_id": B, "target_artifact_id": C},
+            {"source_artifact_id": A, "target_artifact_id": B},
         ]
         assert result["traversal_truncated"] is False
 
@@ -67,7 +56,9 @@ class TestProvenanceTool:
         ]
         assert result["traversal_truncated"] is True
 
-    def test_missing_table_degrades_to_empty(self, make_app, invoke, tmp_path) -> None:
+    def test_valid_empty_store_returns_no_edges(
+        self, make_app, invoke, tmp_path
+    ) -> None:
         publish_test_store(str(tmp_path), LocalFileSystem())
         app = make_app(delta_root=tmp_path)
         result = invoke(app, "artisan_get_provenance_graph", {"artifact_id": A})

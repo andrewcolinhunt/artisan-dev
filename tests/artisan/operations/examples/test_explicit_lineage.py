@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from fixtures.csv import make_csv
 
+from artisan.operations.base import OperationDefinition
 from artisan.operations.examples.csv_head import CsvHead
 from artisan.operations.examples.data_transformer import (
     DataTransformer,
@@ -20,10 +20,10 @@ from artisan.operations.examples.slow_transformer import (
     SlowTransformer,
 )
 from artisan.operations.examples.wait_tool import WaitTool
-from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas import (
     CSVArtifact,
     ExecuteInput,
+    FrozenInputContext,
     PostprocessInput,
     PreprocessInput,
 )
@@ -54,10 +54,13 @@ def _datasets(directory: Path) -> list[CSVArtifact]:
         (SequentialSlowTransformer(params={"duration": 0}), "dataset", 1),
     ],
 )
+@pytest.mark.parametrize("repeated", [False, True], ids=["distinct", "repeated"])
 def test_function_records_preserve_parents_with_duplicate_names(
-    tmp_path: Path, operation, role: str, variants: int
+    tmp_path: Path, operation, role: str, variants: int, repeated: bool
 ) -> None:
     sources = _datasets(tmp_path / "inputs")
+    if repeated:
+        sources.append(sources[0])
     execute_dir = tmp_path / "execute"
     execute_dir.mkdir()
     prepared = operation.preprocess(
@@ -68,6 +71,8 @@ def test_function_records_preserve_parents_with_duplicate_names(
     raw = operation.execute_function(
         ExecuteInput(inputs=prepared, execute_dir=str(execute_dir))
     )
+    if "created_files" in raw:
+        assert len(set(raw["created_files"])) == len(sources) * variants
     result = operation.postprocess(
         PostprocessInput(
             memory_outputs=json.loads(json.dumps(raw)),
@@ -75,6 +80,7 @@ def test_function_records_preserve_parents_with_duplicate_names(
             input_artifacts={"dataset": sources},
             step_number=1,
             postprocess_dir=str(tmp_path / "post"),
+            _context=FrozenInputContext("example-lineage", {"dataset": sources}),
         )
     )
     assert len(result.artifacts[role]) == len(sources) * variants
@@ -83,6 +89,9 @@ def test_function_records_preserve_parents_with_duplicate_names(
         (mapping.draft_index, mapping.source_role, mapping.source_artifact_id)
         for mapping in result.lineage[role]
     ] == [(index, "dataset", artifact_id) for index, artifact_id in enumerate(expected)]
+    assert [mapping.source_input_index for mapping in result.lineage[role]] == [
+        index for index in range(len(sources)) for _ in range(variants)
+    ]
     assert all(
         artifact.original_name.startswith("shared_")
         for artifact in result.artifacts[role]
@@ -90,39 +99,40 @@ def test_function_records_preserve_parents_with_duplicate_names(
 
 
 @pytest.mark.parametrize(
-    ("operation", "role", "suffix", "module"),
+    ("operation", "role", "suffix"),
     [
-        (CsvHead(), "dataset", "head", "csv_head"),
-        (WaitTool(), "output", "waited", "wait_tool"),
+        (CsvHead(), "dataset", "head"),
+        (WaitTool(), "output", "waited"),
     ],
 )
-def test_command_postprocess_calls_matcher_and_declares_exact_parents(
-    tmp_path: Path, operation, role: str, suffix: str, module: str
+def test_command_postprocess_preserves_repeated_occurrences_and_input_order(
+    tmp_path: Path, operation: OperationDefinition, role: str, suffix: str
 ) -> None:
-    sources = _datasets(tmp_path / "inputs")
+    sources = _datasets(tmp_path / "inputs") * 6
     outputs = []
-    for source in reversed(sources):
-        output = tmp_path / f"{source.artifact_id}_{suffix}.csv"
-        output.write_text("value\n1\n")
+    for index in reversed(range(len(sources))):
+        output = tmp_path / f"{index}_{suffix}.csv"
+        output.write_text(f"value\n{index}\n")
         outputs.append(str(output))
-    with patch(
-        f"artisan.operations.examples.{module}.match_outputs_to_inputs_by_stem",
-        wraps=match_outputs_to_inputs_by_stem,
-    ) as matcher:
-        result = operation.postprocess(
-            PostprocessInput(
-                memory_outputs=None,
-                file_outputs=outputs,
-                input_artifacts={"dataset": sources},
-                step_number=1,
-                postprocess_dir=str(tmp_path / "post"),
-            )
+    result = operation.postprocess(
+        PostprocessInput(
+            memory_outputs=None,
+            file_outputs=outputs,
+            input_artifacts={"dataset": sources},
+            step_number=1,
+            postprocess_dir=str(tmp_path / "post"),
+            _context=FrozenInputContext("example-lineage", {"dataset": sources}),
         )
-    matcher.assert_called_once()
+    )
     assert [mapping.source_artifact_id for mapping in result.lineage[role]] == [
-        source.artifact_id for source in reversed(sources)
+        source.artifact_id for source in sources
+    ]
+    assert [mapping.source_input_index for mapping in result.lineage[role]] == list(
+        range(len(sources))
+    )
+    assert [artifact.content for artifact in result.artifacts[role]] == [
+        f"value\n{index}\n".encode() for index in range(len(sources))
     ]
     assert [artifact.original_name for artifact in result.artifacts[role]] == [
-        f"shared_{suffix}",
-        f"shared_{suffix}",
+        f"shared_{suffix}" for _ in sources
     ]

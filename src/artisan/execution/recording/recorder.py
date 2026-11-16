@@ -13,10 +13,13 @@ from __future__ import annotations
 import logging
 import os
 from collections import deque
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
+from fsspec import AbstractFileSystem
 
 from artisan.errors import StoreIntegrityError
 from artisan.execution.recording.commands import sanitize_diagnostic
@@ -28,7 +31,12 @@ from artisan.execution.recording.parquet_writer import StagingResult
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.execution.command_record import CommandRecording
+from artisan.schemas.execution.curator_carriers import CuratorCarrierInventory
+from artisan.schemas.execution.delivery_diagnostics import MAX_DIAGNOSTIC_BYTES
 from artisan.schemas.execution.replay import ReplaySnapshot
+from artisan.storage.core.curator_view import CuratorView
+from artisan.storage.io.curator_carriers import CuratorCarrierStager
+from artisan.storage.io.publication import publish_immutable_bytes
 from artisan.storage.io.worker_seal import EXECUTION_SEAL_FILENAME
 from artisan.utils.path import shard_uri, uri_join
 
@@ -40,6 +48,17 @@ from artisan.utils.log_paths import failure_log_relative_path
 logger = logging.getLogger(__name__)
 
 _MAX_TOOL_OUTPUT_CHARS = 500_000
+
+
+def curator_carrier_stager(
+    context: ExecutionContext, staging_path: str
+) -> CuratorCarrierStager | None:
+    """Capture external bytes only for the admitted curator recording path."""
+    if not isinstance(context.artifact_store._view, CuratorView):
+        return None
+    return CuratorCarrierStager(
+        staging_path, context.fs, files_root=context.artifact_store.files_root
+    )
 
 
 def execution_is_sealed(execution_context: ExecutionContext) -> bool:
@@ -55,14 +74,30 @@ def execution_is_sealed(execution_context: ExecutionContext) -> bool:
     )
 
 
+@contextmanager
+def _curator_carrier_inventory(
+    context: ExecutionContext, staging_path: str
+) -> Iterator[CuratorCarrierInventory | None]:
+    """Keep eager snapshots only when their execution may have been sealed."""
+    stager = curator_carrier_stager(context, staging_path)
+    try:
+        yield None if stager is None else stager.finish()
+    except Exception as error:
+        try:
+            if stager is not None and not execution_is_sealed(context):
+                stager.abort()
+        except Exception as cleanup:
+            error.add_note(sanitize_diagnostic(f"Carrier cleanup failed: {cleanup}"))
+        raise
+
+
 def error_envelope_dict(exc: BaseException) -> dict[str, Any] | None:
     """Return the ArtisanError envelope dict for a caught failure.
 
     Reads ``exc`` directly, or its one-level ``__cause__`` (matching
     ``ArtisanError.to_dict``'s cause depth), so a re-parented
-    ``ExternalToolError`` or the tool-endpoint client's ``ArtisanError``
-    wrapped in a private ``_ExecuteFailure`` still yields its structured
-    code. Returns ``None`` for an unstructured failure — the caller then
+    ``ExternalToolError`` still yields its structured code. Scientific
+    markers preserve this payload before clearing the original exception cause. Returns ``None`` for an unstructured failure — the caller then
     persists only the error string, and ``inspect_failures`` degrades to
     that string plus the failure-log pointer.
 
@@ -217,30 +252,33 @@ def record_execution_success(
         inputs=inputs,
         outputs=output_ids,
     )
-    _stage_execution(
-        command_recording=command_recording,
-        replay_snapshot=replay_snapshot,
-        replay_of_execution_run_id=replay_of_execution_run_id,
-        execution_run_id=execution_context.execution_run_id,
-        execution_spec_id=execution_context.execution_spec_id,
-        operation=execution_context.operation,
-        operation_name=execution_context.operation_name,
-        step_number=execution_context.step_number,
-        execution_edges=execution_edges,
-        staging_path=staging_path,
-        fs=fs,
-        success=True,
-        error=None,
-        timestamp_start=execution_context.timestamp_start,
-        timestamp_end=timestamp_end,
-        worker_id=execution_context.worker_id,
-        params=params,
-        compute_backend=execution_context.compute_backend,
-        result_metadata=result_metadata,
-        user_overrides=user_overrides,
-        tool_output=sanitize_diagnostic(tool_output),
-        step_run_id=execution_context.step_run_id,
-    )
+    with _curator_carrier_inventory(execution_context, staging_path) as inventory:
+        _stage_execution(
+            command_recording=command_recording,
+            replay_snapshot=replay_snapshot,
+            replay_of_execution_run_id=replay_of_execution_run_id,
+            execution_run_id=execution_context.execution_run_id,
+            execution_spec_id=execution_context.execution_spec_id,
+            operation=execution_context.operation,
+            operation_name=execution_context.operation_name,
+            step_number=execution_context.step_number,
+            execution_edges=execution_edges,
+            staging_path=staging_path,
+            fs=fs,
+            success=True,
+            error=None,
+            timestamp_start=execution_context.timestamp_start,
+            timestamp_end=timestamp_end,
+            worker_id=execution_context.worker_id,
+            params=params,
+            compute_backend=execution_context.compute_backend,
+            result_metadata=result_metadata,
+            user_overrides=user_overrides,
+            tool_output=sanitize_diagnostic(tool_output),
+            step_run_id=execution_context.step_run_id,
+            curator_cache_proof=execution_context.curator_cache_proof,
+            curator_carriers=inventory,
+        )
     return StagingResult(
         success=True,
         staging_path=staging_path,
@@ -315,29 +353,32 @@ def record_passthrough(
         inputs=inputs,
         outputs=passthrough,
     )
-    _stage_execution(
-        command_recording=command_recording,
-        replay_snapshot=replay_snapshot,
-        replay_of_execution_run_id=replay_of_execution_run_id,
-        execution_run_id=execution_context.execution_run_id,
-        execution_spec_id=execution_context.execution_spec_id,
-        operation=execution_context.operation,
-        operation_name=execution_context.operation_name,
-        step_number=execution_context.step_number,
-        execution_edges=execution_edges,
-        staging_path=staging_path,
-        fs=fs,
-        success=True,
-        error=None,
-        timestamp_start=execution_context.timestamp_start,
-        timestamp_end=timestamp_end,
-        worker_id=execution_context.worker_id,
-        params=params,
-        compute_backend=execution_context.compute_backend,
-        result_metadata=result_metadata,
-        user_overrides=user_overrides,
-        step_run_id=execution_context.step_run_id,
-    )
+    with _curator_carrier_inventory(execution_context, staging_path) as inventory:
+        _stage_execution(
+            command_recording=command_recording,
+            replay_snapshot=replay_snapshot,
+            replay_of_execution_run_id=replay_of_execution_run_id,
+            execution_run_id=execution_context.execution_run_id,
+            execution_spec_id=execution_context.execution_spec_id,
+            operation=execution_context.operation,
+            operation_name=execution_context.operation_name,
+            step_number=execution_context.step_number,
+            execution_edges=execution_edges,
+            staging_path=staging_path,
+            fs=fs,
+            success=True,
+            error=None,
+            timestamp_start=execution_context.timestamp_start,
+            timestamp_end=timestamp_end,
+            worker_id=execution_context.worker_id,
+            params=params,
+            compute_backend=execution_context.compute_backend,
+            result_metadata=result_metadata,
+            user_overrides=user_overrides,
+            step_run_id=execution_context.step_run_id,
+            curator_cache_proof=execution_context.curator_cache_proof,
+            curator_carriers=inventory,
+        )
     all_passthrough_ids = [aid for ids in passthrough.values() for aid in ids]
     return StagingResult(
         success=True,
@@ -356,13 +397,15 @@ def _write_failure_log(
     compute_backend: str,
     error: str,
     tool_output: str | None = None,
+    *,
+    fs: AbstractFileSystem,
 ) -> None:
-    """Write a human-readable failure log file.
+    """Publish a bounded immutable human-readable failure log.
 
     No-op if failure_logs_root is None. Best-effort — never raises.
 
     Args:
-        failure_logs_root: Root directory for failure logs.
+        failure_logs_root: Root directory or URI for failure logs.
         execution_run_id: Immutable execution attempt ID.
         timestamp_start: Timezone-aware source execution start time.
         operation_name: Name of the operation that failed.
@@ -370,16 +413,15 @@ def _write_failure_log(
         compute_backend: Resolved step-runner name.
         error: Full error string (traceback).
         tool_output: Captured tool stdout/stderr.
+        fs: Captured filesystem used for the configured log root.
     """
     if failure_logs_root is None:
         return
     try:
-        log_file = os.path.join(
-            str(failure_logs_root),
+        log_file = uri_join(
+            failure_logs_root,
             failure_log_relative_path(execution_run_id, timestamp_start),
         )
-        os.makedirs(os.path.dirname(log_file), exist_ok=True)
-
         sections = [
             "=== Execution Failure Log ===",
             f"Run ID:    {execution_run_id}",
@@ -396,14 +438,19 @@ def _write_failure_log(
             tail = "\n".join(tool_output.splitlines()[-100:])
             sections.extend(["", "=== Tool Output (last 100 lines) ===", tail])
 
-        with open(log_file, "x") as f:
-            f.write("\n".join(sections))
-    except FileExistsError:
-        return
-    except Exception:
-        logger.debug(
-            "Failed to write failure log for %s", execution_run_id, exc_info=True
-        )
+        encoded = "\n".join(sections).encode("utf-8")
+        if len(encoded) > MAX_DIAGNOSTIC_BYTES:
+            cut = b"\n[truncated]"
+            prefix = encoded[: MAX_DIAGNOSTIC_BYTES - len(cut)]
+            encoded = prefix.decode("utf-8", errors="ignore").encode("utf-8") + cut
+        publish_immutable_bytes(fs, log_file, encoded)
+    except Exception as failure:
+        with suppress(Exception):
+            logger.debug(
+                "Failed to write failure log for %s (%s)",
+                execution_run_id,
+                type(failure).__name__,
+            )
 
 
 def record_execution_failure(
@@ -503,6 +550,7 @@ def record_execution_failure(
             error_envelope=error_envelope,
         )
         _write_failure_log(
+            fs=fs,
             failure_logs_root=failure_logs_root,
             execution_run_id=execution_context.execution_run_id,
             timestamp_start=execution_context.timestamp_start,

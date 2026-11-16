@@ -176,7 +176,7 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
         cls,
         content: dict[str, Any],
         original_name: str,
-        step_number: int,
+        step_number: int | None = None,
         metadata: dict[str, Any] | None = None,
     ) -> ExecutionConfigArtifact:
         """Create a draft from a config dict.
@@ -184,7 +184,7 @@ class ExecutionConfigArtifact(JsonContentMixin, Artifact):
         Args:
             content: Config key-value pairs (JSON-serializable).
             original_name: Human-readable filename; extensions are stored separately.
-            step_number: Pipeline step number.
+            step_number: Pipeline step number, or None for a standalone draft.
             metadata: Optional metadata dict.
 
         Returns:

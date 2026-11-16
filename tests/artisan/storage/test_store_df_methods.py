@@ -1,284 +1,101 @@
-"""Tests for ArtifactStore DataFrame query methods.
-
-Tests cover:
-1. provenance.load_edges_df with step scoping
-2. load_metrics_df with binary content
-"""
+"""DataFrame queries preserve filtering, binary content and empty schemas."""
 
 from __future__ import annotations
 
-import json
-
 import polars as pl
-from fixtures.logical_commit_store import commit_test_tables as _commit_tables
+from fixtures.retained_inspection import commit_inspection_attempt
 
-from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.enums import TablePath
+from artisan.schemas import CSVArtifact, MetricArtifact
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.storage.core.table_schemas import ARTIFACT_EDGES_SCHEMA, get_schema
+from artisan.storage.io.retained_commit import RetainedCommitter
 
 
-def _write_index(root, fs, entries, storage_options) -> None:
-    _commit_tables(
+def _store(committer: RetainedCommitter) -> ArtifactStore:
+    return ArtifactStore(
+        committer.delta_root,
+        fs=committer.fs,
+        storage_options=committer.storage_options,
+        files_root=committer.files_root,
+    )
+
+
+def test_load_edges_df_filters_both_endpoints_and_exact_execution(
+    backend_committer: RetainedCommitter,
+) -> None:
+    root = backend_committer.delta_root
+    source = CSVArtifact.draft(b"x\n1\n", "source.csv", 1).finalize()
+    metric = MetricArtifact.draft({"score": 0.95}, "score.json", 5).finalize()
+    commit_inspection_attempt(
+        root, committer=backend_committer, number=1, outputs={"data": [source]}
+    )
+    _, execution = commit_inspection_attempt(
         root,
-        fs,
-        storage_options,
+        committer=backend_committer,
+        number=5,
+        inputs={"data": [source]},
+        outputs={"metric": [metric]},
+    )
+    provenance = _store(backend_committer).provenance
+    result = provenance.load_edges_df(
+        1, 5, include_target_type=True, include_roles=True
+    )
+    assert result.select(
+        "source_artifact_id", "target_artifact_id", "target_artifact_type"
+    ).to_dicts() == [
         {
-            TablePath.ARTIFACT_INDEX.value: pl.DataFrame(
-                entries, schema=get_schema(TablePath.ARTIFACT_INDEX)
-            )
-        },
+            "source_artifact_id": source.artifact_id,
+            "target_artifact_id": metric.artifact_id,
+            "target_artifact_type": "metric",
+        }
+    ]
+    assert result["source_role"].to_list() == ["data"]
+    assert result["target_role"].to_list() == ["metric"]
+    assert provenance.load_edges_df(1, 3).is_empty()
+    assert provenance.load_edges_df(2, 5).is_empty()
+    assert provenance.load_edges_df(1, 5, execution_ids={execution}).height == 1
+    assert provenance.load_edges_df(1, 5, execution_ids=set()).is_empty()
+
+
+def test_load_metrics_df_returns_only_requested_binary_payloads(
+    backend_committer: RetainedCommitter,
+) -> None:
+    metrics = [
+        MetricArtifact.draft({"value": index}, f"metric-{index}.json", 1).finalize()
+        for index in range(2)
+    ]
+    commit_inspection_attempt(
+        backend_committer.delta_root,
+        committer=backend_committer,
+        number=1,
+        outputs={"metrics": metrics},
     )
+    store = _store(backend_committer)
+    result = store.load_metrics_df([metrics[0].artifact_id, "f" * 32])
+    assert result.to_dicts() == [
+        {"artifact_id": metrics[0].artifact_id, "content": metrics[0].content}
+    ]
+    assert result.schema == {"artifact_id": pl.String, "content": pl.Binary}
+    assert store.load_metrics_df([item.artifact_id for item in metrics]).height == 2
+    assert store.load_metrics_df([]).is_empty()
 
 
-def _write_edges(root, fs, edges, storage_options) -> None:
-    _commit_tables(
-        root,
-        fs,
-        storage_options,
-        {
-            TablePath.ARTIFACT_EDGES.value: pl.DataFrame(
-                edges, schema=ARTIFACT_EDGES_SCHEMA
-            )
-        },
+def test_empty_dataframe_queries_keep_declared_columns(
+    backend_committer: RetainedCommitter,
+) -> None:
+    store = _store(backend_committer)
+    assert store.load_metrics_df(["f" * 32]).schema == {
+        "artifact_id": pl.String,
+        "content": pl.Binary,
+    }
+    edges = store.provenance.load_edges_df(
+        0, 10, include_roles=True, include_target_type=True
     )
-
-
-def _write_metrics(root, fs, rows, storage_options) -> None:
-    _commit_tables(
-        root,
-        fs,
-        storage_options,
-        {"artifacts/metrics": pl.DataFrame(rows, schema=MetricArtifact.POLARS_SCHEMA)},
-    )
-
-
-class TestLoadProvenanceEdgesDf:
-    """Tests for provenance.load_edges_df via ArtifactStore."""
-
-    def test_returns_edges_within_step_range(self, backend_fs):
-        """Edges with both endpoints in range are returned."""
-        fs, storage, root = backend_fs
-        opts = storage.delta_storage_options()
-        _write_index(
-            root,
-            fs,
-            [
-                {
-                    "artifact_id": "A",
-                    "artifact_type": "csv",
-                    "origin_step_number": 1,
-                    "metadata": "{}",
-                },
-                {
-                    "artifact_id": "B",
-                    "artifact_type": "metric",
-                    "origin_step_number": 2,
-                    "metadata": "{}",
-                },
-            ],
-            opts,
-        )
-        _write_edges(
-            root,
-            fs,
-            [
-                {
-                    "execution_run_id": "run1",
-                    "source_artifact_id": "A",
-                    "target_artifact_id": "B",
-                    "source_artifact_type": "csv",
-                    "target_artifact_type": "metric",
-                    "source_role": "data",
-                    "target_role": "metric",
-                    "group_id": None,
-                    "step_boundary": True,
-                }
-            ],
-            opts,
-        )
-
-        store = ArtifactStore(root, fs=fs, storage_options=opts)
-        result = store.provenance.load_edges_df(step_min=1, step_max=2)
-
-        assert len(result) == 1
-        assert result["source_artifact_id"][0] == "A"
-        assert result["target_artifact_id"][0] == "B"
-
-    def test_filters_out_edges_outside_range(self, backend_fs):
-        """Edges where an endpoint is outside [step_min, step_max] are excluded."""
-        fs, storage, root = backend_fs
-        opts = storage.delta_storage_options()
-        _write_index(
-            root,
-            fs,
-            [
-                {
-                    "artifact_id": "A",
-                    "artifact_type": "csv",
-                    "origin_step_number": 1,
-                    "metadata": "{}",
-                },
-                {
-                    "artifact_id": "B",
-                    "artifact_type": "metric",
-                    "origin_step_number": 5,
-                    "metadata": "{}",
-                },
-            ],
-            opts,
-        )
-        _write_edges(
-            root,
-            fs,
-            [
-                {
-                    "execution_run_id": "run1",
-                    "source_artifact_id": "A",
-                    "target_artifact_id": "B",
-                    "source_artifact_type": "csv",
-                    "target_artifact_type": "metric",
-                    "source_role": "data",
-                    "target_role": "metric",
-                    "group_id": None,
-                    "step_boundary": True,
-                }
-            ],
-            opts,
-        )
-
-        store = ArtifactStore(root, fs=fs, storage_options=opts)
-        result = store.provenance.load_edges_df(step_min=1, step_max=3)
-
-        assert result.is_empty()
-        assert result.columns == ["source_artifact_id", "target_artifact_id"]
-
-    def test_empty_when_tables_empty(self, backend_fs):
-        """Return an empty frame when the required tables are empty."""
-        fs, storage, root = backend_fs
-        store = ArtifactStore(
-            root, fs=fs, storage_options=storage.delta_storage_options()
-        )
-        result = store.provenance.load_edges_df(step_min=0, step_max=10)
-
-        assert result.is_empty()
-        assert result.columns == ["source_artifact_id", "target_artifact_id"]
-
-
-class TestLoadMetricsDf:
-    """Tests for load_metrics_df."""
-
-    def test_returns_metrics_by_id(self, backend_fs):
-        """Loads matching metrics with binary content."""
-        fs, storage, root = backend_fs
-        opts = storage.delta_storage_options()
-        content = json.dumps({"score": 0.95}).encode("utf-8")
-        _write_metrics(
-            root,
-            fs,
-            [
-                {
-                    "artifact_id": "m1",
-                    "origin_step_number": 1,
-                    "content": content,
-                    "original_name": "score",
-                    "extension": ".json",
-                    "metadata": "{}",
-                }
-            ],
-            opts,
-        )
-
-        store = ArtifactStore(root, fs=fs, storage_options=opts)
-        result = store.load_metrics_df(["m1"])
-
-        assert len(result) == 1
-        assert result["artifact_id"][0] == "m1"
-        assert result["content"][0] == content
-
-    def test_filters_to_requested_ids(self, backend_fs):
-        """Only returns metrics matching the requested IDs."""
-        fs, storage, root = backend_fs
-        opts = storage.delta_storage_options()
-        _write_metrics(
-            root,
-            fs,
-            [
-                {
-                    "artifact_id": "m1",
-                    "origin_step_number": 1,
-                    "content": b'{"a": 1}',
-                    "original_name": "a",
-                    "extension": ".json",
-                    "metadata": "{}",
-                },
-                {
-                    "artifact_id": "m2",
-                    "origin_step_number": 1,
-                    "content": b'{"b": 2}',
-                    "original_name": "b",
-                    "extension": ".json",
-                    "metadata": "{}",
-                },
-            ],
-            opts,
-        )
-
-        store = ArtifactStore(root, fs=fs, storage_options=opts)
-        result = store.load_metrics_df(["m1"])
-
-        assert len(result) == 1
-        assert result["artifact_id"][0] == "m1"
-
-    def test_empty_when_no_ids(self, backend_fs):
-        """Returns empty DataFrame for empty ID list."""
-        fs, storage, root = backend_fs
-        store = ArtifactStore(
-            root, fs=fs, storage_options=storage.delta_storage_options()
-        )
-        result = store.load_metrics_df([])
-
-        assert result.is_empty()
-        assert result.columns == ["artifact_id", "content"]
-
-    def test_empty_when_table_empty(self, backend_fs):
-        """Return an empty frame when the metrics table is empty."""
-        fs, storage, root = backend_fs
-        store = ArtifactStore(
-            root, fs=fs, storage_options=storage.delta_storage_options()
-        )
-        result = store.load_metrics_df(["m1"])
-
-        assert result.is_empty()
-        assert result.columns == ["artifact_id", "content"]
-
-
-class TestStoreDfMethodsBackendParametrized:
-    """Test metric frame loading through committed storage on both backends."""
-
-    def test_load_metrics_df_round_trip(self, backend_fs):
-        """Write a metrics Delta table and load it back via ArtifactStore."""
-        fs, storage, root = backend_fs
-        delta_root = f"{root}/delta"
-        storage_options = storage.delta_storage_options()
-
-        artifact = MetricArtifact.draft({"score": 0.95}, "score.json", 1)
-        artifact.finalize()
-        content = artifact.content
-        metrics_df = pl.DataFrame(
-            [artifact.to_row()],
-            schema=MetricArtifact.POLARS_SCHEMA,
-        )
-        _commit_tables(
-            delta_root,
-            fs,
-            storage_options,
-            {"artifacts/metrics": metrics_df},
-        )
-
-        store = ArtifactStore(delta_root, fs=fs, storage_options=storage_options)
-        result = store.load_metrics_df([artifact.artifact_id])
-
-        assert len(result) == 1
-        assert result["artifact_id"][0] == artifact.artifact_id
-        assert result["content"][0] == content
+    assert edges.is_empty()
+    assert edges.columns == [
+        "source_artifact_id",
+        "target_artifact_id",
+        "target_artifact_type",
+        "source_role",
+        "target_role",
+        "group_id",
+    ]

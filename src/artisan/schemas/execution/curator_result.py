@@ -18,18 +18,20 @@ from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
+from artisan.schemas.provenance.occurrence import InputReference
 
 
 class ArtifactResult(BaseModel):
     """Result from operations that create new artifacts.
 
-    These operations produce draft artifacts from their inputs. Drafts have
-    ``artifact_id=None`` and are finalized by the framework before staging.
+    Operation postprocessing returns drafts with ``artifact_id=None``. The
+    framework finalizes them before staging; an invocation session returns this
+    same result type with finalized artifacts and explicit lineage intact.
 
     Attributes:
         success: Whether execution completed successfully.
         error: Error message if success is False.
-        artifacts: Output role -> draft artifact list.
+        artifacts: Output role -> ordered artifact list.
             e.g. {"data": [CSVArtifact(...), ...]}
         lineage: Explicit parent declarations keyed by output role. Every emitted
             role must be present; root roles explicitly contain an empty list.
@@ -58,15 +60,15 @@ class ArtifactResult(BaseModel):
         role: str,
         artifact: Artifact,
         *,
-        sources: dict[str, list[str | int]],
+        sources: dict[str, list[str | int | InputReference]],
     ) -> int:
         """Append an artifact and its declared parents atomically.
 
         Args:
             role: Output role receiving the artifact.
             artifact: Artifact to append without finalization or renaming.
-            sources: Parent role to input IDs (strings) or sibling-output
-                indices (integers). All references must use the same kind.
+            sources: Parent role to input IDs, precise input references, or
+                sibling-output indices. Input and output kinds cannot mix.
                 An empty dictionary explicitly declares a root.
 
         Returns:
@@ -85,16 +87,36 @@ class ArtifactResult(BaseModel):
             raise TypeError(msg)
         index = len(self.artifacts.get(role, []))
         mappings: list[LineageMapping] = []
-        kinds: set[type] = set()
+        kinds: set[str] = set()
         for source_role, references in sources.items():
             if not references:
                 msg = f"Source role {source_role!r} has no references"
                 raise ValueError(msg)
             for reference in references:
-                if type(reference) not in (str, int):
-                    msg = "Sources must be input IDs or integer output indices"
+                if not isinstance(reference, InputReference) and type(
+                    reference
+                ) not in (
+                    str,
+                    int,
+                ):
+                    msg = "Sources must be input IDs, precise input references, or integer output indices"
                     raise ValueError(msg)
-                kinds.add(type(reference))
+                if isinstance(reference, InputReference):
+                    if reference.role != source_role:
+                        msg = "Precise input reference belongs to another source role"
+                        raise ValueError(msg)
+                    kinds.add("inputs")
+                    mappings.append(
+                        LineageMapping(
+                            draft_index=index,
+                            source_role=source_role,
+                            source_artifact_id=reference.artifact_id,
+                            source_input_index=reference.index,
+                            source_invocation=reference.invocation_id,
+                        )
+                    )
+                    continue
+                kinds.add("inputs" if isinstance(reference, str) else "outputs")
                 mappings.append(
                     LineageMapping(
                         draft_index=index,

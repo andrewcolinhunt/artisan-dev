@@ -9,6 +9,7 @@ from contextvars import copy_context
 from unittest.mock import Mock, patch
 
 import pytest
+from fixtures.commands import IdentityCommandEnvironment
 from pydantic import ValidationError
 
 from artisan.execution.recording import commands as commands_mod
@@ -23,12 +24,6 @@ from artisan.schemas.execution.command_record import (
     CommandRecord,
     CommandRecording,
 )
-from artisan.schemas.operation_config.environment_spec import (
-    ApptainerEnvironmentSpec,
-    DockerEnvironmentSpec,
-    LocalEnvironmentSpec,
-    PixiEnvironmentSpec,
-)
 from artisan.utils.command_supervisor import managed_invocation
 from artisan.utils.configuration_secrets import COMMAND_ATTACHMENT_ENV as ATTACHMENT_ENV
 from artisan.utils.external_tools import ExternalToolError, run_command
@@ -38,13 +33,13 @@ def _record(invocation: int = 0, sequence: int = 0, arg: str = "tool") -> Comman
     return CommandRecord(
         invocation=invocation,
         sequence=sequence,
-        location="endpoint",
+        location="local",
         requested_argv=[arg],
         argv=[arg],
         cwd="/worker",
         tool=None,
         environment={
-            "type": "LocalEnvironmentSpec",
+            "type": "IdentityCommandEnvironment",
             "identity": {},
             "variable_names": [],
         },
@@ -75,7 +70,7 @@ def test_partial_inherited_attachment_is_sensitive_without_environment_hints(
         monkeypatch.delenv(name, raising=False)
     monkeypatch.setenv(ATTACHMENT_ENV[1], secret)
     recorder = CommandRecorder()
-    environment = LocalEnvironmentSpec(env={ATTACHMENT_ENV[1]: secret})
+    environment = IdentityCommandEnvironment(env={ATTACHMENT_ENV[1]: secret})
     attempt = recorder.begin(environment, ["tool", secret], ["tool", secret], None, ())
     attempt.finish("succeeded", 0)
     record = recorder.snapshot().commands[0]
@@ -91,7 +86,7 @@ def test_recorder_learns_new_scope_capability_even_through_public_alias(monkeypa
     secret = "new-scope-capability"
     monkeypatch.setattr(commands_mod, "attachment_sensitive_values", lambda: (secret,))
     assert recorder.sanitize(f"failure: {secret}") == "failure: <redacted>"
-    environment = LocalEnvironmentSpec(
+    environment = IdentityCommandEnvironment(
         env={"PUBLIC_ALIAS": secret}, public_env=("PUBLIC_ALIAS",)
     )
     argv = ["tool", secret]
@@ -134,7 +129,7 @@ def test_managed_invocation_records_joined_thread_commands(capture_first):
             results = [
                 threads.submit(
                     run_command,
-                    LocalEnvironmentSpec(),
+                    IdentityCommandEnvironment(),
                     [sys.executable, "-c", "print('joined')"],
                 )
                 for _ in range(2)
@@ -151,7 +146,7 @@ def test_managed_invocation_records_joined_thread_commands(capture_first):
 
 @pytest.mark.parametrize("stream", [False, True])
 def test_actual_boundary_and_failure_outcomes(tmp_path, stream):
-    environment = LocalEnvironmentSpec()
+    environment = IdentityCommandEnvironment()
     with capture_commands() as recorder, invocation_scope():
         run_command(
             environment,
@@ -181,7 +176,7 @@ def test_log_open_and_post_exit_write_boundaries(tmp_path):
     with capture_commands() as recorder:
         with pytest.raises(FileNotFoundError):
             run_command(
-                LocalEnvironmentSpec(),
+                IdentityCommandEnvironment(),
                 [sys.executable, "-c", "pass"],
                 stream_output=True,
                 log_path=str(tmp_path / "missing" / "log"),
@@ -189,7 +184,7 @@ def test_log_open_and_post_exit_write_boundaries(tmp_path):
         assert recorder.snapshot() == CommandRecording.empty()
         with pytest.raises(IsADirectoryError):
             run_command(
-                LocalEnvironmentSpec(),
+                IdentityCommandEnvironment(),
                 [sys.executable, "-c", "pass"],
                 log_path=str(tmp_path),
             )
@@ -209,7 +204,7 @@ def test_interruption_finalizes_and_preserves_cleanup(stream):
         ),
         pytest.raises(KeyboardInterrupt),
     ):
-        run_command(LocalEnvironmentSpec(), ["tool"], stream_output=stream)
+        run_command(IdentityCommandEnvironment(), ["tool"], stream_output=stream)
     process.interrupt.assert_called_once()
     assert isinstance(process.interrupt.call_args.args[0], KeyboardInterrupt)
     process.dispose.assert_called_once()
@@ -221,7 +216,7 @@ def test_redaction_preserves_successful_live_result_and_failure_diagnostics(
 ):
     monkeypatch.setenv("CUSTOM_AUTH_TOKEN", "inherited-secret")
     secret = "opaque-secret"
-    environment = LocalEnvironmentSpec(env={"INNOCENT": "custom-secret"})
+    environment = IdentityCommandEnvironment(env={"INNOCENT": "custom-secret"})
     argv = [
         sys.executable,
         "-c",
@@ -255,7 +250,7 @@ def test_standalone_sensitive_values_redact_only_diagnostics():
     secret = "standalone-opaque"
     with pytest.raises(ExternalToolError) as failed:
         run_command(
-            LocalEnvironmentSpec(),
+            IdentityCommandEnvironment(),
             [
                 sys.executable,
                 "-c",
@@ -268,26 +263,12 @@ def test_standalone_sensitive_values_redact_only_diagnostics():
     assert secret not in " ".join(failed.value.command)
 
 
-@pytest.mark.parametrize(
-    ("environment", "identity"),
-    [
-        (LocalEnvironmentSpec(venv_path="/venv"), {"venv_path": "/venv"}),
-        (
-            DockerEnvironmentSpec(
-                image="example:1", env={"CONFIG": "container-secret"}
-            ),
-            {"image": "example:1"},
-        ),
-        (ApptainerEnvironmentSpec(image="image.sif"), {"image": "image.sif"}),
-        (
-            PixiEnvironmentSpec(
-                pixi_environment="tools", manifest_path="/project/pixi.toml"
-            ),
-            {"pixi_environment": "tools", "manifest_path": "/project/pixi.toml"},
-        ),
-    ],
-)
-def test_environment_wrapping_and_identity(environment, identity):
+def test_environment_wrapping_records_exact_adapter_argv():
+    class WrappedCommand(IdentityCommandEnvironment):
+        def wrap_command(self, command: list[str], cwd: str | None = None) -> list[str]:
+            return ["test-launcher", "CONFIG=" + self.env["CONFIG"], *command]
+
+    environment = WrappedCommand(env={"CONFIG": "container-secret"})
     process = Mock(returncode=0, launch_seconds=0.01)
     process.communicate.return_value = ("", "")
     with (
@@ -302,13 +283,16 @@ def test_environment_wrapping_and_identity(environment, identity):
     ):
         run_command(environment, ["tool", "input"], cwd="/work")
     command = recorder.snapshot().commands[0]
-    assert command.environment.identity == identity
-    assert command.environment.type == type(environment).__name__
+    assert command.environment.identity == {}
+    assert command.environment.type == "WrappedCommand"
     assert command.requested_argv == ["tool", "input"]
-    assert "container-secret" not in recorder.snapshot().model_dump_json()
-    if isinstance(environment, DockerEnvironmentSpec):
-        assert "CONFIG=container-secret" in launch.call_args.args[1]
-        assert "CONFIG=<redacted>" in command.argv
+    assert launch.call_args.args[1] == [
+        "test-launcher",
+        "CONFIG=container-secret",
+        "tool",
+        "input",
+    ]
+    assert command.argv == ["test-launcher", "CONFIG=<redacted>", "tool", "input"]
 
 
 def test_structured_arguments_uri_capabilities_and_short_secrets():
@@ -322,7 +306,7 @@ def test_structured_arguments_uri_capabilities_and_short_secrets():
         "text https://host/p?q=cap trailing",
     ]
     recorder = CommandRecorder()
-    attempt = recorder.begin(LocalEnvironmentSpec(), argv, argv, "/work", ())
+    attempt = recorder.begin(IdentityCommandEnvironment(), argv, argv, "/work", ())
     attempt.finish("succeeded", 0)
     encoded = recorder.snapshot().model_dump_json()
     for value in (
@@ -337,7 +321,7 @@ def test_structured_arguments_uri_capabilities_and_short_secrets():
     assert "KEY=https://host/p" in recorder.snapshot().commands[0].argv
     recorder = CommandRecorder()
     attempt = recorder.begin(
-        LocalEnvironmentSpec(env={"ODD": "x"}),
+        IdentityCommandEnvironment(env={"ODD": "x"}),
         ["tool", "x"],
         ["tool", "x"],
         "/work",
@@ -381,36 +365,31 @@ def test_recording_requires_all_fields_order_and_truthful_status():
 
 
 def test_whole_multibyte_prefix_is_identical_for_shuffled_completions():
-    evidence = {
-        0: _recording(_record(arg="é" * 210_000)),
-        1: _recording(_record(arg="b" * 210_000)),
-        2: _recording(_record(arg="later-short")),
-    }
     recordings = []
     for order in [(0, 1, 2), (2, 1, 0), (1, 2, 0)]:
-        recorder = CommandRecorder()
-        for invocation in order:
-            recorder.merge(evidence[invocation], invocation)
-        recording = recorder.snapshot()
+        with capture_commands() as recorder:
+            attempts = []
+            for invocation, argument in enumerate(
+                ["é" * 210_000, "b" * 210_000, "later-short"]
+            ):
+                with invocation_scope(invocation=invocation):
+                    attempts.append(
+                        recorder.begin(
+                            IdentityCommandEnvironment(),
+                            [argument],
+                            [argument],
+                            "/work",
+                            (),
+                        )
+                    )
+            for index in order:
+                attempts[index].finish("succeeded", 0)
+            recording = recorder.snapshot()
         assert len(recording.model_dump_json().encode()) <= MAX_COMMAND_RECORDING_BYTES
         recordings.append(recording)
     assert recordings[0] == recordings[1] == recordings[2]
     assert [c.invocation for c in recordings[0].commands] == [0]
     assert recordings[0].omitted_commands == 2
-
-
-def test_remote_truncation_closes_prefix_even_when_later_records_fit():
-    first = _recording(_record(arg="first"), omitted=4)
-    later = _recording(_record(arg="later"))
-    results = []
-    for order in [(first, later), (later, first)]:
-        recorder = CommandRecorder()
-        for remote in order:
-            recorder.merge(remote, 0 if remote is first else 1)
-        results.append(recorder.snapshot())
-    assert results[0] == results[1]
-    assert results[0].omitted_commands == 5
-    assert [c.argv for c in results[0].commands] == [["first"]]
 
 
 def test_missing_markers_and_counter_growth_respect_entire_payload(monkeypatch):
@@ -436,8 +415,8 @@ def test_missing_markers_and_counter_growth_respect_entire_payload(monkeypatch):
 def test_scopes_and_dispatch_contexts_are_isolated():
     def work(slot):
         with invocation_scope(invocation=slot):
-            run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
-            run_command(LocalEnvironmentSpec(), [sys.executable, "-c", "pass"])
+            run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
+            run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
 
     with capture_commands() as recorder:
         slots = recorder.reserve(3)
@@ -467,30 +446,6 @@ def test_missing_markers_reach_the_real_one_mib_limit():
     )
 
 
-def test_custom_auth_prefix_and_parent_remote_redaction(monkeypatch):
-    from artisan.operations.examples import WaitTool
-    from artisan.schemas.operation_config.compute import (
-        ComputeProvider,
-        ModalComputeConfig,
-    )
-
-    monkeypatch.setenv("CUSTOM_TOKEN_ID", "custom-id")
-    monkeypatch.setenv("CUSTOM_TOKEN_SECRET", "custom-secret")
-    operation = WaitTool(
-        compute_provider=ComputeProvider(
-            active="modal", modal=ModalComputeConfig(auth_secret="CUSTOM")
-        )
-    )
-    recorder = CommandRecorder(operation)
-    recorder.merge(_recording(_record(arg="custom-id/custom-secret")), 3)
-    command = recorder.snapshot().commands[0]
-    assert command.argv == ["<redacted>/<redacted>"]
-    assert {"CUSTOM_TOKEN_ID", "CUSTOM_TOKEN_SECRET"} <= set(
-        command.required_environment
-    )
-    assert "$.argv[0]" in command.redacted_fields
-
-
 def test_wrapper_failure_does_not_claim_an_attempt_and_scrubs_diagnostics(monkeypatch):
     from artisan.execution.recording.commands import sanitize_diagnostic
 
@@ -498,11 +453,13 @@ def test_wrapper_failure_does_not_claim_an_attempt_and_scrubs_diagnostics(monkey
         msg = "wrapping failed for opaque-value"
         raise ValueError(msg)
 
-    monkeypatch.setattr(LocalEnvironmentSpec, "wrap_command", fail)
+    monkeypatch.setattr(IdentityCommandEnvironment, "wrap_command", fail)
     with capture_commands() as recorder:
         with pytest.raises(ValueError) as caught:
             run_command(
-                LocalEnvironmentSpec(), ["tool"], sensitive_values=("opaque-value",)
+                IdentityCommandEnvironment(),
+                ["tool"],
+                sensitive_values=("opaque-value",),
             )
         assert "opaque-value" not in sanitize_diagnostic(str(caught.value))
     assert recorder.snapshot() == CommandRecording.empty()
@@ -511,22 +468,28 @@ def test_wrapper_failure_does_not_claim_an_attempt_and_scrubs_diagnostics(monkey
 def test_single_character_secret_keeps_structural_fields_valid():
     with capture_commands() as recorder:
         run_command(
-            LocalEnvironmentSpec(env={"ODD": "e"}), [sys.executable, "-c", "pass"]
+            IdentityCommandEnvironment(env={"ODD": "e"}), [sys.executable, "-c", "pass"]
         )
     recording = recorder.snapshot()
     assert recording.commands[0].outcome == "succeeded"
     assert "<redacted>" in recording.commands[0].argv[0]
 
 
-def test_execute_as_tool_records_its_actual_generated_command(tmp_path):
-    from fixtures.endpoint_ops import FlagTool
-
-    from artisan.execution.compute.invoke import invoke_op_work
+def test_prepared_router_records_its_actual_generated_command(tmp_path):
+    from artisan.execution.compute.prepared import PreparedExecuteRouter
+    from artisan.operations.examples import CsvHead
     from artisan.schemas.specs.input_models import ExecuteInput
 
     process = Mock(returncode=0, launch_seconds=0.01)
     process.communicate.return_value = ("", "")
-    operation = FlagTool()
+    operation = CsvHead()
+    router = PreparedExecuteRouter(
+        None,
+        pixi=tmp_path / "unused-pixi",
+        system_env=tmp_path / "unused-env",
+        runtime_env={},
+        command_environment=lambda scratch, witness: IdentityCommandEnvironment(),
+    )
     with (
         capture_commands(operation) as recorder,
         patch(
@@ -537,10 +500,19 @@ def test_execute_as_tool_records_its_actual_generated_command(tmp_path):
             return_value=nullcontext({"secret": "mock-owner-capability"}),
         ),
     ):
-        invoke_op_work(operation, ExecuteInput(execute_dir=str(tmp_path), inputs={}))
+        router.route_execute(
+            operation,
+            [
+                ExecuteInput(
+                    execute_dir=str(tmp_path), inputs={"dataset": ["input.csv"]}
+                )
+            ],
+            str(tmp_path),
+        )
     command = recorder.snapshot().commands[0]
     assert command.argv == launch.call_args.args[1]
     assert command.argv[:3] == ["artisan", "op", "run"]
+    assert command.argv[-1] == '{"dataset": ["input.csv"]}'
 
 
 def test_oversized_wire_string_is_checked_in_bounded_chunks(monkeypatch):
@@ -569,18 +541,18 @@ def test_completed_and_direct_invocations_release_sequence_bookkeeping(monkeypat
         for _ in range(1000):
             with invocation_scope():
                 first = recorder.begin(
-                    LocalEnvironmentSpec(), ["tool"], ["tool"], "/work", ()
+                    IdentityCommandEnvironment(), ["tool"], ["tool"], "/work", ()
                 )
                 first.finish("succeeded", 0)
                 with invocation_scope():
                     second = recorder.begin(
-                        LocalEnvironmentSpec(), ["tool"], ["tool"], "/work", ()
+                        IdentityCommandEnvironment(), ["tool"], ["tool"], "/work", ()
                     )
                     second.finish("succeeded", 0)
                 assert list(recorder._sequences.values()) == [2]
             assert recorder._sequences == {}
             direct = recorder.begin(
-                LocalEnvironmentSpec(), ["tool"], ["tool"], "/work", ()
+                IdentityCommandEnvironment(), ["tool"], ["tool"], "/work", ()
             )
             direct.finish("succeeded", 0)
             assert recorder._sequences == {}
@@ -593,7 +565,11 @@ def test_unchanged_json_argument_preserves_whitespace_without_false_redactions()
     argument = '{ "ordinary": "text", "list": [1, 2] }'
     recorder = CommandRecorder()
     attempt = recorder.begin(
-        LocalEnvironmentSpec(), ["tool", argument], ["tool", argument], "/work", ()
+        IdentityCommandEnvironment(),
+        ["tool", argument],
+        ["tool", argument],
+        "/work",
+        (),
     )
     attempt.finish("succeeded", 0)
     command = recorder.snapshot().commands[0]
@@ -602,33 +578,11 @@ def test_unchanged_json_argument_preserves_whitespace_without_false_redactions()
     assert command.redacted_fields == []
 
 
-def test_remote_environment_hints_allow_duplicates_and_parent_augmentation():
-    command = _record(arg="parent-secret").model_copy(
-        update={"required_environment": ["REMOTE", "REMOTE"]}
+def test_public_environment_survives_both_prepare_passes():
+    environment = IdentityCommandEnvironment(
+        env={"ROOT": "/opt/application", "MODE": "private-mode"}, public_env=("ROOT",)
     )
     recorder = CommandRecorder()
-    recorder.add_environment({"PARENT": "parent-secret"})
-    recorder.merge(_recording(command), 0)
-    retained = recorder.snapshot().commands[0]
-    assert retained.required_environment == ["PARENT", "REMOTE"]
-    assert retained.argv == ["<redacted>"]
-    assert retained.redacted_fields == ["$.argv[0]", "$.requested_argv[0]"]
-
-
-def test_public_environment_survives_operation_and_both_prepare_passes():
-    from artisan.operations.examples.data_generator import DataGenerator
-    from artisan.schemas.operation_config.environments import Environments
-
-    environment = DockerEnvironmentSpec(
-        image="tool:fixed",
-        env={"ROOT": "/opt/application", "MODE": "private-mode"},
-        public_env=("ROOT",),
-    )
-    operation = DataGenerator(
-        environments=Environments(active="docker", docker=environment)
-    )
-    recorder = CommandRecorder(operation)
-    assert recorder.sanitize("/opt/application") == "/opt/application"
     recorder.prepare(environment, ["tool", "/opt/application"], ())
     recorder.begin(
         environment,
@@ -641,30 +595,13 @@ def test_public_environment_survives_operation_and_both_prepare_passes():
     assert recorder.sanitize("private-mode") == "<redacted>"
 
 
-@pytest.mark.parametrize(
-    "source", ["explicit", "ambient", "flag", "environment", "proxy"]
-)
+@pytest.mark.parametrize("source", ["explicit", "ambient", "flag", "environment"])
 def test_known_secret_alias_dominates_public_environment(monkeypatch, source):
-    from artisan.operations.examples.data_generator import DataGenerator
-    from artisan.schemas.operation_config.compute import (
-        ComputeProvider,
-        ModalComputeConfig,
-    )
-    from artisan.schemas.operation_config.environments import Environments
-
     value = "recognized-sensitive-alias"
-    environment = LocalEnvironmentSpec(env={"ROOT": value}, public_env=("ROOT",))
+    environment = IdentityCommandEnvironment(env={"ROOT": value}, public_env=("ROOT",))
     if source == "ambient":
         monkeypatch.setenv("APPLICATION_TOKEN", value)
-    if source == "proxy":
-        monkeypatch.setenv("TEST_PROXY_TOKEN_SECRET", value)
-    operation = DataGenerator(
-        environments=Environments(local=environment),
-        compute_provider=ComputeProvider(
-            active="modal", modal=ModalComputeConfig(auth_secret="TEST_PROXY")
-        ),
-    )
-    recorder = CommandRecorder(operation)
+    recorder = CommandRecorder()
     if source == "environment":
         recorder.add_environment({"TOKEN": value})
     recorder.prepare(
@@ -679,7 +616,6 @@ def test_typed_and_credential_parameter_aliases_remain_sensitive():
     from pydantic import BaseModel, Field, SecretStr
 
     from artisan.operations.examples.data_generator import DataGenerator
-    from artisan.schemas.operation_config.environments import Environments
 
     class ParameterAliases(DataGenerator):
         name = "recording_parameter_aliases"
@@ -697,10 +633,9 @@ def test_typed_and_credential_parameter_aliases_remain_sensitive():
         "FLAG": "false",
         "PUBLIC": "/opt/application",
     }
-    environment = LocalEnvironmentSpec(env=env, public_env=tuple(env))
+    environment = IdentityCommandEnvironment(env=env, public_env=tuple(env))
     operation = ParameterAliases(
         params={"value": env["ROOT"], "token": 839271, "auth": False},
-        environments=Environments(local=environment),
     )
     recorder = CommandRecorder(operation)
     recorder.prepare(environment, ["tool", *env.values()], ())
@@ -714,7 +649,7 @@ def test_password_only_uri_is_safe_without_prior_environment_registration():
     value = "https://:password-only-sensitive@host/path"
     recorder = CommandRecorder()
     assert "password-only-sensitive" not in recorder.sanitize(value)
-    recorder.prepare(LocalEnvironmentSpec(), ["tool", value], ())
+    recorder.prepare(IdentityCommandEnvironment(), ["tool", value], ())
     assert "password-only-sensitive" not in recorder.sanitize(value)
 
 
@@ -724,7 +659,6 @@ def test_credential_parameter_path_uses_its_supported_json_value():
     from pydantic import BaseModel, Field
 
     from artisan.operations.examples.data_generator import DataGenerator
-    from artisan.schemas.operation_config.environments import Environments
 
     class PathParameter(DataGenerator):
         name = "recording_path_parameter"
@@ -739,9 +673,6 @@ def test_credential_parameter_path_uses_its_supported_json_value():
     value = "/private/tokenizer"
     operation = PathParameter(
         params={"tokenizer_path": Path(value)},
-        environments=Environments(
-            local=LocalEnvironmentSpec(env={"ROOT": value}, public_env=("ROOT",))
-        ),
     )
     recorder = CommandRecorder(operation)
     assert recorder.sanitize(value) == "<redacted>"
@@ -752,7 +683,6 @@ def test_credential_parameter_uses_owning_model_field_serializer():
     from pydantic_core import PydanticSerializationError, to_json
 
     from artisan.operations.examples.data_generator import DataGenerator
-    from artisan.schemas.operation_config.environments import Environments
 
     class TokenValue:
         __hash__ = None
@@ -786,9 +716,6 @@ def test_credential_parameter_uses_owning_model_field_serializer():
     value = "serialized-credential-alias"
     operation = SerializedParameter(
         params={"token": value},
-        environments=Environments(
-            local=LocalEnvironmentSpec(env={"ROOT": value}, public_env=("ROOT",))
-        ),
     )
     assert (
         SerializedParameter.model_validate_json(operation.model_dump_json())
@@ -797,45 +724,12 @@ def test_credential_parameter_uses_owning_model_field_serializer():
     with pytest.raises(PydanticSerializationError):
         to_json(operation.params.token)
     recorder = CommandRecorder(operation)
-    recorder.prepare(operation.environments.local, ["tool", value], ())
+    recorder.prepare(
+        IdentityCommandEnvironment(env={"ROOT": value}, public_env=("ROOT",)),
+        ["tool", value],
+        (),
+    )
     assert recorder.sanitize(value) == "<redacted>"
-
-
-def test_copied_nested_configuration_reaches_owner_validation_without_warnings(
-    tmp_path,
-):
-    import warnings
-
-    from artisan.errors import ArtisanError
-    from artisan.execution.tool_endpoint.client import call_endpoint
-    from artisan.operations.examples.data_generator import DataGenerator
-    from artisan.schemas.operation_config.compute import (
-        ComputeProvider,
-        ModalComputeConfig,
-    )
-    from artisan.schemas.specs.input_models import ExecuteInput
-
-    operation = DataGenerator(
-        compute_provider=ComputeProvider(
-            active="modal",
-            modal=ModalComputeConfig(endpoint_url="https://tool.example"),
-        )
-    )
-    operation.compute_provider.modal = operation.compute_provider.modal.model_copy(
-        update={"data_policy": {"input_allowlist": ["file:///copy-sensitive-path"]}}
-    )
-    with (
-        warnings.catch_warnings(record=True) as emitted,
-        patch("artisan.execution.tool_endpoint.client.httpx.Client") as client,
-        pytest.raises(
-            ArtisanError, match="Modal deployment field data_policy"
-        ) as caught,
-    ):
-        call_endpoint(operation, ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
-    assert not emitted
-    assert "copy-sensitive-path" not in str(caught.value)
-    assert "copy-sensitive-path" not in repr(caught.value.__cause__)
-    client.assert_not_called()
 
 
 def test_actual_configuration_serialization_failure_remains_sanitized():

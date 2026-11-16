@@ -12,10 +12,6 @@ from pydantic import BaseModel, Field, ValidationError
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.compute import (
-    ComputeProvider,
-    ModalComputeConfig,
-)
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import ExecuteInput
@@ -669,7 +665,7 @@ class TestResourcesAndExecutionDefaults:
         assert "batch_strategy" in dump
 
     def test_data_transformer_script_has_instance_first_fields(self):
-        """DataTransformerScript uses instance-first tool/environments/resources/execution."""
+        """Tool commands inherit the worker unless an environment is explicit."""
         from artisan.operations.examples.data_transformer_script import (
             DataTransformerScript,
         )
@@ -677,8 +673,8 @@ class TestResourcesAndExecutionDefaults:
 
         op = DataTransformerScript()
         assert isinstance(op.tool, ToolSpec)
-        assert op.tool.interpreter == "python"
-        assert op.environments.available() == ["local", "docker"]
+        assert op.tool.parts() == ["python", "-m"]
+        assert op.environment is None
         assert op.runner_resources.cpus == 1
         assert op.batch_strategy.job_name == "data_transformer_script"
 
@@ -875,21 +871,6 @@ class TestToolOps:
                 name: ClassVar[str] = "neither_test"
                 inputs: ClassVar[dict[str, InputSpec]] = {}
                 outputs: ClassVar[dict[str, OutputSpec]] = {}
-
-    def test_modal_default_requires_tool_op(self):
-        """A class defaulting to modal must declare a command op."""
-        with pytest.raises(TypeError, match="modal requires a command op"):
-
-            class ModalPurePython(OperationDefinition):
-                name: ClassVar[str] = "modal_pure_python_test"
-                inputs: ClassVar[dict[str, InputSpec]] = {}
-                outputs: ClassVar[dict[str, OutputSpec]] = {}
-                compute_provider: ComputeProvider = ComputeProvider(
-                    active="modal", modal=ModalComputeConfig()
-                )
-
-                def execute_function(self, inputs):
-                    return None
 
     def test_execute_function_stub_raises_for_command_op(self):
         """Slots are empty override points — command ops don't inherit a body."""
@@ -1164,31 +1145,6 @@ class TestExecuteAsTool:
                 },
             )
 
-    def test_flag_modal_default_accepted(self):
-        """A flag-op may default to modal — it is a command op."""
-
-        class FlagModal(OperationDefinition):
-            class OutputRole(StrEnum):
-                result = auto()
-
-            name: ClassVar[str] = "flag_modal_default_test"
-            execute_as_tool: ClassVar[bool] = True
-            inputs: ClassVar[dict[str, InputSpec]] = {}
-            outputs: ClassVar[dict[str, OutputSpec]] = {
-                OutputRole.result: OutputSpec(
-                    artifact_type=ArtifactTypes.CSV,
-                    derives_from={"inputs": []},
-                ),
-            }
-            compute_provider: ComputeProvider = ComputeProvider(
-                active="modal", modal=ModalComputeConfig()
-            )
-
-            def execute_function(self, inputs):
-                return None
-
-        assert FlagModal.declares_command_execute()
-
     def test_declares_command_execute_truth_table(self):
         """Flag op and external tool op are command ops; function op is not."""
         assert FlagOp.declares_command_execute()
@@ -1227,20 +1183,24 @@ class TestExecuteAsTool:
             FlagOp().execute_command({"source": object()})
 
 
-def test_cacheable_is_class_only_and_does_not_change_computational_identity(
+def test_cacheable_is_class_only_and_bound_into_resolved_recipe(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Reuse eligibility is separate from serialized input/config identity."""
+    """Intrinsic reuse eligibility cannot be overridden as per-run parameters."""
+    from artisan.composites.base.compiler import compile_definition
     from artisan.operations.curator import IngestPipelineStep
-    from artisan.utils.hashing import effective_config_payload
 
     operation = SimpleOperation()
-    before = effective_config_payload(operation)
+    before = compile_definition(SimpleOperation).recipe
     assert OperationDefinition.cacheable is True
     assert SimpleOperation.cacheable is True
     assert IngestPipelineStep.cacheable is False
     monkeypatch.setattr(SimpleOperation, "cacheable", False)
-    assert effective_config_payload(operation) == before
+    after = compile_definition(SimpleOperation).recipe
+    assert before.cacheable
+    assert not after.cacheable
+    assert before.digest != after.digest
+    assert before.params_json == after.params_json
     assert "cacheable" not in SimpleOperation.model_fields
     assert "cacheable" not in operation.model_dump()
     assert "cacheable" not in SimpleOperation.to_metadata().params_schema["properties"]

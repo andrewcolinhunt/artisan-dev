@@ -8,19 +8,16 @@ metric distributions before committing to thresholds.
 from __future__ import annotations
 
 import json
-import uuid
+import tempfile
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
 
-from artisan.execution.recording.commands import CommandRecorder
-from artisan.execution.recording.durable import (
-    configuration_recorder,
-    sanitize_metadata,
-)
 from artisan.operations.curator.filter import (
     Criterion,
     _assemble_diagnostics,
@@ -37,22 +34,16 @@ from artisan.operations.curator.filter import (
 )
 from artisan.provenance.traversal import walk_forward
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.enums import TablePath
-from artisan.schemas.execution.command_record import CommandRecording
-from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
-from artisan.schemas.orchestration.step_start_record import StepStartRecord
 from artisan.storage.core.artifact_store import ArtifactStore
-from artisan.storage.core.committed_scan import read_committed
 from artisan.utils.dataframes import encode_metric_value
 from artisan.utils.dicts import flatten_dict
-from artisan.utils.hashing import digest_utf8
 from artisan.utils.path import uri_join
 
 if TYPE_CHECKING:
-    from artisan.orchestration.engine.step_tracker import StepTracker
+    from artisan.schemas.execution.curator_admission import CuratorReadSnapshot
+    from artisan.storage.core.curator_view import CuratorView
+    from artisan.storage.core.retained_reader import AcceptedArtifact
 
 
 @dataclass
@@ -88,6 +79,7 @@ class InteractiveFilter:
         delta_root: Root directory of the Delta Lake store.
         fs: Filesystem for reading and writing the store. Defaults to a
             local filesystem when None.
+        files_root: Managed carrier root; required for nonlocal/custom storage.
         storage_options: Backend storage options forwarded to the artifact
             store and Delta scans (e.g. cloud credentials). Defaults to None.
     """
@@ -98,17 +90,24 @@ class InteractiveFilter:
         *,
         fs: AbstractFileSystem | None = None,
         storage_options: dict[str, str] | None = None,
+        files_root: str | None = None,
     ) -> None:
         from fsspec.implementations.local import LocalFileSystem
 
-        self._delta_root = delta_root
+        self._delta_root = str(delta_root)
         self._fs = fs if fs is not None else LocalFileSystem()
         self._storage_options = storage_options
-        self._store = ArtifactStore(
+        from artisan.storage.io.retained_store import open_configured_store
+
+        self._committer = open_configured_store(
             self._delta_root,
+            files_root=files_root,
             fs=self._fs,
-            storage_options=self._storage_options,
+            storage_options=storage_options,
         )
+        self._files_root = self._committer.files_root
+        self._snapshot: CuratorReadSnapshot | None = None
+        self._source_attempts: tuple[str, ...] = ()
         self._wide_df: pl.DataFrame | None = None
         self._tidy_df: pl.DataFrame | None = None
         self._criteria: list[Criterion] = []
@@ -156,45 +155,81 @@ class InteractiveFilter:
         self._evaluation_df = None
         self._wide_df = None
         self._tidy_df = None
-        index_path = uri_join(self._delta_root, TablePath.ARTIFACT_INDEX)
-        if not self._fs.exists(index_path):
-            msg = f"Artifact index not found at {index_path}"
-            raise ValueError(msg)
+        self._snapshot = None
+        self._source_attempts = ()
+        from artisan.orchestration.engine.retained_artifact_query import (
+            _references_for_states,
+        )
+        from artisan.orchestration.engine.retained_execution_query import (
+            _execution_membership,
+        )
+        from artisan.orchestration.engine.retained_step_tracker import (
+            RetainedStepTracker,
+        )
+        from artisan.storage.core.curator_view import CuratorView, capture_curator_view
+        from artisan.storage.core.execution_source import (
+            CuratorExecutionSource,
+            ScientificExecutionSource,
+        )
 
-        self._pipeline_run_id = pipeline_run_id or self._detect_pipeline_run_id()
-        execution_ids: set[str] | None = None
-        if self._pipeline_run_id is not None:
-            from artisan.storage.core.run_scope import (
-                load_accepted_outputs,
-                load_execution_membership,
+        with self._committer._read_snapshot() as read:
+            tracker = RetainedStepTracker(self._committer, "")
+            _, attempts = tracker._read_lifecycle(read)
+            states = tracker._select_current_states(attempts, pipeline_run_id)
+            if not states:
+                msg = "No primary artifacts found"
+                raise ValueError(msg)
+            self._pipeline_run_id = states[0].pipeline_run_id
+            refs = _references_for_states(
+                read, states, pipeline_run_id=self._pipeline_run_id
             )
-
-            outputs = load_accepted_outputs(
-                self._delta_root,
-                fs=self._fs,
-                storage_options=self._storage_options,
-                pipeline_run_id=self._pipeline_run_id,
-            )
-            all_index = outputs.select(
-                "artifact_id",
-                "artifact_type",
-                pl.col("current_step_number").alias("origin_step_number"),
+            all_index = pl.DataFrame(
+                [
+                    {
+                        "artifact_id": ref.artifact_id,
+                        "artifact_type": ref.artifact_type,
+                        "origin_step_number": ref.current_step_number,
+                    }
+                    for ref in refs
+                ],
+                schema={
+                    "artifact_id": pl.String,
+                    "artifact_type": pl.String,
+                    "origin_step_number": pl.Int64,
+                },
             ).unique()
-            membership = load_execution_membership(
-                self._delta_root,
-                fs=self._fs,
-                storage_options=self._storage_options,
-                pipeline_run_id=self._pipeline_run_id,
+            execution_ids = set()
+            for member in _execution_membership(read, states):
+                if isinstance(member.source, CuratorExecutionSource):
+                    execution_ids.add(
+                        str(member.source.execution_record["execution_run_id"])
+                    )
+                elif isinstance(member.source, ScientificExecutionSource):
+                    execution_ids.add(member.source.plan.receipt.delivery.delivery_id)
+            snapshot = capture_curator_view(self._committer, _read=read)
+            store = self._view_store(CuratorView(self._committer, snapshot, _read=read))
+            self._load_data(
+                all_index, execution_ids, store, step_numbers, artifact_type
             )
-            execution_ids = set(membership["execution_run_id"].to_list())
-        else:
-            all_index = read_committed(
-                self._delta_root,
-                TablePath.ARTIFACT_INDEX,
-                fs=self._fs,
-                storage_options=self._storage_options,
-            ).select(["artifact_id", "artifact_type", "origin_step_number"])
+            self._source_attempts = tuple(
+                state.step_run_id
+                for state in states
+                if any(
+                    ref.current_step_number == state.step_number
+                    and ref.artifact_id in self._primary_artifact_ids
+                    for ref in refs
+                )
+            )
+            self._snapshot = snapshot
 
+    def _load_data(
+        self,
+        all_index: pl.DataFrame,
+        execution_ids: set[str],
+        store: ArtifactStore,
+        step_numbers: list[int] | None,
+        artifact_type: str | None,
+    ) -> None:
         if artifact_type is not None:
             primary_mask = all_index["artifact_type"] == artifact_type
         else:
@@ -217,15 +252,13 @@ class InteractiveFilter:
         # ── Metric discovery via forward provenance walk ──
         # Use ALL artifact IDs for step range (not just primaries) so metrics
         # at higher steps are included in the edge scan.
-        step_range = self._store.provenance.get_step_range(
-            all_index["artifact_id"].to_list()
-        )
+        step_range = store.provenance.get_step_range(all_index["artifact_id"].to_list())
         if step_range is None:
             msg = "No metrics found derived from the primary artifacts"
             raise ValueError(msg)
 
         step_min, step_max = step_range
-        edges = self._store.provenance.load_edges_df(
+        edges = store.provenance.load_edges_df(
             step_min,
             step_max,
             include_target_type=True,
@@ -261,27 +294,25 @@ class InteractiveFilter:
             )
             .unique()
         )
-        self._step_names = self._store.provenance.load_step_name_map(
-            self._pipeline_run_id
-        )
+        self._step_names = store.provenance.load_step_name_map(self._pipeline_run_id)
 
         # ── Build wide DataFrame via _build_metric_namespace ──
         wide_df, _ = _build_metric_namespace(
-            primary_df, metric_pairs, self._store, self._pipeline_run_id
+            primary_df, metric_pairs, store, self._pipeline_run_id
         )
         self._wide_df = wide_df.rename({"passthrough_id": "artifact_id"})
 
         # ── Build tidy DataFrame for exploration ──
         all_found_metric_ids = set(metric_pairs["metric_id"].unique().to_list())
         self._metric_sources = _build_metric_sources(
-            all_found_metric_ids, self._store, self._pipeline_run_id
+            all_found_metric_ids, store, self._pipeline_run_id
         )
-        metric_artifacts = self._store.get_artifacts_by_type(
+        metric_artifacts = store.get_artifacts_by_type(
             list(all_found_metric_ids), "metric"
         )
 
-        metric_step_map = self._store.provenance.load_step_map(all_found_metric_ids)
-        step_name_map = self._store.provenance.load_step_name_map(self._pipeline_run_id)
+        metric_step_map = store.provenance.load_step_map(all_found_metric_ids)
+        step_name_map = store.provenance.load_step_name_map(self._pipeline_run_id)
 
         # Build primary->metrics mapping from metric_pairs
         primary_to_metrics: dict[str, list[str]] = {}
@@ -335,18 +366,27 @@ class InteractiveFilter:
         }
         self._tidy_df = pl.DataFrame(rows, schema=tidy_schema)
 
-    def _detect_pipeline_run_id(self) -> str | None:
-        """Return the newest run selected by the authoritative state reader."""
-        from artisan.orchestration.engine.step_tracker import StepTracker
-
-        states = StepTracker(
+    def _view_store(self, view: CuratorView) -> ArtifactStore:
+        return ArtifactStore(
             self._delta_root,
-            storage_options=self._storage_options,
             fs=self._fs,
-        ).load_current_states()
-        if not states:
-            return None
-        return states[0].pipeline_run_id
+            storage_options=self._storage_options,
+            files_root=self._files_root,
+            _view=view,
+        )
+
+    @contextmanager
+    def _loaded_store(self) -> Iterator[ArtifactStore]:
+        """Revalidate the frozen load boundary without advancing its table versions."""
+        from artisan.storage.core.curator_view import CuratorView
+
+        if self._snapshot is None:
+            msg = "No data loaded. Call load() first."
+            raise ValueError(msg)
+        with self._committer._read_snapshot() as read:
+            yield self._view_store(
+                CuratorView(self._committer, self._snapshot, _read=read)
+            )
 
     # ------------------------------------------------------------------
     # Properties
@@ -438,14 +478,15 @@ class InteractiveFilter:
                     ).select("metric_id")
                     pairs = pairs.join(metric_ids, on="metric_id", how="semi")
             selections[selector] = _MetricSelection(pairs, resolved)
-        return _build_criterion_frame(
-            self.wide_df.select("artifact_id"),
-            criteria,
-            selections,
-            self._store,
-            self._pipeline_run_id,
-            metric_steps=self._metric_steps,
-        )
+        with self._loaded_store() as store:
+            return _build_criterion_frame(
+                self.wide_df.select("artifact_id"),
+                criteria,
+                selections,
+                store,
+                self._pipeline_run_id,
+                metric_steps=self._metric_steps,
+            )
 
     def _evaluation_frame(self) -> pl.DataFrame:
         """Return current bindings, rebuilding after a new load."""
@@ -613,164 +654,91 @@ class InteractiveFilter:
             msg = "No artifacts pass the current criteria. Adjust thresholds."
             raise ValueError(msg)
 
-        now = datetime.now(UTC)
-        timestamp_str = now.isoformat()
-
-        step_number = self._next_step_number()
-
-        pipeline_run_id = self._pipeline_run_id or str(uuid.uuid4())
-
-        criteria_json = json.dumps(
-            [c.model_dump() for c in self._criteria], sort_keys=True
+        from artisan.execution.assignment_transport import AssignmentDispatch
+        from artisan.operations.curator._interactive_selection import (
+            InteractiveSelection,
         )
-        sorted_input_ids = ",".join(sorted(self._primary_artifact_ids))
-
-        step_spec_id = digest_utf8(f"{step_name}|{criteria_json}|{sorted_input_ids}")
-        step_run_id = uuid.uuid4().hex
-        execution_spec_id = digest_utf8(f"filter|{sorted_input_ids}|{criteria_json}")
-        execution_run_id = digest_utf8(f"{execution_spec_id}|{timestamp_str}")
-        params = {"criteria": [c.model_dump() for c in self._criteria]}
-        redactor = configuration_recorder(params=params)
-
-        # Build and record step start
-        start_record = StepStartRecord(
-            step_run_id=step_run_id,
-            step_spec_id=step_spec_id,
-            step_number=step_number,
-            step_name=step_name,
-            operation_class="artisan.operations.curator.filter.Filter",
-            params_json=json.dumps(redactor.sanitize_json(params)),
-            input_refs_json="{}",
-            compute_backend="local",
-            compute_options_json="{}",
-            output_roles_json='["passthrough"]',
-            output_types_json='{"passthrough": "any"}',
+        from artisan.orchestration.engine.retained_step_tracker import (
+            RetainedStepTracker,
         )
+        from artisan.orchestration.pipeline_manager import (
+            PipelineManager,
+            _recorded_defaults,
+        )
+        from artisan.schemas.execution.storage_config import StorageConfig
+        from artisan.storage.core.store_format import assert_writable_store
+        from artisan.utils.application_modules import resolve_application_modules
 
-        from artisan.orchestration.engine.step_tracker import StepTracker
-
-        tracker = StepTracker(
+        assert_writable_store(self._delta_root, self._fs)
+        protocol = self._fs.protocol
+        protocol = protocol if isinstance(protocol, str) else protocol[0]
+        storage = StorageConfig(
+            protocol=protocol,
+            options=dict(self._fs.storage_options),
+            delta_options=dict(self._storage_options or {}),
+        )
+        reconstructed = storage.filesystem()
+        if (
+            type(reconstructed) is not type(self._fs)
+            or reconstructed.protocol != self._fs.protocol
+            or reconstructed.storage_options != self._fs.storage_options
+            or self._fs.storage_args
+        ):
+            msg = "Interactive commit requires a reconstructable filesystem binding"
+            raise ValueError(msg)
+        modules = resolve_application_modules()
+        assert self._pipeline_run_id is not None
+        tracker = RetainedStepTracker(self._committer, self._pipeline_run_id)
+        with self._committer._read_snapshot() as read:
+            _, attempts = tracker._read_lifecycle(read)
+        defaults = _recorded_defaults(
+            [
+                state
+                for state in attempts
+                if state.pipeline_run_id == self._pipeline_run_id
+            ],
+            modules,
+        )
+        params = InteractiveSelection.Params(
+            selected_ids=filtered,
+            criteria=self.criteria,
+            diagnostics=self._build_diagnostics(filtered),
+        )
+        dispatch = AssignmentDispatch(
             self._delta_root,
-            pipeline_run_id,
-            storage_options=self._storage_options,
-            fs=self._fs,
+            self._files_root,
+            uri_join(self._delta_root, "_staging"),
+            storage,
+            Path(tempfile.gettempdir()).resolve(),
+            application_modules=modules,
         )
-        tracker.create_attempt(start_record)
-        tracker.transition(
-            step_run_id,
-            StepStatus.PENDING,
-            StepStatus.RUNNING,
-            step_spec_id=step_spec_id,
+        with PipelineManager(
+            self._committer,
+            dispatch,
+            pipeline_run_id=self._pipeline_run_id,
+            recorded_defaults=defaults,
+            skip_cache=True,
+        ) as manager:
+            return manager.submit(
+                InteractiveSelection,
+                params=params,
+                inputs={"passthrough": self._selected_inputs()},
+                name=step_name,
+            ).result()
+
+    def _selected_inputs(self) -> list[AcceptedArtifact]:
+        """Read the exact attempts loaded by the UI, preserving repeated producers."""
+        from artisan.orchestration.engine.current_outputs import (
+            read_current_step_outputs,
         )
 
-        try:
-            return self._commit_running_attempt(
-                tracker=tracker,
-                step_name=step_name,
-                step_number=step_number,
-                step_spec_id=step_spec_id,
-                step_run_id=step_run_id,
-                execution_spec_id=execution_spec_id,
-                execution_run_id=execution_run_id,
-                filtered=filtered,
-                now=now,
-                redactor=redactor,
-            )
-        except Exception as exc:
-            current = tracker.current_state(step_run_id)
-            if current.status != StepStatus.RUNNING:
-                raise
-            error = redactor.sanitize(f"{type(exc).__name__}: {exc}")
-            failed = StepResult(
-                step_name=step_name,
-                step_number=step_number,
-                status=StepStatus.FAILED,
-                error=error,
-                step_run_id=step_run_id,
-            )
-            tracker.transition(
-                step_run_id,
-                StepStatus.RUNNING,
-                StepStatus.FAILED,
-                step_spec_id=step_spec_id,
-                result=failed,
-            )
-            raise
-
-    def _commit_running_attempt(
-        self,
-        *,
-        tracker: StepTracker,
-        step_name: str,
-        step_number: int,
-        step_spec_id: str,
-        step_run_id: str,
-        execution_spec_id: str,
-        execution_run_id: str,
-        filtered: list[str],
-        now: datetime,
-        redactor: CommandRecorder,
-    ) -> StepResult:
-        """Commit one interactive selection and its terminal snapshot."""
-        from artisan.execution.recording.recorder import record_passthrough
-        from artisan.operations.curator.filter import Filter
-        from artisan.orchestration.engine.terminal_commit import commit_terminal_result
-        from artisan.schemas.execution.execution_context import ExecutionContext
-
-        diagnostics = sanitize_metadata(redactor, self._build_diagnostics(filtered))
-        operation = Filter()
-        staging_root = uri_join(self._delta_root, "_staging")
-        execution_context = ExecutionContext(
-            execution_run_id=execution_run_id,
-            execution_spec_id=execution_spec_id,
-            step_number=step_number,
-            timestamp_start=now,
-            worker_id=0,
-            artifact_store=self._store,
-            staging_root=staging_root,
-            fs=self._fs,
-            operation_name=type(operation).name,
-            operation=operation,
-            compute_backend="local",
-            step_run_id=step_run_id,
-        )
-        record_passthrough(
-            command_recording=CommandRecording.empty(),
-            replay_snapshot=ReplaySnapshot.unavailable("manual_interactive_commit"),
-            replay_of_execution_run_id=None,
-            execution_context=execution_context,
-            passthrough={"passthrough": filtered},
-            lineage_edges=None,
-            inputs={"passthrough": list(self._primary_artifact_ids)},
-            timestamp_end=now,
-            params={"criteria": [c.model_dump() for c in self._criteria]},
-            result_metadata={"diagnostics": diagnostics},
-        )
-        result = StepResult(
-            step_name=step_name,
-            step_number=step_number,
-            status=StepStatus.SUCCEEDED,
-            disposition=StepDisposition.EXECUTED,
-            total_count=len(filtered),
-            succeeded_count=len(filtered),
-            failed_count=0,
-            output_roles=frozenset(["passthrough"]),
-            output_types={"passthrough": ArtifactTypes.ANY},
-            metadata={"diagnostics": diagnostics},
-            step_run_id=step_run_id,
-        )
-        return commit_terminal_result(
-            tracker=tracker,
-            result=result,
-            execution_run_ids=(execution_run_id,),
-            delta_root=self._delta_root,
-            staging_root=staging_root,
-            fs=self._fs,
-            storage_options=self._storage_options,
-            step_spec_id=step_spec_id,
-            operation_name=type(operation).name,
-            preserve_staging=False,
-        )
+        return [
+            member
+            for attempt in self._source_attempts
+            for group in read_current_step_outputs(self._committer, attempt)
+            for member in group.occurrences
+            if member.artifact.artifact_id in self._primary_artifact_ids
+        ]
 
     def _build_diagnostics(self, filtered: list[str]) -> dict[str, Any]:
         """Build v4 diagnostics dict matching Filter's format.
@@ -814,19 +782,3 @@ class InteractiveFilter:
             funnel=funnel,
             interactive=True,
         )
-
-    def _next_step_number(self) -> int:
-        """Determine the next step number from the steps table."""
-        steps_path = uri_join(self._delta_root, TablePath.STEPS)
-        if not self._fs.exists(steps_path):
-            return 0
-
-        from artisan.orchestration.engine.step_tracker import StepTracker
-
-        states = StepTracker(
-            self._delta_root,
-            storage_options=self._storage_options,
-            fs=self._fs,
-        ).load_all_current_states()
-        max_val = max((state.step_number for state in states), default=None)
-        return (max_val + 1) if max_val is not None else 0

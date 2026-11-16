@@ -1,4 +1,4 @@
-"""Tests for the coordinated release store boundary."""
+"""The supported domain rejects historical bytes and validates registered tables."""
 
 from __future__ import annotations
 
@@ -9,27 +9,22 @@ from unittest.mock import Mock
 
 import polars as pl
 import pytest
-from deltalake import DeltaTable
 from fsspec.implementations.local import LocalFileSystem
 
-from artisan.errors import IncompatibleStoreError
+from artisan.errors import IncompatibleStoreError, StoreIntegrityError
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
-from artisan.orchestration.pipeline_manager import PipelineManager
+from artisan.orchestration import PipelineManager
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.storage.core.artifact_store import ArtifactStore
+from artisan.storage import ArtifactStore
 from artisan.storage.core.store_format import (
-    STORE_MANIFEST,
     STORE_MANIFEST_PATH,
-    _delta_type,
-    assert_store_format,
-    prepare_store_initialization,
-    publish_store_manifest,
+    assert_retained_store,
+    initialize_retained_store,
 )
-from artisan.storage.io.commit import DeltaCommitter
 from artisan.storage.io.repair import repair_store
-from artisan.storage.io.staging import StagingManager
+from artisan.storage.io.retained_store import create_retained_store, open_retained_store
 
 
 @pytest.fixture
@@ -61,101 +56,30 @@ def list_score_type(monkeypatch: pytest.MonkeyPatch) -> type[ArtifactTypeDef]:
     return ListScoreTypeDef
 
 
-@pytest.mark.parametrize(
-    ("dtype", "expected"),
-    [
-        (pl.Float32, "float"),
-        (
-            pl.List(pl.Float32),
-            {"type": "array", "elementType": "float", "containsNull": True},
-        ),
-        (
-            pl.List(pl.List(pl.Float32)),
-            {
-                "type": "array",
-                "elementType": {
-                    "type": "array",
-                    "elementType": "float",
-                    "containsNull": True,
-                },
-                "containsNull": True,
-            },
-        ),
-        (
-            pl.List(pl.String),
-            {"type": "array", "elementType": "string", "containsNull": True},
-        ),
-    ],
-)
-def test_delta_type_float32_and_lists(dtype: object, expected: object) -> None:
-    assert _delta_type(dtype) == expected
-
-
-def test_delta_type_deep_lists_matches_delta_schema(tmp_path: Path) -> None:
-    dtype = pl.List(pl.List(pl.List(pl.Int64)))
-    table_path = str(tmp_path / "deep_lists")
-    pl.DataFrame(schema={"values": dtype}).write_delta(table_path)
-    schema = json.loads(DeltaTable(table_path).schema().to_json())
-
-    assert _delta_type(dtype) == schema["fields"][0]["type"]
-
-
-@pytest.mark.parametrize(
-    "dtype",
-    [pl.Struct({"value": pl.Float32}), pl.Array(pl.Float32, 2), pl.List(pl.Int16)],
-)
-def test_delta_type_rejects_unsupported_types(dtype: object) -> None:
-    with pytest.raises(TypeError, match="unsupported physical schema type"):
-        _delta_type(dtype)
-
-
 def test_registered_list_artifact_store_initializes_and_reopens(
     tmp_path: Path, list_score_type: type[ArtifactTypeDef]
 ) -> None:
     fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    committer = DeltaCommitter(
-        root, StagingManager(str(tmp_path / "staging"), fs), fs=fs
-    )
-    committer.initialize_tables()
-
-    assert_store_format(root, fs)
+    root, files = str(tmp_path / "delta"), str(tmp_path / "files")
+    create_retained_store(root, files, fs=fs)
+    open_retained_store(root, files, fs=fs)
     ArtifactStore(root, fs=fs)
-    committer.initialize_tables()
-    schema = json.loads(
-        DeltaTable(f"{root}/{list_score_type.table_path}").schema().to_json()
-    )
-    types = {field["name"]: field["type"] for field in schema["fields"]}
-    assert types["score"] == "float"
-    assert types["site_values"] == {
-        "type": "array",
-        "elementType": "float",
-        "containsNull": True,
-    }
-    assert types["pair_values"] == {
-        "type": "array",
-        "elementType": {
-            "type": "array",
-            "elementType": "float",
-            "containsNull": True,
-        },
-        "containsNull": True,
-    }
+    create_retained_store(root, files, fs=fs)
+    schema = pl.scan_delta(f"{root}/{list_score_type.table_path}").collect_schema()
+    assert schema["score"] == pl.Float32
+    assert schema["site_values"] == pl.List(pl.Float32)
+    assert schema["pair_values"] == pl.List(pl.List(pl.Float32))
 
 
 @pytest.mark.parametrize(
-    "wrong_type",
-    [pl.List(pl.List(pl.Float64)), pl.List(pl.Float32)],
-    ids=["wrong-element-type", "wrong-nesting-depth"],
+    "wrong_type", [pl.List(pl.List(pl.Float64)), pl.List(pl.Float32)]
 )
 def test_registered_list_artifact_rejects_wrong_schema(
     tmp_path: Path, list_score_type: type[ArtifactTypeDef], wrong_type: object
 ) -> None:
     fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    DeltaCommitter(
-        root, StagingManager(str(tmp_path / "staging"), fs), fs=fs
-    ).initialize_tables()
+    root, files = str(tmp_path / "delta"), str(tmp_path / "files")
+    create_retained_store(root, files, fs=fs)
     schema = {
         **list_score_type.polars_schema(),
         "pair_values": wrong_type,
@@ -164,179 +88,108 @@ def test_registered_list_artifact_rejects_wrong_schema(
     pl.DataFrame(schema=schema).write_delta(
         f"{root}/{list_score_type.table_path}",
         mode="overwrite",
-        delta_write_options={
-            "schema_mode": "overwrite",
-            "partition_by": ["origin_step_number"],
-        },
+        delta_write_options={"schema_mode": "overwrite"},
     )
-
-    with pytest.raises(IncompatibleStoreError, match="test_list_scores.*has schema"):
-        assert_store_format(root, fs)
-    with pytest.raises(IncompatibleStoreError, match="test_list_scores.*has schema"):
+    with pytest.raises(StoreIntegrityError):
+        open_retained_store(root, files, fs=fs)
+    with pytest.raises(StoreIntegrityError):
         ArtifactStore(root, fs=fs)
 
 
-def test_manifest_round_trip_for_initialized_store(tmp_path) -> None:
+def test_manifest_round_trip_for_initialized_store(tmp_path: Path) -> None:
     fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    DeltaCommitter(
-        root,
-        StagingManager(str(tmp_path / "staging"), fs),
-        fs=fs,
-    ).initialize_tables()
-
-    assert_store_format(root, fs)
-    assert STORE_MANIFEST == {
-        "store_format": 8,
-        "artifact_identity": 1,
-        "cache_identity": 2,
-    }
-    with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "r") as stream:
-        assert json.load(stream) == STORE_MANIFEST
+    root, files = str(tmp_path / "delta"), str(tmp_path / "files")
+    create_retained_store(root, files, fs=fs)
+    assert_retained_store(root, fs)
+    assert (tmp_path / "delta" / STORE_MANIFEST_PATH).read_bytes() == (
+        b'{"domain":"artisan.retained-store","schema_version":1}'
+    )
     assert fs.exists(f"{root}/artifacts/file_refs")
     assert fs.exists(f"{root}/artifacts/csvs")
-    assert not fs.exists(f"{root}/artifacts/data")
-    assert not fs.exists(f"{root}/artifacts/large_files")
 
 
-def test_initialize_empty_root_publishes_manifest_last(tmp_path) -> None:
+def test_manifest_alone_does_not_authorize_reading_missing_tables(
+    tmp_path: Path,
+) -> None:
     fs = LocalFileSystem()
     root = str(tmp_path / "delta")
-    staging = StagingManager(str(tmp_path / "staging"), fs)
-    committer = DeltaCommitter(root, staging, fs=fs)
-
-    committer.initialize_tables()
-
-    assert_store_format(root, fs)
-
-
-def test_current_manifest_without_required_tables_fails(tmp_path) -> None:
-    fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    publish_store_manifest(root, fs)
-
-    with pytest.raises(IncompatibleStoreError, match="missing table"):
-        assert_store_format(root, fs)
-
-
-def test_malformed_cache_reuse_table_fails(tmp_path) -> None:
-    fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    DeltaCommitter(
-        root,
-        StagingManager(str(tmp_path / "staging"), fs),
-        fs=fs,
-    ).initialize_tables()
-    fs.rm(f"{root}/orchestration/cache_reuse", recursive=True)
-    fs.makedirs(f"{root}/orchestration/cache_reuse", exist_ok=True)
-
-    with pytest.raises(IncompatibleStoreError, match="malformed table"):
-        assert_store_format(root, fs)
-
-
-def test_wrong_cache_reuse_schema_fails(tmp_path) -> None:
-    fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    DeltaCommitter(
-        root,
-        StagingManager(str(tmp_path / "staging"), fs),
-        fs=fs,
-    ).initialize_tables()
-    fs.rm(f"{root}/orchestration/cache_reuse", recursive=True)
-    pl.DataFrame(schema={"cached_execution_run_id": pl.String}).write_delta(
-        f"{root}/orchestration/cache_reuse"
-    )
-
-    with pytest.raises(IncompatibleStoreError, match="has schema"):
-        assert_store_format(root, fs)
+    initialize_retained_store(root, fs)
+    with pytest.raises(StoreIntegrityError, match="missing required table"):
+        ArtifactStore(root, fs=fs)
 
 
 @pytest.mark.parametrize(
     "content",
     [
         None,
-        "not-json",
-        json.dumps({"store_format": 2, "artifact_identity": 1, "cache_identity": 2}),
-        json.dumps({"store_format": 4}),
+        b"not-json",
+        b"{}",
+        b'{"domain":"artisan.retained-store","schema_version":true}',
     ],
 )
-def test_missing_malformed_and_unsupported_manifests_fail(tmp_path, content) -> None:
-    fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    if content is not None:
-        fs.makedirs(f"{root}/_artisan", exist_ok=True)
-        with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "w") as stream:
-            stream.write(content)
-
-    with pytest.raises(IncompatibleStoreError, match="Use a new Delta root"):
-        assert_store_format(root, fs)
-
-
-def test_nonempty_legacy_root_cannot_be_initialized(tmp_path) -> None:
-    fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    fs.makedirs(root, exist_ok=True)
-    with fs.open(f"{root}/legacy.bin", "wb") as stream:
-        stream.write(b"legacy")
-
-    with pytest.raises(IncompatibleStoreError, match="not empty"):
-        prepare_store_initialization(root, fs)
-
-
-@pytest.mark.parametrize("previous_format", [5, 6, 7])
-def test_previous_manifest_rejected_even_with_current_tables(
-    tmp_path, previous_format: int
+def test_missing_malformed_and_unsupported_manifests_fail_without_mutation(
+    tmp_path: Path, content: bytes | None
 ) -> None:
     fs = LocalFileSystem()
-    root = str(tmp_path / "delta")
-    DeltaCommitter(
-        root,
-        StagingManager(str(tmp_path / "staging"), fs),
-        fs=fs,
-    ).initialize_tables()
-    previous_manifest = {**STORE_MANIFEST, "store_format": previous_format}
-    with fs.open(f"{root}/{STORE_MANIFEST_PATH}", "w") as stream:
-        json.dump(previous_manifest, stream)
+    root = tmp_path / "delta"
+    path = root / STORE_MANIFEST_PATH
+    if content is not None:
+        path.parent.mkdir(parents=True)
+        path.write_bytes(content)
+    with pytest.raises(IncompatibleStoreError):
+        assert_retained_store(str(root), fs)
+    assert path.read_bytes() == content if content is not None else not root.exists()
 
-    with pytest.raises(
-        IncompatibleStoreError, match=f"found .*store_format.*{previous_format}"
-    ):
-        assert_store_format(root, fs)
-    # Rejection must not rewrite an old manifest to bless inferred history.
-    with fs.open(f"{root}/{STORE_MANIFEST_PATH}") as stream:
-        assert json.load(stream) == previous_manifest
+
+def test_unlabeled_nonempty_root_cannot_be_initialized(tmp_path: Path) -> None:
+    root = tmp_path / "delta"
+    root.mkdir()
+    (root / "legacy.bin").write_bytes(b"legacy")
+    with pytest.raises(IncompatibleStoreError, match="nonempty"):
+        create_retained_store(str(root), str(tmp_path / "files"), fs=LocalFileSystem())
+    assert list(root.iterdir()) == [root / "legacy.bin"]
+
+
+@pytest.mark.parametrize("previous_format", [5, 6, 7, 8, 9])
+def test_previous_manifest_rejected_even_with_current_tables(
+    tmp_path: Path, previous_format: int
+) -> None:
+    fs = LocalFileSystem()
+    root, files = str(tmp_path / "delta"), str(tmp_path / "files")
+    create_retained_store(root, files, fs=fs)
+    path = tmp_path / "delta" / STORE_MANIFEST_PATH
+    previous = json.dumps(
+        {"store_format": previous_format, "artifact_identity": 1, "cache_identity": 3}
+    ).encode()
+    path.write_bytes(previous)
+    with pytest.raises(IncompatibleStoreError, match="outside"):
+        open_retained_store(root, files, fs=fs)
+    assert path.read_bytes() == previous
 
 
 @pytest.mark.parametrize(
     "action", ["open", "initialize", "resume", "repair", "report", "import"]
 )
-def test_format_seven_rejected_without_changing_store_or_staging(
+def test_historical_root_rejected_without_changing_store_or_staging(
     tmp_path: Path, action: str
 ) -> None:
-    root = tmp_path / "delta"
-    staging = tmp_path / "staging"
-    legacy_files = {
-        root / STORE_MANIFEST_PATH: json.dumps(
-            {"store_format": 7, "artifact_identity": 1, "cache_identity": 2}
-        ).encode(),
+    root, staging = tmp_path / "delta", tmp_path / "staging"
+    legacy = {
+        root
+        / STORE_MANIFEST_PATH: b'{"store_format":9,"artifact_identity":1,"cache_identity":3}',
         root / "artifacts/data/old.parquet": b"old table content",
         staging / "old/data.parquet": b"old staged content",
     }
-    for path, content in legacy_files.items():
+    for path, content in legacy.items():
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(content)
-    before = {
-        str(path.relative_to(tmp_path)): path.read_bytes() for path in legacy_files
-    }
-    paths_before = {
-        path for directory in (root, staging) for path in directory.rglob("*")
-    }
+    paths_before = set(tmp_path.rglob("*"))
     fs = LocalFileSystem()
-    operations = {
+    actions = {
         "open": lambda: ArtifactStore(str(root), fs=fs),
-        "initialize": lambda: DeltaCommitter(
-            str(root), StagingManager(str(staging), fs), fs=fs
-        ).initialize_tables(),
+        "initialize": lambda: create_retained_store(
+            str(root), str(tmp_path / "files"), fs=fs
+        ),
         "resume": lambda: PipelineManager.resume(str(root), str(staging)),
         "repair": lambda: repair_store(
             delta_root=str(root), staging_root=str(staging), fs=fs, apply=True
@@ -352,20 +205,7 @@ def test_format_seven_rejected_without_changing_store_or_staging(
             }
         ).execute_curator({}, 0, Mock()),
     }
-    if action == "report":
-        report = operations[action]()
-        assert report.items[0].classification == "legacy_unverifiable"
-    else:
-        with pytest.raises(IncompatibleStoreError, match="Use a new Delta root"):
-            operations[action]()
-
-    after = {
-        str(path.relative_to(tmp_path)): path.read_bytes()
-        for directory in (root, staging)
-        for path in directory.rglob("*")
-        if path.is_file()
-    }
-    assert after == before
-    assert {
-        path for directory in (root, staging) for path in directory.rglob("*")
-    } == paths_before
+    with pytest.raises(IncompatibleStoreError, match="outside"):
+        actions[action]()
+    assert set(tmp_path.rglob("*")) == paths_before
+    assert {path: path.read_bytes() for path in legacy} == legacy

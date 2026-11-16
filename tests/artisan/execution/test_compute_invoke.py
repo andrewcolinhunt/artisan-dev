@@ -1,23 +1,45 @@
-"""Tests for the shared invocation primitive ``invoke_op_work``."""
+"""Command and function dispatch use the explicit selected adapter."""
 
 from __future__ import annotations
 
 import json
 from enum import StrEnum, auto
+from pathlib import Path
 from typing import Any, ClassVar
 from unittest.mock import MagicMock, patch
 
 import pytest
+from fixtures.commands import IdentityCommandEnvironment
 from pydantic import BaseModel, Field
 
-from artisan.execution.compute.invoke import invoke_op_work, tool_command_inputs
+from artisan.execution.compute.invoke import tool_command_inputs
+from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.compute.prepared import PreparedExecuteRouter
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.operation_config.environment_spec import LocalEnvironmentSpec
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import ExecuteInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
+
+
+def _execute(
+    operation: OperationDefinition,
+    inputs: ExecuteInput,
+    *,
+    environment: IdentityCommandEnvironment | None = None,
+) -> Any:
+    """Use the actual router with a test-only command wrapper, no software claim."""
+    router = PreparedExecuteRouter(
+        None,
+        pixi=Path("unused-test-launcher"),
+        system_env=Path("/usr/bin/env"),
+        runtime_env={},
+        command_environment=lambda _root, _witness: (
+            IdentityCommandEnvironment() if environment is None else environment
+        ),
+    )
+    return router.route_execute(operation, [inputs], inputs.execute_dir)[0]
 
 
 class _EchoTool(OperationDefinition):
@@ -111,7 +133,7 @@ class TestInvokeCommandOp:
     def test_runs_tool_and_returns_none(self, tmp_path):
         """The tool runs in execute_dir with the unit log captured."""
         op = _EchoTool(params=_EchoTool.Params(message="hi"))
-        result = invoke_op_work(
+        result = _execute(
             op,
             ExecuteInput(
                 execute_dir=str(tmp_path),
@@ -131,7 +153,7 @@ class TestInvokeCommandOp:
                 seen.append(inputs)
                 return [*self.tool.parts(), "-c", "true"]
 
-        invoke_op_work(
+        _execute(
             _Spy(),
             ExecuteInput(inputs={"dataset": ["/one.csv"]}, execute_dir=str(tmp_path)),
         )
@@ -141,7 +163,7 @@ class TestInvokeCommandOp:
         """log_mode='a': a unit's per-artifact runs share one unit log."""
         log_path = str(tmp_path / "tool_output.log")
         for message in ("first", "second"):
-            invoke_op_work(
+            _execute(
                 _EchoTool(params=_EchoTool.Params(message=message)),
                 ExecuteInput(execute_dir=str(tmp_path), log_path=log_path),
             )
@@ -156,26 +178,25 @@ class TestInvokeCommandOp:
             execute_dir=str(tmp_path),
             log_path=str(tmp_path / "tool_output.log"),
         )
-        environment = LocalEnvironmentSpec()
-        with patch("artisan.execution.compute.invoke.run_command") as mock_run:
-            invoke_op_work(
-                op, execute_input, environment=environment, stream_output=True
-            )
+        environment = IdentityCommandEnvironment()
+        with patch("artisan.execution.compute.prepared.run_command") as mock_run:
+            _execute(op, execute_input, environment=environment)
         mock_run.assert_called_once_with(
             environment,
             op.execute_command({}),
             cwd=str(tmp_path),
             log_path=execute_input.log_path,
             log_mode="a",
-            stream_output=True,
+            sensitive_values=(),
         )
 
-    def test_defaults_to_active_environment(self, tmp_path):
-        """Without an override, the op's active environment wraps the tool."""
-        op = _EchoTool()
-        with patch("artisan.execution.compute.invoke.run_command") as mock_run:
-            invoke_op_work(op, ExecuteInput(execute_dir=str(tmp_path)))
-        assert mock_run.call_args.args[0] == op.environments.current()
+    def test_native_function_router_rejects_unselected_command(
+        self, tmp_path: Path
+    ) -> None:
+        with pytest.raises(ValueError, match="selected prepared software adapter"):
+            LocalExecuteRouter().route_execute(
+                _EchoTool(), [ExecuteInput(execute_dir=str(tmp_path))], str(tmp_path)
+            )
 
 
 class TestInvokeFlagOp:
@@ -183,8 +204,8 @@ class TestInvokeFlagOp:
 
     def test_run_command_receives_op_run_argv_with_raw_inputs(self, tmp_path):
         """No unwrap for flag-ops — the JSON embeds the list shape."""
-        with patch("artisan.execution.compute.invoke.run_command") as mock_run:
-            result = invoke_op_work(
+        with patch("artisan.execution.compute.prepared.run_command") as mock_run:
+            result = _execute(
                 _FlagOp(),
                 ExecuteInput(
                     inputs={"dataset": ["/one.csv"]}, execute_dir=str(tmp_path)
@@ -199,7 +220,7 @@ class TestInvokeFlagOp:
     def test_non_serializable_input_raises_naming_role(self, tmp_path):
         """The argv builder enforces the file-paths contract loudly."""
         with pytest.raises(TypeError, match="dataset"):
-            invoke_op_work(
+            _execute(
                 _FlagOp(),
                 ExecuteInput(inputs={"dataset": object()}, execute_dir=str(tmp_path)),
             )
@@ -211,11 +232,11 @@ class TestInvokeFunctionOp:
     def test_passthrough_return_value(self, tmp_path):
         op = _FunctionOp()
         execute_input = ExecuteInput(inputs={"key": "value"}, execute_dir=str(tmp_path))
-        assert invoke_op_work(op, execute_input) == {"echo": {"key": "value"}}
+        assert _execute(op, execute_input) == {"echo": {"key": "value"}}
 
     def test_exception_propagates(self, tmp_path):
         operation = MagicMock()
         operation.is_command_op.return_value = False
         operation.execute_function.side_effect = RuntimeError("boom")
         with pytest.raises(RuntimeError, match="boom"):
-            invoke_op_work(operation, ExecuteInput(execute_dir=str(tmp_path)))
+            _execute(operation, ExecuteInput(execute_dir=str(tmp_path)))

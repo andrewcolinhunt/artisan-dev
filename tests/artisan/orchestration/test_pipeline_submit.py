@@ -1,270 +1,141 @@
-"""Tests for PipelineManager.submit() async execution."""
+"""Public asynchronous submission preserves pending work, outputs and failures."""
 
 from __future__ import annotations
 
-import time
-from enum import StrEnum, auto
-from typing import ClassVar
-from unittest.mock import MagicMock, patch
+from collections.abc import Iterator
+from pathlib import Path
+from typing import Any
 
 import pytest
+from fixtures.composition_operations import Transform, coordinate, structure
+from fixtures.retained_pipeline import NativePipelineRunner
 
-from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration.pipeline_manager import PipelineManager
-from artisan.orchestration.step_future import StepFuture
-from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.orchestration.step_lifecycle import StepStatus
+from artisan.orchestration import PipelineManager, StepFuture
+from artisan.orchestration.engine.current_outputs import read_current_step_outputs
+from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
-from artisan.schemas.specs.input_spec import InputSpec
-from artisan.schemas.specs.output_spec import OutputSpec
+from artisan.schemas.specs.input_models import PreprocessInput
 
 
-class MockOp(OperationDefinition):
-    class InputRole(StrEnum):
-        data = auto()
-
-    class OutputRole(StrEnum):
-        data = auto()
-
-    name: ClassVar[str] = "MockOp"
-    inputs: ClassVar[dict[str, InputSpec]] = {
-        InputRole.data: InputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.data: OutputSpec(
-            artifact_type=ArtifactTypes.CSV,
-            derives_from={"inputs": ["data"]},
-        ),
-    }
-
-    def preprocess(self, inputs):
-        return {}
-
-    def execute_function(self, inputs, output_dir):
-        pass
+@pytest.fixture
+def pipeline(
+    tmp_path: Path,
+) -> Iterator[tuple[PipelineManager, NativePipelineRunner]]:
+    with PipelineManager.create(
+        "async-submission",
+        delta_root=str(tmp_path / "delta"),
+        staging_root=str(tmp_path / "staging"),
+        working_root=str(tmp_path / "work"),
+    ) as manager:
+        runner = NativePipelineRunner(manager.committer)
+        try:
+            yield manager, runner
+        finally:
+            runner.release.set()
 
 
-class IngestMockOp(OperationDefinition):
-    class OutputRole(StrEnum):
-        file = auto()
-
-    name: ClassVar[str] = "Ingest"
-    inputs: ClassVar[dict[str, InputSpec]] = {}
-    outputs: ClassVar[dict[str, OutputSpec]] = {
-        OutputRole.file: OutputSpec(artifact_type=ArtifactTypes.CSV),
-    }
-
-    def execute_curator(self, execute_input):
-        from artisan.schemas.execution.curator_result import ArtifactResult
-
-        return ArtifactResult(success=True)
-
-
-def _mock_execute_step(**kwargs):
-    from artisan.orchestration.engine.step_executor import build_step_result
-    from artisan.schemas.enums import FailurePolicy
-
-    operation = kwargs["operation"]
-    succeeded_count = 0 if isinstance(operation, IngestMockOp) else 5
-    return build_step_result(
-        operation=operation,
-        step_number=kwargs["step_number"],
-        succeeded_count=succeeded_count,
-        failed_count=0,
-        failure_policy=kwargs["ov"].failure_policy or FailurePolicy.CONTINUE,
+def test_pending_future_exposes_output_and_timeout_before_completion(
+    pipeline: tuple[PipelineManager, NativePipelineRunner],
+) -> None:
+    manager, runner = pipeline
+    runner.release.clear()
+    future = manager.submit(
+        Transform, inputs={"structure": [structure(0)]}, step_runner=runner
     )
+    assert isinstance(future, StepFuture)
+    assert runner.entered.wait(5)
+    assert not future.done
+    assert future.status == StepStatus.PENDING
+    reference = future.output("structure")
+    assert reference.source_step == 0
+    assert reference.role == "structure"
+    with pytest.raises(TimeoutError):
+        future.result(timeout=0.01)
+    assert not future.done
+    runner.release.set()
+    result = future.result()
+    assert future.done
+    assert future.status == result.status == StepStatus.SUCCEEDED
+    assert future.result() == result
 
 
-def _mock_execute_step_slow(**kwargs):
-    """Simulate a slow step."""
-    time.sleep(0.2)
-    return _mock_execute_step(**kwargs)
-
-
-def _mock_execute_step_error(**kwargs):
-    """Simulate a failed step."""
-    msg = "Step execution failed"
-    raise RuntimeError(msg)
-
-
-class TestSubmit:
-    """Tests for submit() non-blocking behavior."""
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
+def test_downstream_submit_waits_without_blocking_the_caller(
+    pipeline: tuple[PipelineManager, NativePipelineRunner],
+) -> None:
+    manager, runner = pipeline
+    runner.release.clear()
+    first = manager.submit(
+        Transform, inputs={"structure": [structure(0)]}, step_runner=runner
     )
-    def test_submit_returns_step_future(self, mock_exec, tmp_path):
-        """submit() returns StepFuture, not StepResult."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future = pipeline.submit(IngestMockOp, inputs=None)
-        assert isinstance(future, StepFuture)
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
+    assert runner.entered.wait(5)
+    second = manager.submit(
+        Transform, inputs={"structure": first.output("structure")}, step_runner=runner
     )
-    def test_submit_cache_hit_resolved(self, mock_exec, tmp_path):
-        """done immediately on cache hit."""
-        from artisan.orchestration.engine.step_tracker import _WholeStepCacheHit
+    assert not first.done
+    assert not second.done
+    assert len(manager.executions) == 2
+    runner.release.set()
+    result = second.result()
+    assert first.status == result.status == StepStatus.SUCCEEDED, result.error
+    outputs = read_current_step_outputs(manager.committer, result.step_run_id)
+    assert coordinate(outputs[0].occurrences[0].artifact) == 2
 
-        delta = tmp_path / "delta"
-        staging = tmp_path / "staging"
 
-        # First run to populate cache
-        p1 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        source = p1.run(IngestMockOp, inputs=None)
-
-        # Second run — cache hit
-        p2 = PipelineManager.create(
-            name="test", delta_root=str(delta), staging_root=str(staging)
-        )
-        p2._step_tracker.check_cache = MagicMock(
-            return_value=_WholeStepCacheHit(
-                result=source,
-                source_step_run_id=source.step_run_id,
-                execution_run_ids=("c" * 32,),
-            )
-        )
-        with patch.object(p2, "_commit_whole_step_reuse"):
-            future = p2.submit(IngestMockOp, inputs=None)
-        assert future.done is True
-        assert future.result().step_run_id != source.step_run_id
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
+@pytest.mark.parametrize("asynchronous", [False, True])
+def test_run_and_submit_return_terminal_results_and_chain_outputs(
+    pipeline: tuple[PipelineManager, NativePipelineRunner], asynchronous: bool
+) -> None:
+    manager, runner = pipeline
+    inputs = {"structure": [structure(0)]}
+    first = (
+        manager.submit(Transform, inputs=inputs, step_runner=runner).result()
+        if asynchronous
+        else manager.run(Transform, inputs=inputs, step_runner=runner)
     )
-    def test_submit_output_never_blocks(self, mock_exec, tmp_path):
-        """output() returns immediately even when step not done."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future = pipeline.submit(IngestMockOp, inputs=None)
-        ref = future.output("file")
-        assert ref.source_step == 0
-        assert ref.role == "file"
-
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
+    assert isinstance(first, StepResult)
+    assert first.status == StepStatus.SUCCEEDED, first.error
+    result = manager.run(
+        Transform, inputs={"structure": first.output("structure")}, step_runner=runner
     )
-    def test_submit_status_transitions(self, mock_exec, tmp_path):
-        """Status transitions to the authoritative succeeded state."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future = pipeline.submit(IngestMockOp, inputs=None)
-        # Wait for completion
-        future.result()
-        assert future.status == StepStatus.SUCCEEDED
+    assert result.status == StepStatus.SUCCEEDED
+    assert [item.step_number for item in manager] == [0, 1]
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_submit_result_blocks(self, mock_exec, tmp_path):
-        """result() blocks and returns StepResult."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future = pipeline.submit(IngestMockOp, inputs=None)
-        result = future.result()
-        assert isinstance(result, StepResult)
-        assert result.step_name == "Ingest"
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step_slow,
-    )
-    def test_submit_result_timeout(self, mock_exec, tmp_path):
-        """TimeoutError on result()."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future = pipeline.submit(IngestMockOp, inputs=None)
-        with pytest.raises(TimeoutError):
-            future.result(timeout=0.01)
-        # Wait for the step to actually finish to avoid teardown issues
-        future.result()
+class _FailingTransform(Transform):
+    name = "submission_failure"
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step_error,
-    )
-    def test_submit_error_returns_failed_result(self, mock_exec, tmp_path):
-        """Failed step returns a failed terminal result instead of raising."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future = pipeline.submit(IngestMockOp, inputs=None)
-        result = future.result()
-        assert isinstance(result, StepResult)
-        assert result.status == StepStatus.FAILED
-        assert result.error is not None
-        assert "RuntimeError" in result.error
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        msg = "synthetic submission failure"
+        raise RuntimeError(msg)
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_run_is_submit_result(self, mock_exec, tmp_path):
-        """run() returns same StepResult as submit().result()."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        result = pipeline.run(IngestMockOp, inputs=None)
-        assert isinstance(result, StepResult)
-        assert result.step_name == "Ingest"
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_mixed_run_submit(self, mock_exec, tmp_path):
-        """A downstream run skips when the submitted step produced no artifacts."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future = pipeline.submit(IngestMockOp, inputs=None)
-        result2 = pipeline.run(MockOp, inputs={"data": future.output("file")})
-        assert result2.step_name == "MockOp"
-        assert result2.status == StepStatus.SKIPPED
-        assert result2.metadata["skip_reason"] == "empty_inputs"
+def test_submit_scientific_failure_returns_failed_result(
+    pipeline: tuple[PipelineManager, NativePipelineRunner],
+) -> None:
+    manager, runner = pipeline
+    result = manager.submit(
+        _FailingTransform, inputs={"structure": [structure(0)]}, step_runner=runner
+    ).result()
+    assert result.status == StepStatus.FAILED
+    assert result.error is not None
+    assert "synthetic submission failure" in result.error
+    assert not read_current_step_outputs(manager.committer, result.step_run_id)
 
-    @patch(
-        "artisan.orchestration.pipeline_manager.execute_step",
-        side_effect=_mock_execute_step,
-    )
-    def test_submit_predecessor_wait(self, mock_exec, tmp_path):
-        """submit() blocks on upstream future completion."""
-        pipeline = PipelineManager.create(
-            name="test",
-            delta_root=str(tmp_path / "delta"),
-            staging_root=str(tmp_path / "staging"),
-        )
-        future0 = pipeline.submit(IngestMockOp, inputs=None)
-        # This should wait for future0 internally via _wait_for_predecessors
-        future1 = pipeline.submit(MockOp, inputs={"data": future0.output("file")})
-        result = future1.result()
-        assert result.step_name == "MockOp"
+
+def test_submitted_cache_hit_preserves_original_outputs_without_launch(
+    pipeline: tuple[PipelineManager, NativePipelineRunner],
+) -> None:
+    manager, runner = pipeline
+    inputs = {"structure": [structure(0)]}
+    original = manager.run(Transform, inputs=inputs, step_runner=runner)
+    launches = len(runner.packs)
+    future = manager.submit(Transform, inputs=inputs, step_runner=runner)
+    reused = future.result()
+    assert reused.status == StepStatus.SUCCEEDED
+    assert reused.disposition == StepDisposition.CACHE_HIT
+    assert reused.step_run_id != original.step_run_id
+    assert future.done
+    assert len(runner.packs) == launches
+    assert read_current_step_outputs(
+        manager.committer, reused.step_run_id
+    ) == read_current_step_outputs(manager.committer, original.step_run_id)

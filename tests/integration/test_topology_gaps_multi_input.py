@@ -25,7 +25,6 @@ from artisan.operations.examples import (
     MetricCalculator,
 )
 from artisan.orchestration import PipelineManager
-from artisan.orchestration.runners import Runner
 from artisan.schemas import ArtifactResult
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -42,6 +41,7 @@ from artisan.schemas.specs.output_spec import OutputSpec
 from .conftest import (
     count_artifacts_by_step,
     count_executions_by_step,
+    create_native_pipeline,
     declared_file_result,
     get_execution_outputs,
     get_step_status,
@@ -132,7 +132,7 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
     """Filter auto-discovers co-produced metrics from same step."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_co_produced_metrics_filter",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -143,7 +143,6 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Filter using co-produced metrics (mean_score >= 0)
@@ -156,7 +155,6 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
                 {"metric": "mean_score", "operator": "ge", "value": 0},
             ],
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -175,7 +173,7 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
     """1:N LINEAGE expansion: one dataset fans out to multiple configs."""
     delta_root = pipeline_env["delta_root"]
 
-    pipeline = PipelineManager.create(
+    pipeline = create_native_pipeline(
         name="test_lineage_1_to_n",
         delta_root=delta_root,
         staging_root=pipeline_env["staging_root"],
@@ -186,7 +184,6 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
 
     # Step 1: Generate configs (2 scale_factors per dataset = 4 configs total)
@@ -198,7 +195,6 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
             "noise_amplitudes": [0.0],
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 2: Consume with LINEAGE grouping
@@ -210,7 +206,6 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
             "dataset": step0.output("datasets"),
             "config": step1.output("config"),
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = pipeline.finalize()
@@ -235,7 +230,7 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     working_root = pipeline_env["working_root"]
 
     # Run 1: Generate -> Transform -> Metrics
-    p1 = PipelineManager.create(
+    p1 = create_native_pipeline(
         name="test_resume_extend",
         delta_root=delta_root,
         staging_root=staging_root,
@@ -246,7 +241,6 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     step0 = p1.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
-        step_runner=Runner.LOCAL,
     )
     step1 = p1.run(
         DataTransformer,
@@ -257,12 +251,10 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 100,
         },
-        step_runner=Runner.LOCAL,
     )
     p1.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
-        step_runner=Runner.LOCAL,
     )
     p1.finalize()
 
@@ -276,10 +268,11 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
         delta_root=delta_root,
         staging_root=staging_root,
         pipeline_run_id=run_id,
+        default_step_runner=p1.runner,
     )
 
     # Resumed steps are restored
-    assert p2.current_step >= 3
+    assert len(p2) == 3
 
     # Extend: Filter on step 2 metrics, passthrough step 1 csv
     step3 = p2.run(
@@ -290,7 +283,6 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
                 {"metric": "distribution.min", "operator": "ge", "value": 0},
             ],
         },
-        step_runner=Runner.LOCAL,
     )
 
     # Step 4: Transform the filtered output
@@ -303,7 +295,6 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
             "variants": 1,
             "seed": 200,
         },
-        step_runner=Runner.LOCAL,
     )
 
     result = p2.finalize()

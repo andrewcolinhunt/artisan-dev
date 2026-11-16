@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from fixtures.cache_isolation_store import build_cache_isolation_store
+from fixtures.retained_cache_isolation_store import build_cache_isolation_store
 
 
 class TestQueryArtifacts:

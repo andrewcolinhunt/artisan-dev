@@ -458,6 +458,17 @@ class TestUriJoin:
 class TestUriParent:
     """URI-safe parent directory for local and cloud URIs."""
 
+    @pytest.mark.parametrize(
+        ("path", "parent"),
+        [
+            (Path("/data/pipelines/delta"), "/data/pipelines"),
+            (Path("runs/delta"), "runs"),
+            (Path("/"), "/"),
+        ],
+    )
+    def test_pathlike_input(self, path: Path, parent: str) -> None:
+        assert uri_parent(path) == parent
+
     def test_local_path(self):
         assert uri_parent("/data/pipelines/delta") == "/data/pipelines"
 
@@ -473,7 +484,28 @@ class TestUriParent:
     def test_root_path(self):
         assert uri_parent("/") == "/"
 
-    def test_bare_s3_bucket(self):
-        # posixpath treats // as separator, so s3://bucket → s3:
-        # In practice, URIs always have a path component (s3://bucket/key)
-        assert uri_parent("s3://bucket") == "s3:"
+    @pytest.mark.parametrize("protocol", ["s3", "gcs"])
+    @pytest.mark.parametrize(
+        ("suffix", "parent_suffix"),
+        [("", ""), ("/", ""), ("/delta", ""), ("/project/delta", "/project")],
+    )
+    def test_cloud_parent_stays_within_authority(
+        self, protocol: str, suffix: str, parent_suffix: str
+    ) -> None:
+        root = f"{protocol}://synthetic-bucket"
+        parent = uri_parent(root + suffix)
+        assert parent == root + parent_suffix
+        assert uri_join(parent, "files") == root + parent_suffix + "/files"
+
+    @pytest.mark.parametrize("uri", ["file:///", "file:///delta"])
+    def test_local_uri_root_keeps_prefix(self, uri: str) -> None:
+        assert uri_parent(uri) == "file:///"
+
+    @pytest.mark.parametrize(
+        ("path", "parent"),
+        [("", ""), ("delta", ""), ("runs/delta", "runs"), ("//runs/delta", "//runs")],
+    )
+    def test_relative_and_posix_paths_are_unchanged(
+        self, path: str, parent: str
+    ) -> None:
+        assert uri_parent(path) == parent

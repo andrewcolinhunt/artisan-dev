@@ -4,8 +4,9 @@ Only failed executions have discoverable log paths — ``inspect_failures``
 emits a relative fragment under ``<runs_dir>/logs/failures/``. This tool
 tails the newest source execution starts for a named step, with execution-ID
 ties broken deterministically. It does not expose success-step logs.
-Failure logs are always local files, matching the standard layout where
-``runs_dir`` is the parent of ``delta_root``.
+Workers publish failure logs through the configured filesystem. This tool
+reads only local files under the parent of ``delta_root``; it does not download
+cloud logs.
 """
 
 from __future__ import annotations
@@ -18,6 +19,7 @@ from pydantic import StrictInt
 
 from artisan.inspection._boundary import validate_int_range
 from artisan.inspection._evidence import MAX_PAYLOAD_BYTES, encode_json
+from artisan.schemas.execution.storage_config import StorageConfig
 
 MAX_TAIL_LINES = 1_000
 
@@ -29,13 +31,18 @@ logger = logging.getLogger(__name__)
 
 
 def logs_payload(
-    root: str, pipeline_run_id: str, step_name: str, tail_lines: int = 200
+    root: str,
+    pipeline_run_id: str,
+    step_name: str,
+    tail_lines: int = 200,
+    *,
+    files_root: str | None = None,
+    storage: StorageConfig | None = None,
 ) -> dict[str, Any]:
     """Read bounded failure-log excerpts within the configured log root."""
     import polars as pl
 
     from artisan.orchestration.run_status import resolve_step_number
-    from artisan.schemas.execution.storage_config import StorageConfig
     from artisan.visualization.inspect import inspect_failures
 
     validate_int_range(
@@ -44,22 +51,33 @@ def logs_payload(
         minimum=1,
         maximum=MAX_TAIL_LINES,
     )
-    storage = StorageConfig()
+    storage = StorageConfig() if storage is None else storage
     opts = storage.delta_storage_options()
     fs = storage.filesystem()
 
     number = resolve_step_number(
-        root, pipeline_run_id, step_name, storage_options=opts, fs=fs
+        root,
+        pipeline_run_id,
+        step_name,
+        storage_options=opts,
+        fs=fs,
+        files_root=files_root,
     )
     if number is None:
         return _excerpt([], set(), False)
 
     failures = inspect_failures(
-        root, pipeline_run_id=pipeline_run_id, storage_options=opts, fs=fs
+        root,
+        pipeline_run_id=pipeline_run_id,
+        storage_options=opts,
+        fs=fs,
+        files_root=files_root,
     )
     logs_root = os.path.join(os.path.dirname(root.rstrip("/")), "logs", "failures")
     paths: list[str] = []
     for row in failures.filter(pl.col("step") == number).iter_rows(named=True):
+        if row["log"] is None:
+            continue
         path = _contained_log_path(logs_root, row["log"])
         if os.path.exists(path):
             paths.append(path)

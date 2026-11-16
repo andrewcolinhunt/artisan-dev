@@ -202,7 +202,7 @@ def test_run_timestamp_ties_use_identity_and_nulls_sort_last(monkeypatch):
         }
         for name, timestamp in [("z", when), ("null", None), ("a", when)]
     ]
-    monkeypatch.setattr(module, "list_runs", lambda _root: pl.DataFrame(rows))
+    monkeypatch.setattr(module, "list_runs", lambda _root, **kwargs: pl.DataFrame(rows))
     first = runs_payload("/store", 1)
     second = runs_payload("/store", 2, first["next_cursor"])
     assert [
@@ -223,7 +223,7 @@ def test_failed_status_without_execution_failure_does_not_claim_cleanup(monkeypa
         matching_failed_run_count=0,
         upstream_scope=module.DiagnosisUpstreamScope(),
     )
-    monkeypatch.setattr(module, "diagnose_run", lambda *args: diagnosis)
+    monkeypatch.setattr(module, "diagnose_run", lambda *args, **kwargs: diagnosis)
     result = diagnosis_payload("/store", "run")
     assert result["last_status"] == "failed"
     assert result["failed_execution_count"] == 0
@@ -256,7 +256,7 @@ def test_failure_identity_narrows_without_reconstructing_redacted_diagnostics(
         matching_failed_run_count=0,
         upstream_scope=module.DiagnosisUpstreamScope(),
     )
-    monkeypatch.setattr(module, "diagnose_run", lambda *args: diagnosis)
+    monkeypatch.setattr(module, "diagnose_run", lambda *args, **kwargs: diagnosis)
     assert (
         diagnosis_payload("/store", "run", "failures")["items"][0]["error"]
         == "[REDACTED]"

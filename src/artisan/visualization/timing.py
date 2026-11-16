@@ -16,16 +16,18 @@ Usage:
 from __future__ import annotations
 
 import json
-from typing import Any
+import math
+from typing import TYPE_CHECKING, Any
 
 import polars as pl
 from fsspec import AbstractFileSystem
+from polars.datatypes import DataType, DataTypeClass
 
 from artisan.errors import StoreIntegrityError
-from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.command_record import CommandRecording
-from artisan.storage.core.store_format import assert_store_format
-from artisan.utils.path import uri_join
+
+if TYPE_CHECKING:
+    from artisan.inspection.models import ExecutionCommands
 
 
 class PipelineTimings:
@@ -33,7 +35,9 @@ class PipelineTimings:
 
     Attributes:
         data (dict[str, Any]): Raw timing data dict. Requires a "steps" key;
-            "pipeline_run_id" is optional.
+            "pipeline_run_id" is optional. Execution command data uses the
+            existing ExecutionCommands envelope under "commands"; scientific
+            invocation timing observations remain nested under "invocations".
 
     Raises:
         ValueError: If data is empty or missing required keys.
@@ -65,6 +69,8 @@ class PipelineTimings:
         pipeline_run_id: str | None = None,
         storage_options: dict[str, str] | None = None,
         fs: AbstractFileSystem | None = None,
+        *,
+        files_root: str | None = None,
     ) -> PipelineTimings:
         """Load timing data from steps and executions delta tables.
 
@@ -74,6 +80,7 @@ class PipelineTimings:
                 latest pipeline run.
             storage_options: Delta-rs storage options for cloud backends.
             fs: Filesystem for existence checks. Local if None.
+            files_root: Managed carrier root; required for nonlocal/custom storage.
 
         Returns:
             PipelineTimings instance.
@@ -82,79 +89,18 @@ class PipelineTimings:
             FileNotFoundError: If steps table doesn't exist.
             ValueError: If no usable terminal steps are found.
         """
-        if fs is None:
-            from fsspec.implementations.local import LocalFileSystem
+        from artisan.storage.io.retained_store import open_configured_store
+        from artisan.visualization.retained_timing import read_retained_timings
 
-            fs = LocalFileSystem()
-        assert_store_format(delta_root, fs, storage_options)
-        steps_path = uri_join(delta_root, TablePath.STEPS)
-        if not fs.exists(steps_path):
-            msg = f"steps table not found at {steps_path}"
-            raise FileNotFoundError(msg)
-
-        from artisan.orchestration.engine.step_tracker import StepTracker
-        from artisan.schemas.orchestration.step_lifecycle import StepStatus
-
-        states = StepTracker(
-            delta_root,
-            storage_options=storage_options,
-            fs=fs,
-        ).load_current_states(pipeline_run_id)
-        states = [
-            state
-            for state in states
-            if state.status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
-        ]
-        if not states:
-            msg = "No usable terminal steps found"
-            raise ValueError(msg)
-        run_id = states[0].pipeline_run_id
-
-        from artisan.storage.core.run_scope import load_execution_membership
-
-        exec_df = load_execution_membership(
-            delta_root,
-            fs=fs,
-            storage_options=storage_options,
-            pipeline_run_id=run_id,
-        ).filter(pl.col("success") & ~pl.col("cache_hit"))
-
-        # Build structured data
-        steps = []
-        for state in states:
-            step_timings = state.metadata.get("timings", {})
-            step_num = state.step_number
-
-            # Gather executions for this step
-            executions = []
-            step_execs = exec_df.filter(
-                pl.col("current_step_run_id") == state.step_run_id
-            )
-            for exec_row in step_execs.iter_rows(named=True):
-                exec_timings = _parse_timings(exec_row["metadata"])
-                executions.append(
-                    {
-                        "execution_run_id": exec_row["execution_run_id"],
-                        "operation_name": exec_row["operation_name"],
-                        "timings": exec_timings or {},
-                        "command_recording": _validate_command_recording(
-                            exec_row.get("command_recording"),
-                            exec_row["execution_run_id"],
-                        ).model_dump(mode="json"),
-                    }
-                )
-
-            steps.append(
-                {
-                    "step_number": step_num,
-                    "step_name": state.step_name,
-                    "duration_seconds": state.duration_seconds,
-                    "timings": step_timings or {},
-                    "executions": executions,
-                }
-            )
-
-        return cls({"pipeline_run_id": run_id, "steps": steps})
+        return read_retained_timings(
+            open_configured_store(
+                delta_root,
+                files_root=files_root,
+                fs=fs,
+                storage_options=storage_options,
+            ),
+            pipeline_run_id=pipeline_run_id,
+        )
 
     # ------------------------------------------------------------------
     # DataFrames
@@ -178,7 +124,7 @@ class PipelineTimings:
                 if isinstance(value, float):
                     row[phase] = value
             rows.append(row)
-        return pl.DataFrame(rows)
+        return pl.DataFrame(rows, infer_schema_length=None)
 
     def execution_timings(self, step_number: int) -> pl.DataFrame:
         """Execution-level timings for a single step.
@@ -187,8 +133,9 @@ class PipelineTimings:
             step_number: The step to get execution timings for.
 
         Returns:
-            DataFrame with one row per execution: step_number, execution_run_id,
-            operation_name, plus one column per timing phase.
+            One row per outer execution with its identity, nullable observed
+            duration, diagnostic coverage and nested invocation observations,
+            plus any actually recorded outer timing phases.
 
         Raises:
             ValueError: If step_number not found.
@@ -200,12 +147,21 @@ class PipelineTimings:
                 "step_number": step["step_number"],
                 "execution_run_id": ex["execution_run_id"],
                 "operation_name": ex["operation_name"],
+                "unit_index": ex.get("unit_index"),
+                "duration_seconds": ex.get("duration_seconds"),
+                "diagnostics_status": ex.get("diagnostics_status"),
+                "omitted_invocations": ex.get("omitted_invocations"),
+                "invocations": ex.get("invocations", []),
             }
             for phase, value in ex["timings"].items():
                 if isinstance(value, float):
                     row[phase] = value
             rows.append(row)
-        return pl.DataFrame(rows)
+        return pl.DataFrame(
+            rows,
+            infer_schema_length=None,
+            schema_overrides={"duration_seconds": pl.Float64},
+        )
 
     def command_timings(self, step_number: int) -> pl.DataFrame:
         """Return observed Popen durations and explicit missing-evidence markers.
@@ -219,8 +175,9 @@ class PipelineTimings:
             step_number: Step whose selected executions should be flattened.
 
         Returns:
-            Typed frame ordered by invocation and command sequence within each
-            execution, preserving availability reasons and both omission counts.
+            Typed frame preserving scientific invocation-group order and local
+            command indices. Delivery coverage, absent observations and empty
+            recordings remain distinct; no command text is copied.
 
         Raises:
             ValueError: The step does not exist.
@@ -229,19 +186,12 @@ class PipelineTimings:
         step = self._find_step(step_number)
         rows: list[dict[str, Any]] = []
         for execution in step["executions"]:
-            recording = _validate_command_recording(
-                execution.get("command_recording"), execution["execution_run_id"]
+            commands = _validate_execution_commands(
+                execution.get("commands"), execution["execution_run_id"]
             )
-            common = {
-                "step_number": step_number,
-                "execution_run_id": execution["execution_run_id"],
-                "operation_name": execution["operation_name"],
-                "recording_status": recording.status,
-                "omitted_commands": recording.omitted_commands,
-                "omitted_missing_invocations": recording.omitted_missing_invocations,
-                "unavailable_reason": recording.unavailable_reason,
-            }
-            rows.extend(common | entry for entry in _command_timing_entries(recording))
+            rows.extend(
+                _command_rows(step_number, execution["operation_name"], commands)
+            )
         return pl.DataFrame(rows, schema=_COMMAND_TIMINGS_SCHEMA)
 
     def execution_stats(self, step_number: int) -> pl.DataFrame:
@@ -251,7 +201,9 @@ class PipelineTimings:
             step_number: The step to compute stats for.
 
         Returns:
-            DataFrame with columns: phase, mean, std, min, max.
+            Phase, mean, std, min, max, observed_count and total_count columns.
+            Missing phases are excluded from numeric samples; no observations
+            produce a typed empty frame. Outer durations are not phase samples.
 
         Raises:
             ValueError: If step_number not found or has no executions.
@@ -264,7 +216,13 @@ class PipelineTimings:
         phase_cols = [
             c
             for c in exec_df.columns
-            if c not in ("step_number", "execution_run_id", "operation_name")
+            if c
+            not in (
+                "step_number",
+                "execution_run_id",
+                "operation_name",
+                "duration_seconds",
+            )
             and exec_df[c].dtype in (pl.Float64, pl.Float32)
         ]
 
@@ -275,12 +233,14 @@ class PipelineTimings:
                 {
                     "phase": phase,
                     "mean": col.mean(),
-                    "std": col.std() or 0.0,
+                    "std": 0.0 if col.count() == 1 else col.std(),
+                    "observed_count": col.count(),
+                    "total_count": len(col),
                     "min": col.min(),
                     "max": col.max(),
                 }
             )
-        return pl.DataFrame(rows)
+        return pl.DataFrame(rows, schema=_EXECUTION_STATS_SCHEMA)
 
     # ------------------------------------------------------------------
     # Plots
@@ -310,10 +270,10 @@ class PipelineTimings:
         all_phases = _collect_phase_names(step["timings"] for step in steps)
 
         labels = [f"{s['step_number']}: {s['step_name']}" for s in steps]
-        phase_data: dict[str, list[float]] = {p: [] for p in all_phases}
+        phase_data: dict[str, list[float | None]] = {p: [] for p in all_phases}
         for step in steps:
             for p in all_phases:
-                phase_data[p].append(step["timings"].get(p, 0.0))
+                phase_data[p].append(step["timings"].get(p))
 
         return self._plot_stacked_phases(
             labels,
@@ -345,13 +305,16 @@ class PipelineTimings:
         )
 
         labels = [f"{s['step_number']}: {s['step_name']}" for s in steps_with_execs]
-        phase_data: dict[str, list[float]] = {p: [] for p in all_phases}
+        phase_data: dict[str, list[float | None]] = {p: [] for p in all_phases}
 
         for step in steps_with_execs:
             stats_df = self.execution_stats(step["step_number"])
-            stats_map = dict(zip(stats_df["phase"], stats_df["mean"], strict=False))
+            complete = stats_df.filter(
+                pl.col("observed_count") == pl.col("total_count")
+            )
+            stats_map = dict(zip(complete["phase"], complete["mean"], strict=False))
             for p in all_phases:
-                phase_data[p].append(stats_map.get(p, 0.0))
+                phase_data[p].append(stats_map.get(p))
 
         return self._plot_stacked_phases(
             labels,
@@ -365,7 +328,7 @@ class PipelineTimings:
     def _plot_stacked_phases(
         self,
         labels: list[str],
-        phase_data: dict[str, list[float]],
+        phase_data: dict[str, list[float | None]],
         all_phases: list[str],
         title: str,
         empty_message: str,
@@ -398,19 +361,34 @@ class PipelineTimings:
         )
 
         y_pos = range(len(labels))
-        lefts = [0.0] * len(labels)
+        observed = [
+            index
+            for index in y_pos
+            if all_phases
+            and all(phase_data[phase][index] is not None for phase in all_phases)
+        ]
+        lefts = [0.0] * len(observed)
         colors = _get_phase_colors(all_phases)
 
         for phase in all_phases:
-            values = phase_data[phase]
-            ax.barh(y_pos, values, left=lefts, label=phase, color=colors[phase])
-            lefts = [left + v for left, v in zip(lefts, values, strict=False)]
+            values = [phase_data[phase][index] for index in observed]
+            ax.barh(observed, values, left=lefts, label=phase, color=colors[phase])
+            lefts = [
+                left + value
+                for left, value in zip(lefts, values, strict=True)
+                if value is not None
+            ]
+
+        for index in y_pos:
+            if index not in observed:
+                ax.text(0, index, "Timing unavailable", va="center")
 
         ax.set_yticks(y_pos)
         ax.set_yticklabels(labels)
         ax.set_xlabel("Time (seconds)")
         ax.set_title(title)
-        ax.legend(loc="lower right", fontsize="small")
+        if observed:
+            ax.legend(loc="lower right", fontsize="small")
         ax.invert_yaxis()
         fig.tight_layout()
         plt.close(fig)
@@ -435,10 +413,16 @@ class PipelineTimings:
 # ======================================================================
 
 
-_COMMAND_TIMINGS_SCHEMA = {
+_COMMAND_TIMINGS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "step_number": pl.Int32,
     "execution_run_id": pl.String,
     "operation_name": pl.String,
+    "coverage_status": pl.String,
+    "omitted_invocations": pl.Int64,
+    "invocation_id": pl.String,
+    "call_path": pl.List(pl.String),
+    "invocation_operation": pl.String,
+    "invocation_version": pl.String,
     "recording_status": pl.String,
     "omitted_commands": pl.Int64,
     "omitted_missing_invocations": pl.Int64,
@@ -453,15 +437,71 @@ _COMMAND_TIMINGS_SCHEMA = {
 }
 
 
-def _validate_command_recording(value: Any, execution_run_id: str) -> CommandRecording:
-    """Use the canonical model without exposing malformed diagnostic contents."""
+_EXECUTION_STATS_SCHEMA = {
+    "phase": pl.String,
+    "mean": pl.Float64,
+    "std": pl.Float64,
+    "min": pl.Float64,
+    "max": pl.Float64,
+    "observed_count": pl.Int64,
+    "total_count": pl.Int64,
+}
+
+
+def _validate_execution_commands(
+    value: object, execution_run_id: str
+) -> ExecutionCommands:
+    from artisan.inspection.models import ExecutionCommands
+
     try:
-        if isinstance(value, str):
-            return CommandRecording.model_validate_json(value)
-        return CommandRecording.model_validate(value)
+        commands = ExecutionCommands.model_validate(value)
+        if commands.execution_run_id != execution_run_id:
+            raise ValueError
     except (ValueError, TypeError):
         msg = f"Invalid canonical command recording for execution {execution_run_id!r}"
         raise StoreIntegrityError(msg) from None
+    return commands
+
+
+def _command_rows(
+    step_number: int, operation: str, commands: ExecutionCommands
+) -> list[dict[str, Any]]:
+    common = {
+        "step_number": step_number,
+        "execution_run_id": commands.execution_run_id,
+        "operation_name": operation,
+        "coverage_status": commands.status,
+        "omitted_invocations": commands.omitted_invocations,
+    }
+    rows: list[dict[str, Any]] = []
+    if commands.recording is not None:
+        rows.extend(common | entry for entry in _recording_entries(commands.recording))
+    for invocation in commands.invocations:
+        identity = {
+            "invocation_id": invocation.invocation_id,
+            "call_path": list(invocation.call_path),
+            "invocation_operation": invocation.operation_name,
+            "invocation_version": invocation.operation_version,
+        }
+        rows.extend(
+            common | identity | entry
+            for entry in _recording_entries(invocation.recording)
+        )
+    if commands.recording is None and (
+        not commands.invocations or commands.omitted_invocations
+    ):
+        rows.append(common | {"entry_type": "delivery_coverage"})
+    return rows
+
+
+def _recording_entries(recording: CommandRecording) -> list[dict[str, Any]]:
+    coverage = {
+        "recording_status": recording.status,
+        "omitted_commands": recording.omitted_commands,
+        "omitted_missing_invocations": recording.omitted_missing_invocations,
+        "unavailable_reason": recording.unavailable_reason,
+    }
+    return [coverage | entry for entry in _command_timing_entries(recording)]
 
 
 def _command_timing_entries(recording: CommandRecording) -> list[dict[str, Any]]:
@@ -495,16 +535,36 @@ def _command_timing_entries(recording: CommandRecording) -> list[dict[str, Any]]
     return entries or [{"entry_type": "empty_recording"}]
 
 
-def _parse_timings(metadata_json: str | None) -> dict[str, Any] | None:
-    """Parse timings from a metadata JSON string."""
-    if not metadata_json:
-        return None
+def _parse_timings(metadata_json: object) -> dict[str, float]:
+    """Read optional phase observations; malformed present evidence is explicit."""
+    if metadata_json is None:
+        return {}
     try:
+        if not isinstance(metadata_json, str):
+            raise TypeError
         data = json.loads(metadata_json)
-        timings: dict[str, Any] | None = data.get("timings")
-        return timings
-    except (json.JSONDecodeError, TypeError):
-        return None
+        if not isinstance(data, dict):
+            raise TypeError
+    except (ValueError, TypeError):
+        msg = "Execution timing metadata is malformed"
+        raise StoreIntegrityError(msg) from None
+    return _timing_values(data.get("timings"))
+
+
+def _timing_values(value: object) -> dict[str, float]:
+    """Keep actual finite nonnegative timings without filling missing phases."""
+    if value is None:
+        return {}
+    if not isinstance(value, dict) or any(
+        not isinstance(key, str)
+        or type(seconds) not in {int, float}
+        or not math.isfinite(seconds)
+        or seconds < 0
+        for key, seconds in value.items()
+    ):
+        msg = "Timing phase observations are malformed"
+        raise StoreIntegrityError(msg)
+    return {key: float(seconds) for key, seconds in value.items()}
 
 
 def _collect_phase_names(timings_iter: Any) -> list[str]:

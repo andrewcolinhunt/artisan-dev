@@ -35,9 +35,7 @@ from artisan.operations.base.operation_example import OperationExample
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
-from artisan.schemas.operation_config.compute import ComputeProvider
-from artisan.schemas.operation_config.compute_resources import ComputeResources
-from artisan.schemas.operation_config.environments import Environments
+from artisan.schemas.operation_config.environment import Environment
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 from artisan.schemas.specs.input_models import (
@@ -224,7 +222,7 @@ class OperationDefinition(BaseModel):
     """Run ``execute_function`` as a framework-generated command.
 
     Opting in makes this op a command op everywhere — a subprocess
-    locally, deployable to a Modal tool endpoint — with the framework
+    under the selected command software, with the framework
     supplying the argv (``artisan op run <module:Qualname>``). Requires
     the file-shaped contract:
 
@@ -232,9 +230,8 @@ class OperationDefinition(BaseModel):
       values are wrapped in ``PerArtifact`` (a raw list passes through
       whole, as shared data, to every per-artifact subprocess). Scalars
       belong in ``Params``.
-    - Multi-element list values (the ``per_artifact_dispatch=False``
-      shape) run under the local command adapter but cannot cross the endpoint —
-      the wire protocol carries one file per role.
+    - Whole-stream operations retain their multi-element input lists in the
+      generated command payload.
     - Outputs are files written to ``execute_dir``;
       ``execute_function`` returns None (a non-None return is a runtime
       error under the adapter).
@@ -243,26 +240,22 @@ class OperationDefinition(BaseModel):
     - ``ExecuteInput.metadata`` and ``files_dir`` are unavailable, and
       ``log_path`` points at a throwaway file — log to stdout/stderr,
       which the framework captures to the unit log.
-    - The op's module and artisan must be importable wherever the
-      command runs: baked into the container image for Modal and
-      ``docker run``, installed in the active environment locally.
+    - The operation and Artisan must be included in the selected command
+      software so the command can import the operation.
     """
 
     # ---------- Tool ----------
     tool: ToolSpec | None = None
     """External binary/script this operation invokes. None for pure-Python ops."""
 
+    environment: Environment | None = None
+    """Canonical command software; absent declarations inherit worker software."""
+
     # ---------- Environments ----------
-    environments: Environments = Environments()
-    """Multi-environment configuration. Selects which runtime wraps commands."""
 
     # ---------- Compute provider ----------
-    compute_provider: ComputeProvider = ComputeProvider()
-    """Compute provider routing. Selects where the execute phase runs (local/Modal)."""
 
     # ---------- Compute resources ----------
-    compute_resources: ComputeResources = ComputeResources()
-    """Hardware resources requested from the compute provider (Modal)."""
 
     # ---------- Runner resources ----------
     runner_resources: RunnerResources = RunnerResources()  # type: ignore[call-arg]
@@ -301,9 +294,8 @@ class OperationDefinition(BaseModel):
         """Assemble the tool command from params + prepared inputs.
 
         Command ops override this instead of ``execute_function()``; the
-        framework runs the returned argv — locally as a subprocess, or on
-        the deployed tool endpoint's worker under
-        ``compute_provider='modal'``. ``execute_as_tool`` ops do not
+        framework runs the returned argv with the selected command software.
+        ``execute_as_tool`` ops do not
         override this: the base implementation returns the generic
         ``artisan op run`` argv for them.
 
@@ -349,7 +341,7 @@ class OperationDefinition(BaseModel):
         """Class-level twin of ``is_command_op()`` for deploy-time checks.
 
         Reads field defaults rather than instance state —
-        ``endpoint_spec`` and the CLI consult class-level config only.
+        Compilation and the CLI consult class-level config only.
         """
         return cls.execute_as_tool or (
             cls.execute_command is not OperationDefinition.execute_command
@@ -359,7 +351,7 @@ class OperationDefinition(BaseModel):
     def params_json(self) -> str:
         """The nested ``Params`` as JSON.
 
-        The unit that crosses process and wire boundaries — the endpoint
+        The unit that crosses process boundaries — the worker
         submit form and the ``artisan op run`` argv both carry exactly
         this payload, and the worker/runner rebuild the op from it.
 
@@ -509,21 +501,6 @@ class OperationDefinition(BaseModel):
                 f"{cls.__name__} fills {len(filled)} execute slots "
                 f"({', '.join(filled)}). Implement exactly one of "
                 "execute_function(), execute_command(), or execute_curator()."
-            )
-            raise TypeError(msg)
-
-        # Modal compute runs execute_command on a deployed tool endpoint —
-        # a class whose default provider is modal must be a command op.
-        provider_default = cls.model_fields["compute_provider"].default
-        if (
-            isinstance(provider_default, ComputeProvider)
-            and provider_default.active == "modal"
-            and not (has_execute_command or cls.execute_as_tool)
-        ):
-            msg = (
-                f"{cls.__name__} defaults compute_provider.active='modal' but "
-                "modal requires a command op — declare a ToolSpec + "
-                "execute_command(), or set execute_as_tool=True"
             )
             raise TypeError(msg)
 
@@ -911,7 +888,7 @@ def _inputs_json(op_name: str, inputs: dict[str, Any]) -> str:
     """Serialize prepared inputs for the ``artisan op run`` argv.
 
     This checks JSON serialization for the local execute-as-tool command.
-    Shared or multi-item lists remain intact. Remote endpoint file transport
+    Shared or multi-item lists remain intact. Command transport
     separately enforces one file per input role.
 
     Args:
