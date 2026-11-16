@@ -769,6 +769,9 @@ def request_lease() -> Iterator[None]:
 @contextlib.contextmanager
 def command_attachment() -> Iterator[Attachment]:
     """Use expected ownership, or create an invocation-local standalone owner."""
+    invocation = _current if _current is not None else _bootstrap
+    if invocation is not None and invocation.closed:
+        invocation.check()
     attachment = _ambient_attachment()
     owner = None
     if attachment is None:
