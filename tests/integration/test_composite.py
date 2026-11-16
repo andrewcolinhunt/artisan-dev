@@ -83,8 +83,10 @@ def test_composite_display_name_does_not_change_scientific_output(
             for role in selected[1]
             for item in role.occurrences
         ]
-        assert pipeline.output("first label", "dataset").source_step == 0
-        assert pipeline.output("second label", "dataset").source_step == 1
+        assert pipeline.output("first label", "dataset") == results[0].output("dataset")
+        assert pipeline.output("second label", "dataset") == results[1].output(
+            "dataset"
+        )
 
 
 def test_composite_root_partitioning_preserves_child_output_count(

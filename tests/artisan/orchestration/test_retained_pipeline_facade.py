@@ -64,8 +64,14 @@ def test_sequence_named_outputs_and_resume_use_logical_step_positions(
         assert bool(pipeline)
         assert "3 steps, all succeeded" in str(pipeline)
         assert "example" in repr(pipeline)
-        assert pipeline.output("repeat", "structure").source_step == 5
-        assert pipeline.output("repeat", "structure", step_number=0).source_step == 0
+        assert (
+            pipeline.output("repeat", "structure").source.step_run_id
+            == second.step_run_id
+        )
+        assert (
+            pipeline.output("repeat", "structure", step_number=0).source.step_run_id
+            == first.step_run_id
+        )
         assert pipeline.output("selected", "found") == dynamic.output("found")
         for name, role, number in (
             ("missing", "structure", None),
@@ -95,8 +101,14 @@ def test_sequence_named_outputs_and_resume_use_logical_step_positions(
     ) as resumed:
         assert resumed.current_step == 7
         assert resumed[1].step_number == 5
-        assert resumed.output("repeat", "structure").source_step == 5
-        assert resumed.output("selected", "found").source_step == 6
+        assert (
+            resumed.output("repeat", "structure").source.step_run_id
+            == second.step_run_id
+        )
+        assert (
+            resumed.output("selected", "found").source.step_run_id
+            == dynamic.step_run_id
+        )
 
 
 def test_pending_static_reference_and_dynamic_completion_are_distinct(
@@ -123,7 +135,7 @@ def test_pending_static_reference_and_dynamic_completion_are_distinct(
         runner.release.set()
     static.result(10)
     dynamic.result(10)
-    assert pipeline.output("dynamic", "found").source_step == 1
+    assert pipeline.output("dynamic", "found") == dynamic.result().output("found")
     pipeline.finalize()
 
 
@@ -189,7 +201,9 @@ def test_static_declarations_survive_nonoutput_terminal_outcome(
     )
     assert result.status.value == outcome
     assert result.output_roles == frozenset()
-    assert pipeline.output("static", "structure").source_step == result.step_number
+    assert (
+        pipeline.output("static", "structure").source.step_run_id == result.step_run_id
+    )
     assert bool(pipeline) is (outcome == "skipped")
     assert pipeline.finalize()["overall_success"] is (outcome == "skipped")
 
@@ -209,7 +223,10 @@ def test_latest_pending_and_failed_attempt_masks_older_success_and_declarations(
     pipeline.tracker.create_attempt(record)
     assert len(pipeline) == 0
     assert not pipeline
-    assert pipeline.output("repeated", "replacement").source_step == 0
+    assert (
+        pipeline.output("repeated", "replacement").source.step_run_id
+        == record.step_run_id
+    )
     with pytest.raises(ValueError, match="Output role"):
         pipeline.output("repeated", "structure")
     with pytest.raises(PersistenceIntegrityError, match="unfinished current"):
@@ -228,7 +245,7 @@ def test_latest_pending_and_failed_attempt_masks_older_success_and_declarations(
     pipeline.tracker.transition(
         record.step_run_id, StepStatus.RUNNING, StepStatus.FAILED, result=result
     )
-    assert pipeline[:] == [result]
+    assert [item.model_dump() for item in pipeline[:]] == [result.model_dump()]
     assert not pipeline.finalize()["overall_success"]
 
 

@@ -876,7 +876,7 @@ class TestCommit:
         result = filt.commit()
         ref = result.output("passthrough")
 
-        assert ref.source_step == result.step_number
+        assert ref.source.step_run_id == result.step_run_id
         assert ref.role == "passthrough"
 
     def test_commit_execution_rows_golden(self, delta_root: Path) -> None:

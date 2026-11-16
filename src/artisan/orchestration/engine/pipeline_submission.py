@@ -29,7 +29,10 @@ from artisan.execution.recording.durable import configuration_recorder
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
-from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.operation_config.runner_resources import (
+    RunnerResources,
+    merge_runner_resources,
+)
 from artisan.schemas.operation_config.tool_spec import ToolSpec
 
 
@@ -124,16 +127,6 @@ def freeze_submission(
     normalize_root_selection(
         instance, group_by=group_by, batch_strategy=batch_patch, tool=tool_patch
     )
-    resources = (
-        instance.runner_resources
-        if isinstance(instance, OperationDefinition)
-        else RunnerResources.model_validate({})
-    )
-    batch = (
-        instance.batch_strategy
-        if isinstance(instance, OperationDefinition)
-        else BatchStrategy.model_validate({})
-    )
     is_curator = isinstance(instance, OperationDefinition) and (
         type(instance)._kind() == "curator"
     )
@@ -158,13 +151,8 @@ def freeze_submission(
         group_by=group_by,
         batch_patch=batch_patch,
         tool_patch=tool_patch,
-        resources=RunnerResources.model_validate(
-            {
-                **resources.model_dump(),
-                **_patch_values(_model_patch(runner_resources, RunnerResources)),
-            }
-        ),
-        batch_strategy=merge_batch_strategy(batch, batch_patch),
+        resources=merge_runner_resources(instance.runner_resources, runner_resources),
+        batch_strategy=merge_batch_strategy(instance.batch_strategy, batch_patch),
         recorder=recorder,
     )
 

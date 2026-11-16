@@ -7,12 +7,13 @@ from typing import Any
 
 import pytest
 from fixtures.composition_operations import PredictMeasure, Transform
+from fixtures.output_references import SYNTHETIC_STORE, output_reference
 from fixtures.retained_pipeline import NativePipelineRunner
 
 from artisan.composites import CompositeContext, CompositeDefinition
 from artisan.operations.curator import Merge
 from artisan.operations.examples import WaitTool
-from artisan.orchestration import OutputReference, PipelineManager
+from artisan.orchestration import PipelineManager
 from artisan.orchestration.engine.pipeline_inputs import (
     normalize_pipeline_inputs,
     validate_pipeline_input_contract,
@@ -125,12 +126,8 @@ def test_matching_or_unspecified_reference_type_preserves_declared_wiring(
     artifact_type: str,
 ) -> None:
     frozen = normalize_pipeline_inputs(
-        {
-            "data": OutputReference(
-                source_step=0, role="value", artifact_type=artifact_type
-            )
-        },
-        step_run_ids={0: "a" * 32},
+        {"data": output_reference("a" * 32, role="value", artifact_type=artifact_type)},
+        store_identity=SYNTHETIC_STORE,
     )
     validate_pipeline_input_contract(
         frozen, {"data": InputSpec(artifact_type="csv")}, runtime_defined_inputs=False
@@ -139,8 +136,8 @@ def test_matching_or_unspecified_reference_type_preserves_declared_wiring(
 
 def test_mismatched_reference_type_rejects_but_any_input_accepts() -> None:
     frozen = normalize_pipeline_inputs(
-        {"data": OutputReference(source_step=0, role="value", artifact_type="metric")},
-        step_run_ids={0: "a" * 32},
+        {"data": output_reference("a" * 32, role="value", artifact_type="metric")},
+        store_identity=SYNTHETIC_STORE,
     )
     with pytest.raises(ValueError, match="type"):
         validate_pipeline_input_contract(
@@ -155,7 +152,7 @@ def test_mismatched_reference_type_rejects_but_any_input_accepts() -> None:
 
 
 def test_optional_and_generative_inputs_need_no_manufactured_roles() -> None:
-    empty = normalize_pipeline_inputs(None, step_run_ids={})
+    empty = normalize_pipeline_inputs(None, store_identity=SYNTHETIC_STORE)
     validate_pipeline_input_contract(empty, {}, runtime_defined_inputs=False)
     validate_pipeline_input_contract(
         empty,

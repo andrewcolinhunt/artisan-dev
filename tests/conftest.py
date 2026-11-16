@@ -231,6 +231,16 @@ def _minio_unavailable(config: pytest.Config, reason: str) -> None:
     logging.getLogger(__name__).warning(reason)
 
 
+@pytest.fixture
+def minio_image(pytestconfig: pytest.Config) -> str:
+    """Return the canonical pin for tests that require an additional endpoint."""
+    reason = _detect_minio_unavailable()
+    if reason is not None:
+        _minio_unavailable(pytestconfig, reason)
+        pytest.skip(reason)
+    return _MINIO_IMAGE
+
+
 @pytest.fixture(scope="session")
 def minio_endpoint(pytestconfig: pytest.Config) -> Iterator[dict[str, str] | None]:
     """Endpoint + credentials for the session-scoped MinIO storage service.

@@ -75,10 +75,11 @@ def test_run_writes_exact_pending_running_terminal_history(tmp_path: Path) -> No
             RepeatableSource, step_runner=NativePipelineRunner(pipeline.committer)
         )
         assert result.status == StepStatus.SUCCEEDED, result.error
-        assert (
-            pipeline.tracker.current_state(result.step_run_id).to_step_result()
-            == result
-        )
+        persisted = pipeline.tracker.current_state(result.step_run_id).to_step_result()
+        assert persisted.model_dump() == result.model_dump()
+        reference = result.output("data")
+        assert reference.source.store == pipeline.committer.store_identity
+        assert reference.source.step_run_id == result.step_run_id
         assert (
             len(
                 read_current_step_outputs(pipeline.committer, result.step_run_id)[
@@ -111,7 +112,8 @@ def test_run_cache_hit_has_new_identity_and_original_accepted_outputs(
             read_current_step_outputs(current.committer, result.step_run_id) == accepted
         )
         state = current.tracker.current_state(result.step_run_id)
-        assert state.to_step_result() == result
+        assert state.to_step_result().model_dump() == result.model_dump()
+        assert result.output("data").source.step_run_id == result.step_run_id
         options = json.loads(state.compute_options_json)
         assert options["pipeline_default_step_runner"] == "local"
         assert state.compute_backend == runner.name

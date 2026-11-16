@@ -14,9 +14,11 @@ from artisan_modal.image_store import publish_image
 from artisan_modal.pack_owner import ModalPackOwner
 from artisan_modal.software import ModalSoftware
 
+from artisan.composites.examples import GenerateAndScore
 from artisan.operations.curator.merge import Merge
 from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_transformer import DataTransformer
+from artisan.orchestration.engine.pipeline_submission import freeze_submission
 from artisan.orchestration.runner_api import (
     AssignmentLaunchError,
     CancellationStatus,
@@ -25,6 +27,49 @@ from artisan.orchestration.runner_api import (
     RunnerResources,
     compile_definition,
 )
+
+
+class ResourceGenerator(DataGenerator):
+    name = "modal_prepare_resource_generator"
+    runner_resources: RunnerResources = RunnerResources(cpus=4, memory_gb=16, gpus=1)
+
+
+class ResourceComposite(GenerateAndScore):
+    name = "modal_prepare_resource_composite"
+    runner_resources: RunnerResources = RunnerResources(cpus=4, memory_gb=16, gpus=1)
+
+
+class ResourceMerge(Merge):
+    name = "modal_prepare_resource_merge"
+    runner_resources: RunnerResources = RunnerResources(cpus=4, memory_gb=16, gpus=1)
+
+
+@pytest.mark.parametrize(
+    "definition", [ResourceGenerator, ResourceComposite, ResourceMerge]
+)
+@pytest.mark.parametrize("override", [None, RunnerResources(memory_gb=32)])
+def test_prepare_uses_the_same_resource_defaults_and_patch_as_submission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    definition: type[ResourceGenerator] | type[ResourceComposite] | type[ResourceMerge],
+    override: RunnerResources | None,
+) -> None:
+    prepare = Mock()
+    monkeypatch.setattr(ModalRunner, "_prepare", prepare)
+    selected = ModalRunner(Environment.from_pixi(tmp_path / "pixi.toml"), "sample")
+    if definition is ResourceMerge:
+        selected.prepare_curator(definition(), runner_resources=override)
+    else:
+        selected.prepare(definition, runner_resources=override)
+    resources = prepare.call_args.args[1]
+    assert (
+        resources == freeze_submission(definition, runner_resources=override).resources
+    )
+    assert (resources.cpus, resources.gpus) == (4, 1)
+    resources.memory_gb = 99
+    assert definition().runner_resources.memory_gb == 16
+    if override is not None:
+        assert override.memory_gb == 32
 
 
 def test_import_and_constructor_do_not_import_optional_sdk(tmp_path: Path) -> None:

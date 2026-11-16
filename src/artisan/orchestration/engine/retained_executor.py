@@ -44,7 +44,7 @@ from artisan.schemas.execution.retained_replay import RetainedReplayDiagnostic
 from artisan.schemas.execution.step_admission import StepAdmission
 from artisan.schemas.execution.worker_ownership import OwnershipState, WorkerOwner
 from artisan.schemas.operation_config.runner_resources import RunnerResources
-from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.output_reference import OutputReference, StepSource
 from artisan.schemas.orchestration.step_lifecycle import (
     TERMINAL_STEP_STATUSES,
     CancellationAcknowledgement,
@@ -218,6 +218,10 @@ class RetainedStepExecution:
                 state.output_types,
                 self._future,
                 lambda: self.tracker.current_state(self.record.step_run_id).status,
+                source=StepSource(
+                    store=self.tracker.committer.store_identity,
+                    step_run_id=self.record.step_run_id,
+                ),
             )
 
     def run(self, pool: Executor) -> StepResult:
@@ -769,15 +773,15 @@ def _publish_assignment(
 def resolve_retained_output(
     reference: OutputReference,
     *,
-    step_run_id: str,
     results: RetainedStepResults,
 ) -> tuple[AcceptedArtifact, ...]:
     """Resolve an existing lazy reference through exact completed step membership."""
+    if reference.source.store != results.tracker.committer.store_identity:
+        msg = "Output reference belongs to a different store"
+        raise ValueError(msg)
+    step_run_id = reference.source.step_run_id
     state = results.tracker.current_state(step_run_id)
-    if (
-        state.step_number != reference.source_step
-        or reference.role not in state.output_roles
-    ):
+    if reference.role not in state.output_roles:
         msg = "Output reference does not match the selected step's available roles"
         raise ValueError(msg)
     return next(

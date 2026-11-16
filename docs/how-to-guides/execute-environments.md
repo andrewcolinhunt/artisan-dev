@@ -64,6 +64,12 @@ environment in a composite once and reuses existing compatible targets. If
 parameters change which tools the composite uses, supply those parameters to
 both preparation and submission.
 
+Preparation uses the operation or composite's authored `runner_resources` by
+default. A supplied `RunnerResources` model patches only its explicit fields,
+matching submission. If you override the eventual allocation, pass the same
+resource patch to preparation when the provider's prepared profile depends on it.
+Nested children do not contribute separate worker allocations.
+
 Preparation is reusable across operations, pipelines, and runner instances that
 can access the same prepared cache or deployment. Another operation using packages
 and tools from those same prepared targets needs no separate installation. A new

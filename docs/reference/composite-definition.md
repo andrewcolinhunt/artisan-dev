@@ -9,13 +9,14 @@ for execution and persistence behavior.
 
 | Interface | Purpose |
 | --- | --- |
-| `CompositeDefinition` | Declares roles, parameters, and `compose()` wiring |
+| `CompositeDefinition` | Declares roles, parameters, outer execution defaults, and `compose()` wiring |
 | `CompositeContext.input` | References a declared input role |
 | `CompositeContext.call` | Declares a creator or nested composite call |
 | `CompositeCall.output` | References a call's declared output role |
 | `CompositeContext.output` | Binds a public role to one or more ordered streams |
 | `CompositeRef` | Immutable reference scoped to its composition |
 | `PipelineManager.run` / `submit` | Executes and persists the outer boundary |
+| `PipelineManager.get_step` | Loads a saved result handle from a run in the same store |
 | `ExecutionSession.run` | Invokes a definition on local artifacts without persistence |
 
 `CompositeContext` is supplied by Artisan during compilation. Author code does
@@ -30,6 +31,12 @@ selected child definition. Duplicate call names, foreign references, invalid
 roles, and incompatible artifact types fail during compilation.
 
 Outside the composite, `StepResult.output(role)` and `StepFuture.output(role)`
-provide references for downstream pipeline steps. There is no separate composite
+provide source-bound references for downstream steps. Completed outputs can
+also feed another run in the same store. There is no separate composite
 result or submission method. Placement, persistence, cache, and retry belong to
 the submitted boundary, not the individual `ctx.call` declarations.
+
+A composite's authored resource, batching, and grouping defaults apply when it
+is the outer boundary. Supplied submission fields override those defaults.
+Nested composites expand transparently and do not reapply their outer defaults.
+See [declaring defaults](../how-to-guides/writing-composite-operations.md#declare-step-defaults).

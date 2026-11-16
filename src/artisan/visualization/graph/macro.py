@@ -71,18 +71,17 @@ def _load_usable_steps(
     )
 
 
-def _parse_input_refs(input_refs_json: str) -> list[tuple[int, str, str]]:
+def _parse_input_refs(input_refs_json: str) -> list[tuple[str, str]]:
     """Read exact submitted output references from sanitized input descriptors."""
     parsed = json.loads(input_refs_json) if input_refs_json else None
     if not isinstance(parsed, dict):
         return []
     return [
-        (member["source_step"], member["role"], member["step_run_id"])
+        (member["step_run_id"], member["role"])
         for group in parsed.values()
         if isinstance(group, list)
         for member in group
         if isinstance(member, dict)
-        and type(member.get("source_step")) is int
         and isinstance(member.get("role"), str)
         and isinstance(member.get("step_run_id"), str)
     ]
@@ -184,7 +183,7 @@ def _build_macro_graph(steps_df: pl.DataFrame) -> graphviz.Digraph:
 
         data_by_step[step_num] = step_data_nodes
 
-    current_attempts = dict(steps_df.select("step_number", "step_run_id").iter_rows())
+    current_positions = dict(steps_df.select("step_run_id", "step_number").iter_rows())
     for row in steps_df.iter_rows(named=True):
         step_num = row["step_number"]
         refs_json = row["input_refs_json"]
@@ -194,11 +193,15 @@ def _build_macro_graph(steps_df: pl.DataFrame) -> graphviz.Digraph:
         input_refs = _parse_input_refs(refs_json)
         exec_node_id = f"exec_{step_num}"
 
-        for source_step, source_role, source_attempt in input_refs:
-            data_node_id = f"data_{source_step}_{source_role}"
-            if current_attempts.get(source_step) != source_attempt:
-                data_node_id = f"data_{source_step}_{source_attempt}_{source_role}"
-                graph.node(data_node_id, label=f"{source_role} (prior attempt)")
+        for source_attempt, source_role in input_refs:
+            if source_attempt in current_positions:
+                data_node_id = f"data_{current_positions[source_attempt]}_{source_role}"
+            else:
+                data_node_id = f"external_{source_attempt}_{source_role}"
+                graph.node(
+                    data_node_id,
+                    label=f"{source_role} (source attempt {source_attempt[:8]})",
+                )
             graph.edge(data_node_id, exec_node_id)
 
     # Strict column ordering using anchor nodes (same pattern as micro)
