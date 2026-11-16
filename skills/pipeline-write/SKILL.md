@@ -57,12 +57,22 @@ the last submission. Do not delete scratch while ownership remains unresolved.
 Wire named roles with `StepResult.output(role)` or `StepFuture.output(role)`.
 `pipeline.output(name, role, step_number=...)` is useful for an existing named step;
 select a position explicitly when repeated names would be ambiguous. References
-freeze the selected upstream attempt rather than following future latest state.
+carry their store and exact upstream attempt from creation; they do not follow
+later retries or get reinterpreted using the receiving run's step numbers.
+
+Use a completed result from another run directly when it belongs to the same
+authoritative store. To retrieve a saved result, use
+`pipeline.get_step(step_number, pipeline_run_id=...)`, then its `.output(role)`.
+Lookup is read-only and does not resume or recover the source run. Different-store
+inputs require an explicit import. A pending source owned by another manager is
+not automatically waited on: wait on its future before submitting the consumer.
 
 `run` waits for a `StepResult`. `submit` freezes the request and returns a
 `StepFuture`; `.result()` obtains its result while its output references can already
 be wired downstream. Check terminal status and accepted outputs rather than
 assuming a returned future or process exit means success.
+For curator roles discovered during execution, use `future.result().output(role)`;
+the future itself exposes only the roles declared at submission.
 
 Raw file paths enter through ingestion. Registration captures full managed bytes
 before curator admission. Creators consume artifact inputs or upstream references,
@@ -82,6 +92,12 @@ and failure policy on the outer submission or its documented defaults. In
 particular, `artifacts_per_unit` partitions scientific inputs;
 `units_per_worker` packs those units in order. Packing does not create child
 persistence boundaries or change accepted scientific membership.
+
+Operations and composites can declare their own resource, batch, and grouping
+defaults. Supplied resource/batch fields override only those fields; omitted
+fields retain the definition defaults. Use the same effective resources for
+preparation when the runner's prepared profile depends on them. Nested composites
+do not reapply their outer defaults or allocate additional workers.
 
 Do not put runner, cache, retry, or persistence settings on `ctx.call` inside a
 composite. Keep authored command environments on the child operations. Native,

@@ -21,7 +21,9 @@ An ordered list of references concatenates streams without deduplicating them.
 
 Parameter-dependent loops can build a fixed sequence of calls. Reading the
 contents of a future output to decide the next call is outside this plan model.
-Store-bound curators remain top-level pipeline steps.
+Creator children require static input roles and support ZIP or CROSS_PRODUCT
+grouping. Store-dependent NAME/LINEAGE grouping and curators remain at the
+pipeline level.
 
 ## How a composite executes
 
@@ -49,17 +51,26 @@ installation and one resolved target for the submission. The installation is als
 reusable by other pipelines. Commands still start separate processes; shared
 software does not imply shared Python memory or a resident model.
 
-### Composite-level overrides are step defaults
+### Defaults belong to the submitted boundary
 
-Placement, resources, batching, and policies on `pipeline.run(Composite, ...)`
-apply to the outer submitted step. They do not create child steps or override
-each child's declared tool software. `ctx.call` has no runner or cache settings.
+A composite may declare resource, batching, and grouping defaults. Supplied
+fields on `pipeline.run(Composite, ...)` override those defaults for the outer
+step. The author chooses one worker allocation; child resource requests are not
+automatically combined. `ctx.call` has no runner or cache settings.
+
+A nested composite expands inside its parent, so its own outer defaults do not
+change the parent's units, grouping, or worker allocation. Creator children retain
+their own scientific invocation behavior and tool software. Use `Params` for
+choices that change the calls in a composition.
 
 ### Submission and waiting
 
 `pipeline.submit` returns a `StepFuture`; `.result()` returns its `StepResult`.
 `pipeline.run` waits and returns that result directly. Both accept operations
-and composites. Cancellation applies to the submitted boundary and waits for
+and composites. Their output references identify an exact attempt and store,
+so a completed result can feed another run in the same store. See
+[reusing another run](../how-to-guides/building-a-pipeline.md#reuse-another-run).
+Cancellation applies to the submitted boundary and waits for
 owned work to close; an unavailable closure acknowledgement remains uncertain.
 
 ## Persistence, lineage, and caching

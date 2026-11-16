@@ -8,6 +8,8 @@ constraint. Providers reject options they cannot apply.
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
+from copy import deepcopy
 from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
@@ -43,3 +45,17 @@ class RunnerResources(BaseModel):
             msg = "time_limit must be a positive duration in HH:MM:SS format"
             raise ValueError(msg)
         return value
+
+
+def merge_runner_resources(
+    defaults: RunnerResources,
+    override: RunnerResources | Mapping[str, object] | None,
+) -> RunnerResources:
+    """Apply supplied resource fields while detaching all caller-owned values."""
+    if override is None:
+        patch = {}
+    elif isinstance(override, RunnerResources):
+        patch = override.model_dump(exclude_unset=True)
+    else:
+        patch = dict(override)
+    return RunnerResources.model_validate(deepcopy({**defaults.model_dump(), **patch}))

@@ -12,13 +12,16 @@ from typing import (
     ClassVar,
 )
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from artisan.operations.base._role_docs import (
     append_role_docs,
     get_registered,
     validate_role_enums,
 )
+from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.execution.batch_strategy import BatchStrategy
+from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
@@ -48,6 +51,19 @@ class CompositeDefinition(BaseModel):
 
     # ---------- Outputs ----------
     outputs: ClassVar[dict[str, OutputSpec]] = {}
+
+    runner_resources: RunnerResources = Field(
+        default_factory=lambda: RunnerResources.model_validate({})
+    )
+    """Default worker allocation when this composite is submitted as a step."""
+
+    batch_strategy: BatchStrategy = Field(
+        default_factory=lambda: BatchStrategy.model_validate({})
+    )
+    """Default root input partitioning and worker packing; ignored when nested."""
+
+    group_by: GroupByStrategy | None = None
+    """Default root input pairing; nested composites expand without regrouping."""
 
     # ---------- Compose ----------
     def compose(self, ctx: CompositeContext) -> None:

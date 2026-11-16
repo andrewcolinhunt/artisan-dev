@@ -68,7 +68,7 @@ from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.execution.worker_ownership import OwnershipState
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.operation_config.tool_spec import ToolSpec
-from artisan.schemas.orchestration.output_reference import OutputReference
+from artisan.schemas.orchestration.output_reference import OutputReference, StepSource
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.schemas.orchestration.step_lifecycle import (
     TERMINAL_STEP_STATUSES,
@@ -539,10 +539,62 @@ class PipelineManager:
     def _results(self) -> list[StepResult]:
         _, states = self._snapshot()
         return [
-            state.to_step_result()
+            self._bound_result(state)
             for state in states
             if state.status in TERMINAL_STEP_STATUSES
         ]
+
+    def _bound_result(self, state: StepState) -> StepResult:
+        return state.to_step_result()._bind_source(
+            StepSource(
+                store=self.committer.store_identity, step_run_id=state.step_run_id
+            )
+        )
+
+    def get_step(
+        self, step_number: int, *, pipeline_run_id: str | None = None
+    ) -> StepResult:
+        """Read a saved step result from this manager's store.
+
+        The result retains its selected attempt when wired into another step,
+        even if the source run later retries that position. Lookup does not
+        resume the source run or take ownership of its workers.
+
+        Args:
+            step_number: Nonnegative logical step position, not a sequence index.
+            pipeline_run_id: Source run ID. None selects this manager's run.
+
+        Returns:
+            The latest attempt at that position as a terminal result. Failed
+            attempts are returned for inspection, without selecting an older
+            success. Its output references already identify their source store.
+
+        Raises:
+            ValueError: If the position/run is invalid or missing, or the selected
+                attempt is still pending or running.
+        """
+        if type(step_number) is not int or step_number < 0:
+            msg = "step_number must be a nonnegative integer"
+            raise ValueError(msg)
+        run_id = (
+            self.config.pipeline_run_id if pipeline_run_id is None else pipeline_run_id
+        )
+        if not run_id.strip():
+            msg = "pipeline_run_id must be a nonempty string"
+            raise ValueError(msg)
+        with self.committer._read_snapshot() as read:
+            _, attempts = self.tracker._read_lifecycle(read)
+            states = self.tracker._select_current_states(attempts, run_id)
+        selected = next(
+            (state for state in states if state.step_number == step_number), None
+        )
+        if selected is None:
+            msg = f"Run {run_id!r} has no step at position {step_number}"
+            raise ValueError(msg)
+        if selected.status not in TERMINAL_STEP_STATUSES:
+            msg = f"Step {step_number} in run {run_id!r} is not ready; wait for its result"
+            raise ValueError(msg)
+        return self._bound_result(selected)
 
     def __repr__(self) -> str:
         return (
@@ -598,11 +650,24 @@ class PipelineManager:
     def output(
         self, name: str, role: str, *, step_number: int | None = None
     ) -> OutputReference:
-        """Reference the latest named attempt's own static or completed dynamic role.
+        """Select an output from a named step in this run.
 
-        Static declarations remain usable before completion and after failure;
-        downstream resolution still enforces the selected attempt's availability.
-        An explicit step number identifies a durable position, not a list index.
+        The reference retains the exact selected attempt and source store. It can
+        be used in another run in the same store once the source is ready. Static
+        declarations remain usable before completion and after failure; actual
+        input resolution still checks availability. Dynamic curator roles require
+        completion.
+
+        Args:
+            name: Step display name. Repeated names select the latest position.
+            role: Declared output role to select.
+            step_number: Optional logical position to disambiguate repeated names.
+
+        Returns:
+            A source-bound reference suitable for a downstream step's inputs.
+
+        Raises:
+            ValueError: If the named step or output role is unavailable.
         """
         rows, states = self._snapshot()
         matching = [
@@ -625,7 +690,9 @@ class PipelineManager:
             msg = f"Output role {role!r} not available for step {name!r}"
             raise ValueError(msg)
         return OutputReference(
-            source_step=selected.step_number,
+            source=StepSource(
+                store=self.committer.store_identity, step_run_id=selected.step_run_id
+            ),
             role=role,
             artifact_type=selected.output_types.get(role) or ArtifactTypes.ANY,
         )
@@ -652,7 +719,39 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         name: str | None = None,
     ) -> StepFuture:
-        """Freeze caller choices and persist pending before operational resolution."""
+        """Submit an operation or composite and return a nonblocking step handle.
+
+        Caller parameters and input references are captured before this method
+        returns. References from this manager's pending steps are waited on during
+        execution. References from other runs in the same store must already be
+        terminal with resolved worker ownership. Submission does not prepare
+        software or transfer ownership of another run's workers.
+
+        Args:
+            operation: Operation or composite definition class.
+            inputs: Named artifact streams or output references. Ingestion also
+                accepts raw paths. None means no boundary inputs.
+            params: Scientific parameters as a mapping or the definition's Params.
+            step_runner: Placement runner. None uses the pipeline default.
+            runner_resources: Worker resource patch over definition defaults.
+            batch_strategy: Unit partitioning and worker-packing patch.
+            group_by: Scientific grouping override. None keeps the default.
+            tool: Command-root tool patch; unavailable for composite roots.
+            skip_cache: Force computation when true. None uses the pipeline default.
+            cache_policy: Cache selection policy. None uses the pipeline default.
+            failure_policy: Unit failure policy. None uses the pipeline default.
+            name: Step display name. None uses the definition's name.
+
+        Returns:
+            A future with source-bound output references for downstream wiring.
+            Its result records ordinary operation failures through StepResult.status.
+
+        Raises:
+            TypeError: If the definition, parameter, or option shape is invalid.
+            ValueError: If roles, types, source store, or source readiness are invalid.
+            RuntimeError: If the pipeline is closed.
+            CommandOwnershipError: If worker ownership is unresolved.
+        """
         submission = freeze_submission(
             operation,
             params=params,
@@ -675,7 +774,7 @@ class PipelineManager:
                 msg = "Pipeline coordinator is closed"
                 raise RuntimeError(msg)
             selected = normalize_pipeline_inputs(
-                inputs, step_run_ids=self._step_run_ids
+                inputs, store_identity=self.committer.store_identity
             )
             validate_pipeline_input_contract(
                 selected,
@@ -684,6 +783,7 @@ class PipelineManager:
                     submission.definition, "runtime_defined_inputs", False
                 ),
             )
+            self._validate_external_sources(selected)
             record = _start_record(
                 submission,
                 selected,
@@ -704,6 +804,36 @@ class PipelineManager:
                 failure_policy=failure_policy or self.failure_policy,
             )
             return self._submit_execution(execution)
+
+    def _validate_external_sources(self, inputs: FrozenPipelineInputs) -> None:
+        """Reject unavailable sources that this manager cannot wait on or close."""
+        foreign = set(inputs.dependency_step_run_ids) - self._futures.keys()
+        if not foreign:
+            return
+        with self.committer._read_snapshot() as read:
+            _, attempts = self.tracker._read_lifecycle(read)
+        selected = {
+            state.step_run_id: state
+            for state in attempts
+            if state.step_run_id in foreign
+        }
+        missing = foreign - selected.keys()
+        if missing:
+            msg = f"Output references select unknown step attempts: {sorted(missing)}"
+            raise ValueError(msg)
+        for state in selected.values():
+            if state.cancellation_status in {
+                CancellationStatus.REQUESTED,
+                CancellationStatus.UNKNOWN,
+            }:
+                msg = f"Source step {state.step_run_id} has unresolved worker ownership"
+                raise CommandOwnershipError(msg)
+            if state.status not in TERMINAL_STEP_STATUSES:
+                msg = (
+                    f"Source step {state.step_run_id} belongs to another controller and "
+                    "is not ready; wait for its result before submitting this step"
+                )
+                raise ValueError(msg)
 
     def _submit_execution(self, execution: Execution) -> StepFuture:
         """Retain one controller under this manager's run and cleanup ownership."""
@@ -750,7 +880,25 @@ class PipelineManager:
         failure_policy: FailurePolicy | None = None,
         name: str | None = None,
     ) -> StepResult:
-        """Use the identical submission, acceptance, and ownership path synchronously."""
+        """Run an operation or composite step and wait for its result.
+
+        Accepts the same inputs, scientific parameters, and execution overrides as
+        :meth:`submit`. Definition defaults apply unless supplied fields override
+        them. A composite is one submitted boundary; these options do not create
+        separate child steps.
+
+        Returns:
+            The terminal result, with source-bound output references usable by
+            subsequent steps or another run in the same store. Check its status:
+            ordinary operation failure is recorded in the result rather than
+            raised solely because the failure policy is FAIL_FAST.
+
+        Raises:
+            TypeError: If the definition, parameter, or option shape is invalid.
+            ValueError: If input or execution configuration is invalid.
+            RuntimeError: If the pipeline is closed.
+            CommandOwnershipError: If worker ownership is unresolved.
+        """
         return self.submit(
             operation,
             inputs=inputs,

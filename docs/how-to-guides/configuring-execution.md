@@ -132,15 +132,23 @@ that intentionally executes on its full prepared batch.
 
 ## Set and override operation defaults
 
-Operations can declare `runner_resources`, `batch_strategy`, and `tool` defaults.
+Operations and composites can declare `runner_resources`, `batch_strategy`, and
+`group_by` defaults. Command operations can also declare `tool` defaults.
 Submission overrides use the fields you supply, as mappings or typed models.
 Omitted fields keep their defaults. `None` as the whole option means no override;
 an explicit `None` inside a patch resets a nullable field. Resource `extra`
 mappings are supplied as a whole, so include the entries you want to keep.
+Omitted `group_by`, including `group_by=None`, keeps the authored grouping.
 
-Composites take placement, resources, batching, and policies at their outer
-submission. Their `ctx.call` declarations contain wiring and scientific parameters.
-See [composite submission](writing-composite-operations.md#forward-execution-overrides).
+For a composite with four CPUs and 16 GiB declared, overriding only
+`runner_resources={"memory_gb": 32}` keeps four CPUs. Likewise, overriding worker
+packing keeps its authored scientific unit size. See the
+[composite defaults example](writing-composite-operations.md#declare-step-defaults).
+
+Composite defaults apply to the outer submitted boundary. Artisan does not
+combine child resource requests. A nested composite's own outer defaults are
+not reapplied inside `ctx.call`; the parent controls the boundary. Its children
+keep their declared tool environments and creator invocation behavior.
 
 ## Select an external tool environment
 

@@ -31,6 +31,7 @@ from artisan.orchestration.runner_api import (
     Parameters,
     RunnerResources,
     compile_definition,
+    merge_runner_resources,
 )
 from artisan.registry import bootstrap_applications
 from artisan_modal.bindings import ModalFunctionRuntime, PreparedModalImage
@@ -121,9 +122,12 @@ class ModalRunner:
         application_modules: tuple[str, ...] = (),
     ) -> None:
         bootstrap_applications(application_modules, purpose="Modal worker preparation")
+        plan = compile_definition(definition, params=params)
         self._prepare(
-            compile_definition(definition, params=params),
-            runner_resources or RunnerResources(cpus=1, memory_gb=4, gpus=0),
+            plan,
+            merge_runner_resources(
+                plan.instantiate().runner_resources, runner_resources
+            ),
             application_modules,
         )
 
@@ -137,7 +141,7 @@ class ModalRunner:
         bootstrap_applications(application_modules, purpose="Modal curator preparation")
         self._prepare(
             operation,
-            runner_resources or RunnerResources(cpus=1, memory_gb=4, gpus=0),
+            merge_runner_resources(operation.runner_resources, runner_resources),
             application_modules,
         )
 

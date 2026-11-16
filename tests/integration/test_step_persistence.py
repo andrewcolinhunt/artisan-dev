@@ -351,7 +351,8 @@ def test_resume(pipeline_env: dict[str, str]) -> None:
 
     # Can chain from resumed state
     ref = p2[1].output("dataset")
-    assert ref.source_step == 1
+    assert ref.source.step_run_id == p2[1].step_run_id
+    assert ref.source.store == p2.committer.store_identity
     assert ref.role == "dataset"
     p2.close()
 
@@ -381,7 +382,8 @@ def test_async_submit(pipeline_env: dict[str, str]) -> None:
 
     # output() returns immediately (never blocks)
     ref = future.output("datasets")
-    assert ref.source_step == 0
+    assert ref.source.step_run_id == pipeline.executions[0].record.step_run_id
+    assert ref.source.store == pipeline.committer.store_identity
     assert ref.role == "datasets"
 
     # result() blocks until done

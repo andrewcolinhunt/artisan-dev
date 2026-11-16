@@ -126,7 +126,35 @@ children explicitly through `ctx.call(..., params=...)`.
 
 Loops and conditionals may depend on those parameters. They cannot depend on
 future artifact values: `CompositeRef` describes wiring and contains no result
-data. Do not read stores, dispatch workers, or install software inside `compose`.
+data. Keep scientific choices in `Params`; do not choose calls based on worker
+resources or batch defaults. Do not read stores, dispatch workers, or install
+software inside `compose`.
+
+## Declare step defaults
+
+A composite can declare `runner_resources`, `batch_strategy`, and `group_by`
+defaults just like an operation. For example, add this subclass to your installed
+application package to reuse the built-in composition with different defaults:
+
+```python
+from artisan.composites.examples import TransformAndScore
+from artisan.schemas import BatchStrategy, RunnerResources
+
+
+class BatchedTransformAndScore(TransformAndScore):
+    name = "batched_transform_and_score"
+    runner_resources: RunnerResources = RunnerResources(cpus=4, memory_gb=16)
+    batch_strategy: BatchStrategy = BatchStrategy(
+        artifacts_per_unit=2,
+        units_per_worker=3,
+    )
+```
+
+The author chooses one worker allocation for the composite. Artisan does not
+combine its children's resource requests. These defaults apply when this
+composite is the submitted boundary. If another composite calls it with
+`ctx.call`, its outer resource, batching, and grouping defaults are not reapplied;
+the nested composition expands within the parent's boundary.
 
 ## Forward execution overrides
 
@@ -143,6 +171,11 @@ scored = pipeline.run(
 )
 ```
 
+Overrides replace only the fields you supply. For example,
+`runner_resources={"memory_gb": 32}` on `BatchedTransformAndScore` keeps its four
+CPUs, while `batch_strategy={"units_per_worker": 2}` keeps its two-artifact units.
+Omitting `group_by`, or passing `None`, keeps the declared grouping default.
+
 These settings govern the submitted boundary. `ctx.call` accepts scientific
 wiring and parameters; it has no child runner, persistence, cache, or retry
 settings. Separate pipeline submissions when an intermediate needs an independent
@@ -154,7 +187,13 @@ different command environments do not require different workers.
 
 Pass another `CompositeDefinition` to `ctx.call` to expand it inside the same
 boundary. A nested composite does not create a separate persisted step or cache.
-Store-bound curators such as `Filter` and `Merge` stay top-level pipeline steps;
+Its outer execution defaults are ignored, while creator children keep their own
+scientific invocation behavior.
+
+Creator children must declare static input roles. Their grouping may be ZIP or
+CROSS_PRODUCT; NAME and LINEAGE grouping require pipeline-level selection and
+cannot run inside a composite. Store-bound curators such as `Filter` and `Merge`
+stay top-level pipeline steps;
 they cannot query uncommitted children inside a scientific composite.
 
 See [Composites and Composition](../concepts/composites-and-composition.md) for

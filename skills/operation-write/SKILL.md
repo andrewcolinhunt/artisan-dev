@@ -50,6 +50,8 @@ Preprocess adapts input artifacts into plain prepared values. Wrap aligned
 per-artifact values in `PerArtifact`; ordinary lists are shared values. Preserve
 input order and occurrence indices alongside paths and other prepared data.
 Declare `per_artifact_dispatch = False` only for intentional whole-batch work.
+Per-artifact execute calls run within the assigned worker; a command may start
+its own tool process. This setting does not create additional provider workers.
 
 Execute performs the calculation. Native code receives `ExecuteInput`; command
 code returns a literal argv list from its prepared input mapping. Use managed
@@ -85,6 +87,12 @@ Prepare missing software explicitly through the selected runner before execution
 Keep runtime weights/data and sensitive storage/runtime configuration out of the
 canonical software recipe. An undeclared tool environment intentionally inherits
 the worker; a missing declared target must fail instead of falling back.
+
+An operation can declare `runner_resources`, `batch_strategy`, and `group_by`
+defaults for its submitted boundary. Sparse submission overrides retain omitted
+fields. A composite enclosing the operation chooses its own worker allocation;
+child resource requests are not combined automatically. Prepare with the same
+effective resource overrides when the runner's deployment depends on them.
 
 ## Package and verify
 

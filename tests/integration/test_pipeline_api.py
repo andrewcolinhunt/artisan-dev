@@ -213,7 +213,8 @@ class TestOutputNameLookup:
 
         ref = pipeline.output("gen_step", "datasets")
         assert isinstance(ref, OutputReference)
-        assert ref.source_step == 0
+        assert ref.source.step_run_id == pipeline[0].step_run_id
+        assert ref.source.store == pipeline.committer.store_identity
         assert ref.role == "datasets"
 
         pipeline.finalize()
@@ -233,7 +234,8 @@ class TestOutputNameLookup:
         )
 
         ref = pipeline.output("data_generator", "datasets")
-        assert ref.source_step == 0
+        assert ref.source.step_run_id == pipeline[0].step_run_id
+        assert ref.source.store == pipeline.committer.store_identity
 
         pipeline.finalize()
 
@@ -293,11 +295,11 @@ class TestOutputNameLookup:
 
         # Default: last wins
         ref_last = pipeline.output("gen", "datasets")
-        assert ref_last.source_step == 1
+        assert ref_last.source.step_run_id == pipeline[1].step_run_id
 
         # Explicit step_number=0
         ref_first = pipeline.output("gen", "datasets", step_number=0)
-        assert ref_first.source_step == 0
+        assert ref_first.source.step_run_id == pipeline[0].step_run_id
 
         pipeline.finalize()
 
@@ -362,7 +364,8 @@ class TestStepFutureProperties:
 
         ref = future.output("datasets")
         assert isinstance(ref, OutputReference)
-        assert ref.source_step == 0
+        assert ref.source.step_run_id == pipeline.executions[0].record.step_run_id
+        assert ref.source.store == pipeline.committer.store_identity
         assert ref.role == "datasets"
 
         future.result(timeout=30)

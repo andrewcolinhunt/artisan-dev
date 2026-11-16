@@ -131,7 +131,8 @@ def test_resume_output_chaining_preserves_exact_accepted_sources(
         outputs = read_current_step_outputs(original.committer, source.step_run_id)
     with _resume(original) as resumed:
         ref = resumed[0].output("structure")
-        assert ref.source_step == 0
+        assert ref.source.step_run_id == source.step_run_id
+        assert ref.source.store == resumed.committer.store_identity
         assert ref.role == "structure"
         assert (
             read_current_step_outputs(resumed.committer, source.step_run_id) == outputs

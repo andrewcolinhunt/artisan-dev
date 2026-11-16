@@ -1,7 +1,7 @@
 # Build a Pipeline
 
-Create a pipeline, connect operation outputs to inputs, and check the completed
-results.
+Create a pipeline, use operations or composites as steps, and connect their
+outputs to the next step.
 
 **Prerequisites:** [Operations Model](../concepts/operations-model.md)
 and operations to compose. The example below uses Artisan's built-in examples.
@@ -16,27 +16,30 @@ Check your application's existing operations before writing a new one. Use the
 A complete pipeline that generates data, transforms it, and computes metrics:
 
 ```python
+from pathlib import Path
+
 from artisan.orchestration import PipelineManager
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 
+run_root = Path("runs").resolve()
 pipeline = PipelineManager.create(
     name="quickstart",
-    delta_root="runs/delta",
-    staging_root="runs/staging",
+    delta_root=str(run_root / "delta"),
+    staging_root=str(run_root / "staging"),
 )
-output = pipeline.output
-
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
-pipeline.run(
-    operation=DataTransformer,
+generated = pipeline.run(
+    DataGenerator, name="generate", params={"count": 5, "seed": 42}
+)
+transformed = pipeline.run(
+    DataTransformer,
     name="transform",
-    inputs={"dataset": output("generate", "datasets")},
+    inputs={"dataset": generated.output("datasets")},
     params={"scale_factor": 2.0, "noise_amplitude": 0.0},
 )
 pipeline.run(
-    operation=MetricCalculator,
+    MetricCalculator,
     name="metrics",
-    inputs={"dataset": output("transform", "dataset")},
+    inputs={"dataset": transformed.output("dataset")},
 )
 summary = pipeline.finalize()
 assert summary["overall_success"]
@@ -52,13 +55,14 @@ distinct names when trying several examples in the same run.
 ```python
 pipeline = PipelineManager.create(
     name="my_pipeline",
-    delta_root="runs/delta",
-    staging_root="runs/staging",
+    delta_root=str(run_root / "delta"),
+    staging_root=str(run_root / "staging"),
 )
 ```
 
 `delta_root` contains the durable store; `staging_root` holds workers' pending
-results. Use [Configure Execution](configuring-execution.md) for worker
+results. Use absolute local paths so workers can find the same locations from
+their execution directories. Use [Configure Execution](configuring-execution.md) for worker
 resources, batching, cache policy, and diagnostic directories. Exact arguments
 are available through the [Python API entry points](../reference/python-api.md).
 
@@ -70,15 +74,16 @@ node-local scratch to avoid shared filesystem contention.
 
 ## Add steps
 
-Pass an operation class to `pipeline.run()`. Inputs can come from upstream steps
-or external files; source operations need no inputs.
+Pass an operation or composite class to `pipeline.run()`. Both return a
+`StepResult` whose `.output(role)` connects to another step. Source operations
+need no inputs; external files enter through ingestion.
 
 ### Source (no inputs)
 
 A source step creates artifacts without upstream inputs:
 
 ```python
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 10})
+generated = pipeline.run(DataGenerator, name="generate", params={"count": 10})
 ```
 
 ### Sequential (one input)
@@ -86,19 +91,18 @@ pipeline.run(operation=DataGenerator, name="generate", params={"count": 10})
 Wire the output of one step to the input of the next using `output()`:
 
 ```python
-output = pipeline.output
-
-pipeline.run(
-    operation=DataTransformer,
+transformed = pipeline.run(
+    DataTransformer,
     name="transform",
-    inputs={"dataset": output("generate", "datasets")},
+    inputs={"dataset": generated.output("datasets")},
     params={"scale_factor": 2.0},
 )
 ```
 
-`output("generate", "datasets")` returns an `OutputReference` — a lazy pointer
-resolved to concrete artifact IDs at dispatch time. The dict key (`"dataset"`)
-must match the downstream operation's input role name.
+`generated.output("datasets")` returns an `OutputReference` that already
+identifies the source store, exact step attempt, and output role. Artisan resolves
+its accepted artifacts when the consumer runs. A later retry does not change the
+reference. The dict key (`"dataset"`) must match the consumer's input role name.
 
 ### Ingest (external files)
 
@@ -150,22 +154,15 @@ the most recent one by default. To reference a specific instance, pass
 output("gen", "datasets", step_number=0)
 ```
 
-:::{tip} Two ways to wire steps
-**Name-based (preferred):**
+Prefer returned handles when wiring new steps:
+
 ```python
-output = pipeline.output
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5})
-pipeline.run(
-    operation=DataTransformer, inputs={"dataset": output("generate", "datasets")}
-)
+generated = pipeline.run(DataGenerator, params={"count": 5})
+pipeline.run(DataTransformer, inputs={"dataset": generated.output("datasets")})
 ```
 
-**Direct chaining (also works):**
-```python
-step0 = pipeline.run(operation=DataGenerator, params={"count": 5})
-pipeline.run(operation=DataTransformer, inputs={"dataset": step0.output("datasets")})
-```
-:::
+Name lookup is useful when retrieving a step you did not keep in a variable.
+Both forms capture an exact source attempt when the reference is created.
 
 ---
 
@@ -194,15 +191,15 @@ step used `run()`. It releases the pipeline's executor and runner resources.
 pending step, and returns a `StepFuture`. Both wire downstream with `.output("role")`.
 Use `submit()` to keep the caller available, then call `.result()` for the result
 or `finalize()` to wait for all work and clean up. Operations and composites use
-these same methods.
+these same methods. A curator with output roles discovered during execution
+requires `future.result().output(role)` for those roles.
 
 ```python
-output = pipeline.output
-pipeline.submit(operation=DataGenerator, name="generate", params={"count": 100})
+generated = pipeline.submit(DataGenerator, name="generate", params={"count": 100})
 pipeline.submit(
-    operation=DataTransformer,
+    DataTransformer,
     name="transform",
-    inputs={"dataset": output("generate", "datasets")},
+    inputs={"dataset": generated.output("datasets")},
 )
 summary = pipeline.finalize()
 ```
@@ -213,13 +210,15 @@ Use a `with` block when all steps belong to one block of code:
 
 ```python
 with PipelineManager.create(
-    name="batch", delta_root="runs/delta", staging_root="runs/staging"
+    name="batch",
+    delta_root=str(run_root / "delta"),
+    staging_root=str(run_root / "staging"),
 ) as pipeline:
-    pipeline.run(operation=DataGenerator, name="generate")
+    generated = pipeline.run(DataGenerator, name="generate")
     pipeline.run(
-        operation=DataTransformer,
+        DataTransformer,
         name="transform",
-        inputs={"dataset": pipeline.output("generate", "datasets")},
+        inputs={"dataset": generated.output("datasets")},
     )
 # __exit__ calls finalize() automatically.
 ```
@@ -239,18 +238,17 @@ rules, and [Python API lookup](../reference/python-api.md) for exact arguments.
 Feed the same output into separate steps with different parameters:
 
 ```python
-output = pipeline.output
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 10, "seed": 42})
-pipeline.submit(
-    operation=DataTransformer,
+generated = pipeline.run(DataGenerator, params={"count": 10, "seed": 42})
+branch_a = pipeline.submit(
+    DataTransformer,
     name="branch_a",
-    inputs={"dataset": output("generate", "datasets")},
+    inputs={"dataset": generated.output("datasets")},
     params={"scale_factor": 2.0, "noise_amplitude": 0.0},
 )
-pipeline.submit(
-    operation=DataTransformer,
+branch_b = pipeline.submit(
+    DataTransformer,
     name="branch_b",
-    inputs={"dataset": output("generate", "datasets")},
+    inputs={"dataset": generated.output("datasets")},
     params={"scale_factor": 3.0, "noise_amplitude": 0.0},
 )
 ```
@@ -262,12 +260,12 @@ Combine multiple streams into one with `Merge`:
 ```python
 from artisan.operations.curator import Merge
 
-pipeline.run(
-    operation=Merge,
+merged = pipeline.run(
+    Merge,
     name="merge",
-    inputs=[output("branch_a", "dataset"), output("branch_b", "dataset")],
+    inputs=[branch_a.output("dataset"), branch_b.output("dataset")],
 )
-# Downstream uses: output("merge", "merged")
+# Downstream uses: merged.output("merged")
 ```
 
 Pass inputs as a list. The merged output role is always `"merged"`.
@@ -279,17 +277,17 @@ Use `Filter` to keep artifacts that meet criteria:
 ```python
 from artisan.operations.curator import Filter
 
-pipeline.run(
-    operation=Filter,
+filtered = pipeline.run(
+    Filter,
     name="filter",
-    inputs={"passthrough": output("transform", "dataset")},
+    inputs={"passthrough": transformed.output("dataset")},
     params={
         "criteria": [
             {"metric": "distribution.median", "operator": "gt", "value": 0.5},
         ],
     },
 )
-# Downstream uses: output("filter", "passthrough")
+# Downstream uses: filtered.output("passthrough")
 ```
 
 `"passthrough"` names both the input and output role. `Filter` discovers descendant
@@ -299,22 +297,24 @@ and threshold previews.
 
 ### Composing operations with composites
 
-Run a reusable sequence with `pipeline.run()`. This example uses
-`TransformAndScore` from [Write Composite Operations](writing-composite-operations.md).
-Its children run in one worker per unit, with one persistence and cache boundary:
+Use the same call for a reusable composite. This example uses the installed
+`TransformAndScore`; [Write Composite Operations](writing-composite-operations.md)
+shows how it is defined. Its children run in one worker per unit, with one
+persistence and cache boundary:
 
 ```python
-output = pipeline.output
-pipeline.run(operation=DataGenerator, name="gen", params={"count": 10})
+from artisan.composites.examples import TransformAndScore
 
-pipeline.run(
+generated = pipeline.run(DataGenerator, params={"count": 10})
+combined = pipeline.run(
     TransformAndScore,
-    name="ts",
-    inputs={"dataset": output("gen", "datasets")},
+    inputs={"dataset": generated.output("datasets")},
 )
 ```
 
-Execution settings apply to the outer submission. See
+`combined.output("dataset")` and `combined.output("metrics")` connect to later
+steps exactly like an operation result. Execution settings apply to the outer
+submission. See
 [composite submission](writing-composite-operations.md#forward-execution-overrides).
 
 ### Optional SLURM execution
@@ -329,7 +329,7 @@ settings:
 ```python
 from pathlib import Path
 
-from artisan.schemas import Environment
+from artisan.schemas import Environment, RunnerResources
 from artisan_submitit import SlurmRunner
 
 shared = Path("/shared/artisan/example")
@@ -341,14 +341,15 @@ runner = SlurmRunner(
     log_folder=shared / "scheduler",
     slurm_partition="cpu",
 )
-runner.prepare(DataTransformer)
+resources = RunnerResources(cpus=1, memory_gb=2, time_limit="00:05:00")
+runner.prepare(DataTransformer, runner_resources=resources)
 
 pipeline.run(
     operation=DataTransformer,
     name="transform",
-    inputs={"dataset": output("generate", "datasets")},
+    inputs={"dataset": generated.output("datasets")},
     step_runner=runner,
-    runner_resources={"cpus": 1, "memory_gb": 2, "time_limit": "00:05:00"},
+    runner_resources=resources,
 )
 ```
 
@@ -357,6 +358,61 @@ paths on the nodes. Preparation may install software; submission only verifies
 and uses the prepared target.
 
 See [Configuring Execution](configuring-execution.md) for resource and batching recipes.
+
+(reuse-another-run)=
+### Use results from another run
+
+A pipeline run groups submissions and manages their execution. The store holds
+accepted results that other runs can reuse. Pass a result's `.output(role)` to
+another pipeline using that same store; the reference keeps its original source.
+
+If you no longer have the result handle, retrieve it with `get_step`. This
+complete example creates two runs in one temporary store:
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from artisan.operations.examples import DataGenerator, MetricCalculator
+from artisan.orchestration import PipelineManager, StepStatus
+from artisan.visualization import inspect_step
+
+with TemporaryDirectory() as directory:
+    root = Path(directory)
+    roots = {"delta_root": str(root / "delta"), "staging_root": str(root / "staging")}
+    with PipelineManager.create(name="generate", **roots) as first:
+        generated = first.run(DataGenerator, params={"count": 2, "seed": 42})
+        assert generated.status is StepStatus.SUCCEEDED, generated.error
+        source_run_id = first.config.pipeline_run_id
+
+    with PipelineManager.create(name="measure", **roots) as second:
+        saved = second.get_step(generated.step_number, pipeline_run_id=source_run_id)
+        assert saved.output("datasets") == generated.output("datasets")
+        measured = second.run(
+            MetricCalculator,
+            inputs={"dataset": saved.output("datasets")},
+        )
+        assert measured.status is StepStatus.SUCCEEDED, measured.error
+        outputs = inspect_step(
+            roots["delta_root"],
+            measured.step_number,
+            pipeline_run_id=second.config.pipeline_run_id,
+        )
+        assert outputs.height == 2
+```
+
+The temporary store is deleted when this example ends. Use persistent roots to
+keep your results. `get_step` selects the latest attempt at the requested logical
+step position when called; the returned handle stays bound to that attempt.
+Unlike `pipeline[index]`, its number is a logical step number rather than a list
+index. It reads the source result without resuming or changing the earlier run.
+A failed latest attempt is returned as failed, without substituting an older success.
+
+Within one manager, a downstream submission waits for a pending source future.
+A source owned by another manager must already be terminal with resolved worker
+ownership. Wait on that source's `.result()` before submitting the consumer if
+needed. A consumer never takes over or cancels the other run's workers.
+Different stores require an explicit import rather than an output reference.
 
 ### Resume a previous run
 
@@ -370,8 +426,8 @@ Use `resume()` to restore an existing run and append steps:
 
 ```python
 pipeline = PipelineManager.resume(
-    delta_root="runs/delta",
-    staging_root="runs/staging",
+    delta_root=str(run_root / "delta"),
+    staging_root=str(run_root / "staging"),
 )
 ```
 
@@ -396,8 +452,8 @@ the runner's stable name for provenance, not the configured Python object:
 ```python
 # `runner` is the configured SlurmRunner from the setup above.
 pipeline = PipelineManager.resume(
-    delta_root="runs/delta",
-    staging_root="runs/staging",
+    delta_root=str(run_root / "delta"),
+    staging_root=str(run_root / "staging"),
     default_step_runner=runner,
 )
 ```
@@ -412,7 +468,7 @@ Inspect all pipeline runs stored in a delta root:
 ```python
 from artisan.orchestration import list_runs
 
-runs = list_runs(delta_root="runs/delta")
+runs = list_runs(delta_root=str(run_root / "delta"))
 print(runs)  # polars DataFrame with run IDs, step counts, and timestamps
 ```
 
@@ -437,10 +493,11 @@ Run your pipeline with a small dataset to confirm wiring and output:
 ```python
 from artisan.orchestration import StepStatus
 
+test_root = Path("test").resolve()
 pipeline = PipelineManager.create(
     name="test",
-    delta_root="test/delta",
-    staging_root="test/staging",
+    delta_root=str(test_root / "delta"),
+    staging_root=str(test_root / "staging"),
 )
 step = pipeline.run(operation=DataGenerator, params={"count": 3, "seed": 42})
 assert step.status is StepStatus.SUCCEEDED
@@ -449,7 +506,9 @@ assert step.succeeded_count == 1  # One source execution creates three artifacts
 from artisan.visualization import inspect_step
 
 outputs = inspect_step(
-    "test/delta", step.step_number, pipeline_run_id=pipeline.config.pipeline_run_id
+    str(test_root / "delta"),
+    step.step_number,
+    pipeline_run_id=pipeline.config.pipeline_run_id,
 )
 assert outputs.filter(outputs["artifact_type"] == "csv").height == 3
 assert pipeline.finalize()["overall_success"]

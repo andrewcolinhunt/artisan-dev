@@ -45,14 +45,13 @@ class RootSelection:
             ):
                 msg = "Root selection cannot change declared invocation behavior"
                 raise ValueError(msg)
-            if isinstance(instance, OperationDefinition):
-                instance.group_by = self.policy.group_by
-                instance.batch_strategy = BatchStrategy.model_validate(
-                    {
-                        **instance.batch_strategy.model_dump(),
-                        **self.policy.model_dump(include=_SCIENTIFIC_BATCH_FIELDS),
-                    }
-                )
+            instance.group_by = self.policy.group_by
+            instance.batch_strategy = BatchStrategy.model_validate(
+                {
+                    **instance.batch_strategy.model_dump(),
+                    **self.policy.model_dump(include=_SCIENTIFIC_BATCH_FIELDS),
+                }
+            )
         if self.tool is not None:
             _require_command_tool(instance)
             assert isinstance(instance, OperationDefinition)
@@ -87,12 +86,7 @@ def normalize_root_selection(
     if policy.independent_input_streams and (group_by is not None or scientific):
         msg = "Whole-stream creators reject explicit pairing or scientific batching"
         raise ValueError(msg)
-    batch = merge_batch_strategy(
-        instance.batch_strategy
-        if isinstance(instance, OperationDefinition)
-        else BatchStrategy.model_validate({}),
-        batch_patch,
-    )
+    batch = merge_batch_strategy(instance.batch_strategy, batch_patch)
     selected_policy = None
     if group_by is not None or scientific:
         selected_policy = InvocationPolicy.model_validate(
