@@ -91,6 +91,27 @@ class ReplayAssociation(ReplayModel):
     artifact_ids: list[str]
 
 
+def captured_associations(
+    inputs: dict[str, list[CacheInputIdentity]],
+) -> list[ReplayAssociation]:
+    """Recover the exact association snapshot included in cache occurrences."""
+    captured: dict[tuple[str, str], tuple[str, ...]] = {}
+    for entries in inputs.values():
+        for entry in entries:
+            for association in entry.associated:
+                key = (entry.artifact_id, association.artifact_type)
+                if key in captured and captured[key] != association.artifact_ids:
+                    msg = "Conflicting captured membership for one associated input"
+                    raise ValueError(msg)
+                captured[key] = association.artifact_ids
+    return [
+        ReplayAssociation(
+            primary_id=primary, artifact_type=kind, artifact_ids=list(ids)
+        )
+        for (primary, kind), ids in sorted(captured.items())
+    ]
+
+
 class ReplayReplacement(ReplayModel):
     """One omitted whole JSON value; hints never supply values implicitly."""
 
@@ -168,6 +189,10 @@ class ReplaySnapshot(ReplayModel):
         owners = [(item.primary_id, item.artifact_type) for item in self.associated]
         if len(owners) != len(set(owners)):
             msg = "Duplicate replay association owner"
+            raise ValueError(msg)
+        captured = captured_associations(self.inputs)
+        if captured and captured != self.associated:
+            msg = "Replay associations differ from the frozen cache inputs"
             raise ValueError(msg)
         if self.operation is not None and self.associated_complete:
             specs: Any = self.operation.behavior["inputs"]

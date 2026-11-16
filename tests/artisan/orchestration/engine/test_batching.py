@@ -12,7 +12,7 @@ from artisan.orchestration.engine.batching import (
     pack_units,
 )
 from artisan.schemas.orchestration.batch_config import BatchConfig
-from artisan.utils.hashing import CacheInputIdentity
+from artisan.utils.hashing import AssociatedInputIdentity, CacheInputIdentity
 
 
 def _units(count: int) -> list[ExecutionUnit]:
@@ -24,6 +24,32 @@ def _units(count: int) -> list[ExecutionUnit]:
         )
         for index in range(count)
     ]
+
+
+def test_batches_preserve_associations_for_their_primary_occurrences() -> None:
+    ids = ["a" * 32, "b" * 32]
+    memberships = [(), ("c" * 32,)]
+    cache = {
+        "data": [
+            CacheInputIdentity(
+                "data",
+                None,
+                i,
+                "csv",
+                primary,
+                (AssociatedInputIdentity("metric", memberships[i]),),
+            )
+            for i, primary in enumerate(ids)
+        ]
+    }
+    batches = generate_execution_unit_batches(
+        {"data": ids}, BatchConfig(artifacts_per_unit=1), cache_inputs=cache
+    )
+    for i, (_, _, occurrences) in enumerate(batches):
+        entry = occurrences["data"][0]
+        assert entry.position == 0
+        assert entry.artifact_id == ids[i]
+        assert entry.associated[0].artifact_ids == memberships[i]
 
 
 class TestPackUnits:

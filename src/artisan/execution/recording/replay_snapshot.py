@@ -24,6 +24,7 @@ from artisan.schemas.execution.replay import (
     ReplayReplacement,
     ReplaySnapshot,
     ReplaySource,
+    captured_associations,
 )
 from artisan.schemas.operation_config.compute import ModalComputeConfig
 from artisan.schemas.operation_config.environment_spec import EnvironmentSpec
@@ -247,10 +248,8 @@ def build_replay_snapshot(
             ),
             inputs=cache_inputs,
             group_ids=unit.group_ids,
-            associated=[],
-            associated_complete=not any(
-                spec.with_associated for spec in unit.operation.inputs.values()
-            ),
+            associated=captured_associations(cache_inputs),
+            associated_complete=True,
             source=ReplaySource(
                 step_number=unit.step_number,
                 step_run_id=unit.step_run_id,
@@ -285,7 +284,7 @@ class ReplayBuilder:
     def record_associated(
         self, associated: dict[tuple[str, str], list[Artifact]]
     ) -> None:
-        """Freeze the actual hydrated list, preserving its order and empty pairs."""
+        """Verify hydrated membership and retain canonical association evidence."""
         records = [
             ReplayAssociation(
                 primary_id=primary,
@@ -294,9 +293,15 @@ class ReplayBuilder:
                     a.artifact_id for a in artifacts if a.artifact_id is not None
                 ],
             )
-            for (primary, kind), artifacts in associated.items()
+            for (primary, kind), artifacts in sorted(associated.items())
         ]
         with self._lock:
+            if self._snapshot.associated_complete and records != sorted(
+                self._snapshot.associated,
+                key=lambda item: (item.primary_id, item.artifact_type),
+            ):
+                msg = "Hydrated associations differ from the frozen input snapshot"
+                raise ValueError(msg)
             self._snapshot = self._snapshot.model_copy(
                 update={"associated": records, "associated_complete": True}
             )
@@ -411,6 +416,13 @@ def capture_replay(
             snapshot = build_replay_snapshot(unit, runtime, occurrences)
         except (KeyError, ValueError, OSError, ArtisanError):
             snapshot = ReplaySnapshot.unavailable("unverified_input_occurrences")
+    if snapshot.associated_complete and sorted(
+        unit.associated_inputs, key=lambda item: (item.primary_id, item.artifact_type)
+    ) != sorted(
+        snapshot.associated, key=lambda item: (item.primary_id, item.artifact_type)
+    ):
+        msg = "Runtime associations differ from the frozen replay snapshot"
+        raise ValueError(msg)
     builder = ReplayBuilder(snapshot)
     builder.record_remote(
         RemoteObservation(

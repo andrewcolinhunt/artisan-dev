@@ -19,6 +19,7 @@ from artisan.schemas.orchestration.step_overrides import StepOverrides
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.utils.hashing import (
+    AssociatedInputIdentity,
     CacheInputIdentity,
     compute_artifact_id,
     compute_content_digest,
@@ -28,6 +29,22 @@ from artisan.utils.hashing import (
     effective_config_payload,
     serialize_params,
 )
+
+
+def test_association_types_and_empty_membership_change_both_cache_keys() -> None:
+    """An empty captured type differs from no declaration or another type."""
+    memberships = [
+        (),
+        (AssociatedInputIdentity("metric", ()),),
+        (AssociatedInputIdentity("config", ()),),
+        (AssociatedInputIdentity("metric", ("b" * 32,)),),
+    ]
+    inputs = [
+        {"data": [CacheInputIdentity("data", None, 0, "csv", "a" * 32, membership)]}
+        for membership in memberships
+    ]
+    assert len({compute_execution_spec_id("consumer", item) for item in inputs}) == 4
+    assert len({compute_step_spec_id("consumer", 1, {}, item) for item in inputs}) == 4
 
 
 class TestComputeArtifactId:

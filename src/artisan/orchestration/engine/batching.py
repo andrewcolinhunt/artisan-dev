@@ -92,6 +92,7 @@ def generate_execution_unit_batches(
                     position=position,
                     artifact_type=entry.artifact_type,
                     artifact_id=entry.artifact_id,
+                    associated=entry.associated,
                 )
                 for position, entry in enumerate(entries[start:end])
             ]
