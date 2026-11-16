@@ -11,12 +11,15 @@ import pytest
 from fixtures.composition_operations import Transform
 
 from artisan.composites.base.compiler import compile_definition
+from artisan.composites.examples import GenerateAndScore
 from artisan.execution.assignment_transport import (
     AdmittedAssignment,
     AssignmentDispatch,
 )
 from artisan.execution.environments.requirements import ToolEnvironmentSelection
 from artisan.execution.local_packing import LocalPackStartupError
+from artisan.operations.curator.merge import Merge
+from artisan.orchestration.engine.pipeline_submission import freeze_submission
 from artisan.orchestration.runners.assignment import AssignmentLaunchError
 from artisan.orchestration.runners.local import LocalRunner
 from artisan.schemas.execution.admission import AdmissionReference
@@ -33,6 +36,21 @@ from artisan.utils.command_supervisor import OwnershipOutcome
 MODULE = "artisan.orchestration.runners.local"
 
 
+class ResourceTransform(Transform):
+    name = "local_prepare_resource_transform"
+    runner_resources: RunnerResources = RunnerResources(cpus=4, memory_gb=16)
+
+
+class ResourceComposite(GenerateAndScore):
+    name = "local_prepare_resource_composite"
+    runner_resources: RunnerResources = RunnerResources(cpus=4, memory_gb=16)
+
+
+class ResourceMerge(Merge):
+    name = "local_prepare_resource_merge"
+    runner_resources: RunnerResources = RunnerResources(cpus=4, memory_gb=16)
+
+
 def _runner(tmp_path: Path, **kwargs: object) -> LocalRunner:
     return LocalRunner(
         Environment.from_pixi(tmp_path / "pixi.toml", name="worker"),
@@ -43,6 +61,34 @@ def _runner(tmp_path: Path, **kwargs: object) -> LocalRunner:
 
 def _resources(**kwargs: object) -> RunnerResources:
     return RunnerResources(cpus=1, memory_gb=4, gpus=0, **kwargs)
+
+
+@pytest.mark.parametrize(
+    "definition", [ResourceTransform, ResourceComposite, ResourceMerge]
+)
+@pytest.mark.parametrize("override", [None, RunnerResources(memory_gb=32)])
+def test_prepare_uses_the_same_resource_defaults_and_patch_as_submission(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    definition: type[ResourceTransform] | type[ResourceComposite] | type[ResourceMerge],
+    override: RunnerResources | None,
+) -> None:
+    runner = LocalRunner(cache_root=tmp_path)
+    resolve = Mock()
+    monkeypatch.setattr(LocalRunner, "resolve", resolve)
+    monkeypatch.setattr(LocalRunner, "resolve_curator", resolve)
+    expected = freeze_submission(definition, runner_resources=override).resources
+    if definition is ResourceMerge:
+        runner.prepare_curator(definition(), runner_resources=override)
+    else:
+        runner.prepare(definition, runner_resources=override)
+    selected = resolve.call_args.args[1]
+    assert selected == expected
+    assert selected.cpus == 4
+    selected.memory_gb = 99
+    assert definition().runner_resources.memory_gb == 16
+    if override is not None:
+        assert override.memory_gb == 32
 
 
 def test_constructor_is_declaration_only_and_resource_rejection_precedes_lookup(

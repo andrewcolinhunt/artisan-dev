@@ -67,7 +67,10 @@ from artisan.orchestration.runners.curator import CuratorHandle, CuratorLaunchEr
 from artisan.registry import bootstrap_applications
 from artisan.schemas.execution.prepared_environment import PreparedNativeEnvironment
 from artisan.schemas.operation_config.environment import Environment
-from artisan.schemas.operation_config.runner_resources import RunnerResources
+from artisan.schemas.operation_config.runner_resources import (
+    RunnerResources,
+    merge_runner_resources,
+)
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
@@ -131,12 +134,14 @@ class LocalRunner:
         application_modules: tuple[str, ...] = (),
     ) -> None:
         """Compile and explicitly provision unique worker/tool software requirements."""
-        resources = runner_resources or RunnerResources(cpus=1, memory_gb=4, gpus=0)
-        _validate_resources(resources)
         application_modules = validate_application_modules(application_modules)
         bootstrap_applications(application_modules, purpose="worker preparation")
-        capture_native_gpu(resources.gpus)
         plan = compile_definition(definition, params=params)
+        resources = merge_runner_resources(
+            plan.instantiate().runner_resources, runner_resources
+        )
+        _validate_resources(resources)
+        capture_native_gpu(resources.gpus)
         selections = select_tool_environments(plan)
         declarations: list[Environment] = []
         for selection in selections:
@@ -177,7 +182,7 @@ class LocalRunner:
         application_modules: tuple[str, ...] = (),
     ) -> None:
         """Explicitly prepare only the worker needed by one trusted curator."""
-        resources = runner_resources or RunnerResources(cpus=1, memory_gb=4, gpus=0)
+        resources = merge_runner_resources(operation.runner_resources, runner_resources)
         _validate_resources(resources)
         application_modules = validate_application_modules(application_modules)
         bootstrap_applications(
