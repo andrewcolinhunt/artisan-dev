@@ -140,7 +140,8 @@ def test_prefix_check_preserves_existing_tools_and_literal_arguments(
     prefix = tmp_path / "tool prefix"
     (prefix / "bin").mkdir(parents=True)
     executable = prefix / "bin/tool"
-    shutil.copyfile("/bin/echo", executable)
+    # Multicall host utilities can reject the renamed executable's basename.
+    executable.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
     executable.chmod(0o755)
     if symlink:
         (prefix / "bin/alias").symlink_to("tool")
@@ -152,9 +153,9 @@ def test_prefix_check_preserves_existing_tools_and_literal_arguments(
         check=False,
         capture_output=True,
     )
+    assert result.returncode == 0, result.stderr
     assert result.stdout == (literal + "\n").encode()
     assert result.stderr == b""
-    assert result.returncode == 0
     assert invocation.verify_exit(0)
 
 
