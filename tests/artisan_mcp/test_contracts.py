@@ -172,6 +172,7 @@ def test_commit_error_preserves_repair_fields_and_suppresses_cause(
 ):
     from artisan.inspection import runs
 
+    app = make_app(delta_root=tmp_path)
     error = _commit_error()
     marker = "PRIVATE-CAUSE-DO-NOT-EMIT"
 
@@ -179,7 +180,7 @@ def test_commit_error_preserves_repair_fields_and_suppresses_cause(
         raise error from RuntimeError(marker)
 
     monkeypatch.setattr(runs, "runs_payload", fail)
-    result = invoke_result(make_app(delta_root=tmp_path), "artisan_list_runs")
+    result = invoke_result(app, "artisan_list_runs")
     assert result.is_error is True
     assert result.data is None
     assert result.structured_content == error.to_dict(include_cause=False)
@@ -193,6 +194,7 @@ def test_internal_defects_are_masked_in_native_results(
 ):
     from artisan.inspection import runs
 
+    app = make_app(delta_root=tmp_path)
     marker = "PRIVATE-INVALID-PROJECTION"
 
     def fail(*args, **kwargs):
@@ -203,7 +205,7 @@ def test_internal_defects_are_masked_in_native_results(
         raise RuntimeError(marker)
 
     monkeypatch.setattr(runs, "runs_payload", fail)
-    result = invoke_result(make_app(delta_root=tmp_path), "artisan_list_runs")
+    result = invoke_result(app, "artisan_list_runs")
     assert result.is_error is True
     assert result.structured_content is None
     assert marker not in _wire(result).decode("utf-8")
@@ -215,10 +217,11 @@ def test_success_cannot_pass_validation_as_an_error_branch(
 ):
     from artisan.inspection import runs
 
+    app = make_app(delta_root=tmp_path)
     monkeypatch.setattr(
         runs, "runs_payload", lambda *args, **kwargs: _handled_error().to_dict()
     )
-    result = invoke_result(make_app(delta_root=tmp_path), "artisan_list_runs")
+    result = invoke_result(app, "artisan_list_runs")
     assert result.is_error is True
     assert result.structured_content is None
     assert "Choose a valid field." not in _wire(result).decode("utf-8")
@@ -274,6 +277,7 @@ def test_oversized_handled_error_uses_fixed_bounded_fallback(
 ):
     from artisan.inspection import runs
 
+    app = make_app(delta_root=tmp_path)
     marker = "PRIVATE-LARGE-ERROR-"
 
     def fail(*args, **kwargs):
@@ -282,7 +286,7 @@ def test_oversized_handled_error_uses_fixed_bounded_fallback(
         raise error
 
     monkeypatch.setattr(runs, "runs_payload", fail)
-    result = invoke_result(make_app(delta_root=tmp_path), "artisan_list_runs")
+    result = invoke_result(app, "artisan_list_runs")
     assert result.is_error is True
     assert result.structured_content["code"] == "evidence_response_too_large"
     assert marker not in _wire(result).decode("utf-8")

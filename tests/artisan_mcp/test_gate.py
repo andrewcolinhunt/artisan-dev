@@ -38,14 +38,20 @@ def test_failed_startup_discovery_blocks_store_tools_resources_and_prompts(
     from fastmcp import Client
 
     readers = importlib.import_module("artisan.inspection.runs")
-    monkeypatch.setattr(
-        readers, "runs_payload", lambda **kwargs: pytest.fail("store opened")
-    )
     (tmp_path / "inspection_broken_app.py").write_text(
         "raise RuntimeError('startup failure')\n"
     )
     monkeypatch.syspath_prepend(str(tmp_path))
     app = make_app(delta_root=tmp_path, load_modules="inspection_broken_app")
+    resources = importlib.import_module("artisan_mcp.resources.runs")
+    prompts = importlib.import_module("artisan_mcp.prompts")
+
+    def forbid_store_read(*args: object, **kwargs: object) -> None:
+        pytest.fail("store opened")
+
+    monkeypatch.setattr(readers, "runs_payload", forbid_store_read)
+    monkeypatch.setattr(resources, "runs_payload", forbid_store_read)
+    monkeypatch.setattr(prompts, "status_payload", forbid_store_read)
 
     async def check():
         async with Client(app) as client:
