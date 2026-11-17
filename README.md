@@ -117,20 +117,20 @@ pipeline = PipelineManager.create(
 output = pipeline.output
 
 # Generate datasets -> transform -> compute metrics -> filter by score
-pipeline.run(operation=DataGenerator, name="generate", params={"count": 5, "seed": 42})
+pipeline.run(definition=DataGenerator, name="generate", params={"count": 5, "seed": 42})
 pipeline.run(
-    operation=DataTransformer,
+    definition=DataTransformer,
     name="transform",
     inputs={"dataset": output("generate", "datasets")},
     params={"scale_factor": 2.0, "seed": 42},
 )
 pipeline.run(
-    operation=MetricCalculator,
+    definition=MetricCalculator,
     name="score",
     inputs={"dataset": output("transform", "dataset")},
 )
 pipeline.run(
-    operation=Filter,
+    definition=Filter,
     name="filter",
     inputs={"passthrough": output("transform", "dataset")},
     params={

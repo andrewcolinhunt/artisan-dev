@@ -7,12 +7,12 @@ from pathlib import Path
 
 from artisan.execution.context.builder import build_execution_context
 from artisan.operations.examples.data_generator import DataGenerator
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 
 
 def test_build_execution_context_snapshots_runtime(tmp_path: Path) -> None:
-    runtime = RuntimeEnvironment(
+    runtime = WorkerConfig(
         delta_root=str(tmp_path / "delta"),
         staging_root=str(tmp_path / "staging"),
         files_root=str(tmp_path / "files"),
@@ -30,7 +30,7 @@ def test_build_execution_context_snapshots_runtime(tmp_path: Path) -> None:
         execution_spec_id="b" * 32,
         step_number=3,
         timestamp_start=started,
-        runtime_env=runtime,
+        worker_config=runtime,
         operation=operation,
         step_run_id="step-run",
     )

@@ -80,7 +80,7 @@ Use it in a pipeline like any other operation:
 
 ```python
 pipeline.run(
-    operation=SimpleMerge,
+    definition=SimpleMerge,
     name="merge",
     inputs=[output("branch_a", "results"), output("branch_b", "results")],
 )
@@ -444,7 +444,7 @@ Usage:
 
 ```python
 pipeline.run(
-    operation=IngestProjectCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"]
+    definition=IngestProjectCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"]
 )
 # Raw file paths are auto-promoted to FileRefArtifact before dispatch
 ```
@@ -483,7 +483,7 @@ Keep artifacts whose metrics pass all criteria:
 from artisan.operations.curator import Filter
 
 pipeline.run(
-    operation=Filter,
+    definition=Filter,
     name="filter",
     inputs={"passthrough": output("prev_step", "results")},
     params={
@@ -499,7 +499,7 @@ add `step` or `step_number` when field names collide:
 
 ```python
 pipeline.run(
-    operation=Filter,
+    definition=Filter,
     name="multi_filter",
     inputs={"passthrough": output("generate", "results")},
     params={
@@ -517,7 +517,7 @@ Set `passthrough_failures=True` to preview removals while retaining every artifa
 
 ```python
 pipeline.run(
-    operation=Filter,
+    definition=Filter,
     name="dry_run_filter",
     inputs={"passthrough": output("generate", "results")},
     params={
@@ -537,7 +537,7 @@ from artisan.operations.curator import Merge
 
 # List format combines the streams into one input role.
 pipeline.run(
-    operation=Merge,
+    definition=Merge,
     name="merge",
     inputs=[output("branch_a", "results"), output("branch_b", "results")],
 )
@@ -551,7 +551,7 @@ Import CSV files from disk as `CSVArtifact` objects:
 ```python
 from artisan.operations.curator import IngestCSV
 
-pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
+pipeline.run(definition=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
 # Output role: "csv" → output("ingest", "csv")
 ```
 
@@ -564,7 +564,7 @@ store. Use `artisan.orchestration.list_runs` to discover source run IDs:
 from artisan.operations.curator import IngestPipelineStep
 
 pipeline.run(
-    operation=IngestPipelineStep,
+    definition=IngestPipelineStep,
     name="ingest_external",
     params={
         "source_delta_root": "/runs/other_pipeline/delta",
@@ -709,10 +709,10 @@ pipeline = PipelineManager.create(
     name="test", delta_root="test/delta", staging_root="test/staging",
 )
 output = pipeline.output
-pipeline.run(operation=DataGenerator, name="gen_a", params={"count": 3, "seed": 42})
-pipeline.run(operation=DataGenerator, name="gen_b", params={"count": 2, "seed": 43})
+pipeline.run(definition=DataGenerator, name="gen_a", params={"count": 3, "seed": 42})
+pipeline.run(definition=DataGenerator, name="gen_b", params={"count": 2, "seed": 43})
 step = pipeline.run(
-    operation=SimpleMerge,
+    definition=SimpleMerge,
     name="merge",
     inputs=[output("gen_a", "datasets"), output("gen_b", "datasets")],
 )

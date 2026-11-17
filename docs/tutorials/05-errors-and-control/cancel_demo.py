@@ -51,7 +51,7 @@ def main() -> None:
 
     for i in range(10):
         pipeline.submit(
-            operation=Wait,
+            definition=Wait,
             name=f"wait_{i}",
             params={"duration": 30.0},
         )

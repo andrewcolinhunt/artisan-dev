@@ -29,7 +29,7 @@ from artisan.schemas.execution.curator_admission import (
     CuratorAdmissionReference,
 )
 from artisan.schemas.execution.replay import ReplayAssociation, ReplayDiagnostic
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.execution.worker_transport import RuntimeCompatibility
 from artisan.schemas.orchestration.step_lifecycle import CancellationStatus, StepStatus
 from artisan.storage.cache.curator_dependencies import CuratorReadRecorder
@@ -173,7 +173,7 @@ def execute_admitted_curator(
             *dispatch.runtime_env.values(),
         ),
     )
-    runtime = RuntimeEnvironment(
+    worker_config = WorkerConfig(
         delta_root=dispatch.delta_root,
         files_root=dispatch.files_root,
         staging_root=dispatch.staging_root,
@@ -190,7 +190,7 @@ def execute_admitted_curator(
     unit.replay_snapshot = capture_curator_replay(
         curator.operation,
         admission,
-        runtime,
+        worker_config,
         dispatch.runtime_env,
         sensitive_values=unit.replay_sensitive_values,
     )
@@ -201,7 +201,9 @@ def execute_admitted_curator(
         unit.replay_snapshot = unit.replay_snapshot.model_copy(
             update={
                 "diagnostic": curator.diagnostic.model_copy(
-                    update={"roots": recorder.sanitize_data(runtime_roots(runtime))}
+                    update={
+                        "roots": recorder.sanitize_data(runtime_roots(worker_config))
+                    }
                 )
             }
         )
@@ -209,7 +211,7 @@ def execute_admitted_curator(
     with runtime_injections(dispatch.runtime_env):
         result = run_curator_flow(
             unit,
-            runtime,
+            worker_config,
             curator_view=view,
             read_recorder=CuratorReadRecorder(view, admission),
         )

@@ -15,13 +15,13 @@ from artisan.composites.base.compiler import compile_definition
 from artisan.errors import ArtisanError, StoreIntegrityError
 from artisan.execution.composition import execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.executor import Executor
 from artisan.execution.lineage.graph import OccurrenceGraph
 from artisan.execution.recording.retained_replay import (
     capture_replay_configuration,
     publish_replay_configuration,
     read_replay_configuration,
 )
-from artisan.execution.session import ExecutionSession
 from artisan.orchestration.retained_replay import Definition, prepare_retained_replay
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.enums import GroupByStrategy
@@ -77,11 +77,11 @@ def _accept_plan(tmp_path: Path, plan: CompiledPlan) -> AcceptedFixture:
         fs=committer.fs,
     )
     committer.journal.admit(attempt, admission_digest=admission.record_digest)
-    with ExecutionSession() as session:
+    with Executor() as executor:
         result = execute_compiled_plan(
             plan,
             {"source": [artifact]},
-            session,
+            executor,
             invocation_id=identity.assignment_id,
             execute_adapter=lambda *_: LocalExecuteRouter(),
             input_attribution=boundary.input_attribution,
@@ -133,11 +133,11 @@ def test_frozen_replay_runs_complete_recipe_with_new_diagnostic_owner(
         role: [replay.artifacts[address] for address in addresses]
         for role, addresses in roles.items()
     }
-    with ExecutionSession() as session:
+    with Executor() as executor:
         result = execute_compiled_plan(
             replay.plan,
             inputs,
-            session,
+            executor,
             invocation_id=replay.identity.assignment_id,
             execute_adapter=lambda *_: LocalExecuteRouter(),
             frozen_context=replay.boundary.frozen_context,
@@ -468,11 +468,11 @@ def test_diagnostic_recovery_preserves_diagnostic_owner_and_cache_exclusion(
         role: [replay.artifacts[address] for address in addresses]
         for role, addresses in replay.boundary.input_roles().items()
     }
-    with ExecutionSession() as session:
+    with Executor() as executor:
         result = execute_compiled_plan(
             replay.plan,
             inputs,
-            session,
+            executor,
             invocation_id=replay.identity.assignment_id,
             execute_adapter=lambda *_: LocalExecuteRouter(),
             input_attribution=replay.boundary.input_attribution,

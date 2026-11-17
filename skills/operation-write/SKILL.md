@@ -24,7 +24,7 @@ signature or configuration catalog in the new operation.
 Do not mix curator and creator methods. Both use the pipeline's selected worker
 runner. Preprocess, postprocess, and native Python run in that worker; a command
 may use a separate declared tool environment. Curators remain top-level pipeline
-operations, outside scientific composites and standalone `ExecutionSession.run`.
+operations, outside scientific composites and standalone `Executor.run`.
 
 ## Define a reviewable contract
 
@@ -104,8 +104,8 @@ module name is insufficient authorization. See
 [application loading](../../docs/how-to-guides/configuring-execution.md#load-application-definitions-in-every-process).
 
 Test pure scientific logic directly when useful, then check the actual lifecycle.
-Use `ExecutionSession.run` for local creator/composite authoring without a store,
-or a small pipeline for curator and durable acceptance behavior. Keep the session
+Use `Executor.run` for local creator/composite authoring without a store,
+or a small pipeline for curator and durable acceptance behavior. Keep the executor
 open while using temporary carriers. Test relevant empty/required outputs,
 parameter errors, duplicate input occurrences, and exact lineage. Use real
 admission and accepted fixtures for persistence checks; mocked rows do not prove

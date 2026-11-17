@@ -21,10 +21,10 @@ from artisan.composites.base.compiler import compile_definition
 from artisan.errors import StoreIntegrityError
 from artisan.execution.composition import execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.executor import Executor
 from artisan.execution.executors.curator import run_curator_flow
 from artisan.execution.lineage.graph import OccurrenceGraph
 from artisan.execution.models.execution_unit import ExecutionUnit
-from artisan.execution.session import ExecutionSession
 from artisan.operations.curator.merge import Merge
 from artisan.orchestration.engine.retained_curator import CuratorResults
 from artisan.orchestration.engine.retained_inputs import prepare_step_inputs
@@ -38,7 +38,7 @@ from artisan.schemas import (
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.assignment import AssignmentAttempt
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
@@ -255,7 +255,7 @@ def test_curator_reuse_preserves_downstream_creator_cache_key_and_hit(
         step_run_id="c" * 32,
         reader=reader,
     )[0]
-    with ExecutionSession() as session:
+    with Executor() as executor:
         execution = execute_compiled_plan(
             plan,
             {
@@ -264,7 +264,7 @@ def test_curator_reuse_preserves_downstream_creator_cache_key_and_hit(
                     for address in first.boundary.input_roles()["source"]
                 ]
             },
-            session,
+            executor,
             invocation_id=first.assignment.assignment_id,
             execute_adapter=lambda *_: LocalExecuteRouter(),
             frozen_context=first.boundary.frozen_context,
@@ -403,7 +403,7 @@ def test_reuse_preserves_source_sets_frozen_queries_and_required_support(
             execution_spec_id=admission.digest,
             replay_snapshot=ReplaySnapshot.unavailable("curator-reuse-fixture"),
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=committer.delta_root,
             staging_root=coordinator.staging.staging_dir,
             files_root=committer.files_root,

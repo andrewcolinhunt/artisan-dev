@@ -13,8 +13,8 @@ from artisan.composites.base.compiler import compile_definition
 from artisan.composites.examples import GenerateAndScore, TransformAndScore
 from artisan.execution.composition import ExecuteAdapter
 from artisan.execution.compute.local import LocalExecuteRouter
-from artisan.execution.session import ExecutionSession
-from artisan.execution.session_runtime import SessionRuntime
+from artisan.execution.executor import Executor
+from artisan.execution.executor_runtime import ExecutorRuntime
 from artisan.operations.base import OperationDefinition
 from artisan.schemas import Artifact
 
@@ -25,7 +25,7 @@ def test_nested_example_retains_final_data_and_direct_metrics(
     paths: list[tuple[str, ...]] = []
 
     def software(
-        self: SessionRuntime,
+        self: ExecutorRuntime,
         plan: CompiledPlan,
         inventory: Sequence[Artifact],
         root: Path,
@@ -39,9 +39,9 @@ def test_nested_example_retains_final_data_and_direct_metrics(
         return adapter
 
     # Exercise the native scientific kernel; worker software is qualified separately.
-    monkeypatch.setattr(SessionRuntime, "_software", software)
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(GenerateAndScore, params={"count": 2, "seed": 42})
+    monkeypatch.setattr(ExecutorRuntime, "_software", software)
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(GenerateAndScore, params={"count": 2, "seed": 42})
         assert len(result.artifacts["dataset"]) == len(result.artifacts["metrics"]) == 2
         assert [edge.source_output_index for edge in result.lineage["metrics"]] == [
             0,

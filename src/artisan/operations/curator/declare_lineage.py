@@ -73,7 +73,7 @@ class DeclareLineage(OperationDefinition):
 
     Example:
         >>> pipeline.run(
-        ...     operation=DeclareLineage,
+        ...     definition=DeclareLineage,
         ...     inputs={"parents": designs, "children": anchored_msas},
         ...     params={"pairing": GroupByStrategy.ZIP},
         ...     name="link_anchored_msas_to_designs",

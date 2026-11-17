@@ -11,13 +11,13 @@ from typing import Any, ClassVar
 import pytest
 
 from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.executor import Executor
 from artisan.execution.invocation import (
     ExecuteFailure,
     PostprocessFailure,
     reassemble_results,
     split_prepared_inputs,
 )
-from artisan.execution.session import ExecutionSession
 from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas.artifact.appendable import AppendableArtifact
 from artisan.schemas.artifact.base import Artifact
@@ -170,8 +170,8 @@ def test_invocation_preserves_phases_ordered_equal_content_and_exact_lineage(
     source = MetricArtifact.draft({"value": 4}, "source.json").finalize()
     context = FrozenInputContext("copy", {"source": [source, source]})
     operation_class.phases.clear()
-    with ExecutionSession(working_root=tmp_path / "session") as session:
-        result = session.invoke(
+    with Executor(working_root=tmp_path / "session") as executor:
+        result = executor.invoke(
             operation_class(),
             context,
             batch_size=2,
@@ -218,8 +218,8 @@ def test_session_keeps_file_intermediate_without_store_or_recording(
     monkeypatch.setattr(
         "artisan.execution.context.builder.build_execution_context", forbidden
     )
-    with ExecutionSession(working_root=tmp_path / "session") as session:
-        first = session.invoke(
+    with Executor(working_root=tmp_path / "session") as executor:
+        first = executor.invoke(
             _GenerateFile(),
             FrozenInputContext("generate", {}),
             batch_size=1,
@@ -230,7 +230,7 @@ def test_session_keeps_file_intermediate_without_store_or_recording(
         path = Path(file.path)
         assert path.exists()
         assert file.origin_step_number is None
-        second = session.invoke(
+        second = executor.invoke(
             _MeasureFile(),
             FrozenInputContext("measure", {"source": [file]}),
             batch_size=1,
@@ -272,11 +272,11 @@ def test_execute_failure_keeps_cause_and_never_postprocesses(
     source = MetricArtifact.draft({"value": 1}, "source.json").finalize()
     _CopyMetrics.phases.clear()
     monkeypatch.setattr(_CopyMetrics, "execute_function", fail)
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         with pytest.raises(
             ExecuteFailure, match="scientific execute failed"
         ) as captured:
-            session.invoke(
+            executor.invoke(
                 _CopyMetrics(),
                 FrozenInputContext("failure", {"source": [source]}),
                 batch_size=1,
@@ -297,10 +297,10 @@ def test_unsuccessful_postprocess_does_not_finalize(
         lambda *_: ArtifactResult(success=False, error="not valid"),
     )
     with (
-        ExecutionSession(working_root=tmp_path / "session") as session,
+        Executor(working_root=tmp_path / "session") as executor,
         pytest.raises(PostprocessFailure, match="not valid"),
     ):
-        session.invoke(
+        executor.invoke(
             _GenerateFile(),
             FrozenInputContext("failure", {}),
             batch_size=1,
@@ -336,10 +336,10 @@ def test_invocation_requires_captured_context_before_operation_code(
         associations={("source", 0, "metric"): []} if captured else {},
     )
     _AssociatedMetrics.phases.clear()
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         if not captured:
             with pytest.raises(ValueError, match="not captured"):
-                session.invoke(
+                executor.invoke(
                     _AssociatedMetrics(),
                     context,
                     batch_size=1,
@@ -348,7 +348,7 @@ def test_invocation_requires_captured_context_before_operation_code(
                 )
             assert _AssociatedMetrics.phases == []
         else:
-            result = session.invoke(
+            result = executor.invoke(
                 _AssociatedMetrics(),
                 context,
                 batch_size=1,
@@ -411,8 +411,8 @@ class _EmptyMetrics(OperationDefinition):
 
 
 def test_invocation_preserves_explicit_empty_optional_output(tmp_path: Path) -> None:
-    with ExecutionSession(working_root=tmp_path / "session") as session:
-        result = session.invoke(
+    with Executor(working_root=tmp_path / "session") as executor:
+        result = executor.invoke(
             _EmptyMetrics(),
             FrozenInputContext("empty", {}),
             batch_size=1,
@@ -446,8 +446,8 @@ class _OriginMetrics(_EmptyMetrics):
 def test_pipeline_owns_drafts_before_finalization_and_preserves_existing_origins(
     tmp_path: Path, step_number: int | None, origins: list[int | None]
 ) -> None:
-    with ExecutionSession(working_root=tmp_path / "session") as session:
-        result = session.invoke(
+    with Executor(working_root=tmp_path / "session") as executor:
+        result = executor.invoke(
             _OriginMetrics(),
             FrozenInputContext("origin", {}),
             batch_size=1,
@@ -525,8 +525,8 @@ def test_equal_config_occurrences_materialize_each_captured_dependency_view(
             ("config", 1): {second.artifact_id: second},
         },
     )
-    with ExecutionSession(working_root=tmp_path / "session") as session:
-        result = session.invoke(
+    with Executor(working_root=tmp_path / "session") as executor:
+        result = executor.invoke(
             _ReadConfigReferences(),
             context,
             batch_size=2,

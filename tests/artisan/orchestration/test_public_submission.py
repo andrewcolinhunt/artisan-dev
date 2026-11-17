@@ -21,13 +21,13 @@ def _pipeline(root: Path) -> PipelineManager:
     )
 
 
-def test_operation_keyword_and_positional_submit_share_one_controller(
+def test_definition_keyword_and_positional_submit_share_one_controller(
     tmp_path: Path,
 ) -> None:
     with _pipeline(tmp_path) as pipeline:
         runner = NativePipelineRunner(pipeline.committer)
         first = pipeline.run(
-            operation=Transform,
+            definition=Transform,
             inputs={"structure": [structure(0)]},
             step_runner=runner,
             name="first",

@@ -7,10 +7,10 @@ from inspect import signature
 from artisan.orchestration import PipelineManager
 
 
-def test_pipeline_entry_accepts_positional_operation_and_explicit_provider() -> None:
+def test_pipeline_entry_accepts_positional_definition_and_explicit_provider() -> None:
     for method in (PipelineManager.run, PipelineManager.submit):
         parameters = signature(method).parameters
-        assert list(parameters)[:2] == ["self", "operation"]
+        assert list(parameters)[:2] == ["self", "definition"]
         assert parameters["step_runner"].default is None
         assert (
             not {"compute_backend", "environment", "prepared_environment", "compact"}

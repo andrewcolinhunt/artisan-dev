@@ -15,7 +15,7 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
 | Declare worker or command software | `artisan.schemas` | `Environment.from_pixi` |
 | Prepare and place local work | `artisan.orchestration.runners` | `LocalRunner`, `DockerRuntime`, `ApptainerRuntime` |
-| Invoke creators inside an existing process | `artisan.execution` | `ExecutionSession` |
+| Invoke creators inside an existing process | `artisan.execution` | `Executor` |
 | Retain generated external files | `artisan.schemas` | `ExecuteInput`, `PostprocessInput`, `FileRefArtifact` |
 | Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
 | Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |

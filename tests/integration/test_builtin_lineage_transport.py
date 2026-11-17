@@ -13,7 +13,7 @@ from fixtures.commands import command_router
 
 from artisan.composites.base.compiler import compile_definition
 from artisan.execution.composition import execute_compiled_plan
-from artisan.execution.session import ExecutionSession
+from artisan.execution.executor import Executor
 from artisan.operations.base import OperationDefinition
 from artisan.operations.examples import CsvHead, WaitTool
 from artisan.schemas import CSVArtifact
@@ -45,11 +45,11 @@ def test_builtin_command_preserves_exact_parents_and_names(
     ]
     if repeated:
         sources.append(sources[0])
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         result = execute_compiled_plan(
             compile_definition(operation, params=params),
             {"dataset": sources},
-            session,
+            executor,
             invocation_id="builtin-commands",
             execute_adapter=lambda _operation, _path: command_router(),
         )

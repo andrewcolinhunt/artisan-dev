@@ -15,12 +15,12 @@ from artisan.composites.base.compiler import compile_definition
 from artisan.errors import ArtifactIntegrityError, StoreIntegrityError
 from artisan.execution.composition import execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.executor import Executor
 from artisan.execution.lineage.graph import OccurrenceGraph
 from artisan.execution.recording.retained_replay import (
     capture_replay_configuration,
     publish_replay_configuration,
 )
-from artisan.execution.session import ExecutionSession
 from artisan.operations.curator.declare_lineage import DeclareLineage
 from artisan.operations.curator.merge import Merge
 from artisan.orchestration.engine.retained_inputs import prepare_step_inputs
@@ -548,14 +548,14 @@ def test_compiled_composition_consumes_the_exact_frozen_unit(
     unit = prepare_step_inputs(
         plan.recipe, {"source": [artifact]}, step_run_id="a" * 32, reader=reader
     )[0]
-    with ExecutionSession() as session:
+    with Executor() as executor:
         result = execute_compiled_plan(
             plan,
             {
                 role: [unit.artifacts[address] for address in addresses]
                 for role, addresses in unit.boundary.input_roles().items()
             },
-            session,
+            executor,
             invocation_id=unit.assignment.assignment_id,
             execute_adapter=lambda *_: LocalExecuteRouter(),
             frozen_context=unit.boundary.frozen_context,
@@ -809,11 +809,11 @@ def test_creator_replay_preserves_curator_input_authority(
         step_run_id="c" * 32,
         reader=reader,
     )[0]
-    with ExecutionSession() as session:
+    with Executor() as executor:
         executed = execute_compiled_plan(
             plan,
             {"source": [artifact]},
-            session,
+            executor,
             invocation_id=unit.assignment.assignment_id,
             execute_adapter=lambda *_: LocalExecuteRouter(),
             frozen_context=unit.boundary.frozen_context,
@@ -853,14 +853,14 @@ def test_creator_replay_preserves_curator_input_authority(
         replay.boundary.input_attribution[0].producer
         == unit.boundary.input_attribution[0].producer
     )
-    with ExecutionSession() as session:
+    with Executor() as executor:
         result = execute_compiled_plan(
             replay.plan,
             {
                 role: [replay.artifacts[address] for address in addresses]
                 for role, addresses in replay.boundary.input_roles().items()
             },
-            session,
+            executor,
             invocation_id=replay.identity.assignment_id,
             execute_adapter=lambda *_: LocalExecuteRouter(),
             frozen_context=replay.boundary.frozen_context,

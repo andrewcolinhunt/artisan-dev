@@ -19,8 +19,8 @@ from artisan.schemas.artifact.csv import CSVArtifact
 from artisan.schemas.execution.curator_admission import CuratorAdmission
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_models import (
@@ -93,7 +93,7 @@ def stage_observed(
             execution_spec_id=admission.digest,
             replay_snapshot=ReplaySnapshot.unavailable("synthetic-curator-replay"),
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=committer.delta_root,
             staging_root=coordinator.staging.staging_dir,
             files_root=committer.files_root,

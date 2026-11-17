@@ -58,13 +58,13 @@ def linear_chain_pipeline(
 
     # Step 0: Generate 2 datasets
     step0 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
     # Step 1: Transform datasets (1 variant each)
     step1 = pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
             "scale_factor": 1.5,
@@ -76,7 +76,7 @@ def linear_chain_pipeline(
 
     # Step 2: Calculate metrics
     pipeline.run(
-        operation=MetricCalculator,
+        definition=MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
     )
 
@@ -140,7 +140,7 @@ def fan_out_execution_pipeline(
 
     # Step 0: Generate 2 datasets
     step0 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
@@ -149,7 +149,7 @@ def fan_out_execution_pipeline(
 
     # Step 1: Transform with seed 100 (Branch A)
     pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": shared_ref},
         params={
             "scale_factor": 1.5,
@@ -161,7 +161,7 @@ def fan_out_execution_pipeline(
 
     # Step 2: Transform with seed 200 (Branch B)
     pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": shared_ref},
         params={
             "scale_factor": 2.0,
@@ -227,13 +227,13 @@ def fan_out_data_pipeline(
 
     # Step 0: Generate 1 dataset
     step0 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 1, "seed": 42},
     )
 
     # Step 1: Create 3 variants
     pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
             "scale_factor": 1.5,
@@ -300,19 +300,19 @@ def fan_in_merge_pipeline(
 
     # Step 0: Generate 2 datasets (Branch A)
     step0 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
     # Step 1: Generate 2 datasets (Branch B)
     step1 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 2, "seed": 100},
     )
 
     # Step 2: Merge both branches
     pipeline.run(
-        operation=Merge,
+        definition=Merge,
         inputs={
             "branch_a": step0.output("datasets"),
             "branch_b": step1.output("datasets"),
@@ -379,19 +379,19 @@ def passthrough_pipeline(
 
     # Step 0: Generate 2 datasets
     step0 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
     # Step 1: Calculate metrics
     pipeline.run(
-        operation=MetricCalculator,
+        definition=MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
     )
 
     # Step 2: Filter (forward-walk metric discovery, always pass with min >= 0)
     step2 = pipeline.run(
-        operation=Filter,
+        definition=Filter,
         inputs={
             "passthrough": step0.output("datasets"),
         },
@@ -404,7 +404,7 @@ def passthrough_pipeline(
 
     # Step 3: Transform the passthrough datasets
     pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": step2.output("passthrough")},
         params={
             "scale_factor": 1.1,
@@ -472,13 +472,13 @@ def batch_processing_pipeline(
 
     # Step 0: Generate 5 datasets
     step0 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 5, "seed": 42},
     )
 
     # Step 1: Batch transform with artifacts_per_unit=2 via execution override
     pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": step0.output("datasets")},
         params={
             "scale_factor": 1.5,
@@ -570,19 +570,19 @@ def comprehensive_pipeline(
     # Stage 1: Sources
     # Step 0: Ingest one external CSV file
     step0 = pipeline.run(
-        operation=IngestCSV,
+        definition=IngestCSV,
         inputs=[str(f) for f in source_files],
     )
 
     # Step 1: Generate one distinct dataset
     step1 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 1, "rows_per_file": 1, "seed": 1},
     )
 
     # Step 2: Merge ingest + generated
     step2 = pipeline.run(
-        operation=Merge,
+        definition=Merge,
         inputs={
             "ingested": step0.output("csv"),
             "generated": step1.output("datasets"),
@@ -592,7 +592,7 @@ def comprehensive_pipeline(
     # Stage 2: Parallel Branches
     # Step 3: DataTransformer A
     step3 = pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": step2.output("merged")},
         params={
             "scale_factor": 0.1,
@@ -605,7 +605,7 @@ def comprehensive_pipeline(
 
     # Step 4: DataTransformer B
     step4 = pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": step2.output("merged")},
         params={
             "scale_factor": 2.0,
@@ -618,7 +618,7 @@ def comprehensive_pipeline(
 
     # Step 5: Merge both branches
     step5 = pipeline.run(
-        operation=Merge,
+        definition=Merge,
         inputs={
             "branch_a": step3.output("dataset"),
             "branch_b": step4.output("dataset"),
@@ -628,13 +628,13 @@ def comprehensive_pipeline(
     # Stage 3: Metrics & Filter
     # Step 6: Calculate metrics
     pipeline.run(
-        operation=MetricCalculator,
+        definition=MetricCalculator,
         inputs={"dataset": step5.output("merged")},
     )
 
     # Step 7: Filter based on median_score (forward-walk metric discovery)
     step7 = pipeline.run(
-        operation=Filter,
+        definition=Filter,
         inputs={
             "passthrough": step5.output("merged"),
         },
@@ -652,7 +652,7 @@ def comprehensive_pipeline(
     # Stage 4: Final Fan-Out
     # Step 8: Create variants of filtered datasets
     pipeline.run(
-        operation=DataTransformer,
+        definition=DataTransformer,
         inputs={"dataset": step7.output("passthrough")},
         params={
             "scale_factor": 1.1,

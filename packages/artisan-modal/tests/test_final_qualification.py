@@ -40,7 +40,7 @@ def test_qualification_native_rows_preserve_exact_batch_occurrences(
 
     from artisan.execution.composition import execute_compiled_plan
     from artisan.execution.compute.local import LocalExecuteRouter
-    from artisan.execution.session import ExecutionSession
+    from artisan.execution.executor import Executor
     from artisan.orchestration.runner_api import compile_definition
     from artisan.schemas import MetricArtifact
 
@@ -49,11 +49,11 @@ def test_qualification_native_rows_preserve_exact_batch_occurrences(
     ]
     for artifact in artifacts:
         artifact.finalize()
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         result = execute_compiled_plan(
             compile_definition(NativeProbe),
             {"source": artifacts},
-            session,
+            executor,
             invocation_id="qualification-native",
             execute_adapter=lambda *_: LocalExecuteRouter(),
         ).result
@@ -518,7 +518,7 @@ def test_application_composite_runs_native_then_both_real_commands(
     from artisan.execution.composition import execute_compiled_plan
     from artisan.execution.compute.local import LocalExecuteRouter
     from artisan.execution.compute.prepared import PreparedExecuteRouter
-    from artisan.execution.session import ExecutionSession
+    from artisan.execution.executor import Executor
     from artisan.orchestration.runner_api import compile_definition
 
     def adapter(operation, _path):
@@ -540,11 +540,11 @@ def test_application_composite_runs_native_then_both_real_commands(
 
     manifest = tmp_path / "pixi.toml"
     manifest.write_text('[workspace]\nname="fixture"\nplatforms=["linux-64"]\n')
-    with ExecutionSession(working_root=tmp_path / "work") as session:
+    with Executor(working_root=tmp_path / "work") as executor:
         seeds = execute_compiled_plan(
             compile_definition(Seeds),
             {},
-            session,
+            executor,
             invocation_id="seeds",
             execute_adapter=adapter,
         ).result.artifacts["values"]
@@ -553,7 +553,7 @@ def test_application_composite_runs_native_then_both_real_commands(
             result = execute_compiled_plan(
                 compile_definition(TwoTools, params={"manifest": str(manifest)}),
                 {"source": [seed]},
-                session,
+                executor,
                 invocation_id=f"compose-{index}",
                 execute_adapter=adapter,
             ).result

@@ -170,7 +170,7 @@ src/artisan/                # Framework (domain-agnostic)
 │   ├── assignment.py       # Admitted worker assignment execution and result sealing
 │   ├── composition.py      # Execute compiled child calls and project retained outputs
 │   ├── invocation.py       # One operation's preprocess/execute/postprocess lifecycle
-│   ├── session.py          # Local execution session and scratch ownership
+│   ├── executor.py         # Local definition execution and scratch ownership
 │   ├── exceptions.py       # Execution-phase exceptions
 │   └── utils.py            # Execution helpers (run-id generation, artifact finalization)
 ├── operations/             # Base class + framework ops
@@ -191,7 +191,7 @@ src/artisan/                # Framework (domain-agnostic)
 ├── schemas/                # All data models
 │   ├── artifact/           # Artifact base, registry, types, metric, file_ref, csv, execution_config
 │   ├── composites/         # Composition references, execution recipes and wiring
-│   ├── execution/          # Execution context, record, results, runtime environment, storage config
+│   ├── execution/          # Execution context, record, results, worker config, storage config
 │   ├── operation_config/   # Command/resource/environment configuration schemas
 │   ├── orchestration/      # Pipeline/step config + result schemas
 │   ├── provenance/         # Provenance edge + lineage-mapping schemas

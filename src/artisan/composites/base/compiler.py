@@ -127,7 +127,7 @@ def _definition_class(value: object) -> Definition:
 
 def _validate_creator_policy(instance: OperationDefinition, *, nested: bool) -> None:
     if instance._kind() != "creator":
-        msg = "Curators cannot run inside compositions or execution sessions"
+        msg = "Curators cannot run inside compositions or standalone executors"
         raise ValueError(msg)
     if instance.runtime_defined_inputs:
         msg = "Composition calls require statically declared input roles"

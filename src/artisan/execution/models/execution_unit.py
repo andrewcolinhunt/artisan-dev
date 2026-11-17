@@ -1,7 +1,7 @@
 """Transport container carrying work from the orchestrator to executors.
 
 Specifies WHAT to execute (operation, inputs, caching metadata).
-WHERE execution happens is specified separately by RuntimeEnvironment.
+WHERE execution happens is specified separately by WorkerConfig.
 """
 
 from __future__ import annotations
