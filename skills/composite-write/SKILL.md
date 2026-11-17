@@ -80,9 +80,9 @@ operation. The reference identifies its exact source attempt and store. A saved
 result selected with `pipeline.get_step(step_number, pipeline_run_id=...)` uses
 the same interface; cross-run inputs require the same authoritative store.
 
-For local authoring checks, use `ExecutionSession` from `artisan.execution` as a
-context manager and call `session.run(Definition, inputs=..., params=...)`.
-Inputs are finalized artifacts with local carriers. The session retains temporary
+For local authoring checks, use `Executor` from `artisan.execution` as a
+context manager and call `executor.run(Definition, inputs=..., params=...)`.
+Inputs are finalized artifacts with local carriers. The executor retains temporary
 artifacts across sequential calls and performs no store writes or provisioning.
 See [Prepare Execute Environments](../../docs/how-to-guides/execute-environments.md)
 when a child needs prepared software.

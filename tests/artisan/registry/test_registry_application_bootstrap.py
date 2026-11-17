@@ -11,14 +11,14 @@ import pytest
 from artisan.errors import ApplicationRegistrationError
 from artisan.operations.base import OperationDefinition
 from artisan.registry import bootstrap_applications, discover
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.orchestration.pipeline_config import PipelineConfig
 from artisan.utils.application_modules import resolve_application_modules
 from artisan.utils.process_call import execute_process_call, serialize_process_call
 
 
 @pytest.mark.parametrize("value", ["app", [""], ["a..b"], ["a/b"], ["a;secret"], [2]])
-@pytest.mark.parametrize("model", [RuntimeEnvironment, PipelineConfig])
+@pytest.mark.parametrize("model", [WorkerConfig, PipelineConfig])
 def test_application_modules_reject_invalid_names(value: object, model: type) -> None:
     kwargs = {"delta_root": "/delta", "staging_root": "/staging"}
     if model is PipelineConfig:
@@ -32,11 +32,11 @@ def test_resolution_freezes_environment_before_explicit_modules(
 ) -> None:
     monkeypatch.setenv("ARTISAN_LOAD_MODULES", " a.b, ,c.d,a.b ")
     assert resolve_application_modules(["c.d", "e.f"]) == ("a.b", "c.d", "e.f")
-    runtime = RuntimeEnvironment(
+    runtime = WorkerConfig(
         delta_root="/delta", staging_root="/staging", application_modules=("a.b",)
     )
     monkeypatch.setenv("ARTISAN_LOAD_MODULES", "malicious.child")
-    restored = RuntimeEnvironment.model_validate_json(runtime.model_dump_json())
+    restored = WorkerConfig.model_validate_json(runtime.model_dump_json())
     call = serialize_process_call(lambda value: value.application_modules, restored)
     assert execute_process_call(call) == ("a.b",)
     assert (

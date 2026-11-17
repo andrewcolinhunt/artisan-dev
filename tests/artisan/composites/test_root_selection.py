@@ -24,7 +24,7 @@ from artisan.composites.base.compiler import (
 from artisan.composites.base.root_selection import merge_batch_strategy
 from artisan.execution.composition import execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
-from artisan.execution.session import ExecutionSession
+from artisan.execution.executor import Executor
 from artisan.operations.examples.csv_head import CsvHead
 from artisan.operations.examples.wait_tool import WaitTool
 from artisan.orchestration.engine.retained_inputs import prepare_step_inputs
@@ -210,11 +210,11 @@ def test_root_selection_still_rejects_live_immutable_policy_drift(
 def test_admitted_root_override_executes_one_partition(tmp_path: Path) -> None:
     plan = compile_definition(CappedTransform, batch_strategy={"artifacts_per_unit": 4})
     CappedTransform.phase_sizes.clear()
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         result = execute_compiled_plan(
             plan,
             {"structure": [structure(index) for index in range(4)]},
-            session,
+            executor,
             invocation_id="root",
             execute_adapter=lambda *_: LocalExecuteRouter(),
         )
@@ -247,7 +247,7 @@ def test_root_cross_product_partitions_once_in_admission_order(tmp_path: Path) -
     )
     observed = []
     PairedTransform.phase_sizes.clear()
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         for unit in units:
             inputs = {
                 role: [unit.artifacts[address] for address in addresses]
@@ -263,7 +263,7 @@ def test_root_cross_product_partitions_once_in_admission_order(tmp_path: Path) -
             execute_compiled_plan(
                 plan,
                 inputs,
-                session,
+                executor,
                 invocation_id=unit.assignment.assignment_id,
                 execute_adapter=lambda *_: LocalExecuteRouter(),
                 input_attribution=unit.boundary.input_attribution,
@@ -283,11 +283,11 @@ def test_root_composite_batch_does_not_replace_child_lifecycle_size(
 ) -> None:
     plan = compile_definition(PredictMeasure, batch_strategy={"artifacts_per_unit": 3})
     Transform.phase_sizes.clear()
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         execute_compiled_plan(
             plan,
             {"structure": [structure(i) for i in range(3)]},
-            session,
+            executor,
             invocation_id="composite",
             execute_adapter=lambda *_: LocalExecuteRouter(),
         )

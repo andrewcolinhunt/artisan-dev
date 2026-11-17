@@ -126,4 +126,4 @@ roles/cardinality, required lineage, asynchronous wiring, and closure. Use publi
 inspection readers for accepted results. Distinguish local/source tests from
 installed or remote provider qualification, and report external dependencies that
 were not exercised. For temporary-only creator experimentation, use
-`ExecutionSession.run` instead of fabricating a store or pipeline receipt.
+`Executor.run` instead of fabricating a store or pipeline receipt.

@@ -112,5 +112,5 @@ without adding worker, persistence, or cache boundaries. See the
 An operation implements a transformation's lifecycle. A composite connects
 transformations and chooses outputs. Both can be submitted through
 `PipelineManager.run` and `submit`. An existing worker can also invoke creators
-and composites through `ExecutionSession.run`, which keeps local artifacts for
-the session's lifetime and does not access a store or persist a result.
+and composites through `Executor.run`, which keeps local artifacts for
+the executor's lifetime and does not access a store or persist a result.

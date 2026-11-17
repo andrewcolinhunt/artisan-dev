@@ -731,7 +731,7 @@ def test_authored_failure_preserves_phase_and_redacts_selected_values(
     assert raised.value.delivery.attempt == _assignment(bindings).attempt
     assert "scientific failure" in str(raised.value)
     assert "selected-secret-value" not in str(raised.value)
-    assert not list((tmp_path / "work").glob("*/artisan-session-*"))
+    assert not list((tmp_path / "work").glob("*/artisan-executor-*"))
 
 
 @pytest.mark.parametrize("failure_location", ["adapter", "materialization", "sealing"])
@@ -871,7 +871,7 @@ def test_failed_delivery_is_not_exposed_before_session_exit(
     failure: str,
 ) -> None:
     from artisan.execution.exceptions import AssignmentExecutionError
-    from artisan.execution.session import ExecutionSession
+    from artisan.execution.executor import Executor
     from artisan.utils.command_supervisor import close_command_scope
 
     def science(*_args: object) -> Any:
@@ -882,9 +882,9 @@ def test_failed_delivery_is_not_exposed_before_session_exit(
         close_command_scope(error)
         return False
 
-    original_exit = ExecutionSession.__exit__
+    original_exit = Executor.__exit__
 
-    def failed_exit(self: ExecutionSession, *args: Any) -> None:
+    def failed_exit(self: Executor, *args: Any) -> None:
         original_exit(self, *args)
         message = "session exit failed"
         raise OSError(message)
@@ -893,10 +893,10 @@ def test_failed_delivery_is_not_exposed_before_session_exit(
     monkeypatch.setattr(_NativeFile, "execute_function", science)
     if failure == "unknown":
         monkeypatch.setattr(
-            "artisan.execution.session.close_command_scope", uncertain_close
+            "artisan.execution.executor.close_command_scope", uncertain_close
         )
     else:
-        monkeypatch.setattr(ExecutionSession, "__exit__", failed_exit)
+        monkeypatch.setattr(Executor, "__exit__", failed_exit)
     with pytest.raises(
         CommandOwnershipError if failure == "unknown" else OSError
     ) as caught:
@@ -952,22 +952,22 @@ def test_infrastructure_marker_cannot_acquire_a_failed_delivery(
 ) -> None:
     from artisan.execution.assignment_reply import AssignmentReply
     from artisan.execution.exceptions import AssignmentExecutionError
-    from artisan.execution.session import ExecutionSession
+    from artisan.execution.executor import Executor
     from artisan.schemas.execution.delivery_diagnostics import DeliveryDiagnostics
 
     def fail(*_args: Any) -> Any:
         message = "misplaced scientific marker"
         raise AssignmentExecutionError(message, phase="execute")
 
-    original_exit = ExecutionSession.__exit__
+    original_exit = Executor.__exit__
 
-    def failed_exit(self: ExecutionSession, *args: Any) -> None:
+    def failed_exit(self: Executor, *args: Any) -> None:
         original_exit(self, *args)
         fail()
 
     monkeypatch.setattr(PreparedLocalBindings, "verify", lambda *_: None)
     if location == "session":
-        monkeypatch.setattr(ExecutionSession, "__exit__", failed_exit)
+        monkeypatch.setattr(Executor, "__exit__", failed_exit)
     assignment = _assignment(bindings)
     captured: list[DeliveryDiagnostics] = []
     with pytest.raises(RuntimeError, match="outside scientific") as caught:

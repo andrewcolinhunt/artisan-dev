@@ -38,8 +38,8 @@ from artisan.schemas import (
 )
 from artisan.schemas.enums import CachePolicy, TablePath
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.orchestration.step_lifecycle import (
     CancellationAcknowledgement,
     CancellationStatus,
@@ -485,7 +485,7 @@ def test_curator_metric_reuse_keeps_current_membership_and_original_origin(
             execution_spec_id=admitted.digest,
             replay_snapshot=ReplaySnapshot.unavailable("fixture"),
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=committer.delta_root,
             files_root=committer.files_root,
             staging_root=curator.staging.staging_dir,

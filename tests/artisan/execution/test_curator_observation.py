@@ -32,8 +32,8 @@ from artisan.schemas.execution.curator_cache import (
     CuratorCacheProof,
 )
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.storage.cache.curator_dependencies import CuratorReadRecorder
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.curator_view import CuratorView
@@ -128,7 +128,7 @@ def test_actual_curator_scopes_stream_reads_and_closes_failed_iterator(
             execution_spec_id=admission.digest,
             replay_snapshot=ReplaySnapshot.unavailable("stream-observation-fixture"),
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=committer.delta_root,
             staging_root=coordinator.staging.staging_dir,
             files_root=committer.files_root,

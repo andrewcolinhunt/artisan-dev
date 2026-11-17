@@ -89,8 +89,8 @@ frozen associations and references. Fresh consuming IDs are normalized; changing
 the selected producer or dependency context changes the identity.
 
 ```
-prev = pipeline.run(operation=PrevOp, ...)
-pipeline.run(operation=MyOp, inputs={"data": prev.output("data")})
+prev = pipeline.run(definition=PrevOp, ...)
+pipeline.run(definition=MyOp, inputs={"data": prev.output("data")})
     │
     ▼
 resolve -> type-check -> verify -> group

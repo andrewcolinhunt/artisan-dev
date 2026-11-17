@@ -38,15 +38,15 @@ from artisan.utils.command_supervisor import (
 )
 
 if TYPE_CHECKING:
-    from artisan.execution.session_runtime import SessionRuntime
+    from artisan.execution.executor_runtime import ExecutorRuntime
     from artisan.utils.command_supervisor import _Invocation
 
 
-class ExecutionSession:
+class Executor:
     """Own sequential local creator/composite calls and temporary artifacts.
 
     Files remain available between child calls and are removed on confirmed
-    session closure unless preservation was requested. Preservation never keeps
+    executor closure unless preservation was requested. Preservation never keeps
     command ownership active. This owner neither installs software nor accesses a store.
     ``run`` accepts live definitions; ``invoke`` is the admitted partition kernel.
     """
@@ -60,7 +60,7 @@ class ExecutionSession:
         tool_backend: Literal["pixi", "docker", "apptainer"] = "pixi",
     ) -> None:
         if tool_backend not in {"pixi", "docker", "apptainer"}:
-            msg = "Unsupported session tool backend"
+            msg = "Unsupported executor tool backend"
             raise ValueError(msg)
         self._working_root = working_root
         self._preserve_working = preserve_working
@@ -70,27 +70,29 @@ class ExecutionSession:
         self._invocation: _Invocation | None = None
         self._cleanup_complete = False
         self._tool_backend = tool_backend
-        self._runtime: SessionRuntime | None = None
+        self._runtime: ExecutorRuntime | None = None
         self._run_lock = Lock()
         self._borrowed = False
 
     @property
     def cleanup_complete(self) -> bool:
-        """Whether this session's command scope has actually finished closing."""
+        """Whether this executor's command scope has actually finished closing."""
         return self._cleanup_complete
 
     def __enter__(self) -> Self:
         if self._scope is not None:
-            msg = "Execution session is already active"
+            msg = "Executor is already active"
             raise RuntimeError(msg)
         if self._root is not None:
-            msg = "Execution session retains unresolved cleanup ownership"
+            msg = "Executor retains unresolved cleanup ownership"
             raise RuntimeError(msg)
         self._cleanup_complete = False
         self._borrowed = has_command_scope()
         if self._working_root is not None:
             self._working_root.mkdir(parents=True, exist_ok=True)
-        root = Path(tempfile.mkdtemp(prefix="artisan-session-", dir=self._working_root))
+        root = Path(
+            tempfile.mkdtemp(prefix="artisan-executor-", dir=self._working_root)
+        )
         scope = managed_invocation()
         try:
             invocation = scope.__enter__()
@@ -108,7 +110,7 @@ class ExecutionSession:
         traceback: TracebackType | None,
     ) -> None:
         if self._scope is None or self._root is None:
-            msg = "Execution session is not active"
+            msg = "Executor is not active"
             raise RuntimeError(msg)
         closed = False
         try:
@@ -136,24 +138,24 @@ class ExecutionSession:
         inputs: Mapping[str, Sequence[Artifact]] | None = None,
         params: Parameters = None,
     ) -> ArtifactResult:
-        """Run a creator or composition locally, retaining files until session exit.
+        """Run a creator or composition locally, retaining files until executor exit.
 
         Inputs must be finalized, with local carriers and sufficient captured
         context. Software targets must already be prepared. This method does not
         access a store, install environments, or launch a replacement worker.
         """
         if self._scope is None or self._root is None or self._borrowed:
-            msg = "Standalone run requires an active independently owned session"
+            msg = "Standalone run requires an active independently owned executor"
             raise RuntimeError(msg)
         if not self._run_lock.acquire(blocking=False):
-            msg = "Standalone session calls must be sequential and nonrecursive"
+            msg = "Standalone executor calls must be sequential and nonrecursive"
             raise RuntimeError(msg)
         try:
-            from artisan.execution.session_runtime import SessionRuntime
+            from artisan.execution.executor_runtime import ExecutorRuntime
 
             check_command_scope(expected=self._invocation)
             if self._runtime is None:
-                self._runtime = SessionRuntime(self._tool_backend)
+                self._runtime = ExecutorRuntime(self._tool_backend)
             return self._runtime.run(
                 definition, {} if inputs is None else inputs, params, self, self._root
             )
@@ -164,9 +166,9 @@ class ExecutionSession:
     def invocation(
         self, *, observation: InvocationObservation | None = None
     ) -> Iterator[InvocationPaths]:
-        """Open a child scope while retaining its files through session closure."""
+        """Open a child scope while retaining its files through executor closure."""
         if self._scope is None or self._root is None:
-            msg = "Execution session must be entered before invoking operations"
+            msg = "Executor must be entered before invoking operations"
             raise RuntimeError(msg)
         check_command_scope()
         with managed_invocation():

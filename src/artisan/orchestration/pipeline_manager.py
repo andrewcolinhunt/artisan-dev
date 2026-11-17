@@ -705,7 +705,7 @@ class PipelineManager:
 
     def submit(
         self,
-        operation: Definition,
+        definition: Definition,
         *,
         inputs: PipelineInputs = None,
         params: Parameters = None,
@@ -728,7 +728,7 @@ class PipelineManager:
         software or transfer ownership of another run's workers.
 
         Args:
-            operation: Operation or composite definition class.
+            definition: Operation or composite definition class.
             inputs: Named artifact streams or output references. Ingestion also
                 accepts raw paths. None means no boundary inputs.
             params: Scientific parameters as a mapping or the definition's Params.
@@ -753,7 +753,7 @@ class PipelineManager:
             CommandOwnershipError: If worker ownership is unresolved.
         """
         submission = freeze_submission(
-            operation,
+            definition,
             params=params,
             runner_resources=runner_resources,
             batch_strategy=batch_strategy,
@@ -866,7 +866,7 @@ class PipelineManager:
 
     def run(
         self,
-        operation: Definition,
+        definition: Definition,
         *,
         inputs: PipelineInputs = None,
         params: Parameters = None,
@@ -900,7 +900,7 @@ class PipelineManager:
             CommandOwnershipError: If worker ownership is unresolved.
         """
         return self.submit(
-            operation,
+            definition,
             inputs=inputs,
             params=params,
             step_runner=step_runner,

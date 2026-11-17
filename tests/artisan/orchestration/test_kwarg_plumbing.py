@@ -35,8 +35,8 @@ def test_run_and_submit_share_the_exact_supported_surface() -> None:
     run = inspect.signature(PipelineManager.run)
     submit = inspect.signature(PipelineManager.submit)
     assert run.parameters == submit.parameters
-    assert set(run.parameters) == {"self", "operation", *_KWARGS}
-    assert run.parameters["operation"].kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
+    assert set(run.parameters) == {"self", "definition", *_KWARGS}
+    assert run.parameters["definition"].kind == inspect.Parameter.POSITIONAL_OR_KEYWORD
     assert all(
         run.parameters[name].kind == inspect.Parameter.KEYWORD_ONLY for name in _KWARGS
     )

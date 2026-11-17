@@ -24,8 +24,8 @@ from artisan.operations.base import OperationDefinition
 from artisan.schemas import InputSpec, MetricArtifact, OutputSpec, PassthroughResult
 from artisan.schemas.execution.curator_admission import CuratorInputAssociation
 from artisan.schemas.execution.replay import ReplayAssociation, ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.schemas.specs.input_models import CuratorInput
@@ -141,7 +141,7 @@ def test_preloaded_metrics_change_cache_identity_without_authored_queries(
         execution_spec_id=admission.digest,
         replay_snapshot=ReplaySnapshot.unavailable("association-fixture"),
     )
-    runtime = RuntimeEnvironment(
+    runtime = WorkerConfig(
         delta_root=committer.delta_root,
         staging_root=coordinator.staging.staging_dir,
         files_root=committer.files_root,

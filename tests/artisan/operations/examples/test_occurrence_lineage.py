@@ -9,7 +9,7 @@ import pytest
 from artisan.composites.base.compiler import compile_definition
 from artisan.execution.composition import execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
-from artisan.execution.session import ExecutionSession
+from artisan.execution.executor import Executor
 from artisan.operations.base import OperationDefinition
 from artisan.operations.examples import (
     DataTransformer,
@@ -49,11 +49,11 @@ def test_repeated_inputs_keep_order_and_distinct_lineage(
     second = CSVArtifact.draft(
         b"x,score\n3,4\n", "second.csv", step_number=0
     ).finalize()
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         execution = execute_compiled_plan(
             compile_definition(definition, params=params),
             {"dataset": [second, first, second]},
-            session,
+            executor,
             invocation_id="repeated-inputs",
             execute_adapter=lambda _operation, _path: LocalExecuteRouter(),
         )
