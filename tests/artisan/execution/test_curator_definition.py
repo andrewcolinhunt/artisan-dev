@@ -34,8 +34,8 @@ from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_admission import CuratorAdmission
 from artisan.schemas.execution.curator_definition import CuratorDefinitionContract
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.operation_config.environment import Environment
 from artisan.storage.cache.curator_dependencies import CuratorReadRecorder
 from artisan.storage.core.artifact_store import ArtifactStore
@@ -248,7 +248,7 @@ def test_entry_rejects_changed_contract_before_author_or_process_scope(
                 execution_spec_id=admission.digest,
                 replay_snapshot=ReplaySnapshot.unavailable("contract-fixture"),
             ),
-            RuntimeEnvironment(
+            WorkerConfig(
                 delta_root=committer.delta_root,
                 staging_root=coordinator.staging.staging_dir,
                 files_root=committer.files_root,
@@ -328,7 +328,7 @@ def test_contract_is_checked_once_before_mutable_stream_consumption(
             execution_spec_id=admission.digest,
             replay_snapshot=ReplaySnapshot.unavailable("mutable-stream-fixture"),
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=committer.delta_root,
             staging_root=coordinator.staging.staging_dir,
             files_root=committer.files_root,

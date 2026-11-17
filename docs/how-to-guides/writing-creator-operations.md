@@ -235,7 +235,7 @@ Access parameter values in lifecycle methods through `self.params`, such as
 `self.params.scale_factor`. Override them at the pipeline step level:
 
 ```python
-pipeline.run(operation=MyOp, inputs=..., params={"scale_factor": 2.0})
+pipeline.run(definition=MyOp, inputs=..., params={"scale_factor": 2.0})
 ```
 
 Parameterless operations omit both `Params` and `params`; see `MetricCalculator`
@@ -957,18 +957,18 @@ See [Configuring Execution](configuring-execution.md) for resource and batching 
 
 ## Verify
 
-Run the complete creator lifecycle with `ExecutionSession`. Inline definitions
-work here without installing an application package. Keep the session open while
+Run the complete creator lifecycle with `Executor`. Inline definitions
+work here without installing an application package. Keep the executor open while
 using its output files:
 
 ```python
-from artisan.execution import ExecutionSession
+from artisan.execution import Executor
 
 source = CSVArtifact.draft(
     content=b"id,value\n1,10\n2,20\n", original_name="test.csv"
 ).finalize()
-with ExecutionSession() as session:
-    artifact_result = session.run(
+with Executor() as executor:
+    artifact_result = executor.run(
         ScaleData,
         inputs={"dataset": [source, source]},
         params={"factor": 3.0},
@@ -999,9 +999,9 @@ pipeline = PipelineManager.create(
     staging_root="test/staging",
 )
 output = pipeline.output
-pipeline.run(operation=DataGenerator, name="source", params={"count": 3})
+pipeline.run(definition=DataGenerator, name="source", params={"count": 3})
 step = pipeline.run(
-    operation=ScaleData,
+    definition=ScaleData,
     inputs={"dataset": output("source", "datasets")},
     batch_strategy={"artifacts_per_unit": 3},
 )

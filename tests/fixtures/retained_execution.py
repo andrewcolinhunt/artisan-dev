@@ -14,8 +14,8 @@ from artisan.execution.assignment_transport import (
 )
 from artisan.execution.composition import execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.executor import Executor
 from artisan.execution.scientific_failure import assignment_science
-from artisan.execution.session import ExecutionSession
 from artisan.orchestration.runners.assignment import (
     AssignmentSoftware,
 )
@@ -138,7 +138,7 @@ class NativeRunner:
                 fs=fs,
                 verify_producer=self.committer._verify_producer,
             ) as captured,
-            ExecutionSession(working_root=dispatch.working_root) as session,
+            Executor(working_root=dispatch.working_root) as executor,
             assignment_science(),
         ):
             boundary = captured.record.boundary
@@ -153,7 +153,7 @@ class NativeRunner:
                     role: [captured.artifacts[address] for address in values]
                     for role, values in boundary.input_roles().items()
                 },
-                session,
+                executor,
                 invocation_id=delivery.attempt.assignment.assignment_id,
                 execute_adapter=lambda _operation, _path: LocalExecuteRouter(),
                 context_artifacts={

@@ -37,11 +37,11 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
     )
 
     step0 = pipeline.run(
-        operation=DataGenerator,
+        definition=DataGenerator,
         params={"count": 2, "rows_per_file": 10, "seed": 42},
     )
     pipeline.run(
-        operation=CsvHead,
+        definition=CsvHead,
         inputs={"dataset": step0.output("datasets")},
         params={"rows": 3},
     )

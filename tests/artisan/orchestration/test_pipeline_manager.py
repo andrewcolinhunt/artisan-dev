@@ -42,9 +42,11 @@ def test_explicit_default_instance_and_composite_share_public_submission(
 ) -> None:
     pipeline, runner = _pipeline(tmp_path)
     with pipeline:
-        first = pipeline.run(PredictMeasure, inputs={"structure": [structure(0)]})
+        first = pipeline.run(
+            definition=PredictMeasure, inputs={"structure": [structure(0)]}
+        )
         second = pipeline.submit(
-            operation=Transform, inputs={"structure": first.output("structure")}
+            definition=Transform, inputs={"structure": first.output("structure")}
         ).result()
         assert first.status == second.status == StepStatus.SUCCEEDED
         assert pipeline.runner is runner

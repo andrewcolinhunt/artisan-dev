@@ -1,4 +1,4 @@
-"""Interpret an admitted static recipe within one local execution session."""
+"""Interpret an admitted static recipe within one local executor."""
 
 from __future__ import annotations
 
@@ -12,11 +12,11 @@ from fsspec import AbstractFileSystem
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.exceptions import AssignmentExecutionError
+from artisan.execution.executor import Executor
 from artisan.execution.inputs.partitioning import partition_local_inputs
 from artisan.execution.lineage.graph import OccurrenceGraph
 from artisan.execution.lineage.validation import validate_artifacts_match_specs
 from artisan.execution.scientific_failure import scientific_phase
-from artisan.execution.session import ExecutionSession
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
@@ -41,7 +41,7 @@ type ExecuteAdapter = Callable[[OperationDefinition, tuple[str, ...]], ExecuteRo
 class PlanExecution:
     """Ordinary scientific result with private retained acceptance evidence.
 
-    Artifacts and their files remain owned by the caller's open session. This
+    Artifacts and their files remain owned by the caller's open executor. This
     value neither publishes them nor grants standalone adoption authority.
     """
 
@@ -53,7 +53,7 @@ class PlanExecution:
 def execute_compiled_plan(
     plan: CompiledPlan,
     inputs: Mapping[str, Sequence[Artifact]],
-    session: ExecutionSession,
+    executor: Executor,
     *,
     invocation_id: str,
     execute_adapter: ExecuteAdapter,
@@ -77,7 +77,7 @@ def execute_compiled_plan(
         msg = "All-empty boundary inputs contain no admitted work"
         raise ValueError(msg)
     runtime = _PlanRuntime(
-        session,
+        executor,
         invocation_id,
         execute_adapter,
         frozen_context or FrozenBoundaryContext(),
@@ -126,7 +126,7 @@ def _validate_local_policy(plan: CompiledPlan) -> None:
 def execute_local_plan(
     plan: CompiledPlan,
     inputs: Mapping[str, Sequence[Artifact]],
-    session: ExecutionSession,
+    executor: Executor,
     *,
     invocation_id: str,
     execute_adapter: ExecuteAdapter,
@@ -135,7 +135,7 @@ def execute_local_plan(
 ) -> PlanExecution:
     """Partition a standalone root while retaining one exact visible boundary."""
     runtime = _PlanRuntime(
-        session, invocation_id, execute_adapter, frozen_context, None, None
+        executor, invocation_id, execute_adapter, frozen_context, None, None
     )
     boundary = runtime.admit(inputs, context_artifacts, None)
     specs = _output_specs(plan.recipe)
@@ -238,14 +238,14 @@ class _PlanRuntime:
 
     def __init__(
         self,
-        session: ExecutionSession,
+        executor: Executor,
         invocation_id: str,
         execute_adapter: ExecuteAdapter,
         context: FrozenBoundaryContext,
         step_number: int | None,
         fs: AbstractFileSystem | None,
     ) -> None:
-        self.session = session
+        self.executor = executor
         self.invocation_id = invocation_id
         self.execute_adapter = execute_adapter
         self.context = context
@@ -347,7 +347,7 @@ class _PlanRuntime:
             context, references = self._input_context(identity, partition, plan.recipe)
             router = self.execute_adapter(operation, path)
             try:
-                result = self.session.invoke(
+                result = self.executor.invoke(
                     operation,
                     context,
                     batch_size=max(

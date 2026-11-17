@@ -25,8 +25,8 @@ from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.execution.composition import ExecuteAdapter
 from artisan.execution.compute.local import LocalExecuteRouter
-from artisan.execution.session import ExecutionSession
-from artisan.execution.session_runtime import SessionRuntime
+from artisan.execution.executor import Executor
+from artisan.execution.executor_runtime import ExecutorRuntime
 from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas import ArtifactResult, InputSpec, OutputSpec
 from artisan.schemas.artifact.base import Artifact
@@ -48,7 +48,7 @@ def native_adapter(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
     calls: list[tuple[str, ...]] = []
 
     def software(
-        self: SessionRuntime,
+        self: ExecutorRuntime,
         plan: CompiledPlan,
         inventory: Sequence[Artifact],
         root: Path,
@@ -61,7 +61,7 @@ def native_adapter(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
 
         return adapter
 
-    monkeypatch.setattr(SessionRuntime, "_software", software)
+    monkeypatch.setattr(ExecutorRuntime, "_software", software)
     return calls
 
 
@@ -71,8 +71,8 @@ def test_standalone_root_partitions_preserve_visible_lineage_and_tool_paths(
 ) -> None:
     Transform.phase_sizes.clear()
     inputs = [structure(i) for i in range(3)]
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(PredictMeasure, inputs={"structure": inputs})
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(PredictMeasure, inputs={"structure": inputs})
         assert [coordinate(item) for item in result.artifacts["structure"]] == [1, 2, 3]
         assert [item.source_input_index for item in result.lineage["structure"]] == [
             0,
@@ -109,8 +109,8 @@ def test_creator_partitioning_and_fixed_loop_share_kernel(
     tmp_path: Path, native_adapter: list[tuple[str, ...]]
 ) -> None:
     Transform.phase_sizes.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(
             BatchedTransform, inputs={"structure": [structure(i) for i in range(5)]}
         )
         assert [coordinate(item) for item in result.artifacts["structure"]] == [
@@ -125,7 +125,7 @@ def test_creator_partitioning_and_fixed_loop_share_kernel(
             for size in (2, 2, 1)
             for phase in ("preprocess", "execute", "postprocess")
         ]
-        loop = session.run(Iterate, inputs={"structure": [structure(0)]})
+        loop = executor.run(Iterate, inputs={"structure": [structure(0)]})
         assert coordinate(loop.artifacts["structure"][0]) == 14
 
 
@@ -138,15 +138,15 @@ def test_empty_and_invalid_inputs_never_resolve_software(
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("zero or invalid work resolved software")
 
-    monkeypatch.setattr(SessionRuntime, "_software", forbidden)
-    with ExecutionSession(working_root=tmp_path) as session:
+    monkeypatch.setattr(ExecutorRuntime, "_software", forbidden)
+    with Executor(working_root=tmp_path) as executor:
         if inputs == {"structure": []}:
-            result = session.run(PredictMeasure, inputs=inputs)
+            result = executor.run(PredictMeasure, inputs=inputs)
             assert result.artifacts == {"structure": [], "metrics": []}
             assert result.lineage == {"structure": [], "metrics": []}
         else:
             with pytest.raises(ValueError, match="missing required or undeclared"):
-                session.run(PredictMeasure, inputs=inputs)
+                executor.run(PredictMeasure, inputs=inputs)
 
 
 class Associated(Measure):
@@ -168,27 +168,29 @@ class Associated(Measure):
 def test_association_context_accumulates_only_retained_exact_relations(
     tmp_path: Path, native_adapter: list[tuple[str, ...]]
 ) -> None:
-    with ExecutionSession(working_root=tmp_path) as session:
-        first = session.run(Transform, inputs={"structure": [structure(0)]}).artifacts[
+    with Executor(working_root=tmp_path) as executor:
+        first = executor.run(Transform, inputs={"structure": [structure(0)]}).artifacts[
             "structure"
         ][0]
-        empty = session.run(Associated, inputs={"structure": [first]})
+        empty = executor.run(Associated, inputs={"structure": [first]})
         assert empty.artifacts["metrics"][0].values == {"score": 0}
         # The query's own exported metric is a genuine later direct relation too.
-        session.run(Measure, inputs={"structure": [first]})
-        later = session.run(Associated, inputs={"structure": [first]})
+        executor.run(Measure, inputs={"structure": [first]})
+        later = executor.run(Associated, inputs={"structure": [first]})
         assert later.artifacts["metrics"][0].values == {"score": 2}
-        other = session.run(
+        other = executor.run(
             PredictMeasure, inputs={"structure": [structure(0)]}
         ).artifacts["structure"][0]
         assert first.artifact_id == other.artifact_id
-        exact = session.run(Associated, inputs={"structure": [other, other]})
+        exact = executor.run(Associated, inputs={"structure": [other, other]})
         assert [item.values for item in exact.artifacts["metrics"]] == [
             {"score": 1},
             {"score": 1},
         ]
-        with pytest.raises(ValueError, match="no captured session producer"):
-            session.run(Associated, inputs={"structure": [other.model_copy(deep=True)]})
+        with pytest.raises(ValueError, match="no captured executor producer"):
+            executor.run(
+                Associated, inputs={"structure": [other.model_copy(deep=True)]}
+            )
 
 
 class Passthrough(CompositeDefinition):
@@ -216,14 +218,14 @@ def test_unscoped_passthrough_and_static_nested_query_fail_before_science(
             ctx.output("structure", ctx.input("structure"))
             ctx.output("metrics", measured.output("metrics"))
 
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         original = structure(2)
-        returned = session.run(Passthrough, inputs={"structure": [original]}).artifacts[
-            "structure"
-        ][0]
+        returned = executor.run(
+            Passthrough, inputs={"structure": [original]}
+        ).artifacts["structure"][0]
         assert returned is original
-        with pytest.raises(ValueError, match="no captured session producer"):
-            session.run(Query, inputs={"structure": [returned]})
+        with pytest.raises(ValueError, match="no captured executor producer"):
+            executor.run(Query, inputs={"structure": [returned]})
     assert native_adapter == []
 
 
@@ -303,14 +305,14 @@ def test_required_support_survives_later_call_and_mutation_rejects(
             return ArtifactResult(artifacts={"metrics": []}, lineage={"metrics": []})
 
     ReadConfig.paths.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(ConfigOnly, inputs={"structure": [structure(4)]})
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(ConfigOnly, inputs={"structure": [structure(4)]})
         config = result.artifacts["config"][0]
-        session.run(InspectConfig, inputs={"config": [config]})
+        executor.run(InspectConfig, inputs={"config": [config]})
         assert all(path.is_file() for path in ReadConfig.paths)
         assert ReadConfig.paths[-1].read_text() == "coordinate\n5\n"
         with pytest.raises(ValueError, match="referen|missing|Missing"):
-            session.run(
+            executor.run(
                 InspectConfig, inputs={"config": [config.model_copy(deep=True)]}
             )
     assert all(not path.exists() for path in ReadConfig.paths)
@@ -338,38 +340,38 @@ def test_unavailable_carrier_rejects_without_opening_source_store(
         outputs: ClassVar = {"structure": OutputSpec(artifact_type="file_ref")}
 
     with (
-        ExecutionSession(working_root=tmp_path) as session,
+        Executor(working_root=tmp_path) as executor,
         pytest.raises(ValueError, match="available local artifact carriers"),
     ):
-        session.run(Files, inputs={"structure": [artifact]})
+        executor.run(Files, inputs={"structure": [artifact]})
     assert native_adapter == []
 
 
 def test_lifetime_borrowed_and_recursive_entry_reject(
     tmp_path: Path, native_adapter: list[tuple[str, ...]]
 ) -> None:
-    session = ExecutionSession(working_root=tmp_path)
+    executor = Executor(working_root=tmp_path)
     with pytest.raises(RuntimeError, match="active independently"):
-        session.run(Transform)
-    with session:
+        executor.run(Transform)
+    with executor:
         with (
-            ExecutionSession(working_root=tmp_path) as borrowed,
+            Executor(working_root=tmp_path) as borrowed,
             pytest.raises(RuntimeError, match="active independently"),
         ):
             borrowed.run(Transform)
         with (
-            session.invocation(),
+            executor.invocation(),
             pytest.raises(RuntimeError, match="scope is not current"),
         ):
-            session.run(Transform)
-        session._run_lock.acquire()
+            executor.run(Transform)
+        executor._run_lock.acquire()
         try:
             with pytest.raises(RuntimeError, match="sequential and nonrecursive"):
-                session.run(Transform)
+                executor.run(Transform)
         finally:
-            session._run_lock.release()
+            executor._run_lock.release()
     with pytest.raises(RuntimeError, match="active independently"):
-        session.run(Transform)
+        executor.run(Transform)
 
 
 def test_empty_invalid_grouping_is_not_silently_accepted(
@@ -380,10 +382,10 @@ def test_empty_invalid_grouping_is_not_silently_accepted(
         group_by: GroupByStrategy = GroupByStrategy.NAME
 
     with (
-        ExecutionSession(working_root=tmp_path) as session,
+        Executor(working_root=tmp_path) as executor,
         pytest.raises(ValueError, match="Local input pairing"),
     ):
-        session.run(Named, inputs={"structure": []})
+        executor.run(Named, inputs={"structure": []})
 
 
 @pytest.mark.parametrize("invoked", [False, True])
@@ -393,21 +395,21 @@ def test_unknown_closure_keeps_exact_scratch_and_prevents_reentry(
     native_adapter: list[tuple[str, ...]],
     invoked: bool,
 ) -> None:
-    session = ExecutionSession(working_root=tmp_path)
-    with session:
+    executor = Executor(working_root=tmp_path)
+    with executor:
         if invoked:
             with pytest.raises(ValueError, match="missing required"):
-                session.run(Transform)
-        root = session._root
+                executor.run(Transform)
+        root = executor._root
         monkeypatch.setattr(
-            "artisan.execution.session.close_command_scope", lambda _error: False
+            "artisan.execution.executor.close_command_scope", lambda _error: False
         )
     assert root is not None
     assert root.is_dir()
-    assert session._root == root
-    assert not session.cleanup_complete
+    assert executor._root == root
+    assert not executor.cleanup_complete
     with pytest.raises(RuntimeError, match="unresolved cleanup ownership"):
-        session.__enter__()
+        executor.__enter__()
 
 
 class Pair(CompositeDefinition):
@@ -469,8 +471,8 @@ def test_root_pairing_retains_input_positions(
             GroupByStrategy.CROSS_PRODUCT if cross else GroupByStrategy.ZIP
         )
 
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(
             SelectedPair,
             inputs={
                 "left": [structure(1), structure(2)],
@@ -487,12 +489,12 @@ def test_root_pairing_retains_input_positions(
             [0, 0, 1, 1] if cross else [0, 1]
         )
         if cross:
-            assert session.run(
+            assert executor.run(
                 SelectedPair, inputs={"left": [structure(1)], "right": []}
             ).artifacts == {"left": [], "right": []}
         else:
             with pytest.raises(ValueError, match="equal lengths"):
-                session.run(SelectedPair, inputs={"left": [structure(1)], "right": []})
+                executor.run(SelectedPair, inputs={"left": [structure(1)], "right": []})
 
 
 def test_aliases_share_context_but_hidden_metrics_are_discarded(
@@ -508,10 +510,10 @@ def test_aliases_share_context_but_hidden_metrics_are_discarded(
                 "structure", [made.output("structure"), made.output("structure")]
             )
 
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(Hidden, inputs={"structure": [structure(1)]})
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(Hidden, inputs={"structure": [structure(1)]})
         assert result.artifacts["structure"][0] is result.artifacts["structure"][1]
-        found = session.run(
+        found = executor.run(
             Associated, inputs={"structure": result.artifacts["structure"]}
         )
         assert [item.values for item in found.artifacts["metrics"]] == [
@@ -558,13 +560,13 @@ def test_actual_observation_keeps_local_class_in_current_interpreter(
         pytest.fail("Standalone native call launched a qualification child")
 
     monkeypatch.setattr(observed.subprocess, "run", forbidden)
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(LocalDefinition)
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(LocalDefinition)
         assert result.artifacts["metrics"][0].values == {
             "pid": [os.getpid()],
             "executable": [sys.executable],
         }
-    assert session.cleanup_complete
+    assert executor.cleanup_complete
 
 
 class Command(OperationDefinition):
@@ -606,17 +608,17 @@ def test_actual_inherited_command_uses_verified_existing_helper(tmp_path: Path) 
     cache = os.environ.get("ARTISAN_TEST_PREPARED_CACHE")
     if cache is None:
         pytest.skip("Explicit existing command-witness qualification cache required")
-    with ExecutionSession(working_root=tmp_path) as session:
-        runtime = SessionRuntime("pixi")
+    with Executor(working_root=tmp_path) as executor:
+        runtime = ExecutorRuntime("pixi")
         runtime.cache_root = Path(cache)
-        session._runtime = runtime
-        result = session.run(Command)
+        executor._runtime = runtime
+        result = executor.run(Command)
         assert result.artifacts["metrics"][0].values["pid"] != os.getpid()
         assert result.artifacts["metrics"][0].values["executable"] == sys.executable
-        assert session.run(Generate).artifacts["metrics"][0].values["pid"] == [
+        assert executor.run(Generate).artifacts["metrics"][0].values["pid"] == [
             os.getpid()
         ]
-    assert session.cleanup_complete
+    assert executor.cleanup_complete
 
 
 def test_actual_prepared_cpu_tool_uses_existing_prefix(tmp_path: Path) -> None:
@@ -646,13 +648,13 @@ def test_actual_prepared_cpu_tool_uses_existing_prefix(tmp_path: Path) -> None:
             )
 
     with (
-        ExecutionSession(working_root=tmp_path) as session,
+        Executor(working_root=tmp_path) as executor,
         capture_commands() as recorder,
     ):
-        runtime = SessionRuntime("pixi")
+        runtime = ExecutorRuntime("pixi")
         runtime.cache_root = Path(cache)
-        session._runtime = runtime
-        assert session.run(Compiler).artifacts["metrics"][0].values == {
+        executor._runtime = runtime
+        assert executor.run(Compiler).artifacts["metrics"][0].values == {
             "completed": True
         }
     commands = recorder.snapshot().commands
@@ -662,7 +664,7 @@ def test_actual_prepared_cpu_tool_uses_existing_prefix(tmp_path: Path) -> None:
         str(Path(cache) / "native") in argument and COMPILER in argument
         for argument in commands[0].argv
     )
-    assert session.cleanup_complete
+    assert executor.cleanup_complete
 
 
 def test_actual_missing_target_fails_before_authored_phases(tmp_path: Path) -> None:
@@ -676,10 +678,10 @@ def test_actual_missing_target_fails_before_authored_phases(tmp_path: Path) -> N
             pytest.fail("Missing prepared target reached authored code")
 
     with (
-        ExecutionSession(working_root=tmp_path) as session,
+        Executor(working_root=tmp_path) as executor,
         pytest.raises(FileNotFoundError),
     ):
-        session.run(Missing)
+        executor.run(Missing)
 
 
 def test_same_object_with_two_producers_rejects_later_context(
@@ -701,11 +703,11 @@ def test_same_object_with_two_producers_rejects_later_context(
         }
         outputs: ClassVar = {"structure": OutputSpec(artifact_type="metric")}
 
-    with ExecutionSession(working_root=tmp_path) as session:
-        first = session.run(Shared).artifacts["metrics"][0]
-        assert session.run(Shared).artifacts["metrics"][0] is first
+    with Executor(working_root=tmp_path) as executor:
+        first = executor.run(Shared).artifacts["metrics"][0]
+        assert executor.run(Shared).artifacts["metrics"][0] is first
         with pytest.raises(ValueError, match="ambiguous producer"):
-            session.run(MetricIdentity, inputs={"structure": [first]})
+            executor.run(MetricIdentity, inputs={"structure": [first]})
 
 
 def test_whole_stream_is_not_split_and_invalid_output_does_not_gain_context(
@@ -725,8 +727,8 @@ def test_whole_stream_is_not_split_and_invalid_output_does_not_gain_context(
             return {"values": []}
 
     Transform.phase_sizes.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
-        result = session.run(
+    with Executor(working_root=tmp_path) as executor:
+        result = executor.run(
             Whole, inputs={"structure": [structure(i) for i in range(4)]}
         )
         assert len(result.artifacts["structure"]) == 4
@@ -734,7 +736,7 @@ def test_whole_stream_is_not_split_and_invalid_output_does_not_gain_context(
             (phase, 4) for phase in ("preprocess", "execute", "postprocess")
         ]
         with pytest.raises(ArtifactValidationError, match="required"):
-            session.run(Drop, inputs={"structure": [structure(0)]})
+            executor.run(Drop, inputs={"structure": [structure(0)]})
 
 
 def test_mutated_prior_output_rejects_before_following_science(
@@ -742,8 +744,8 @@ def test_mutated_prior_output_rejects_before_following_science(
 ) -> None:
     from artisan.errors import ArtifactIntegrityError
 
-    with ExecutionSession(working_root=tmp_path) as session:
-        first = session.run(Transform, inputs={"structure": [structure(0)]}).artifacts[
+    with Executor(working_root=tmp_path) as executor:
+        first = executor.run(Transform, inputs={"structure": [structure(0)]}).artifacts[
             "structure"
         ][0]
         with pytest.raises(TypeError, match="finalized artifact"):
@@ -751,7 +753,7 @@ def test_mutated_prior_output_rejects_before_following_science(
         object.__setattr__(first, "content", b"coordinate\n999\n")
         before = len(native_adapter)
         with pytest.raises(ArtifactIntegrityError):
-            session.run(Transform, inputs={"structure": [first]})
+            executor.run(Transform, inputs={"structure": [first]})
         assert len(native_adapter) == before
 
 
@@ -770,12 +772,12 @@ def test_creator_returning_unscoped_object_cannot_capture_empty_associations(
             )
             return result
 
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         original = structure(0)
-        result = session.run(ReturnInput, inputs={"structure": [original]})
+        result = executor.run(ReturnInput, inputs={"structure": [original]})
         assert result.artifacts["structure"][0] is original
-        with pytest.raises(ValueError, match="no captured session producer"):
-            session.run(Associated, inputs=result.artifacts)
+        with pytest.raises(ValueError, match="no captured executor producer"):
+            executor.run(Associated, inputs=result.artifacts)
 
 
 @pytest.mark.parametrize("body_fails", [False, True])
@@ -797,13 +799,13 @@ def test_final_supervisor_unknown_keeps_session_ownership(
         return OwnershipOutcome("unknown", False, "injected final collection loss")
 
     monkeypatch.setattr(CommandSupervisor, "finish", unknown)
-    session = ExecutionSession(working_root=tmp_path)
+    executor = Executor(working_root=tmp_path)
     failure = ValueError("authored failure")
     with (
         pytest.raises(ValueError if body_fails else CommandOwnershipError) as raised,
-        session,
+        executor,
     ):
-        root = session._root
+        root = executor._root
         if body_fails:
             raise failure
     if body_fails:
@@ -813,7 +815,7 @@ def test_final_supervisor_unknown_keeps_session_ownership(
         )
     assert root is not None
     assert root.is_dir()
-    assert session._root == root
-    assert not session.cleanup_complete
+    assert executor._root == root
+    assert not executor.cleanup_complete
     with pytest.raises(RuntimeError, match="unresolved cleanup ownership"):
-        session.__enter__()
+        executor.__enter__()

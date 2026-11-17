@@ -1,8 +1,4 @@
-"""Runtime environment configuration for worker processes.
-
-``RuntimeEnvironment`` specifies WHERE execution happens (URIs, debug
-flags), separate from WHAT executes (ExecutionUnit).
-"""
+"""Storage, scratch, cleanup, and identity settings for worker execution."""
 
 from __future__ import annotations
 
@@ -12,19 +8,12 @@ from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.utils.application_modules import validate_application_modules
 
 
-class RuntimeEnvironment(BaseModel):
-    """Runtime environment configuration.
+class WorkerConfig(BaseModel):
+    """Immutable configuration used by curator execution and replay capture.
 
-    This specifies WHERE execution happens, not WHAT executes.
-    Typically created from PipelineConfig via _create_runtime_environment() and
-    passed to workers.
-
-    The separation of concerns:
-    - ExecutionUnit: What to compute (operation, inputs, params, step_number)
-    - RuntimeEnvironment: Where to compute (URIs/paths, debug flags)
-
-    For curator operations, working_root is None since they
-    don't require sandboxing or materialization.
+    The admitted worker constructs these settings from its dispatch context.
+    Software dependencies belong to Environment declarations; this model records
+    storage access, scratch locations, cleanup preferences, and worker identity.
 
     Field semantics:
     - delta_root, staging_root, files_root, failure_logs_root: Local path or
@@ -32,7 +21,7 @@ class RuntimeEnvironment(BaseModel):
     - working_root: Always a local path. Use os.* for I/O.
 
     Example:
-        >>> env = RuntimeEnvironment(
+        >>> config = WorkerConfig(
         ...     delta_root="/data/delta",
         ...     staging_root="/data/staging",
         ...     working_root="/tmp",
@@ -98,7 +87,7 @@ class RuntimeEnvironment(BaseModel):
         description="Don't cleanup sandbox directory after execution",
     )
 
-    # Runner traits (flattened from WorkerTraits for serialization)
+    # Resolved worker identity and placement metadata.
     worker_id_env_var: str | None = Field(
         None,
         description="Provider environment variable resolved at the worker entry point.",

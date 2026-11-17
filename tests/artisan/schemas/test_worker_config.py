@@ -8,17 +8,17 @@ import cloudpickle
 import pytest
 from pydantic import ValidationError
 
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 
 
-class TestRuntimeEnvironmentWorkerId:
+class TestWorkerConfigWorkerId:
     def test_defaults_to_local_worker(self) -> None:
-        env = RuntimeEnvironment(delta_root="/delta", staging_root="/staging")
+        env = WorkerConfig(delta_root="/delta", staging_root="/staging")
         assert env.worker_id == 0
 
     @pytest.mark.parametrize("worker_id", [-(2**31), -1, 0, 42, 2**31 - 1])
     def test_accepts_signed_int32(self, worker_id: int) -> None:
-        env = RuntimeEnvironment(
+        env = WorkerConfig(
             delta_root="/delta", staging_root="/staging", worker_id=worker_id
         )
         assert env.worker_id == worker_id
@@ -28,7 +28,7 @@ class TestRuntimeEnvironmentWorkerId:
     @pytest.mark.parametrize("worker_id", [True, False, 7.0, "7", -(2**31) - 1, 2**31])
     def test_rejects_invalid_worker_id(self, worker_id: object) -> None:
         with pytest.raises(ValidationError):
-            RuntimeEnvironment(
+            WorkerConfig(
                 delta_root="/delta", staging_root="/staging", worker_id=worker_id
             )
 
@@ -36,14 +36,14 @@ class TestRuntimeEnvironmentWorkerId:
     def test_serialized_runtime_retains_frozen_worker_identity(
         self, transport: str
     ) -> None:
-        env = RuntimeEnvironment(
+        env = WorkerConfig(
             delta_root="/delta",
             staging_root="/staging",
             worker_id=42,
             worker_id_env_var="PROVIDER_WORKER_ID",
         )
         restored = (
-            RuntimeEnvironment.model_validate_json(env.model_dump_json())
+            WorkerConfig.model_validate_json(env.model_dump_json())
             if transport == "json"
             else cloudpickle.loads(cloudpickle.dumps(env))
         )
@@ -55,12 +55,12 @@ class TestRuntimeEnvironmentWorkerId:
             restored.worker_id = 7
 
 
-class TestRuntimeEnvironmentFilesRoot:
-    """Tests for the files_root field on RuntimeEnvironment."""
+class TestWorkerConfigFilesRoot:
+    """Tests for the files_root field on WorkerConfig."""
 
     def test_files_root_defaults_to_none(self, tmp_path: Path) -> None:
         """files_root is None when not provided."""
-        env = RuntimeEnvironment(
+        env = WorkerConfig(
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
         )
@@ -69,7 +69,7 @@ class TestRuntimeEnvironmentFilesRoot:
     def test_files_root_accepts_value(self, tmp_path: Path) -> None:
         """files_root stores the provided path."""
         files_root = str(tmp_path / "files")
-        env = RuntimeEnvironment(
+        env = WorkerConfig(
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
             files_root=files_root,
@@ -78,7 +78,7 @@ class TestRuntimeEnvironmentFilesRoot:
 
     def test_files_root_frozen(self, tmp_path: Path) -> None:
         """files_root cannot be mutated (frozen model)."""
-        env = RuntimeEnvironment(
+        env = WorkerConfig(
             delta_root=str(tmp_path / "delta"),
             staging_root=str(tmp_path / "staging"),
             files_root=str(tmp_path / "files"),
@@ -90,12 +90,12 @@ class TestRuntimeEnvironmentFilesRoot:
             pass  # Expected: ValidationError on frozen model
 
 
-class TestRuntimeEnvironment:
-    """Tests for RuntimeEnvironment model."""
+class TestWorkerConfig:
+    """Tests for WorkerConfig model."""
 
     def test_config_is_frozen(self, tmp_path):
-        """RuntimeEnvironment should be immutable."""
-        env = RuntimeEnvironment(
+        """WorkerConfig should be immutable."""
+        env = WorkerConfig(
             delta_root=str(tmp_path / "delta"),
             working_root=str(tmp_path / "working"),
             staging_root=str(tmp_path / "staging"),
@@ -105,9 +105,9 @@ class TestRuntimeEnvironment:
             env.delta_root = str(tmp_path / "other")
 
     def test_config_requires_all_paths(self, tmp_path):
-        """RuntimeEnvironment requires staging_root."""
+        """WorkerConfig requires staging_root."""
         with pytest.raises(ValidationError):
-            RuntimeEnvironment(
+            WorkerConfig(
                 delta_root=str(tmp_path / "delta"),
                 working_root=str(tmp_path / "working"),
                 # missing staging_root

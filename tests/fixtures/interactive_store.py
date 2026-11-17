@@ -28,8 +28,8 @@ from artisan.schemas.execution.assignment import (
 )
 from artisan.schemas.execution.curator_admission import CuratorAdmissionReference
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.step_admission import StepAdmission
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.execution.worker_ownership import OwnershipState
 from artisan.schemas.operation_config.runner_resources import RunnerResources
 from artisan.schemas.orchestration.step_lifecycle import (
@@ -246,7 +246,7 @@ def launch_test_curator(
             ),
             replay_sensitive_values=curator.sensitive_values,
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=dispatch.delta_root,
             staging_root=dispatch.staging_root,
             files_root=dispatch.files_root,

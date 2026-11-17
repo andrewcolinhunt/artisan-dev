@@ -45,10 +45,10 @@ from artisan.schemas.provenance.projection import (
 )
 
 if TYPE_CHECKING:
-    from artisan.execution.session import ExecutionSession
+    from artisan.execution.executor import Executor
 
 
-class SessionRuntime:
+class ExecutorRuntime:
     """Keep only completed boundaries, exports and required support until closure."""
 
     def __init__(self, tool_backend: Literal["pixi", "docker", "apptainer"]) -> None:
@@ -58,7 +58,7 @@ class SessionRuntime:
             / "artisan/environments"
         )
         if not self.cache_root.is_absolute():
-            msg = "Session environment cache requires an absolute path"
+            msg = "Executor environment cache requires an absolute path"
             raise ValueError(msg)
         self.artifacts: dict[OccurrenceAddress, Artifact] = {}
         self.objects: dict[int, tuple[Artifact, set[OccurrenceAddress]]] = {}
@@ -74,7 +74,7 @@ class SessionRuntime:
         definition: Definition,
         inputs: Mapping[str, Sequence[Artifact]],
         params: Parameters,
-        session: ExecutionSession,
+        executor: Executor,
         root: Path,
     ) -> ArtifactResult:
         """Validate all captured inputs before selecting software or invoking science."""
@@ -105,7 +105,7 @@ class SessionRuntime:
         execution = execute_local_plan(
             plan,
             inputs,
-            session,
+            executor,
             invocation_id=identity,
             execute_adapter=adapter,
             context_artifacts=captured,
@@ -154,7 +154,7 @@ class SessionRuntime:
                 supplied[source] = artifact
                 for kind in sorted(requested.get(role, ())):
                     if source not in self.produced:
-                        msg = "Associated input query has no captured session producer context"
+                        msg = "Associated input query has no captured executor producer context"
                         raise ValueError(msg)
                     members = tuple(
                         sorted(
@@ -312,7 +312,7 @@ class SessionRuntime:
                 self.tool_backend, path=worker.environment.get("PATH", os.defpath)
             )
             if executable is None:
-                msg = "Selected session tool backend is unavailable; prepare it explicitly"
+                msg = "Selected executor tool backend is unavailable; prepare it explicitly"
                 raise ValueError(msg)
             if self.tool_backend == "docker":
                 if (

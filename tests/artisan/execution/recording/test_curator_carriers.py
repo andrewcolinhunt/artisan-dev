@@ -37,8 +37,8 @@ from artisan.schemas.execution.curator_carriers import (
 )
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.curator_view import CuratorView, capture_curator_view
 from artisan.storage.core.retained_reader import RetainedReader
@@ -123,7 +123,7 @@ def test_stream_captures_temporary_files_before_iterator_advance(
             execution_spec_id=admission.digest,
             replay_snapshot=ReplaySnapshot.unavailable("carrier-fixture"),
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=committer.delta_root,
             files_root=committer.files_root,
             staging_root=coordinator.staging.staging_dir,

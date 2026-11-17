@@ -69,7 +69,7 @@ from artisan.schemas.execution.curator_result import (
 )
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.specs.input_models import CuratorInput
 from artisan.storage.cache.curator_dependencies import CuratorReadRecorder
 from artisan.storage.core.artifact_store import ArtifactStore
@@ -200,7 +200,7 @@ def _handle_passthrough_result(
 
 def run_curator_flow(
     unit: ExecutionUnit,
-    runtime_env: RuntimeEnvironment,
+    worker_config: WorkerConfig,
     *,
     curator_view: CuratorView | None = None,
     read_recorder: CuratorReadRecorder | None = None,
@@ -209,7 +209,7 @@ def run_curator_flow(
 
     Args:
         unit: Configured operation and concrete input batch.
-        runtime_env: Resolved worker identity, runtime paths and storage.
+        worker_config: Resolved worker identity, runtime paths and storage.
         curator_view: Verified fixed store view supplied by admitted worker entry.
         read_recorder: Qualified observation of authored reads in that same view.
 
@@ -221,12 +221,12 @@ def run_curator_flow(
     with (
         managed_invocation(),
         curator_resources(
-            runtime_env.working_root, preserve_working=runtime_env.preserve_working
+            worker_config.working_root, preserve_working=worker_config.preserve_working
         ),
         capture_commands(unit.operation) as commands,
     ):
         bootstrap_applications(
-            runtime_env.application_modules, purpose="curator worker"
+            worker_config.application_modules, purpose="curator worker"
         )
         configuration_recorder(
             unit.operation, params=unit.user_overrides, recorder=commands
@@ -237,7 +237,7 @@ def run_curator_flow(
         with capture_replay(unit):
             return _run_curator_flow(
                 unit,
-                runtime_env,
+                worker_config,
                 curator_view=curator_view,
                 read_recorder=read_recorder,
             )
@@ -290,7 +290,7 @@ def _validate_observation(
 
 def _run_curator_flow(
     unit: ExecutionUnit,
-    runtime_env: RuntimeEnvironment,
+    worker_config: WorkerConfig,
     *,
     curator_view: CuratorView | None = None,
     read_recorder: CuratorReadRecorder | None = None,
@@ -304,7 +304,7 @@ def _run_curator_flow(
     execution_run_id = generate_execution_run_id(
         unit.execution_spec_id,
         timestamp_start,
-        runtime_env.worker_id,
+        worker_config.worker_id,
     )
     params_dict = serialize_params(operation)
     user_overrides = unit.user_overrides
@@ -320,7 +320,7 @@ def _run_curator_flow(
                 execution_spec_id=unit.execution_spec_id,
                 step_number=unit.step_number,
                 timestamp_start=timestamp_start,
-                runtime_env=runtime_env,
+                worker_config=worker_config,
                 operation=operation,
                 step_run_id=unit.step_run_id,
                 curator_view=curator_view,
@@ -374,7 +374,7 @@ def _run_curator_flow(
                         total_start,
                         params_dict,
                         user_overrides,
-                        runtime_env.failure_logs_root,
+                        worker_config.failure_logs_root,
                         read_recorder=read_recorder,
                     )
                 close_command_scope()
@@ -391,7 +391,7 @@ def _run_curator_flow(
                     timestamp_end=datetime.now(UTC),
                     params=params_dict,
                     user_overrides=user_overrides,
-                    failure_logs_root=runtime_env.failure_logs_root,
+                    failure_logs_root=worker_config.failure_logs_root,
                     error_envelope=error_envelope_dict(exc),
                 )
 
@@ -422,7 +422,7 @@ def _run_curator_flow(
                     timestamp_end=timestamp_end,
                     params=params_dict,
                     user_overrides=user_overrides,
-                    failure_logs_root=runtime_env.failure_logs_root,
+                    failure_logs_root=worker_config.failure_logs_root,
                 )
             else:
                 if read_recorder is not None:
@@ -478,7 +478,7 @@ def _run_curator_flow(
                             timestamp_end=datetime.now(UTC),
                             params=params_dict,
                             user_overrides=user_overrides,
-                            failure_logs_root=runtime_env.failure_logs_root,
+                            failure_logs_root=worker_config.failure_logs_root,
                         )
 
     except Exception as exc:
@@ -516,7 +516,7 @@ def _run_curator_flow(
             timestamp_end=datetime.now(UTC),
             params=params_dict,
             user_overrides=user_overrides,
-            failure_logs_root=runtime_env.failure_logs_root,
+            failure_logs_root=worker_config.failure_logs_root,
             error_envelope=error_envelope_dict(exc),
         )
 

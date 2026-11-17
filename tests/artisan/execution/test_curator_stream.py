@@ -34,7 +34,7 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.execution_context import ExecutionContext
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.storage.io.publication import is_publication_temporary
 from artisan.storage.io.retained_store import create_retained_store
 from artisan.utils.path import shard_uri
@@ -417,11 +417,11 @@ def test_writer_failure_retains_temps_and_records_failure_only(execute, monkeypa
     assert Path(calls[0]).read_bytes() == b"partial temporary payload"
 
 
-def _runtime(tmp_path: Path) -> RuntimeEnvironment:
+def _runtime(tmp_path: Path) -> WorkerConfig:
     root = tmp_path / "stream-store"
     files = tmp_path / "files"
     create_retained_store(str(root), str(files), fs=LocalFileSystem())
-    return RuntimeEnvironment(
+    return WorkerConfig(
         delta_root=str(root),
         files_root=str(files),
         staging_root=str(tmp_path / "staging"),
