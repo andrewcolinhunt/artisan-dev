@@ -157,6 +157,15 @@ orchestrator, with no external step-runner dispatch or working sandbox. See
 
 ---
 
+(glossary-definition)=
+## Definition
+
+A reusable operation or composite class, derived from `OperationDefinition` or
+`CompositeDefinition`. It declares inputs, outputs, parameters, and behavior.
+Submitting a definition to a pipeline creates a [step](#glossary-step).
+
+---
+
 (glossary-delta-lake)=
 ## Delta Lake
 
@@ -174,6 +183,16 @@ The artifact lifecycle. `Subclass.draft()` creates a mutable artifact with
 `artifact_id=None`. `finalize()` validates it, assigns its ID, protects durable
 fields, and snapshots them to detect later nested changes. Artisan finalizes
 returned drafts before commitment.
+
+---
+
+(glossary-environment)=
+## Environment
+
+A software declaration backed by a locked Pixi project. An operation declares
+its command software; a runner declares its worker software. The runner prepares
+the required installation or image before execution. See
+[Prepare Execute Environments](../how-to-guides/execute-environments.md).
 
 ---
 
@@ -212,6 +231,16 @@ the compiled recipe, exact inputs, selected software, and attempt identity.
 `batch_strategy.artifacts_per_unit` controls scientific partitioning;
 `units_per_worker` packs compatible units sequentially without combining their
 persistence or cache boundaries.
+
+---
+
+(glossary-executor)=
+## Executor
+
+A context manager for sequential local creator and composite calls. It keeps
+temporary files available between calls and removes them after confirmed closure
+unless preservation was requested. It neither accesses a store nor prepares
+software. See [local operation verification](../how-to-guides/writing-creator-operations.md#verify).
 
 ---
 
@@ -348,9 +377,11 @@ including them in a [logical commit](#glossary-logical-commit).
 A directed acyclic graph (DAG) of [steps](#glossary-step) managed by
 [PipelineManager](#glossary-pipeline-manager). Steps are added by calling
 `pipeline.run()` (waits for completion) or `pipeline.submit()` (returns a
-completion handle after synchronous preparation) and wired through
-[output references](#glossary-output-reference). The current manager executes
-steps serially and can parallelize worker batches within a creator step.
+completion handle after capturing parameters and input references) and wired
+through [output references](#glossary-output-reference). The current manager
+executes steps serially and can parallelize worker batches within a creator step.
+Prepare required software explicitly through the runner before submission; see
+[Prepare Execute Environments](../how-to-guides/execute-environments.md).
 
 ---
 
@@ -437,10 +468,11 @@ call it to choose parents; executors never do. See
 (glossary-step)=
 ## Step
 
-A single operation invocation within a [pipeline](#glossary-pipeline). Each step
-has a sequential step number, an operation, resolved inputs, and produces a
+A submitted operation or composite within a [pipeline](#glossary-pipeline).
+Each step has a sequential step number, a definition, and inputs, and produces a
 [StepResult](#glossary-step-result) on completion. `pipeline.run()` waits for
-completion; `pipeline.submit()` returns a handle after synchronous preparation.
+completion; `pipeline.submit()` returns a completion handle without waiting for
+the step to finish.
 
 ---
 
@@ -455,11 +487,13 @@ How a usable `StepResult` was obtained: `executed` or `cache_hit`. Only
 (glossary-step-future)=
 ## StepFuture
 
-A completion handle returned by `pipeline.submit()` after synchronous
-preparation, which can include predecessor waits. Wraps a concurrent future
-and provides `output()` to create a downstream reference without waiting,
-plus `result()` for blocking retrieval and a `status` property containing the
-latest durably persisted [StepStatus](#glossary-step-status).
+A completion handle returned by `pipeline.submit()` after capturing parameters
+and input references. Pending dependencies from the same manager are waited on
+during execution. References from other runs in the same store must already be
+terminal with resolved worker ownership. Provides `output()` to create a
+downstream reference without waiting, `result()` for blocking retrieval, and a
+`status` property containing the latest durably persisted
+[StepStatus](#glossary-step-status).
 
 ---
 
@@ -493,6 +527,15 @@ Declares the external binary or script that a
 (path or name resolved via PATH), optional `interpreter` prefix (e.g.
 `"python"`), and optional `subcommand`. Set as the `tool` attribute on an
 operation. `None` for pure-Python operations.
+
+---
+
+(glossary-worker-config)=
+## WorkerConfig
+
+An internal configuration model for storage access, scratch paths, cleanup
+preferences, and worker metadata. Software dependencies belong to
+[Environment](#glossary-environment) declarations.
 
 ---
 

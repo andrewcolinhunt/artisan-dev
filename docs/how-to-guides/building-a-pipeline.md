@@ -111,7 +111,7 @@ Bring files from disk into the pipeline as artifacts:
 ```python
 from artisan.operations.curator import IngestCSV
 
-pipeline.run(operation=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
+pipeline.run(definition=IngestCSV, name="ingest", inputs=["/data/a.csv", "/data/b.csv"])
 ```
 
 Raw file paths are auto-promoted to `FileRefArtifact` and committed to Delta
@@ -138,9 +138,9 @@ custom name, then use `output()` to reference it later:
 ```python
 output = pipeline.output
 
-pipeline.run(operation=DataGenerator, name="gen", params={"count": 10})
+pipeline.run(definition=DataGenerator, name="gen", params={"count": 10})
 pipeline.run(
-    operation=DataTransformer,
+    definition=DataTransformer,
     name="transform",
     inputs={"dataset": output("gen", "datasets")},
 )
@@ -345,7 +345,7 @@ resources = RunnerResources(cpus=1, memory_gb=2, time_limit="00:05:00")
 runner.prepare(DataTransformer, runner_resources=resources)
 
 pipeline.run(
-    operation=DataTransformer,
+    definition=DataTransformer,
     name="transform",
     inputs={"dataset": generated.output("datasets")},
     step_runner=runner,
@@ -499,7 +499,7 @@ pipeline = PipelineManager.create(
     delta_root=str(test_root / "delta"),
     staging_root=str(test_root / "staging"),
 )
-step = pipeline.run(operation=DataGenerator, params={"count": 3, "seed": 42})
+step = pipeline.run(definition=DataGenerator, params={"count": 3, "seed": 42})
 assert step.status is StepStatus.SUCCEEDED
 assert step.succeeded_count == 1  # One source execution creates three artifacts.
 

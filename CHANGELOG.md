@@ -7,6 +7,11 @@ User-facing changes are recorded here using
 
 ### Changed
 
+- **Breaking: consistent execution names.** Pipeline `run` and `submit` use
+  `definition=` for either an operation or composite; positional calls remain
+  valid. `artisan.execution.Executor` replaces `ExecutionSession`, and the
+  internal `WorkerConfig` replaces `RuntimeEnvironment`. Retired names have no
+  aliases. Execution behavior and the retained-results store format are unchanged.
 - Prepared environments are reusable across operations and pipelines. Each
   submission resolves shared environments once; repeated preparation reuses
   completed installations and compatible Modal deployments. Normal execution
@@ -25,7 +30,7 @@ User-facing changes are recorded here using
 - **Breaking: composites are one retained boundary.** `compose(ctx)` declares
   creator calls with `ctx.call` and selects exports with `ctx.output`. Children
   share one worker per unit and do not create separate persisted steps or cache
-  checkpoints. `ExecutionSession.run` invokes the same lifecycle without pipeline
+  checkpoints. `Executor.run` invokes the same lifecycle without pipeline
   persistence. Output occurrences preserve order, repetition, and exact producer
   attribution even when content deduplicates. See
   [composition](docs/concepts/composites-and-composition.md).

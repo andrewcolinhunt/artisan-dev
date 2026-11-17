@@ -29,7 +29,7 @@ if TYPE_CHECKING:
     from artisan.execution.models.execution_unit import ExecutionUnit
     from artisan.operations.base.operation_definition import OperationDefinition
     from artisan.schemas.artifact.base import Artifact
-    from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+    from artisan.schemas.execution.worker_config import WorkerConfig
 
 _current: ContextVar[ReplayBuilder | None] = ContextVar("replay_builder", default=None)
 
@@ -56,10 +56,10 @@ def operation_behavior(operation: OperationDefinition) -> dict[str, Any]:
     }
 
 
-def runtime_roots(runtime: RuntimeEnvironment) -> dict[str, str | None]:
+def runtime_roots(worker_config: WorkerConfig) -> dict[str, str | None]:
     """Return only root context, never storage credentials or worker environment."""
     return {
-        key: getattr(runtime, key)
+        key: getattr(worker_config, key)
         for key in (
             "delta_root",
             "working_root",

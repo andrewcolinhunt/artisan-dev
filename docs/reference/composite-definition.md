@@ -17,7 +17,7 @@ for execution and persistence behavior.
 | `CompositeRef` | Immutable reference scoped to its composition |
 | `PipelineManager.run` / `submit` | Executes and persists the outer boundary |
 | `PipelineManager.get_step` | Loads a saved result handle from a run in the same store |
-| `ExecutionSession.run` | Invokes a definition on local artifacts without persistence |
+| `Executor.run` | Invokes a definition on local artifacts without persistence |
 
 `CompositeContext` is supplied by Artisan during compilation. Author code does
 not construct it or pass a pipeline into it. Exact signatures and validation

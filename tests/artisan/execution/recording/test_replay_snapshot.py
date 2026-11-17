@@ -28,8 +28,8 @@ from artisan.schemas.execution.curator_admission import (
     CuratorInputRole,
 )
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.storage import ArtifactStore
 
@@ -97,7 +97,7 @@ def unit(tmp_path: Path) -> ExecutionUnit:
             ),
         }
     )
-    runtime = RuntimeEnvironment(
+    runtime = WorkerConfig(
         delta_root=committer.delta_root, staging_root=str(tmp_path / "staging")
     )
     snapshot = capture_curator_replay(operation, admission, runtime, {})

@@ -34,8 +34,8 @@ from artisan.orchestration.engine.current_outputs import read_current_step_outpu
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.schemas.orchestration.step_result import StepResult
 from artisan.storage.cache.curator_lookup import lookup_curator
@@ -176,7 +176,7 @@ def test_import_seals_independent_destination_bytes_before_source_deletion(
             execution_spec_id=admission.digest,
             replay_snapshot=ReplaySnapshot.unavailable("synthetic-import"),
         ),
-        RuntimeEnvironment(
+        WorkerConfig(
             delta_root=destination.delta_root,
             staging_root=coordinator.staging.staging_dir,
             files_root=destination.files_root,

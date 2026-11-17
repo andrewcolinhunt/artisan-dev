@@ -260,7 +260,7 @@ def test_delivery_captures_commands_before_cleanup_and_keeps_only_declared_outpu
         assert command.outcome == "succeeded"
         assert command.requested_argv[-2] == "<redacted>"
         assert not Path(command.cwd).exists()
-    assert not list((tmp_path / "work").rglob("artisan-session-*"))
+    assert not list((tmp_path / "work").rglob("artisan-executor-*"))
     with capture_retained_delivery(
         receipt, {}, expected_recipe=assignment.plan.recipe, fs=LocalFileSystem()
     ) as retained:
@@ -534,7 +534,7 @@ def test_authored_failure_with_unresolved_child_never_reads_logs_or_commands(
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("Unresolved child captured final mutable command evidence")
 
-    monkeypatch.setattr("artisan.execution.session.close_command_scope", unknown)
+    monkeypatch.setattr("artisan.execution.executor.close_command_scope", unknown)
     monkeypatch.setattr("artisan.execution.assignment.close_command_scope", unknown)
     monkeypatch.setattr(recording, "_read_tool_output", forbidden)
     monkeypatch.setattr(CommandRecorder, "snapshot", forbidden)
@@ -568,7 +568,7 @@ def test_unresolved_session_keeps_original_infrastructure_or_cancellation_outcom
         return closed if failure is None else False
 
     monkeypatch.setattr(sys.modules[__name__], "stage_retained_result", fail)
-    monkeypatch.setattr("artisan.execution.session.close_command_scope", unknown)
+    monkeypatch.setattr("artisan.execution.executor.close_command_scope", unknown)
     captured: list[DeliveryDiagnostics] = []
     with pytest.raises(type(error)) as caught:
         _run(tmp_path, captured.append)

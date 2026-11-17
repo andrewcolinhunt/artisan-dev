@@ -35,7 +35,7 @@ from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.execution.composition import PlanExecution, execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.exceptions import ArtifactValidationError
-from artisan.execution.session import ExecutionSession
+from artisan.execution.executor import Executor
 from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas import ArtifactResult, InputSpec, OutputSpec
 from artisan.schemas.artifact.base import Artifact
@@ -55,11 +55,11 @@ def _run(
     inputs: dict[str, list[Artifact]],
     tmp_path: Path,
 ) -> PlanExecution:
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         return execute_compiled_plan(
             compile_definition(definition),
             inputs,
-            session,
+            executor,
             invocation_id="unit",
             execute_adapter=lambda _operation, _path: LocalExecuteRouter(),
         )
@@ -566,7 +566,7 @@ def test_external_associations_require_frozen_capture_even_when_empty(
         else ()
     )
     _Associated.observed.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         if not capture_empty:
             with pytest.raises(
                 ValueError, match="Association membership was not captured"
@@ -574,7 +574,7 @@ def test_external_associations_require_frozen_capture_even_when_empty(
                 execute_compiled_plan(
                     compile_definition(_Associated),
                     {"structure": [_structure(7)]},
-                    session,
+                    executor,
                     invocation_id="unit",
                     execute_adapter=lambda _op, _path: LocalExecuteRouter(),
                     frozen_context=context,
@@ -584,7 +584,7 @@ def test_external_associations_require_frozen_capture_even_when_empty(
             output = execute_compiled_plan(
                 compile_definition(_Associated),
                 {"structure": [_structure(7)]},
-                session,
+                executor,
                 invocation_id="unit",
                 execute_adapter=lambda _op, _path: LocalExecuteRouter(),
                 frozen_context=context,
@@ -624,11 +624,11 @@ def test_captured_membership_is_exact_and_not_extended_by_local_measurement(
         )
     )
     _Associated.observed.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         result = execute_compiled_plan(
             compile_definition(ReadBoundary),
             {"structure": [_structure(7)]},
-            session,
+            executor,
             invocation_id="unit",
             execute_adapter=lambda _op, _path: LocalExecuteRouter(),
             context_artifacts={
@@ -719,11 +719,11 @@ def test_nested_config_references_are_materialized_without_store_and_kept_until_
 
     monkeypatch.setattr(ArtifactStore, "get_artifact", forbidden)
     _UseConfig.paths.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         output = execute_compiled_plan(
             compile_definition(_MaterializedConfig),
             {"structure": [_structure(3)]},
-            session,
+            executor,
             invocation_id="unit",
             execute_adapter=lambda _op, _path: LocalExecuteRouter(),
         )
@@ -931,11 +931,11 @@ def test_file_intermediates_and_exports_survive_for_retained_evidence_capture(
     tmp_path: Path,
 ) -> None:
     _FileStep.paths.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         output = execute_compiled_plan(
             compile_definition(_FileComposition),
             {},
-            session,
+            executor,
             invocation_id="unit",
             execute_adapter=lambda _op, _path: LocalExecuteRouter(),
         )
@@ -961,13 +961,13 @@ def test_frozen_child_drift_fails_before_any_scientific_phase(
     monkeypatch.setattr(_Measure, "per_artifact_dispatch", False)
     _Transform.phase_sizes.clear()
     with (
-        ExecutionSession(working_root=tmp_path) as session,
+        Executor(working_root=tmp_path) as executor,
         pytest.raises(ValueError, match="changed"),
     ):
         execute_compiled_plan(
             plan,
             {"structure": [_structure(0)]},
-            session,
+            executor,
             invocation_id="unit",
             execute_adapter=lambda _op, _path: LocalExecuteRouter(),
         )
@@ -1013,11 +1013,11 @@ def test_equal_content_boundary_slots_keep_distinct_accepted_producers_and_conte
     )
     artifact = _structure(7)
     _Associated.observed.clear()
-    with ExecutionSession(working_root=tmp_path) as session:
+    with Executor(working_root=tmp_path) as executor:
         output = execute_compiled_plan(
             compile_definition(_Associated),
             {"structure": [artifact, artifact]},
-            session,
+            executor,
             invocation_id="unit",
             execute_adapter=lambda _op, _path: LocalExecuteRouter(),
             context_artifacts={
@@ -1043,13 +1043,13 @@ def test_missing_producer_attribution_membership_fails_before_science(
 ) -> None:
     _Transform.phase_sizes.clear()
     with (
-        ExecutionSession(working_root=tmp_path) as session,
+        Executor(working_root=tmp_path) as executor,
         pytest.raises(ValueError, match="attribution"),
     ):
         execute_compiled_plan(
             compile_definition(_PredictMeasure),
             {"structure": [_structure(0)]},
-            session,
+            executor,
             invocation_id="unit",
             execute_adapter=lambda _op, _path: LocalExecuteRouter(),
             input_attribution=(),

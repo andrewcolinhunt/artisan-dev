@@ -19,7 +19,7 @@ from fixtures.retained_results import RetainedCase
 
 from artisan.composites.base.compiler import compile_definition
 from artisan.execution.composition import execute_compiled_plan
-from artisan.execution.session import ExecutionSession
+from artisan.execution.executor import Executor
 from artisan.operations.base import OperationDefinition
 from artisan.schemas import CSVArtifact, ExecuteInput
 from artisan.schemas.execution.storage_config import StorageConfig
@@ -55,11 +55,11 @@ def test_pairs_keep_exact_declared_parents_after_acceptance(
     committer = open_committer(
         str(tmp_path / "store"), storage.filesystem(), storage, initialize=True
     )
-    with ExecutionSession(working_root=tmp_path / "session") as session:
+    with Executor(working_root=tmp_path / "session") as executor:
         executed = execute_compiled_plan(
             compile_definition(operation, params=params),
             inputs,
-            session,
+            executor,
             invocation_id="pairs",
             execute_adapter=lambda _operation, _path: command_router(),
         )

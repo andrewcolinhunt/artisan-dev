@@ -13,8 +13,8 @@ import pytest
 from pydantic import BaseModel, Field
 
 from artisan.execution.compute.local import LocalExecuteRouter
+from artisan.execution.executor import Executor
 from artisan.execution.invocation import ExecuteFailure
-from artisan.execution.session import ExecutionSession
 from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.operations.lineage import match_outputs_to_inputs_by_stem
 from artisan.schemas.artifact.metric import MetricArtifact
@@ -134,8 +134,8 @@ def test_human_names_and_equal_names_keep_explicit_parents(
     operation_class: type[OperationDefinition],
 ) -> None:
     artifacts = _inputs()
-    with ExecutionSession(working_root=tmp_path / "work") as session:
-        result = session.invoke(
+    with Executor(working_root=tmp_path / "work") as executor:
+        result = executor.invoke(
             operation_class(),
             FrozenInputContext("named", {"source": artifacts}),
             batch_size=2,
@@ -158,9 +158,9 @@ def test_human_names_and_equal_names_keep_explicit_parents(
 
 
 def test_split_and_whole_invocations_have_identical_outputs(tmp_path: Path) -> None:
-    with ExecutionSession(working_root=tmp_path / "work") as session:
+    with Executor(working_root=tmp_path / "work") as executor:
         results = [
-            session.invoke(
+            executor.invoke(
                 operation(),
                 FrozenInputContext(str(index), {"source": _inputs()}),
                 batch_size=2,
@@ -182,10 +182,10 @@ def test_returned_failure_keeps_cause_and_prevents_postprocess(
     monkeypatch.setattr(_SuffixOp, "postprocess", postprocess)
     failure = ValueError("container died")
     with (
-        ExecutionSession(working_root=tmp_path / "work") as session,
+        Executor(working_root=tmp_path / "work") as executor,
         pytest.raises(ExecuteFailure, match="1/2 artifact executions failed") as caught,
     ):
-        session.invoke(
+        executor.invoke(
             _SuffixOp(),
             FrozenInputContext("failed", {"source": _inputs()}),
             batch_size=2,

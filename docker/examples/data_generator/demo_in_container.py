@@ -1,59 +1,30 @@
-"""Validate native unit execution inside a Docker container.
-
-Constructs execution objects directly (bypassing the orchestrator),
-mirroring what a cloud dispatch handle does when calling workers.
-"""
+"""Validate standalone native execution inside a Docker container."""
 
 from __future__ import annotations
 
-import os
-import sys
+from pathlib import Path
 
+from artisan.execution import Executor
 from artisan.operations.examples import DataGenerator
-from artisan.orchestration.runner_api import (
-    ExecutionUnit,
-    RuntimeEnvironment,
-    execute_unit,
-)
-
-DEMO_ROOT = "/tmp/artisan-demo"
+from artisan.schemas import CSVArtifact
 
 
 def main() -> None:
-    op = DataGenerator(params=DataGenerator.Params(count=3, rows_per_file=5))
-
-    unit = ExecutionUnit(operation=op)
-
-    runtime_env = RuntimeEnvironment(
-        delta_root=os.path.join(DEMO_ROOT, "delta"),
-        staging_root=os.path.join(DEMO_ROOT, "staging"),
-        working_root=os.path.join(DEMO_ROOT, "working"),
-    )
-
-    print("--- execute_unit ---")
-    result = execute_unit(unit, runtime_env)
-
-    print(f"success:           {result.success}")
-    print(f"error:             {result.error}")
-    print(f"item_count:        {result.item_count}")
-    print(f"execution_run_ids: {result.execution_run_ids}")
-
-    # List staged output files
-    staging_dir = os.path.join(DEMO_ROOT, "staging")
-    if os.path.isdir(staging_dir):
-        print("\n--- staged files ---")
-        for dirpath, _dirnames, filenames in os.walk(staging_dir):
-            for fname in sorted(filenames):
-                rel = os.path.relpath(os.path.join(dirpath, fname), staging_dir)
-                print(f"  {rel}")
-    else:
-        print("\nWARNING: staging directory not found")
-
-    if not result.success:
-        print(f"\nFAILED: {result.error}", file=sys.stderr)
-        sys.exit(1)
-
-    print("\nSUCCESS")
+    """Generate deterministic CSV artifacts without creating a results store."""
+    with Executor(working_root=Path("/tmp/artisan-demo")) as executor:
+        result = executor.run(
+            DataGenerator, params={"count": 3, "rows_per_file": 5, "seed": 42}
+        )
+        assert result.success, result.error
+        datasets = result.artifacts["datasets"]
+        assert len(datasets) == 3
+        for dataset in datasets:
+            assert isinstance(dataset, CSVArtifact)
+            assert dataset.is_finalized and dataset.row_count == 5
+            assert dataset.content is not None
+            print(f"{dataset.original_name}: {dataset.row_count} rows")
+    assert executor.cleanup_complete
+    print("SUCCESS")
 
 
 if __name__ == "__main__":

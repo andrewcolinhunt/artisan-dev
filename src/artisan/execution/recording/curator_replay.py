@@ -22,14 +22,14 @@ from artisan.schemas.execution.replay import (
     ReplaySource,
     captured_associations,
 )
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.utils.hashing import AssociatedInputIdentity, CacheInputIdentity
 
 
 def capture_curator_replay(
     operation: OperationDefinition,
     admission: CuratorAdmission,
-    runtime: RuntimeEnvironment,
+    worker_config: WorkerConfig,
     runtime_env: Mapping[str, str],
     *,
     sensitive_values: tuple[str, ...] = (),
@@ -47,7 +47,7 @@ def capture_curator_replay(
     verify_curator_definition(operation, admission.definition)
     injections = freeze_runtime_injections(runtime_env)
     recorder = configuration_recorder(operation)
-    recorder._learn_json(runtime.storage)
+    recorder._learn_json(worker_config.storage)
     recorder.add_sensitive_data(dict(injections))
     recorder.add_sensitive_data(sensitive_values)
     try:
@@ -72,9 +72,9 @@ def capture_curator_replay(
                 step_number=admission.record.step_number,
                 step_run_id=admission.record.step_run_id,
                 runner=admission.record.compute_backend,
-                application_modules=runtime.application_modules,
+                application_modules=worker_config.application_modules,
                 execution_spec_id=admission.digest,
-                roots=recorder.sanitize_data(runtime_roots(runtime)),
+                roots=recorder.sanitize_data(runtime_roots(worker_config)),
             ),
             required_replacements=replacements,
             required_runtime_keys=tuple(sorted(injections)),

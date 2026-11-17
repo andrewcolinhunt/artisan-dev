@@ -12,7 +12,7 @@ from artisan.execution.executors.curator import run_curator_flow
 from artisan.execution.models.execution_unit import ExecutionUnit
 from artisan.execution.recording import parquet_writer
 from artisan.operations.curator import Merge
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.storage.io.worker_seal import verify_worker_seal
 
 
@@ -37,7 +37,7 @@ def _execute(tmp_path: Path, *, shared: bool = False):
         operation_name="merge",
         storage=storage,
     )
-    runtime = RuntimeEnvironment(
+    runtime = WorkerConfig(
         delta_root=committer.delta_root,
         files_root=committer.files_root,
         staging_root=str(tmp_path / "staging"),
@@ -117,7 +117,7 @@ def test_scientific_seal_publishes_complete_kernel_result_last(
     from artisan.composites.base.compiler import compile_definition
     from artisan.execution.composition import execute_compiled_plan
     from artisan.execution.compute.local import LocalExecuteRouter
-    from artisan.execution.session import ExecutionSession
+    from artisan.execution.executor import Executor
     from artisan.operations.examples import DataGenerator
     from artisan.schemas.execution.assignment import (
         AssignmentAttempt,
@@ -148,12 +148,12 @@ def test_scientific_seal_publishes_complete_kernel_result_last(
     identity = AssignmentIdentity(step_run_id="b" * 32, unit_index=0)
     with (
         pytest.raises(RuntimeError, match="after retained seal publication"),
-        ExecutionSession(working_root=tmp_path / "working") as session,
+        Executor(working_root=tmp_path / "working") as executor,
     ):
         result = execute_compiled_plan(
             plan,
             {},
-            session,
+            executor,
             invocation_id=identity.assignment_id,
             execute_adapter=lambda operation, path: LocalExecuteRouter(),
         )

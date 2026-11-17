@@ -308,7 +308,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "__version__",
         "build_mcp_app",
     ),
-    "artisan.execution": ("ExecutionSession",),
+    "artisan.execution": ("Executor",),
     "artisan.orchestration.runners": (
         "ApptainerRuntime",
         "DockerRuntime",
@@ -396,6 +396,7 @@ def test_facade_exports_are_exact_and_importable(
         ("artisan.schemas.artifact", ("ArtifactProvenanceEdge", "DataArtifact")),
         ("artisan.schemas.artifact.csv", ("DataArtifact", "DataTypeDef")),
         ("artisan.operations.curator", ("IngestData",)),
+        ("artisan.execution", ("ExecutionSession",)),
         ("artisan.visualization", ("inspect_data",)),
         ("artisan.visualization.inspect", ("inspect_data",)),
         (
@@ -406,6 +407,7 @@ def test_facade_exports_are_exact_and_importable(
                 "ExecutionContext",
                 "ExecutionRecord",
                 "RuntimeEnvironment",
+                "WorkerConfig",
                 "UnitResult",
             ),
         ),
@@ -465,8 +467,8 @@ def test_composite_ref_has_only_the_supported_fields() -> None:
 def test_public_facades_import_in_fresh_worker_and_storage_orders(first: str) -> None:
     program = (
         f"import {first}; "
-        "from artisan.execution import ExecutionSession; "
-        "from artisan.execution.session import ExecutionSession as ActualSession; "
+        "from artisan.execution import Executor; "
+        "from artisan.execution.executor import Executor as ActualExecutor; "
         "from artisan.orchestration import PipelineManager, replay_execution; "
         "from artisan.orchestration.replay import replay_execution as ActualReplay; "
         "assert replay_execution is ActualReplay; "
@@ -479,7 +481,7 @@ def test_public_facades_import_in_fresh_worker_and_storage_orders(first: str) ->
         "from artisan.storage.core.artifact_store import ArtifactStore as ActualStore; "
         "from artisan.storage.publication import PublicationExport as ActualExport, "
         "export_publication as actual_export; "
-        "assert ExecutionSession is ActualSession; "
+        "assert Executor is ActualExecutor; "
         "assert PipelineManager is ActualManager; "
         "assert LocalRunner is ActualRunner; "
         "assert ApptainerRuntime is ActualApptainer; "

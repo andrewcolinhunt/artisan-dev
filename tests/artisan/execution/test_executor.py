@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 from fixtures.commands import IdentityCommandEnvironment
 
-from artisan.execution.session import ExecutionSession
+from artisan.execution.executor import Executor
 from artisan.utils.command_supervisor import check_command_scope, close_command_scope
 from artisan.utils.external_tools import run_command
 
@@ -16,8 +16,8 @@ from artisan.utils.external_tools import run_command
 def test_child_scope_closure_retains_files_and_parent_accepts_next_call(
     tmp_path: Path,
 ) -> None:
-    with ExecutionSession(working_root=tmp_path / "sessions") as session:
-        with session.invocation() as first:
+    with Executor(working_root=tmp_path / "sessions") as executor:
+        with executor.invocation() as first:
             assert first.files is not None
             output = Path(first.files) / "intermediate.txt"
             run_command(
@@ -31,7 +31,7 @@ def test_child_scope_closure_retains_files_and_parent_accepts_next_call(
             )
             close_command_scope()
         check_command_scope()
-        with session.invocation() as second:
+        with executor.invocation() as second:
             assert second.sandbox != first.sandbox
             assert output.read_text() == "ready"
             run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])
@@ -41,18 +41,18 @@ def test_child_scope_closure_retains_files_and_parent_accepts_next_call(
 
 
 def test_session_rejects_invocation_outside_its_lifetime(tmp_path: Path) -> None:
-    session = ExecutionSession(working_root=tmp_path / "sessions")
-    assert not session.cleanup_complete
-    with pytest.raises(RuntimeError, match="must be entered"), session.invocation():
+    executor = Executor(working_root=tmp_path / "sessions")
+    assert not executor.cleanup_complete
+    with pytest.raises(RuntimeError, match="must be entered"), executor.invocation():
         pytest.fail("An inactive session admitted an invocation")
-    with session, session.invocation() as paths:
-        assert not session.cleanup_complete
+    with executor, executor.invocation() as paths:
+        assert not executor.cleanup_complete
         assert Path(paths.sandbox).is_dir()
-    assert session.cleanup_complete
-    with session:
-        assert not session.cleanup_complete
-    assert session.cleanup_complete
-    with pytest.raises(RuntimeError, match="must be entered"), session.invocation():
+    assert executor.cleanup_complete
+    with executor:
+        assert not executor.cleanup_complete
+    assert executor.cleanup_complete
+    with pytest.raises(RuntimeError, match="must be entered"), executor.invocation():
         pytest.fail("A closed session admitted an invocation")
 
 
@@ -60,10 +60,10 @@ def test_session_rejects_invocation_outside_its_lifetime(tmp_path: Path) -> None
 def test_preserved_session_files_outlive_success_or_closed_failure(
     tmp_path: Path, fail: bool
 ) -> None:
-    session = ExecutionSession(working_root=tmp_path, preserve_working=True)
+    executor = Executor(working_root=tmp_path, preserve_working=True)
 
     def run() -> Path:
-        with session, session.invocation() as paths:
+        with executor, executor.invocation() as paths:
             output = Path(paths.execute) / "debug.txt"
             output.write_text("intermediate output")
             if fail:
@@ -78,7 +78,7 @@ def test_preserved_session_files_outlive_success_or_closed_failure(
     else:
         output = run()
     assert output.read_text() == "intermediate output"
-    with pytest.raises(RuntimeError, match="must be entered"), session.invocation():
+    with pytest.raises(RuntimeError, match="must be entered"), executor.invocation():
         pytest.fail("Preserved files kept the session active")
 
 
@@ -98,8 +98,8 @@ def test_session_reaps_command_descendants_before_next_invocation(
         "p=pathlib.Path(sys.argv[2]); "
         "exec('while not p.exists(): time.sleep(0.01)')"
     )
-    with ExecutionSession(working_root=tmp_path / "session") as session:
-        with session.invocation() as first:
+    with Executor(working_root=tmp_path / "session") as executor:
+        with executor.invocation() as first:
             pid_path = Path(first.execute) / "descendant.pid"
             run_command(
                 IdentityCommandEnvironment(),
@@ -107,5 +107,5 @@ def test_session_reaps_command_descendants_before_next_invocation(
             )
         pid = int(pid_path.read_text())
         assert not Path(f"/proc/{pid}").exists()
-        with session.invocation():
+        with executor.invocation():
             run_command(IdentityCommandEnvironment(), [sys.executable, "-c", "pass"])

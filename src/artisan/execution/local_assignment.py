@@ -49,8 +49,8 @@ from artisan.execution.environments.prepared_sif import (
     verify_sif_environment,
 )
 from artisan.execution.environments.requirements import select_tool_environments
+from artisan.execution.executor import Executor
 from artisan.execution.local_profile import LocalLauncherIdentity, LocalWorkerProfile
-from artisan.execution.session import ExecutionSession
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.command_witness import PreparedCommandWitness
@@ -408,7 +408,7 @@ def qualify_local_worker(
         "from artisan.execution.runtime_compatibility import capture_runtime_compatibility; "
         "Path(sys.argv[1]).write_text(capture_runtime_compatibility().model_dump_json())"
     )
-    with ExecutionSession() as session, session.invocation() as paths:
+    with Executor() as executor, executor.invocation() as paths:
         environment = PreparedCommandEnvironment(
             target, pixi, system_env, Path(paths.sandbox)
         )

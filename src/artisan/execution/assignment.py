@@ -17,12 +17,12 @@ from artisan.execution.composition import (
 )
 from artisan.execution.compute.prepared import freeze_runtime_injections
 from artisan.execution.exceptions import AssignmentExecutionError
+from artisan.execution.executor import Executor
 from artisan.execution.recording.delivery_diagnostics import (
     capture_delivery_diagnostics,
 )
 from artisan.execution.runtime_injections import runtime_injections
 from artisan.execution.scientific_failure import assignment_science
-from artisan.execution.session import ExecutionSession
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.assignment import (
     AssignmentAttempt,
@@ -142,14 +142,14 @@ def execute_assignment(
         ) as diagnostics,
         runtime_injections(runtime_env),
     ):
-        session = ExecutionSession(
+        executor = Executor(
             working_root=working_root / delivery.delivery_id,
             preserve_working=preserve_working,
             diagnostics=diagnostics,
         )
         authored_failure: AssignmentExecutionError | None = None
         try:
-            with session:
+            with executor:
                 try:
                     with assignment_science(
                         sensitive_values=tuple(runtime_env.values())
@@ -157,7 +157,7 @@ def execute_assignment(
                         result = execute_compiled_plan(
                             assignment.plan,
                             assignment.inputs,
-                            session,
+                            executor,
                             invocation_id=assignment.attempt.assignment.assignment_id,
                             execute_adapter=adapter,
                             context_artifacts=assignment.context_artifacts,
@@ -195,7 +195,7 @@ def execute_assignment(
             if error is not authored_failure:
                 msg = "Assignment infrastructure failed outside scientific execution"
                 raise RuntimeError(msg) from error
-            if not session.cleanup_complete:
+            if not executor.cleanup_complete:
                 raise CommandOwnershipError() from error
             raise AssignmentExecutionError(
                 str(error),

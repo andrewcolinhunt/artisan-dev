@@ -21,7 +21,7 @@ from artisan.operations.curator.merge import Merge
 from artisan.schemas.execution.command_record import CommandRecording
 from artisan.schemas.execution.curator_result import PassthroughResult
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
+from artisan.schemas.execution.worker_config import WorkerConfig
 
 _MOCK_MODULE = "artisan.execution.executors.curator"
 _PARQUET_MODULE = "artisan.execution.recording.parquet_writer"
@@ -31,7 +31,7 @@ _PARQUET_MODULE = "artisan.execution.recording.parquet_writer"
 def test_curator_records_runtime_worker_identity(
     tmp_path: Path, failure: str | None
 ) -> None:
-    runtime = RuntimeEnvironment(
+    runtime = WorkerConfig(
         delta_root=str(tmp_path / "delta"),
         staging_root=str(tmp_path / "staging"),
         worker_id=-7,
@@ -191,7 +191,7 @@ def test_curator_command_evidence_survives_every_result(tmp_path, monkeypatch, f
         )
 
     monkeypatch.setattr(Merge, "execute_curator", execute)
-    runtime = RuntimeEnvironment(
+    runtime = WorkerConfig(
         delta_root=str(tmp_path / "delta"), staging_root=str(tmp_path / "staging")
     )
     result = run_curator_flow(

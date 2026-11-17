@@ -21,8 +21,8 @@ from artisan.schemas.execution.curator_admission import (
     CuratorInputRole,
 )
 from artisan.schemas.execution.replay import ReplaySnapshot
-from artisan.schemas.execution.runtime_environment import RuntimeEnvironment
 from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.schemas.execution.worker_config import WorkerConfig
 from artisan.schemas.specs.input_spec import InputSpec
 
 
@@ -59,17 +59,15 @@ class PrivateCurator(DynamicCurator):
 
 
 @pytest.fixture
-def runtime(tmp_path: Path) -> RuntimeEnvironment:
-    return RuntimeEnvironment(
+def runtime(tmp_path: Path) -> WorkerConfig:
+    return WorkerConfig(
         delta_root=str(tmp_path / "store"),
         staging_root=str(tmp_path / "staging"),
         files_root=str(tmp_path / "files"),
     )
 
 
-def _admission(
-    runtime: RuntimeEnvironment, operation: DynamicCurator
-) -> CuratorAdmission:
+def _admission(runtime: WorkerConfig, operation: DynamicCurator) -> CuratorAdmission:
     committer = open_committer(
         runtime.delta_root, LocalFileSystem(), StorageConfig(), initialize=True
     )
@@ -80,7 +78,7 @@ def _admission(
 
 
 def test_capture_preserves_repeated_inputs_and_empty_association_membership(
-    runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch
+    runtime: WorkerConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     operation = AssociatedCurator()
     admission = _admission(runtime, operation)
@@ -126,7 +124,7 @@ def test_capture_preserves_repeated_inputs_and_empty_association_membership(
 
 @pytest.mark.parametrize("replaced", [False, True])
 def test_capture_redacts_configuration_and_keeps_runtime_replacement_keys(
-    runtime: RuntimeEnvironment,
+    runtime: WorkerConfig,
     replaced: bool,
 ) -> None:
     operation = PrivateCurator()
@@ -156,7 +154,7 @@ def test_capture_redacts_configuration_and_keeps_runtime_replacement_keys(
 
 
 def test_capture_failure_is_optional_but_definition_mismatch_is_not(
-    runtime: RuntimeEnvironment, monkeypatch: pytest.MonkeyPatch
+    runtime: WorkerConfig, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     operation = DynamicCurator()
     admission = _admission(runtime, operation)
@@ -179,7 +177,7 @@ def test_capture_failure_is_optional_but_definition_mismatch_is_not(
 
 @pytest.mark.parametrize("keys", [("A", "A"), ("Z", "A"), ("invalid-key",)])
 def test_runtime_replacement_keys_reject_ambiguous_or_invalid_capture(
-    runtime: RuntimeEnvironment, keys: tuple[str, ...]
+    runtime: WorkerConfig, keys: tuple[str, ...]
 ) -> None:
     operation = DynamicCurator()
     snapshot = capture_curator_replay(
