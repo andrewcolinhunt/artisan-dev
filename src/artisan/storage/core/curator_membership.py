@@ -121,7 +121,9 @@ def accepted_step_frame(view: CuratorView) -> pl.DataFrame:
     states = current_states(view, run_id)
     if run_id is None and states:
         run_id = states[0].pipeline_run_id
-    rows = [(run_id, None, None, None, None)]
+    rows: list[tuple[str | None, int | None, str | None, str | None, str | None]] = [
+        (run_id, None, None, None, None)
+    ]
     read = _FrozenMetadataRead(view)
     for state in states:
         rows.append((run_id, state.step_number, state.step_name, None, None))
