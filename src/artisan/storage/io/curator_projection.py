@@ -275,6 +275,11 @@ def _reference_closure(
     candidates = set(selected) | {
         member.artifact_id for role in admission.inputs for member in role.members
     }
+    candidates.update(
+        artifact_id
+        for association in admission.associations
+        for artifact_id in association.artifact_ids
+    )
     pending = list(selected)
     captured: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
     while pending:
