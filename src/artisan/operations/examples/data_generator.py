@@ -76,6 +76,9 @@ class DataGenerator(OperationDefinition):
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write CSV files with columns id, x, y, z, score to execute_dir."""
         output_dir = inputs.execute_dir
+        if output_dir is None:
+            msg = "This file-producing operation requires work_dir"
+            raise ValueError(msg)
         os.makedirs(output_dir, exist_ok=True)
 
         rng = random.Random(self.params.seed)

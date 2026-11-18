@@ -55,6 +55,9 @@ class Wait(OperationDefinition):
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Sleep for the configured duration."""
         output_dir = inputs.execute_dir
+        if output_dir is None:
+            msg = "This file-producing operation requires work_dir"
+            raise ValueError(msg)
         os.makedirs(output_dir, exist_ok=True)
 
         start = time.perf_counter()

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from collections.abc import Callable, Mapping
+from contextlib import AbstractContextManager, nullcontext
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -18,6 +19,11 @@ from artisan.execution.environments.native_gpu import (
     native_gpu_environment,
 )
 from artisan.execution.environments.native_target import native_executable
+from artisan.execution.local_software import (
+    LOCAL_SOFTWARE_ENV,
+    LocalSoftware,
+    local_software_scope,
+)
 from artisan.execution.recording.commands import invocation_scope, reserve_invocations
 from artisan.execution.scientific_failure import scientific_phase
 from artisan.operations.base.operation_definition import OperationDefinition
@@ -46,7 +52,14 @@ class CommandEnvironment(Protocol):
 def freeze_runtime_injections(environment: Mapping[str, str]) -> Mapping[str, str]:
     """Copy explicit runtime values after rejecting software/ownership overrides."""
     injections = dict(environment)
-    reserved = {"PATH", "HOME", "TMPDIR", "VIRTUAL_ENV", *COMMAND_ATTACHMENT_ENV}
+    reserved = {
+        "PATH",
+        "HOME",
+        "TMPDIR",
+        "VIRTUAL_ENV",
+        LOCAL_SOFTWARE_ENV,
+        *COMMAND_ATTACHMENT_ENV,
+    }
     if reserved & injections.keys() or any(
         key.startswith(("PYTHON", "LD_", "DYLD_", "CONDA_", "PIXI_"))
         for key in injections
@@ -79,6 +92,7 @@ class PreparedCommandEnvironment:
     env: Mapping[str, str] = field(default_factory=dict)
     witness: WitnessInvocation | None = None
     gpu: NativeGPUAllocation | None = None
+    local_software: LocalSoftware | None = None
     public_env: ClassVar[tuple[str, ...]] = ()
     cancellation_scope: ClassVar[Literal["process_group"]] = "process_group"
 
@@ -102,6 +116,7 @@ class PreparedCommandEnvironment:
             **{key: os.environ[key] for key in _GPU_ENVIRONMENT if key in os.environ},
             **self.env,
             **native_gpu_environment(self.gpu, self.env),
+            **(self.local_software.environment() if self.local_software else {}),
         }
         return [
             str(self.pixi),
@@ -131,6 +146,7 @@ class PreparedCommandEnvironment:
             "LANG": "C.UTF-8",
             **{key: os.environ[key] for key in _GPU_ENVIRONMENT if key in os.environ},
             **native_gpu_environment(self.gpu, self.env),
+            **(self.local_software.environment() if self.local_software else {}),
         }
 
 
@@ -151,6 +167,7 @@ class PreparedExecuteRouter(ExecuteRouter):
         witness: PreparedCommandWitness | None = None,
         sensitive_values: tuple[str, ...] = (),
         gpu: NativeGPUAllocation | None = None,
+        local_software: LocalSoftware | None = None,
     ) -> None:
         self.target = target
         self.pixi = pixi
@@ -161,12 +178,21 @@ class PreparedExecuteRouter(ExecuteRouter):
         self.command_environment = command_environment
         self.witness = witness
         self.sensitive_values = sensitive_values
+        self.local_software = local_software
+
+    def context(self) -> AbstractContextManager[None]:
+        """Expose selected local software while all native phases run."""
+        return (
+            local_software_scope(self.local_software)
+            if self.local_software is not None
+            else nullcontext()
+        )
 
     def route_execute(
         self,
         operation: OperationDefinition,
         execute_inputs: list[ExecuteInput],
-        sandbox_root: str,
+        sandbox_root: str | None,
     ) -> list[Any]:
         slots = reserve_invocations(len(execute_inputs))
         results = []
@@ -176,6 +202,9 @@ class PreparedExecuteRouter(ExecuteRouter):
                     with scientific_phase("execute"):
                         results.append(operation.execute_function(inputs))
                     continue
+                if sandbox_root is None:
+                    msg = "Command execution requires a working directory"
+                    raise ValueError(msg)
                 witness = (
                     WitnessInvocation(
                         self.witness, Path(sandbox_root) / "command-runtime" / "exits"
@@ -195,6 +224,7 @@ class PreparedExecuteRouter(ExecuteRouter):
                         self.runtime_env,
                         witness,
                         self.gpu,
+                        self.local_software,
                     )
                 prepared = (
                     inputs.inputs

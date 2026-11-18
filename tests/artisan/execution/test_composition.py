@@ -486,6 +486,15 @@ def test_required_reference_support_is_retained_without_becoming_an_export(
     assert config.get_artifact_references() == [
         output.retained_artifacts[support].artifact_id
     ]
+    assert output.result.referenced_artifacts("config", index=0) == {
+        output.retained_artifacts[support].artifact_id: output.retained_artifacts[
+            support
+        ]
+    }
+    assert output.result.support is not None
+    assert set(output.result.support.artifacts) == {
+        occurrence.address for occurrence in output.projection.occurrences
+    }
     mapping = output.result.lineage["config"][0]
     assert (mapping.source_role, mapping.source_input_index) == ("structure", 0)
 

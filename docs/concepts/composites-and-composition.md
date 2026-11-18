@@ -111,6 +111,8 @@ without adding worker, persistence, or cache boundaries. See the
 
 An operation implements a transformation's lifecycle. A composite connects
 transformations and chooses outputs. Both can be submitted through
-`PipelineManager.run` and `submit`. An existing worker can also invoke creators
-and composites through `Executor.run`, which keeps local artifacts for
-the executor's lifetime and does not access a store or persist a result.
+`PipelineManager.run` and `submit`. Use
+[`run_operation`](../how-to-guides/writing-creator-operations.md#call-operation-directly)
+to call either directly with caller-owned files and no store. `Executor.run` adds
+an owned scratch lifetime and remembers context across sequential calls. Neither
+entry point publishes results.

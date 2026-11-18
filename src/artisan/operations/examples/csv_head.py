@@ -83,6 +83,9 @@ class CsvHead(OperationDefinition):
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """One materialized path per artifact, sliced per dispatch."""
+        if inputs.preprocess_dir is None:
+            msg = "CsvHead requires work_dir"
+            raise ValueError(msg)
         index_paths = []
         for index in range(len(inputs.input_artifacts["dataset"])):
             path = Path(inputs.preprocess_dir) / f"input-index-{index}.txt"
@@ -97,6 +100,9 @@ class CsvHead(OperationDefinition):
 
     def execute_function(self, inputs: ExecuteInput) -> None:
         """Write the header plus first ``rows`` rows of each input CSV."""
+        if inputs.execute_dir is None:
+            msg = "CsvHead requires work_dir"
+            raise ValueError(msg)
         for index_path, input_path in zip(
             inputs.inputs["input_index"], inputs.inputs["dataset"], strict=True
         ):
