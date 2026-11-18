@@ -21,6 +21,13 @@ def read_curator_result_evidence(
     view = CuratorView(
         committer, capture_curator_view(committer, _read=_read), _read=_read
     )
+    return curator_result_evidence(view, step_run_id)
+
+
+def curator_result_evidence(
+    view: CuratorView, step_run_id: str
+) -> dict[str, pl.DataFrame]:
+    """Read dynamic summaries through an already fixed curator view."""
     reuse = (
         view.scan(TablePath.CACHE_REUSE)
         .filter(pl.col("current_step_run_id") == step_run_id)

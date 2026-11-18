@@ -43,6 +43,7 @@ class CuratorReadRecorder:
         if key is None:
             msg = "Curator cache observation requires admitted code and software qualification"
             raise ValueError(msg)
+        view.bind_admission(admission)
         self._view, self._admission, self._key = view, admission, key
         self.views: set[tuple[str, bool]] = set()
         self.exclusions: set[CuratorCacheExclusion] = set()
@@ -221,6 +222,7 @@ def validate_curator_cache_proof(
     ):
         msg = "Curator cache proof differs from its admitted science or snapshot"
         raise StoreIntegrityError(msg)
+    view.bind_admission(admission)
     if not curator_views_match(proof, view):
         msg = "Curator cache proof differs from its exact admitted query results"
         raise StoreIntegrityError(msg)
