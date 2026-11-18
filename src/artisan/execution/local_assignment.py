@@ -51,6 +51,7 @@ from artisan.execution.environments.prepared_sif import (
 from artisan.execution.environments.requirements import select_tool_environments
 from artisan.execution.executor import Executor
 from artisan.execution.local_profile import LocalLauncherIdentity, LocalWorkerProfile
+from artisan.execution.local_software import LocalSoftware
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.execution.command_witness import PreparedCommandWitness
@@ -96,6 +97,7 @@ class PreparedLocalBindings:
     command_witness: PreparedCommandWitness | None = None
     native_gpu: NativeGPUAllocation | None = None
     application_modules: tuple[str, ...] = ()
+    cache_root: Path | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -344,6 +346,11 @@ class PreparedLocalBindings:
                 msg = "Command has no admitted prepared target"
                 raise ValueError(msg)
             target = matches[0]
+        local = (
+            LocalSoftware(self.cache_root, self.pixi, self.system_env, runtime_env)
+            if self.cache_root is not None
+            else None
+        )
         if isinstance(target, ObservedWorker):
             return PreparedExecuteRouter(
                 None,
@@ -353,12 +360,14 @@ class PreparedLocalBindings:
                 witness=self.command_witness,
                 sensitive_values=self.diagnostic_sensitive_values,
                 gpu=self.native_gpu,
+                local_software=local,
                 command_environment=lambda sandbox, witness: ObservedCommandEnvironment(
                     target,
                     sandbox / "command-runtime",
                     runtime_env,
                     witness,
                     self.native_gpu,
+                    local,
                 ),
             )
         if not isinstance(target, PreparedNativeEnvironment):
@@ -390,6 +399,7 @@ class PreparedLocalBindings:
             witness=self.command_witness,
             sensitive_values=self.diagnostic_sensitive_values,
             gpu=self.native_gpu,
+            local_software=local,
         )
 
 
@@ -409,6 +419,8 @@ def qualify_local_worker(
         "Path(sys.argv[1]).write_text(capture_runtime_compatibility().model_dump_json())"
     )
     with Executor() as executor, executor.invocation() as paths:
+        assert paths.sandbox is not None
+        assert paths.postprocess is not None
         environment = PreparedCommandEnvironment(
             target, pixi, system_env, Path(paths.sandbox)
         )
@@ -514,6 +526,7 @@ def bind_local_software(
         lookup_command_witness(cache_root) if tools else None,
         native_gpu,
         application_modules,
+        cache_root,
     )
     bindings.verify(plan)
     return bindings

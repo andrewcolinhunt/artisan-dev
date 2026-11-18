@@ -262,7 +262,8 @@ class PreprocessInput(_InputArtifactsMixin):
     """Input container for preprocess phase.
 
     Attributes:
-        preprocess_dir: Directory for writing generated files (configs, conversions).
+        preprocess_dir: Directory for writing generated files, or None for a
+            fileless direct call. Require a directory before writing files.
         input_artifacts: Artifacts keyed by role. Access via artifact.materialized_path
             (for materialized inputs) or artifact.content (for non-materialized).
         metadata: Escape hatch for additional data from the engine.
@@ -272,7 +273,7 @@ class PreprocessInput(_InputArtifactsMixin):
         ...     process(artifact.materialized_path)
     """
 
-    preprocess_dir: str
+    preprocess_dir: str | None
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     _associated: Mapping[tuple[str, str], Sequence[Artifact]] = field(
@@ -340,30 +341,27 @@ class CuratorInput(Mapping[str, pl.DataFrame]):
 class ExecuteInput:
     """Input container for execute phase.
 
-    Contains the prepared inputs from preprocess and the directory
-    where output files should be written.
+    Contains prepared inputs and optional directories for file outputs.
+    Fileless direct calls leave all directory and log paths unset.
 
     Attributes:
-        execute_dir: Directory for writing output files.
-            Files are made available to postprocess, which returns artifact drafts.
+        execute_dir: Directory for writing output files, or None for a fileless
+            direct call. Files are made available to postprocess.
         inputs: Prepared inputs from preprocess.
             Keys may differ from original roles after transformation.
-        log_path: Path where external tool output should be written.
-            Provided by the framework for automatic capture. The
+        log_path: Optional path for automatic capture of external tool output.
+            Unset for a fileless direct call. The
             filename ``tool_output.log`` is reserved by the framework
             — do not write a file by that name to ``<sandbox_root>``.
         metadata: Escape hatch for additional data from the engine.
-        files_dir: Local sandbox directory for external file output.
-            Always a local filesystem path, never a cloud URI. Operations
-            write here using stdlib I/O; the framework uploads the
-            contents to ``files_root`` on postprocess and rewrites each
-            artifact's ``external_path`` to the destination (cloud URI
-            on cloud backends; sharded path under ``files_root`` on
-            local). Set when the pipeline has ``files_root`` configured;
-            None otherwise.
+        files_dir: Optional local directory for file-backed outputs. Write complete
+            files here before drafting file references. Pipeline execution moves
+            accepted files into managed storage and updates their locators.
+            Direct calls with ``work_dir`` leave files beneath the caller's path
+            until the caller removes them. Unset for fileless direct calls.
     """
 
-    execute_dir: str
+    execute_dir: str | None
     inputs: dict[str, Any] = field(default_factory=dict)
     log_path: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -379,28 +377,25 @@ class PostprocessInput(_InputArtifactsMixin):
 
     Attributes:
         step_number: Current pipeline step number, or None for a standalone call.
-        postprocess_dir: Directory for any postprocess artifacts.
-            Rarely needed; most postprocessing is in-memory.
-        file_outputs: All files in execute_dir after execute completes.
-            Use these to create artifact drafts by reading content.
+        postprocess_dir: Directory for postprocess files, or None for a fileless
+            direct call. Most postprocessing can use in-memory results.
+        file_outputs: Files collected from execute directories. Empty for
+            fileless direct calls. Read their content to create artifact drafts.
         memory_outputs: Whatever execute returned (Any type).
             Could be a subprocess result, dict, library object, None, etc.
         input_artifacts: Full input context with metadata.
-            Artifacts have materialized_path set for reference.
+            Artifacts have materialized_path set when materialization was requested.
             Use for output naming and explicit parent declarations.
         metadata: Escape hatch for additional data from the engine.
-        files_dir: Local staging directory for this lifecycle unit's managed
-            external files. Set when ``files_root`` is configured; None
-            otherwise. Copy selected complete outputs here before drafting
-            file references to their staged paths. Use distinct subdirectories
-            for outputs with the same basename. The framework relocates
-            referenced files and updates their locators before successful
-            sandbox cleanup. This path is temporary: do not retain it as a
-            permanent locator or write to it after postprocess returns.
+        files_dir: Optional local directory for file-backed outputs. Copy selected
+            complete outputs here before drafting references; use distinct paths
+            for files with the same basename. Pipeline execution relocates accepted
+            files and updates their locators. Direct-call files remain beneath
+            the caller's ``work_dir`` until caller cleanup. Unset for fileless calls.
     """
 
     step_number: int | None
-    postprocess_dir: str
+    postprocess_dir: str | None
     file_outputs: list[str] = field(default_factory=list)
     memory_outputs: Any = None
     input_artifacts: dict[str, list[Artifact]] = field(default_factory=dict)

@@ -24,6 +24,7 @@ from artisan.execution.local_assignment import (
     bind_local_software,
 )
 from artisan.execution.local_profile import LocalLauncherIdentity
+from artisan.execution.local_software import LOCAL_SOFTWARE_ENV, LocalSoftware
 from artisan.execution.local_worker import launch_local_assignment
 from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas import ArtifactResult, InputSpec, OutputSpec
@@ -350,6 +351,35 @@ def test_clean_command_environment_preserves_gpu_absence_and_selected_literals_o
     monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "0")
     assert command.prepare_env()["CUDA_VISIBLE_DEVICES"] == "0"
     assert "CUDA_VISIBLE_DEVICES=0" in command.wrap_command(["python"])
+
+
+def test_prepared_command_passes_local_locations_through_pixi_activation(
+    tmp_path: Path,
+    bindings: PreparedLocalBindings,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "artisan.execution.compute.prepared.native_executable",
+        lambda target, name: target.prefix / "bin" / name,
+    )
+    software = LocalSoftware(
+        tmp_path / "cache",
+        bindings.pixi,
+        bindings.system_env,
+        {"SERVICE_TOKEN": "synthetic"},
+    )
+    command = PreparedCommandEnvironment(
+        bindings.worker,
+        bindings.pixi,
+        bindings.system_env,
+        tmp_path / "runtime",
+        software.runtime_env,
+        local_software=software,
+    )
+    encoded = software.environment()[LOCAL_SOFTWARE_ENV]
+    assert command.prepare_env()[LOCAL_SOFTWARE_ENV] == encoded
+    assert f"{LOCAL_SOFTWARE_ENV}={encoded}" in command.wrap_command(["python"])
+    assert "SERVICE_TOKEN=synthetic" in command.wrap_command(["python"])
 
 
 def test_unsupported_process_packing_rejects_before_owner_start(

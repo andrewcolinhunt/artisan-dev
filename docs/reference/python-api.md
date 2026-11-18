@@ -15,10 +15,10 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Configure operations and define artifacts | `artisan.schemas` | `BatchStrategy`, `InputSpec`, `Artifact`, `ArtifactTypeDef` |
 | Declare worker or command software | `artisan.schemas` | `Environment.from_pixi` |
 | Prepare and place local work | `artisan.orchestration.runners` | `LocalRunner`, `DockerRuntime`, `ApptainerRuntime` |
-| Invoke creators inside an existing process | `artisan.execution` | `Executor` |
+| Invoke creators and composites inside an existing process | `artisan.execution` | `run_operation`, `Executor` |
 | Retain generated external files | `artisan.schemas` | `ExecuteInput`, `PostprocessInput`, `FileRefArtifact` |
 | Load trusted application definitions | `artisan.orchestration`, `artisan.registry` | `PipelineManager.create(application_modules=...)`, `bootstrap_applications` |
-| Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts` |
+| Resolve typed configuration dependencies | `artisan.schemas` | `InputSpec.resolve_references`, `PreprocessInput.referenced_artifacts`, `ArtifactResult.referenced_artifacts` |
 | Run a command inside an operation | `artisan.utils` | `run_command`, `format_args` |
 | Reuse built-in operations | `artisan.operations.curator`, `artisan.operations.examples` | `Filter`, `Merge`, `DataGenerator` |
 | Compose operations | `artisan.composites` | `CompositeDefinition`, `CompositeContext`, `CompositeCall`, `CompositeRef` |
@@ -78,6 +78,7 @@ Use `pixi run artisan --help` to find CLI commands, then append
 - [Configure execution](../how-to-guides/configuring-execution.md).
 - [Prepare execute environments](../how-to-guides/execute-environments.md).
 - [Write an operation](../how-to-guides/writing-creator-operations.md).
+- [Call an operation without a pipeline](../how-to-guides/writing-creator-operations.md#call-operation-directly).
 - [Retain command-generated files](../how-to-guides/writing-creator-operations.md#retain-command-files).
 - [Resolve configuration references](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 - [Write a composite](../how-to-guides/writing-composite-operations.md).

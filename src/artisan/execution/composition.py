@@ -6,6 +6,7 @@ import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
+from typing import Protocol
 
 from fsspec import AbstractFileSystem
 
@@ -24,6 +25,7 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.composites.plan import ExecutionRecipe, RoleBinding
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.execution.result_support import ArtifactResultSupport
 from artisan.schemas.provenance.occurrence import ArtifactOccurrence, OccurrenceAddress
 from artisan.schemas.provenance.projection import (
     BoundaryInputAttribution,
@@ -35,6 +37,23 @@ from artisan.schemas.specs.output_spec import OutputSpec
 
 type OccurrenceStreams = dict[str, tuple[OccurrenceAddress, ...]]
 type ExecuteAdapter = Callable[[OperationDefinition, tuple[str, ...]], ExecuteRouter]
+
+
+class OperationInvoker(Protocol):
+    """Run a creator partition with paths and ownership supplied by its caller."""
+
+    def __call__(
+        self,
+        operation: OperationDefinition,
+        context: FrozenInputContext,
+        *,
+        execute_router: ExecuteRouter,
+        batch_size: int,
+        materialization_references: Mapping[str, Mapping[str, Artifact]],
+        step_number: int | None = None,
+        fs: AbstractFileSystem | None = None,
+        call_path: tuple[str, ...] = (),
+    ) -> ArtifactResult: ...
 
 
 @dataclass(frozen=True)
@@ -77,7 +96,7 @@ def execute_compiled_plan(
         msg = "All-empty boundary inputs contain no admitted work"
         raise ValueError(msg)
     runtime = _PlanRuntime(
-        executor,
+        executor.invoke,
         invocation_id,
         execute_adapter,
         frozen_context or FrozenBoundaryContext(),
@@ -126,7 +145,7 @@ def _validate_local_policy(plan: CompiledPlan) -> None:
 def execute_local_plan(
     plan: CompiledPlan,
     inputs: Mapping[str, Sequence[Artifact]],
-    executor: Executor,
+    invoke: OperationInvoker,
     *,
     invocation_id: str,
     execute_adapter: ExecuteAdapter,
@@ -135,7 +154,7 @@ def execute_local_plan(
 ) -> PlanExecution:
     """Partition a standalone root while retaining one exact visible boundary."""
     runtime = _PlanRuntime(
-        executor, invocation_id, execute_adapter, frozen_context, None, None
+        invoke, invocation_id, execute_adapter, frozen_context, None, None
     )
     boundary = runtime.admit(inputs, context_artifacts, None)
     specs = _output_specs(plan.recipe)
@@ -176,11 +195,16 @@ def _finish_plan(
         result = runtime.graph.visible_result(
             runtime.invocation_id, boundary, exports, specs
         )
-    external = projection.boundary_addresses()
-    retained = {
+    inventory = {
         item.address: runtime.graph.nodes[item.address].artifact
         for item in projection.occurrences
-        if item.address not in external
+    }
+    result.support = ArtifactResultSupport(projection, inventory)
+    external = projection.boundary_addresses()
+    retained = {
+        address: artifact
+        for address, artifact in inventory.items()
+        if address not in external
     }
     return PlanExecution(result, projection, MappingProxyType(retained))
 
@@ -238,14 +262,14 @@ class _PlanRuntime:
 
     def __init__(
         self,
-        executor: Executor,
+        invoke: OperationInvoker,
         invocation_id: str,
         execute_adapter: ExecuteAdapter,
         context: FrozenBoundaryContext,
         step_number: int | None,
         fs: AbstractFileSystem | None,
     ) -> None:
-        self.executor = executor
+        self.invoke = invoke
         self.invocation_id = invocation_id
         self.execute_adapter = execute_adapter
         self.context = context
@@ -347,7 +371,7 @@ class _PlanRuntime:
             context, references = self._input_context(identity, partition, plan.recipe)
             router = self.execute_adapter(operation, path)
             try:
-                result = self.executor.invoke(
+                result = self.invoke(
                     operation,
                     context,
                     batch_size=max(

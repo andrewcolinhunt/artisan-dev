@@ -51,13 +51,13 @@ from artisan.utils.traceback import format_error
 class InvocationPaths:
     """Local directories for one lifecycle, retained by its enclosing owner."""
 
-    sandbox: str
-    preprocess: str
-    execute: str
-    postprocess: str
-    materialized: str
-    log: str
-    files: str | None
+    sandbox: str | None = None
+    preprocess: str | None = None
+    execute: str | None = None
+    postprocess: str | None = None
+    materialized: str | None = None
+    log: str | None = None
+    files: str | None = None
 
     @classmethod
     def create(cls, root: Path, *, files_enabled: bool = True) -> Self:
@@ -101,7 +101,35 @@ class PreparedInvocation:
     step_number: int | None
     timings: dict[str, float] = field(default_factory=dict)
     execute_inputs: list[ExecuteInput] = field(default_factory=list)
-    execute_dirs: list[str] = field(default_factory=list)
+    execute_dirs: list[str | None] = field(default_factory=list)
+
+
+def invoke_operation(
+    operation: OperationDefinition,
+    context: FrozenInputContext,
+    *,
+    paths: InvocationPaths,
+    execute_router: ExecuteRouter,
+    batch_size: int,
+    materialization_references: Mapping[str, Mapping[str, Artifact]],
+    step_number: int | None = None,
+    fs: AbstractFileSystem | None = None,
+    timings: dict[str, float] | None = None,
+) -> ArtifactResult:
+    """Run the shared scientific phases within caller-supplied paths and scope."""
+    with execute_router.context():
+        prepared = prepare_invocation(
+            operation,
+            context,
+            paths,
+            batch_size=batch_size,
+            materialization_references=materialization_references,
+            step_number=step_number,
+            fs=fs,
+            timings=timings,
+        )
+        results = execute_invocation(prepared, execute_router)
+        return postprocess_invocation(prepared, results, fs=fs)
 
 
 def prepare_invocation(
@@ -125,6 +153,12 @@ def prepare_invocation(
         raise ValueError(msg)
     _validate_operation_outputs(type(operation))
     _validate_captured_context(operation, context)
+    if paths.materialized is None and any(
+        spec.materialize or spec.resolve_references
+        for spec in operation.inputs.values()
+    ):
+        msg = "Operation materialization requires work_dir"
+        raise ValueError(msg)
     references = dict(materialization_references)
     for (role, index), captured in context.references.items():
         config_id = context.artifacts[role][index].artifact_id
@@ -139,27 +173,28 @@ def prepare_invocation(
     )
     setup_elapsed = prepared.timings.get("setup", 0.0)
     with phase_timer("setup", prepared.timings):
-        materialize_captured_inputs(
-            artifacts,
-            operation.inputs,
-            paths.materialized,
-            references,
-            fs=fs,
-        )
-        typed_references = materialize_captured_references(
-            artifacts,
-            operation.inputs,
-            paths.materialized,
-            references,
-            fs=fs,
-        )
-        for (role, index), captured in context.references.items():
-            config_id = context.artifacts[role][index].artifact_id
-            assert config_id is not None
-            for artifact_id, artifact in captured.items():
-                artifact.materialized_path = typed_references[config_id][
-                    artifact_id
-                ].materialized_path
+        if paths.materialized is not None:
+            materialize_captured_inputs(
+                artifacts,
+                operation.inputs,
+                paths.materialized,
+                references,
+                fs=fs,
+            )
+            typed_references = materialize_captured_references(
+                artifacts,
+                operation.inputs,
+                paths.materialized,
+                references,
+                fs=fs,
+            )
+            for (role, index), captured in context.references.items():
+                config_id = context.artifacts[role][index].artifact_id
+                assert config_id is not None
+                for artifact_id, artifact in captured.items():
+                    artifact.materialized_path = typed_references[config_id][
+                        artifact_id
+                    ].materialized_path
     prepared.timings["setup"] += setup_elapsed
     with phase_timer("preprocess", prepared.timings), scientific_phase("preprocess"):
         values = operation.preprocess(
@@ -188,8 +223,13 @@ def prepare_invocation(
         )
         return prepared
     for index in range(batch_size):
-        execute_dir = os.path.join(paths.execute, f"artifact_{index}")
-        os.makedirs(execute_dir, exist_ok=True)
+        execute_dir = (
+            os.path.join(paths.execute, f"artifact_{index}")
+            if paths.execute is not None
+            else None
+        )
+        if execute_dir is not None:
+            os.makedirs(execute_dir, exist_ok=True)
         files_dir = (
             os.path.join(paths.files, f"artifact_{index}") if paths.files else None
         )
@@ -408,7 +448,7 @@ def split_prepared_inputs(
 
 def reassemble_results(
     per_artifact_results: list[Any],
-    artifact_execute_dirs: list[str],
+    artifact_execute_dirs: list[str | None],
 ) -> tuple[Any, list[str]]:
     """Merge per-artifact execute results for batched postprocess.
 
@@ -428,7 +468,8 @@ def reassemble_results(
     """
     file_outputs: list[str] = []
     for directory in artifact_execute_dirs:
-        file_outputs.extend(output_snapshot(directory))
+        if directory is not None:
+            file_outputs.extend(output_snapshot(directory))
 
     if not per_artifact_results or all(r is None for r in per_artifact_results):
         return None, file_outputs

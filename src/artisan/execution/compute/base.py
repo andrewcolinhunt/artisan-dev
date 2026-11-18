@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from contextlib import AbstractContextManager, nullcontext
 from typing import Any
 
 from artisan.schemas.specs.input_models import ExecuteInput
@@ -11,12 +12,16 @@ from artisan.schemas.specs.input_models import ExecuteInput
 class ExecuteRouter(ABC):
     """Route the execute phase of one unit to a compute target."""
 
+    def context(self) -> AbstractContextManager[None]:
+        """Scope execution settings shared by preprocessing and postprocessing."""
+        return nullcontext()
+
     @abstractmethod
     def route_execute(
         self,
         operation: Any,
         execute_inputs: list[ExecuteInput],
-        sandbox_root: str,
+        sandbox_root: str | None,
     ) -> list[Any]:
         """Run the execute phase for every artifact of one unit.
 
