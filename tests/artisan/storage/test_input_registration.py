@@ -180,6 +180,34 @@ def test_raw_registration_preserves_order_and_owns_copies(
 
 
 @pytest.mark.parametrize(
+    ("filename", "stem", "extension"),
+    [
+        ("data.csv", "data", ".csv"),
+        ("data.csv.gz", "data", ".csv.gz"),
+        ("data.v1.csv.zst", "data", ".v1.csv.zst"),
+        (".hidden.csv.gz", ".hidden", ".csv.gz"),
+        ("data..csv.gz", "data.", ".csv.gz"),
+        ("data.", "data.", ""),
+        ("no_extension", "no_extension", ""),
+    ],
+)
+def test_registration_retains_complete_filename_after_source_loss(
+    backend_fs: Backend, tmp_path: Path, filename: str, stem: str, extension: str
+) -> None:
+    committer = _open(backend_fs)
+    source = _source(tmp_path, filename)
+    plan = _register(committer, backend_fs, [str(source)])
+    source.unlink()
+    reopened = _open(backend_fs, initialize=False)
+    artifact = _load(_view(reopened), plan.inputs[0].artifact_id)
+    assert artifact.original_name == stem
+    assert artifact.extension == extension
+    assert artifact.original_name + artifact.extension == filename
+    assert artifact.path.endswith(".bin")
+    assert artifact.read_content(fs=reopened.fs) == b"x\n1\n"
+
+
+@pytest.mark.parametrize(
     "boundary",
     ["plan", "planned", *(f"table:{path}" for path in REGISTRATION_TABLES), "complete"],
 )
