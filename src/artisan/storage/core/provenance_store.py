@@ -366,12 +366,36 @@ class ProvenanceStore:
         return set(result["artifact_id"].to_list())
 
     @with_read_scope
+    def load_accepted_artifact_ids_by_step(
+        self, artifact_type: str
+    ) -> dict[int, set[str]]:
+        """Return accepted exported IDs grouped by current logical step.
+
+        An admitted curator queries its owning run at its frozen view. Ordinary
+        stores select the latest run. Reused content keeps its original artifact
+        identity and may occur in several accepted steps. This query reads exact
+        terminal selections, without hydrating payloads or finding associations.
+
+        Args:
+            artifact_type: Registered artifact type to select.
+
+        Returns:
+            Nonempty sets of accepted IDs keyed by logical step number.
+        """
+        view = self._view
+        if view is None:
+            msg = "Accepted membership requires an active query scope"
+            raise RuntimeError(msg)
+        return view.accepted_artifact_ids_by_step(artifact_type)
+
+    @with_read_scope
     def load_step_name_map(self, pipeline_run_id: str | None = None) -> dict[int, str]:
         """Load a mapping of step number to human-readable step name.
 
         Args:
-            pipeline_run_id: Exact run to query. None selects the run with
-                the most recent authoritative attempt snapshot.
+            pipeline_run_id: Exact run to query. None selects the admitted
+                curator's owning run, or the most recent authoritative run
+                for ordinary store reads.
 
         Returns:
             Mapping of logical step number to its latest attempt's step name.
