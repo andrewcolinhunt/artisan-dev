@@ -122,20 +122,34 @@ def _freeze_partition(
     graph = OccurrenceGraph(boundary_invocation=assignment.assignment_id)
     representatives: dict[SelectionKey, OccurrenceAddress] = {}
     positions: dict[OccurrenceAddress, SelectionKey] = {}
+    attribution: list[BoundaryInputAttribution] = []
     captures = []
     specs = {spec.role: spec for spec in recipe.inputs}
     for role, selections in inputs.items():
         graph.declare_input_role(role)
         for item in selections:
             address = graph.add_input(role, item.artifact)
-            positions[address] = item.key
-            # Only identical qualified producers share a context representative.
-            # Every consuming input position itself remains distinct.
-            representatives.setdefault(item.key, address)
+            key = sources.canonical_key(item.key)
+            positions[address] = key
+            # Context aliases share a representative; selected positions and their
+            # exact producer attribution remain distinct admission evidence.
+            representatives.setdefault(key, address)
+            attribution.append(
+                BoundaryInputAttribution(boundary=address, producer=item.producer)
+            )
             for kind in specs[role].with_associated:
                 assert item.producer is not None
+                members = associations[AssociationQuery(item.producer, kind)]
                 captures.append(
-                    (address, kind, associations[AssociationQuery(item.producer, kind)])
+                    (
+                        address,
+                        kind,
+                        tuple(
+                            dict.fromkeys(
+                                sources.canonical(member) for member in members
+                            )
+                        ),
+                    )
                 )
     required = dict.fromkeys(representatives)
     for _, _, members in captures:
@@ -147,6 +161,12 @@ def _freeze_partition(
         if not sources.has_policy(key):
             continue
         referents, parents = sources.references(key)
+        referents = tuple(
+            dict.fromkeys(sources.canonical_key(member) for member in referents)
+        )
+        parents = tuple(
+            dict.fromkeys(sources.canonical_key(parent) for parent in parents)
+        )
         references[key] = (referents, parents)
         for member in referents:
             if member not in required:
@@ -162,6 +182,12 @@ def _freeze_partition(
             graph.add_context_input(address, sources.artifact(key))
             representatives[key] = address
             positions[address] = key
+            attribution.append(
+                BoundaryInputAttribution(
+                    boundary=address,
+                    producer=None if isinstance(key, OccurrenceAddress) else key,
+                )
+            )
     context = FrozenBoundaryContext(
         associations=tuple(
             FrozenAssociation(
@@ -185,15 +211,8 @@ def _freeze_partition(
             if key in references
         ),
     )
-    attribution = tuple(
-        BoundaryInputAttribution(
-            boundary=address,
-            producer=None if isinstance(key, OccurrenceAddress) else key,
-        )
-        for address, key in positions.items()
-    )
     boundary = graph.project(
-        {}, {}, frozen_context=context, input_attribution=attribution
+        {}, {}, frozen_context=context, input_attribution=tuple(attribution)
     )
     return PreparedAssignmentInputs(
         assignment,
@@ -387,6 +406,9 @@ class _InputSources:
             tuple(_reference(key, address) for address in members),
             tuple(_reference(key, address) for address in parents),
         )
+
+    def canonical_key(self, key: SelectionKey) -> SelectionKey:
+        return key if isinstance(key, OccurrenceAddress) else self.canonical(key)
 
     def canonical(self, reference: AcceptedProducer) -> AcceptedProducer:
         chain = []
