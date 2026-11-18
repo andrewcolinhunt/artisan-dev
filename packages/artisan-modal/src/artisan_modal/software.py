@@ -7,20 +7,24 @@ import json
 from collections.abc import Mapping
 from dataclasses import dataclass, replace
 from pathlib import Path
+from typing import Literal
 
 from artisan.orchestration.runner_api import (
     Assignment,
     CompiledPlan,
     ExecuteAdapter,
+    ExternalAccessMount,
     NativeGPUSoftware,
+    PreparedExternalFiles,
     PreparedLocalBindings,
     PreparedNativeEnvironment,
     RuntimeCompatibility,
     select_runtime_compatibility,
 )
-from artisan_modal.bindings import PIXI, ModalFunctionRuntime, PreparedModalImage
+from artisan_modal.bindings import PIXI, ModalFunctionProfile, PreparedModalImage
 from artisan_modal.gpu import capture_worker_gpu
 from artisan_modal.runtime import verify_modal_function, verify_modal_runtime
+from artisan_modal.volumes import validate_external_roots
 
 
 @dataclass(frozen=True)
@@ -29,10 +33,14 @@ class ModalSoftware:
 
     image: PreparedModalImage
     local: PreparedLocalBindings
-    function: ModalFunctionRuntime
+    function: ModalFunctionProfile
     gpu: NativeGPUSoftware | None = None
 
     def __post_init__(self) -> None:
+        validate_external_roots(
+            self.local.external_files,
+            tuple(mount.mount_path for mount in self.function.mount_inventory()),
+        )
         if self.function.image_id != self.image.image_id:
             message = "Modal function and prepared image identities differ"
             raise ValueError(message)
@@ -85,6 +93,21 @@ class ModalSoftware:
             raise ValueError(message)
 
     @property
+    def external_files(self) -> Mapping[str, PreparedExternalFiles]:
+        """Expose configured metadata without reading remote file payloads."""
+        return self.local.external_files
+
+    @property
+    def external_provider(self) -> Literal["modal"]:
+        """Identify the provider owning this mount evidence."""
+        return "modal"
+
+    @property
+    def external_mounts(self) -> tuple[ExternalAccessMount, ...]:
+        """Return the complete attested endpoint mount scope."""
+        return tuple(item.access_mount() for item in self.function.mount_inventory())
+
+    @property
     def software_cacheable(self) -> bool:
         return self.local.software_cacheable
 
@@ -101,7 +124,7 @@ class ModalSoftware:
         descriptor = {
             "image": self.image.digest,
             "selection": self.local.software_digest,
-            "function": self.function.model_dump(mode="json"),
+            "function": self.function.scientific_profile(),
         }
         if self.gpu is not None:
             descriptor["gpu"] = self.gpu.model_dump(mode="json")

@@ -17,7 +17,7 @@ from artisan.orchestration.runner_api import (
     verify_native_gpu_loader,
     verify_runtime_compatibility,
 )
-from artisan_modal.bindings import ModalFunctionRuntime, ModalRuntimePayload
+from artisan_modal.bindings import ModalFunctionProfile, ModalRuntimePayload
 from artisan_modal.diagnostics import redacted_message
 from artisan_modal.runtime import verify_modal_function, verify_modal_runtime
 from artisan_modal.worker import verify_worker_activation
@@ -29,7 +29,7 @@ class GPUProbe(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
     domain: Literal["artisan.modal-gpu-probe"] = "artisan.modal-gpu-probe"
     nonce: UUID
-    function: ModalFunctionRuntime
+    function: ModalFunctionProfile
     runtime: ModalRuntimePayload
     compatibility: RuntimeCompatibility
 

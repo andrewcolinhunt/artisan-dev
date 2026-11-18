@@ -88,6 +88,13 @@ class ArtifactTypeDef:
         if not isinstance(schema, dict):
             msg = f"{model.__name__} must declare POLARS_SCHEMA"
             raise TypeError(msg)
+        if model.EXTERNAL_REFERENCE:
+            if model.EXTERNALLY_BACKED or model.LOCATOR_FIELDS:
+                msg = "External references cannot declare managed carrier storage"
+                raise TypeError(msg)
+            if model.external_descriptor is Artifact.external_descriptor:
+                msg = "External references must implement external_descriptor()"
+                raise TypeError(msg)
         if model.EXTERNALLY_BACKED:
             if len(model.LOCATOR_FIELDS) != 1:
                 msg = (

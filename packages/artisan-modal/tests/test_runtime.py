@@ -57,6 +57,7 @@ def test_function_identity_requires_active_exact_image_resources_and_one_input(
         ),
         max_concurrent_inputs=0,
         timeout_secs=60,
+        volume_mounts=(),
     )
     monkeypatch.setattr(
         _ContainerIOManager, "_singleton", SimpleNamespace(function_def=definition)
