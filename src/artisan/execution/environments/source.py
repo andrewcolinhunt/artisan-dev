@@ -261,7 +261,15 @@ def _locked_local_inputs(
     for record in document.get("packages", []):
         path = record.get("pypi")
         if path is None or path.startswith(
-            ("https://", "http://", "direct+https://", "direct+http://")
+            (
+                "https://",
+                "http://",
+                "direct+https://",
+                "direct+http://",
+                "git+https://",
+                "git+http://",
+                "git+ssh://",
+            )
         ):
             continue
         is_selected = path in selected

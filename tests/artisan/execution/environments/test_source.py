@@ -251,6 +251,45 @@ def test_source_keeps_remote_wheels_in_the_exact_lock_without_local_capture(
     assert capture_environment_source(inputs).source.digest != captured.source.digest
 
 
+@pytest.mark.parametrize("scheme", ["git+https", "git+http", "git+ssh"])
+@pytest.mark.parametrize("selected", [False, True])
+def test_source_captures_locked_git_revision_without_local_files(
+    source: Path, scheme: str, selected: bool
+) -> None:
+    revision = "a" * 40
+    path = f"{scheme}://example.invalid/project.git?rev={revision}#{revision}"
+    lock_path = source / "pixi.lock"
+    lock = json.loads(lock_path.read_text())
+    lock["environments"]["default"]["packages"]["linux-64"] = (
+        [{"pypi": path}] if selected else []
+    )
+    lock["packages"] = [{"pypi": path, "name": "example", "version": "1.0"}]
+    original = json.dumps(lock).encode()
+    lock_path.write_bytes(original)
+    inputs = read_environment_inputs(
+        Environment.from_pixi(source / "pixi.toml"), platform="linux-64"
+    )
+    assert inputs.packages == ()
+    assert set(inputs.paths) == {
+        "pixi.toml",
+        "pixi.lock",
+        "activate.sh",
+        "data/config.json",
+    }
+    captured = capture_environment_source(inputs)
+    records = dict(
+        zip(
+            (item.path for item in captured.source.files),
+            captured.contents,
+            strict=True,
+        )
+    )
+    assert records["pixi.lock"] == original
+    assert lock_path.read_bytes() == original
+    lock_path.write_bytes(original.replace(revision.encode(), b"b" * 40))
+    assert capture_environment_source(inputs).source.digest != captured.source.digest
+
+
 @pytest.mark.parametrize(
     "path",
     [
@@ -258,6 +297,9 @@ def test_source_keeps_remote_wheels_in_the_exact_lock_without_local_capture(
         "direct+ftp://example.invalid/example.whl",
         "direct+https:/example.invalid/example.whl",
         "file:///outside.whl",
+        "git+file:///outside/project",
+        "git+https:/example.invalid/project.git",
+        "git+ftp://example.invalid/project.git",
         "./../outside.whl",
     ],
 )
