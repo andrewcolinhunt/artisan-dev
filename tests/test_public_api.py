@@ -308,7 +308,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "__version__",
         "build_mcp_app",
     ),
-    "artisan.execution": ("Executor",),
+    "artisan.execution": ("Executor", "run_operation"),
     "artisan.orchestration.runners": (
         "ApptainerRuntime",
         "DockerRuntime",
@@ -467,8 +467,10 @@ def test_composite_ref_has_only_the_supported_fields() -> None:
 def test_public_facades_import_in_fresh_worker_and_storage_orders(first: str) -> None:
     program = (
         f"import {first}; "
-        "from artisan.execution import Executor; "
+        "from artisan.execution import Executor, run_operation; "
         "from artisan.execution.executor import Executor as ActualExecutor; "
+        "from artisan.execution.call import run_operation as ActualRun; "
+        "assert run_operation is ActualRun; "
         "from artisan.orchestration import PipelineManager, replay_execution; "
         "from artisan.orchestration.replay import replay_execution as ActualReplay; "
         "assert replay_execution is ActualReplay; "

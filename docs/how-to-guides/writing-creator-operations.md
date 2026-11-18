@@ -957,9 +957,125 @@ See [Configuring Execution](configuring-execution.md) for resource and batching 
 
 ## Verify
 
-Run the complete creator lifecycle with `Executor`. Inline definitions
-work here without installing an application package. Keep the executor open while
-using its output files:
+(call-operation-directly)=
+### Call without a pipeline
+
+Use `run_operation` to call a creator or static composite from Python. It runs the
+normal phases and returns finalized artifacts and lineage without opening a store,
+using a result cache, or installing software. Native computation runs in your
+calling process; native inline definitions work without an application package.
+
+This complete example returns a metric entirely in memory:
+
+```python
+from enum import StrEnum
+from typing import Any, ClassVar
+
+from artisan.execution import run_operation
+from artisan.operations.base import OperationDefinition
+from artisan.schemas import (
+    ArtifactResult,
+    ExecuteInput,
+    MetricArtifact,
+    OutputSpec,
+    PostprocessInput,
+)
+
+
+class ConstantScore(OperationDefinition):
+    name = "constant_score"
+
+    class OutputRole(StrEnum):
+        metrics = "metrics"
+
+    outputs: ClassVar = {
+        "metrics": OutputSpec(artifact_type="metric", derives_from={"inputs": []})
+    }
+
+    def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
+        return {"scores": [7]}
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        score = inputs.memory_outputs["scores"][0]
+        return ArtifactResult(
+            artifacts={
+                "metrics": [MetricArtifact.draft({"score": score}, "score.json")]
+            },
+            lineage={"metrics": []},
+        )
+
+
+result = run_operation(ConstantScore)
+assert result.artifacts["metrics"][0].is_finalized
+assert result.artifacts["metrics"][0].values == {"score": 7}
+```
+
+For operations with inputs, pass finalized artifacts in `inputs={"role": [artifact]}`
+and settings in `params`. To stay fileless, input specs must use `materialize=False`
+and every phase must work without paths. The phase directory fields are then
+`None`. A standalone native call using only memory creates no scratch directory
+or command supervisor.
+
+Supply `work_dir=Path(...)` when the operation materializes inputs, resolves
+configuration references to files, uses a command adapter, or writes files itself.
+Each call creates separate directories beneath that path. Files remain after
+success or failure until you remove them. Keep them while using file-backed
+outputs or supporting artifacts. A failed call raises and returns no result.
+
+The operation's execution method determines its process and software:
+
+| Execution method | Where it runs | Software |
+| --- | --- | --- |
+| `execute_function` | Calling process | Your current Python installation |
+| `execute_command` without `environment` | Subprocess | Caller's software installation |
+| `execute_command` with `environment` | Subprocess | The declared, previously prepared environment |
+
+Preprocess and postprocess remain in the calling process. `execute_as_tool=True`
+uses the command path for a Python body and requires its existing file-based
+contract. Managed commands preserve cancellation and cleanup; they do not create
+pipeline steps. See [environment preparation](execute-environments.md) for setup.
+
+Calls are sequential. Calling this helper from a normal managed operation is
+supported; recursive helper calls and concurrent calls in one process are not.
+
+### Supply declared supporting artifacts
+
+A direct call cannot query a store for missing dependencies. Operations that request
+associations accept `associations={("role", index, "artifact_type"): [artifact]}`.
+Indices refer to the original supplied input streams before batching. An empty
+sequence is explicitly known-empty; omitting required membership is an error.
+
+Results keep any required generated referents in runtime support, so a composite
+need not add public outputs just to keep those referents alive. For your own
+`MakeConfig` and `Predict` definitions, the handoff pattern is:
+
+```python
+configured = run_operation(
+    MakeConfig,
+    inputs={"source": [source]},
+    work_dir=work_dir,
+)
+prediction = run_operation(
+    Predict,
+    inputs={"config": configured.artifacts["config"]},
+    config_references={
+        ("config", 0): configured.referenced_artifacts("config", index=0),
+    },
+    work_dir=work_dir,
+)
+```
+
+This fragment assumes one returned configuration and a caller-owned `work_dir`.
+The accessor selects that exact output's direct references. Missing support raises;
+it does not silently become an empty mapping. Support is excluded from result
+serialization and does not publish a child graph. The next call still validates
+its supplied references; it does not infer associations or historical producers.
+
+### Use an executor for an owned lifetime
+
+`Executor` retains sequential-call context and cleans up its own scratch files.
+The following example continues with `ScaleData` defined above. Keep the executor
+open while using its output files:
 
 ```python
 from artisan.execution import Executor

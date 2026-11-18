@@ -12,6 +12,7 @@ from unittest.mock import Mock
 import pytest
 from pydantic import BaseModel, Field
 
+from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executor import Executor
 from artisan.execution.invocation import ExecuteFailure
@@ -111,13 +112,18 @@ class _MonolithicSuffixOp(_SuffixOp):
     per_artifact_dispatch: ClassVar[bool] = False
 
 
-class _StubRouter:
+class _StubRouter(ExecuteRouter):
     """Injected router returning canned per-artifact results."""
 
     def __init__(self, results: list[Any]) -> None:
         self._results = results
 
-    def route_execute(self, operation, execute_inputs, sandbox_root):
+    def route_execute(
+        self,
+        operation: OperationDefinition,
+        execute_inputs: list[ExecuteInput],
+        sandbox_root: str | None,
+    ) -> list[Any]:
         return self._results[: len(execute_inputs)]
 
 
