@@ -234,15 +234,27 @@ class WitnessInvocation:
     def receipt(self) -> Path:
         return self.directory / f"{self.nonce}.json"
 
-    def wrap(self, command: list[str], *, prefix: Path | None = None) -> list[str]:
+    def wrap(
+        self,
+        command: list[str],
+        *,
+        prefix: Path | None = None,
+        external_access: Path | None = None,
+    ) -> list[str]:
         """Preserve argv and optionally require the resolved tool inside its prefix."""
         self.directory.mkdir(parents=True, exist_ok=True)
         confinement = ["--prefix", str(prefix)] if prefix is not None else []
+        access = (
+            ["--external-access", str(external_access)]
+            if external_access is not None
+            else []
+        )
         return [
             str(self.target.executable),
             str(self.receipt),
             self.nonce,
             *confinement,
+            *access,
             *command,
         ]
 

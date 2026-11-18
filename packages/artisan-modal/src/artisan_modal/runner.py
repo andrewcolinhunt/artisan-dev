@@ -5,7 +5,7 @@ from __future__ import annotations
 import hashlib
 import re
 import time
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar
@@ -29,12 +29,14 @@ from artisan.orchestration.runner_api import (
     OperationDefinition,
     OwnershipState,
     Parameters,
+    PreparedExternalFiles,
     RunnerResources,
     compile_definition,
+    freeze_external_files,
     merge_runner_resources,
 )
 from artisan.registry import bootstrap_applications
-from artisan_modal.bindings import ModalFunctionRuntime, PreparedModalImage
+from artisan_modal.bindings import ModalFunctionProfile, PreparedModalImage
 from artisan_modal.gpu import GPUProbe
 from artisan_modal.gpu_owner import GPUProbeOwner
 from artisan_modal.handles import ModalAssignmentHandle, ModalCuratorHandle
@@ -51,17 +53,23 @@ from artisan_modal.resolution import (
 )
 from artisan_modal.software import ModalSoftware
 from artisan_modal.submission import prepare_call, sensitive_values, validate_dispatch
+from artisan_modal.volumes import (
+    ModalVolumeBinding,
+    resolve_volume_mounts,
+    validate_external_roots,
+    validate_volume_bindings,
+)
 
 
 def _deployment_name(
-    app_name: str, image: PreparedModalImage, profile: ModalFunctionRuntime
+    app_name: str, image: PreparedModalImage, profile: ModalFunctionProfile
 ) -> str:
     descriptor = image.digest + "\0" + profile.model_dump_json()
     suffix = hashlib.sha256(descriptor.encode()).hexdigest()[:24]
     return f"{app_name}-{suffix}"
 
 
-def _function(app: object, profile: ModalFunctionRuntime) -> ModalFunction:
+def _function(app: object, profile: ModalFunctionProfile) -> ModalFunction:
     import modal
 
     if not isinstance(app, modal.App):
@@ -78,6 +86,10 @@ def _function(app: object, profile: ModalFunctionRuntime) -> ModalFunction:
         max_containers=1,
         retries=0,
         include_source=False,
+        volumes={
+            str(mount.mount_path): modal.Volume.from_id(mount.volume_id).read_only()
+            for mount in profile.mount_inventory()
+        },
     )(invoke_pack)
 
 
@@ -97,9 +109,18 @@ class ModalRunner:
         default_factory=lambda: Path.home() / ".cache/artisan/environments"
     )
     base_image: str = BASE_IMAGE
+    volumes: tuple[ModalVolumeBinding, ...] = ()
+    external_files: Mapping[str, PreparedExternalFiles] = field(default_factory=dict)
     name: ClassVar[str] = "modal"
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "volumes", validate_volume_bindings(self.volumes))
+        object.__setattr__(
+            self, "external_files", freeze_external_files(self.external_files)
+        )
+        validate_external_roots(
+            self.external_files, tuple(item.mount_path for item in self.volumes)
+        )
         if not self.cache_root.is_absolute():
             message = "Modal environment cache requires an absolute path"
             raise ValueError(message)
@@ -154,6 +175,7 @@ class ModalRunner:
         import modal
 
         function_profile("im-pending", resources)
+        mounts = resolve_volume_mounts(self.volumes)
         providers = self._providers()
         names, tools = requirements(subject, providers, applications)
         try:
@@ -180,7 +202,7 @@ class ModalRunner:
             controller_compatibility(
                 subject, providers, self.environment, image, applications
             )
-        profile = function_profile(image.image_id, resources)
+        profile = function_profile(image.image_id, resources, volumes=mounts)
         if self._deployment_exists(image, profile):
             return
         app = modal.App()
@@ -188,7 +210,7 @@ class ModalRunner:
         app.deploy(name=_deployment_name(self.app_name, image, profile))
 
     def _deployment_exists(
-        self, image: PreparedModalImage, profile: ModalFunctionRuntime
+        self, image: PreparedModalImage, profile: ModalFunctionProfile
     ) -> bool:
         """Distinguish an absent deployment from an inaccessible Modal service."""
         import modal
@@ -226,6 +248,7 @@ class ModalRunner:
         applications: tuple[str, ...],
     ) -> ModalSoftware:
         function_profile("im-pending", resources)
+        mounts = resolve_volume_mounts(self.volumes)
         providers = self._providers()
         names, tools = requirements(subject, providers, applications)
         selected = lookup_image(
@@ -239,18 +262,28 @@ class ModalRunner:
         compatibility = controller_compatibility(
             subject, providers, self.environment, image, applications
         )
-        profile = function_profile(image.image_id, resources)
+        profile = function_profile(image.image_id, resources, volumes=mounts)
+        if mounts and not self._deployment_exists(image, profile):
+            message = "Modal endpoint with the selected volumes is not prepared"
+            raise ValueError(message)
         gpu = self._measure_gpu(
             image, profile, curator=not isinstance(subject, CompiledPlan)
         )
         return bind_software(
-            subject, selected, compatibility, resources, applications, gpu
+            subject,
+            selected,
+            compatibility,
+            resources,
+            applications,
+            gpu,
+            external_files=self.external_files,
+            volumes=profile.mount_inventory(),
         )
 
     def _measure_gpu(
         self,
         image: PreparedModalImage,
-        profile: ModalFunctionRuntime,
+        profile: ModalFunctionProfile,
         *,
         curator: bool,
     ) -> NativeGPUSoftware | None:
@@ -289,7 +322,7 @@ class ModalRunner:
             ) from error
 
     def _lookup_profile(
-        self, image: PreparedModalImage, profile: ModalFunctionRuntime
+        self, image: PreparedModalImage, profile: ModalFunctionProfile
     ) -> ModalFunction:
         import modal
 

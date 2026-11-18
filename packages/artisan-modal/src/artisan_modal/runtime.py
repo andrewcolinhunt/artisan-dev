@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from artisan_modal.bindings import ModalFunctionRuntime, ModalRuntimePayload
+from artisan_modal.bindings import (
+    ModalFunctionProfile,
+    ModalFunctionRuntime,
+    ModalFunctionRuntimeWithVolumes,
+    ModalRuntimePayload,
+)
+from artisan_modal.volumes import ModalVolumeMount, validate_volume_mounts
 
 RUNTIME_ROOT = Path("/pkg")
 
@@ -29,7 +35,7 @@ def verify_modal_runtime(expected: ModalRuntimePayload) -> None:
         raise ValueError(message)
 
 
-def capture_modal_function() -> ModalFunctionRuntime:
+def capture_modal_function() -> ModalFunctionProfile:
     """Read the exact pinned SDK's assigned image/resources without trusting inputs.
 
     This narrow internal SDK accessor is qualified with version 1.4.1 at the
@@ -42,7 +48,7 @@ def capture_modal_function() -> ModalFunctionRuntime:
         message = "Modal function identity requires an active SDK worker"
         raise ValueError(message)
     definition = manager.function_def
-    return ModalFunctionRuntime(
+    profile = ModalFunctionRuntime(
         image_id=definition.image_id,
         milli_cpu=definition.resources.milli_cpu,
         memory_mb=definition.resources.memory_mb,
@@ -51,10 +57,26 @@ def capture_modal_function() -> ModalFunctionRuntime:
         max_inputs=definition.max_concurrent_inputs or 1,
         timeout_seconds=definition.timeout_secs,
     )
+    mounts = validate_volume_mounts(
+        tuple(
+            ModalVolumeMount(
+                volume_id=mount.volume_id,
+                mount_path=Path(mount.mount_path),
+                read_only=mount.read_only,
+                allow_background_commits=mount.allow_background_commits,
+            )
+            for mount in definition.volume_mounts
+        )
+    )
+    if mounts:
+        return ModalFunctionRuntimeWithVolumes(**profile.model_dump(), volumes=mounts)
+    return profile
 
 
-def verify_modal_function(expected: ModalFunctionRuntime) -> None:
-    """Reject a different image, allocation or concurrent-input configuration."""
+def verify_modal_function(expected: ModalFunctionProfile) -> None:
+    """Reject a different image, allocation, concurrency or volume mounts."""
     if capture_modal_function() != expected:
-        message = "Modal function differs from its admitted image/resources"
+        message = (
+            "Modal function differs from its admitted image/resources or volume mounts"
+        )
         raise ValueError(message)

@@ -16,6 +16,8 @@ from artisan.execution.environments.container_runtime import (
     DockerRuntime,
 )
 from artisan.execution.environments.container_source import CONTAINER_PIXI
+from artisan.execution.environments.external_preflight import write_external_preflight
+from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.container_environment import (
     PreparedOCIEnvironment,
     PreparedSIFEnvironment,
@@ -56,10 +58,15 @@ class PreparedContainerCommandEnvironment:
     env: Mapping[str, str] = field(default_factory=dict)
     input_files: tuple[Path, ...] = ()
     witness: WitnessInvocation | None = None
+    external_files: tuple[PreparedExternalFiles, ...] = ()
     public_env: ClassVar[tuple[str, ...]] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "env", freeze_runtime_injections(self.env))
+        object.__setattr__(self, "external_files", tuple(self.external_files))
+        if self.external_files and not isinstance(self.runtime, DockerRuntime):
+            msg = "External artifact mounts are supported only by the Docker backend"
+            raise ValueError(msg)
         if isinstance(self.target, PreparedOCIEnvironment) != isinstance(
             self.runtime, DockerRuntime
         ):
@@ -97,8 +104,18 @@ class PreparedContainerCommandEnvironment:
             msg = "Prepared container commands require a command witness"
             raise ValueError(msg)
         executable = container_executable(self.native, command[0])
+        access = (
+            write_external_preflight(
+                self.external_files,
+                self.sandbox / "external-access" / f"{self.witness.nonce}.bin",
+            )
+            if self.external_files
+            else None
+        )
         resolved = self.witness.wrap(
-            [executable, *command[1:]], prefix=self.native.prefix
+            [executable, *command[1:]],
+            prefix=self.native.prefix,
+            external_access=access,
         )
         values = {
             "HOME": str(self.scratch / "home"),
@@ -152,12 +169,18 @@ class PreparedContainerCommandEnvironment:
                 "--entrypoint",
                 "/usr/bin/env",
             ]
+            external_roots = {item.root for item in self.external_files}
             for path, readonly in mounts:
                 prefix.extend(
                     [
                         "--mount",
                         f"type=bind,source={path},target={path}"
-                        + (",readonly" if readonly else ""),
+                        + (",readonly" if readonly else "")
+                        + (
+                            ",bind-propagation=rprivate,bind-recursive=readonly"
+                            if path in external_roots
+                            else ""
+                        ),
                     ]
                 )
             if devices:
@@ -184,9 +207,11 @@ class PreparedContainerCommandEnvironment:
         return [*prefix, str(self.target.sif), "/usr/bin/env", *activated]
 
     def _mounts(self, working: Path) -> tuple[tuple[Path, bool], ...]:
+        self._validate_external_mounts(working)
         mounts = {
             self.sandbox.parent: True,
             **dict.fromkeys(self.input_files, True),
+            **dict.fromkeys((item.root for item in self.external_files), True),
             working: False,
             self.scratch: False,
         }
@@ -206,6 +231,43 @@ class PreparedContainerCommandEnvironment:
         return tuple(
             sorted(mounts.items(), key=lambda item: (len(item[0].parts), str(item[0])))
         )
+
+    def _validate_external_mounts(self, working: Path) -> None:
+        """Keep external roots separate from writable and executable control paths."""
+        roots = {item.root for item in self.external_files}
+        protected = {
+            # Image launchers, loaders and configuration must remain image-owned.
+            *(
+                Path(root)
+                for root in (
+                    "/usr",
+                    "/bin",
+                    "/sbin",
+                    "/lib",
+                    "/lib64",
+                    "/etc",
+                    "/dev",
+                    "/proc",
+                    "/sys",
+                    "/run",
+                )
+            ),
+            self.sandbox.parent,
+            working,
+            self.scratch,
+            self.native.workspace,
+            *self.input_files,
+        }
+        if self.witness is not None:
+            protected.add(self.witness.target.executable)
+        for root in roots:
+            if not root.is_dir() or root.resolve(strict=True) != root:
+                msg = "External container mounts require canonical installation roots"
+                raise ValueError(msg)
+            for other in (roots - {root}) | protected:
+                if root.is_relative_to(other) or other.is_relative_to(root):
+                    msg = "External container mounts overlap another mount or control path"
+                    raise ValueError(msg)
 
     def _managed_container_command(self, wrapped: list[str]) -> list[str] | None:
         """Let the existing native owner create and retain the exact Docker container."""

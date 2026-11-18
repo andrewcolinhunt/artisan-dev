@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING
 
 from fsspec import AbstractFileSystem
@@ -11,10 +11,37 @@ from fsspec import AbstractFileSystem
 from artisan.execution.inputs._validation import is_hex_id
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
+from artisan.schemas.composites.plan import InputContract
 from artisan.schemas.specs.input_spec import InputSpec
 
 if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
+
+
+def requires_materialization(
+    artifacts: Mapping[str, Sequence[Artifact]],
+    input_specs: Mapping[str, InputSpec | InputContract],
+    references: Mapping[str, Mapping[str, Artifact]],
+) -> bool:
+    """Check actual delivery requirements without accessing external payloads."""
+    required = False
+    for role, values in artifacts.items():
+        spec = input_specs.get(role, InputSpec())
+        for artifact in values:
+            if artifact.EXTERNAL_REFERENCE and spec.materialize_as is not None:
+                msg = "External file artifacts do not support format conversion"
+                raise ValueError(msg)
+            if spec.materialize and artifact.is_hydrated:
+                required |= not artifact.EXTERNAL_REFERENCE
+            if spec.resolve_references:
+                if not isinstance(artifact, ExecutionConfigArtifact):
+                    msg = "Reference resolution requires a configuration artifact"
+                    raise ValueError(msg)
+                required |= any(
+                    not member.EXTERNAL_REFERENCE
+                    for member in _captured_references(artifact, references).values()
+                )
+    return required
 
 
 def materialize_inputs(
@@ -65,6 +92,9 @@ def materialize_captured_inputs(
     for role, artifact_list in artifacts.items():
         spec = input_specs.get(role, InputSpec())
         for artifact in artifact_list:
+            if artifact.EXTERNAL_REFERENCE and spec.materialize_as is not None:
+                msg = "External file artifacts do not support format conversion"
+                raise ValueError(msg)
             if not artifact.is_hydrated:
                 continue
 
@@ -92,6 +122,9 @@ def materialize_captured_inputs(
     materialized_paths: dict[str, str] = {}
     for artifact, fmt in non_configs:
         if artifact.artifact_id is None:
+            continue
+        if artifact.EXTERNAL_REFERENCE:
+            resolved_paths[artifact.artifact_id] = str(artifact.external_root)
             continue
         materialized = _materialize_artifact(artifact, directory, fs, fmt)
         if isinstance(materialized, str):
@@ -256,12 +289,16 @@ def materialize_captured_references(
             result[config.artifact_id] = captured
     loaded = {key: value for values in result.values() for key, value in values.items()}
     for artifact_id, artifact in loaded.items():
+        if artifact.EXTERNAL_REFERENCE:
+            _ = artifact.external_root
+            continue
         target = os.path.join(directory, "references", artifact_id)
         os.makedirs(target, exist_ok=True)
         _materialize_artifact(artifact, target, fs)
     for captured in result.values():
         for artifact_id, artifact in captured.items():
-            artifact.materialized_path = loaded[artifact_id].materialized_path
+            if not artifact.EXTERNAL_REFERENCE:
+                artifact.materialized_path = loaded[artifact_id].materialized_path
     return result
 
 

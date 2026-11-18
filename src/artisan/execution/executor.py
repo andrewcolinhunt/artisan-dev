@@ -16,6 +16,7 @@ from fsspec import AbstractFileSystem
 
 from artisan.composites.base.compiler import Definition, Parameters
 from artisan.execution.compute.base import ExecuteRouter
+from artisan.execution.external_access import freeze_external_files
 from artisan.execution.invocation import (
     InvocationPaths,
     invoke_operation,
@@ -26,6 +27,7 @@ from artisan.execution.recording.delivery_diagnostics import (
 )
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.specs.input_models import FrozenInputContext
 from artisan.utils.command_supervisor import (
@@ -135,12 +137,14 @@ class Executor:
         *,
         inputs: Mapping[str, Sequence[Artifact]] | None = None,
         params: Parameters = None,
+        external_files: Mapping[str, PreparedExternalFiles] | None = None,
     ) -> ArtifactResult:
         """Run a creator or composition locally, retaining files until executor exit.
 
         Inputs must be finalized, with local carriers and sufficient captured
         context. Software targets must already be prepared. This method does not
         access a store, install environments, or launch a replacement worker.
+        External file artifacts require explicit prepared bindings on each call.
         """
         if self._scope is None or self._root is None or self._borrowed:
             msg = "Standalone run requires an active independently owned executor"
@@ -151,6 +155,7 @@ class Executor:
         try:
             from artisan.execution.executor_runtime import ExecutorRuntime
 
+            external_files = freeze_external_files(external_files)
             check_command_scope(expected=self._invocation)
             if self._runtime is None:
                 self._runtime = ExecutorRuntime(self._tool_backend)
@@ -160,6 +165,7 @@ class Executor:
                 params,
                 self.invoke,
                 self._root,
+                external_files=external_files,
             )
         finally:
             self._run_lock.release()
