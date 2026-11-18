@@ -998,7 +998,9 @@ class ConstantScore(OperationDefinition):
     def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
         score = inputs.memory_outputs["scores"][0]
         return ArtifactResult(
-            artifacts={"metrics": [MetricArtifact.draft({"score": score}, "score.json")]},
+            artifacts={
+                "metrics": [MetricArtifact.draft({"score": score}, "score.json")]
+            },
             lineage={"metrics": []},
         )
 
