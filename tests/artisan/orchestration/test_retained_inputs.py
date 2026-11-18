@@ -23,7 +23,10 @@ from artisan.execution.recording.retained_replay import (
 )
 from artisan.operations.curator.declare_lineage import DeclareLineage
 from artisan.operations.curator.merge import Merge
-from artisan.orchestration.engine.retained_inputs import prepare_step_inputs
+from artisan.orchestration.engine.retained_inputs import (
+    PreparedAssignmentInputs,
+    prepare_step_inputs,
+)
 from artisan.orchestration.retained_replay import prepare_retained_replay
 from artisan.schemas import (
     Artifact,
@@ -447,6 +450,135 @@ def test_exact_producer_aliases_share_reference_context_but_keep_consuming_slots
     assert unit.boundary.input_attribution[0].producer == first.reference
     assert unit.boundary.input_attribution[1].producer == first.reference
     assert unit.boundary.input_attribution[2].producer == other.reference
+
+
+def _boundary_graph(unit: PreparedAssignmentInputs) -> OccurrenceGraph:
+    graph = OccurrenceGraph(boundary_invocation=unit.assignment.assignment_id)
+    for role, addresses in unit.boundary.input_roles().items():
+        for address in addresses:
+            assert graph.add_input(role, unit.artifacts[address]) == address
+    for address, artifact in unit.artifacts.items():
+        if address not in graph.nodes:
+            graph.add_context_input(address, artifact)
+    return graph
+
+
+def test_retained_reference_aliases_share_context_after_later_annotation(
+    reader: RetainedReader, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        ArtifactTypeDef.get("metric"),
+        "required_references",
+        staticmethod(_direct_references),
+    )
+    _, receipt = _seed(reader)
+    result = reader.read(receipt)
+    primary = result.output("structures")[0]
+    original = result.output("metrics")[0]
+    recipe = _recipe("data", associated=("metric",))
+    before = prepare_step_inputs(
+        recipe, {"data": [primary]}, step_run_id="b" * 32, reader=reader
+    )[0]
+    graph = _boundary_graph(before)
+    source = before.boundary.input_roles()["data"][0]
+    prior = before.boundary.frozen_context.associated(source, "metric")[0]
+    metric = MetricArtifact.draft({"score": 2}, "later.json").finalize()
+    annotation = _derive(graph, "annotation", metric, [source, prior])
+    case = RetainedCase(
+        graph.project(
+            {"metric": [annotation], "data": [source]},
+            {"metric": OutputSpec(), "data": OutputSpec()},
+            frozen_context=before.boundary.frozen_context,
+            input_attribution=before.boundary.input_attribution,
+        ),
+        before.artifacts,
+        {annotation: metric},
+    )
+    _, later = admit_read_case(reader.committer, case, step_run_id="b" * 32)
+    reader.committer.accept(later)
+    after = prepare_step_inputs(
+        recipe, {"data": [primary]}, step_run_id="c" * 32, reader=reader
+    )[0]
+    graph = _boundary_graph(after)
+    source = after.boundary.input_roles()["data"][0]
+    config = ExecutionConfigArtifact.draft(
+        {
+            "source": {"$artifact": primary.artifact.artifact_id},
+            "original": {"$artifact": original.artifact.artifact_id},
+            "later": {"$artifact": metric.artifact_id},
+        },
+        "config.json",
+    ).finalize()
+    output = _derive(graph, "config", config, [source])
+    projection = graph.project(
+        {"config": [output]},
+        {"config": OutputSpec()},
+        frozen_context=after.boundary.frozen_context,
+        input_attribution=after.boundary.input_attribution,
+    )
+    assert len(after.artifacts) == 3
+    assert len([edge for edge in projection.references if edge.source == output]) == 3
+    assert (
+        sum(
+            item.producer == original.reference
+            for item in after.boundary.input_attribution
+        )
+        == 1
+    )
+    alias = reader.read(later).output("data")[0]
+    repeated = prepare_step_inputs(
+        recipe.model_copy(update={"policy": InvocationPolicy(artifacts_per_unit=2)}),
+        {"data": [primary, alias]},
+        step_run_id="d" * 32,
+        reader=reader,
+    )[0]
+    positions = repeated.boundary.input_roles()["data"]
+    assert len(set(positions)) == 2
+    assert len(repeated.artifacts) == 4
+    assert tuple(item.producer for item in repeated.boundary.input_attribution[:2]) == (
+        primary.reference,
+        alias.reference,
+    )
+    assert repeated.boundary.frozen_context.associated(positions[0], "metric") == (
+        repeated.boundary.frozen_context.associated(positions[1], "metric")
+    )
+    alias_only = prepare_step_inputs(
+        recipe, {"data": [alias]}, step_run_id="c" * 32, reader=reader
+    )[0]
+    assert (
+        alias_only.boundary.input_context_digest != after.boundary.input_context_digest
+    )
+
+
+def test_independent_equal_content_referents_remain_ambiguous(
+    reader: RetainedReader,
+) -> None:
+    _, receipt = _seed(reader)
+    primary = reader.read(receipt).output("structures")[0]
+    first = _measure(reader, primary, "b" * 32)
+    second = _measure(reader, primary, "c" * 32)
+    assert first.artifact.artifact_id == second.artifact.artifact_id
+    assert first.reference != second.reference
+    unit = prepare_step_inputs(
+        _recipe("data", associated=("metric",)),
+        {"data": [primary]},
+        step_run_id="d" * 32,
+        reader=reader,
+    )[0]
+    assert len(unit.artifacts) == 4
+    graph = _boundary_graph(unit)
+    source = unit.boundary.input_roles()["data"][0]
+    config = ExecutionConfigArtifact.draft(
+        {"metric": {"$artifact": first.artifact.artifact_id}}, "config.json"
+    ).finalize()
+    output = _derive(graph, "config", config, [source])
+    with pytest.raises(ValueError, match="missing or ambiguous"):
+        graph.project(
+            {"config": [output]},
+            {"config": OutputSpec()},
+            frozen_context=unit.boundary.frozen_context,
+            input_attribution=unit.boundary.input_attribution,
+        )
 
 
 def test_recursive_required_references_are_captured_to_fixed_point(

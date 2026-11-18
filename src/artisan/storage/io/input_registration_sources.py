@@ -141,6 +141,7 @@ def _file_ref(
     uri: str, path: Path, carrier: ManagedCarrier, step_number: int
 ) -> FileRefArtifact:
     basename = os.path.basename(uri)
+    stem = strip_extensions(basename)
     artifact = cast(
         FileRefArtifact,
         FileRefArtifact.draft(
@@ -148,8 +149,8 @@ def _file_ref(
             content_hash=carrier.digest,
             size_bytes=carrier.size_bytes,
             step_number=step_number,
-            original_name=strip_extensions(basename),
-            extension=os.path.splitext(basename)[1],
+            original_name=stem,
+            extension=basename[len(stem) :],
         ).finalize(),
     )
     artifact.verify_external_content(fs=LocalFileSystem())
