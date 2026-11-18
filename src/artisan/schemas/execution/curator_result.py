@@ -10,13 +10,16 @@ The ``CuratorResult`` union captures all three for typing and validation.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from typing import Any, cast
 
 from pydantic import BaseModel, ConfigDict, Field, StrictStr, field_validator
+from pydantic.json_schema import SkipJsonSchema
 
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.provenance import ArtifactProvenanceEdge
+from artisan.schemas.execution.result_support import ArtifactResultSupport
 from artisan.schemas.provenance.lineage_mapping import LineageMapping
 from artisan.schemas.provenance.occurrence import InputReference
 
@@ -36,6 +39,8 @@ class ArtifactResult(BaseModel):
         lineage: Explicit parent declarations keyed by output role. Every emitted
             role must be present; root roles explicitly contain an empty list.
         metadata: Extensibility escape hatch for additional data.
+        support: Runtime-only references retained by completed execution. Excluded
+            from result serialization and unrelated to durable acceptance.
 
     Example:
         >>> result = ArtifactResult(
@@ -54,6 +59,36 @@ class ArtifactResult(BaseModel):
     artifacts: dict[str, list[Artifact]] = Field(default_factory=dict)
     lineage: dict[str, list[LineageMapping]] = Field(default_factory=dict)
     metadata: dict[str, Any] = Field(default_factory=dict)
+    support: SkipJsonSchema[ArtifactResultSupport | None] = Field(
+        default=None, exclude=True, repr=False
+    )
+
+    def referenced_artifacts(self, role: str, *, index: int) -> Mapping[str, Artifact]:
+        """Return the direct dependencies of one configuration output.
+
+        Args:
+            role: Declared output role containing a configuration.
+            index: Exact position in that role's ordered output sequence.
+
+        Returns:
+            Read-only artifact-ID mapping for the selected output's referents.
+
+        Raises:
+            ValueError: If the position, configuration, or runtime support is
+                missing, stale, or invalid.
+        """
+        outputs = self.artifacts.get(role, ())
+        if type(index) is not int or not 0 <= index < len(outputs):
+            msg = "Result output position does not exist"
+            raise ValueError(msg)
+        artifact = outputs[index]
+        if not isinstance(artifact, ExecutionConfigArtifact):
+            msg = "Result reference access requires a configuration output"
+            raise ValueError(msg)
+        if self.support is None:
+            msg = "Result has no runtime reference support"
+            raise ValueError(msg)
+        return self.support.referenced_artifacts(role, index=index, artifact=artifact)
 
     def add_artifact(
         self,

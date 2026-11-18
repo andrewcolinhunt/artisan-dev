@@ -18,9 +18,7 @@ from artisan.composites.base.compiler import Definition, Parameters
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.invocation import (
     InvocationPaths,
-    execute_invocation,
-    postprocess_invocation,
-    prepare_invocation,
+    invoke_operation,
 )
 from artisan.execution.recording.delivery_diagnostics import (
     DeliveryRecorder,
@@ -157,7 +155,11 @@ class Executor:
             if self._runtime is None:
                 self._runtime = ExecutorRuntime(self._tool_backend)
             return self._runtime.run(
-                definition, {} if inputs is None else inputs, params, self, self._root
+                definition,
+                {} if inputs is None else inputs,
+                params,
+                self.invoke,
+                self._root,
             )
         finally:
             self._run_lock.release()
@@ -205,15 +207,14 @@ class Executor:
         with observation as observed, self.invocation(observation=observed) as paths:
             if observed is not None:
                 observed.log_path = paths.log
-            prepared = prepare_invocation(
+            return invoke_operation(
                 operation,
                 context,
-                paths,
+                paths=paths,
+                execute_router=execute_router,
                 batch_size=batch_size,
                 step_number=step_number,
                 materialization_references=materialization_references,
                 fs=fs,
                 timings=observed.timings if observed is not None else None,
             )
-            raw_results = execute_invocation(prepared, execute_router)
-            return postprocess_invocation(prepared, raw_results, fs=fs)

@@ -94,6 +94,9 @@ class SlowTransformer(OperationDefinition):
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Sleep for the configured duration per artifact, write timing markers."""
         output_dir = inputs.execute_dir
+        if output_dir is None:
+            msg = "This file-producing operation requires work_dir"
+            raise ValueError(msg)
         os.makedirs(output_dir, exist_ok=True)
 
         dataset_input = inputs.inputs.get("dataset")

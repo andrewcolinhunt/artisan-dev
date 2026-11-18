@@ -7,7 +7,7 @@ import shutil
 from collections import deque
 from collections.abc import Mapping, Sequence
 from pathlib import Path
-from typing import TYPE_CHECKING, Literal
+from typing import Literal
 from uuid import uuid4
 
 from fsspec.implementations.local import LocalFileSystem
@@ -16,10 +16,12 @@ from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.compiler import Definition, Parameters, compile_definition
 from artisan.execution.composition import (
     ExecuteAdapter,
+    OperationInvoker,
     PlanExecution,
     execute_local_plan,
     validate_local_inputs,
 )
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.environments.container_launch import validate_container_bind_path
 from artisan.execution.environments.container_runtime import (
     ApptainerRuntime,
@@ -27,6 +29,10 @@ from artisan.execution.environments.container_runtime import (
 )
 from artisan.execution.environments.observed_worker import observe_current_worker
 from artisan.execution.environments.requirements import select_tool_environments
+from artisan.execution.inputs.local_context import (
+    boundary_queries,
+    capture_local_context,
+)
 from artisan.execution.inputs.partitioning import partition_local_inputs
 from artisan.execution.lineage.graph import OccurrenceGraph
 from artisan.execution.local_assignment import (
@@ -43,9 +49,7 @@ from artisan.schemas.provenance.projection import (
     FrozenBoundaryContext,
     FrozenReferences,
 )
-
-if TYPE_CHECKING:
-    from artisan.execution.executor import Executor
+from artisan.schemas.specs.input_models import FrozenInputContext
 
 
 class ExecutorRuntime:
@@ -53,13 +57,7 @@ class ExecutorRuntime:
 
     def __init__(self, tool_backend: Literal["pixi", "docker", "apptainer"]) -> None:
         self.tool_backend = tool_backend
-        self.cache_root = (
-            Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache"))
-            / "artisan/environments"
-        )
-        if not self.cache_root.is_absolute():
-            msg = "Executor environment cache requires an absolute path"
-            raise ValueError(msg)
+        self.cache_root: Path | None = None
         self.artifacts: dict[OccurrenceAddress, Artifact] = {}
         self.objects: dict[int, tuple[Artifact, set[OccurrenceAddress]]] = {}
         self.produced: set[OccurrenceAddress] = set()
@@ -74,16 +72,22 @@ class ExecutorRuntime:
         definition: Definition,
         inputs: Mapping[str, Sequence[Artifact]],
         params: Parameters,
-        executor: Executor,
-        root: Path,
+        invoke: OperationInvoker,
+        root: Path | None,
+        *,
+        explicit_context: FrozenInputContext | None = None,
     ) -> ArtifactResult:
         """Validate all captured inputs before selecting software or invoking science."""
         inputs = {role: tuple(values) for role, values in inputs.items()}
         plan = compile_definition(definition, params=params)
         validate_local_inputs(plan, inputs)
         select_tool_environments(plan)
-        identity = uuid4().hex
-        positions, context, captured = self._capture(plan, inputs, identity)
+        identity = explicit_context.invocation_id if explicit_context else uuid4().hex
+        if explicit_context is None:
+            positions, context, captured = self._capture(plan, inputs, identity)
+        else:
+            context, captured = capture_local_context(plan, explicit_context)
+            positions = {}
         if next(partition_local_inputs(inputs, plan.recipe.policy), None) is None:
             return ArtifactResult(
                 artifacts={spec.role: [] for spec in plan.recipe.outputs},
@@ -101,11 +105,14 @@ class ExecutorRuntime:
         for address, artifact in captured.items():
             graph.add_context_input(address, artifact)
         graph.validate_boundary_context(context)
+        if root is None and _requires_files(plan):
+            msg = "Operation commands or materialization require work_dir"
+            raise ValueError(msg)
         adapter = self._software(plan, inventory, root)
         execution = execute_local_plan(
             plan,
             inputs,
-            executor,
+            invoke,
             invocation_id=identity,
             execute_adapter=adapter,
             context_artifacts=captured,
@@ -116,7 +123,8 @@ class ExecutorRuntime:
             for role, values in inputs.items()
             for index, artifact in enumerate(values)
         }
-        self._remember(execution, positions, {**boundary, **captured})
+        if explicit_context is None:
+            self._remember(execution, positions, {**boundary, **captured})
         return execution.result
 
     def _source(
@@ -143,7 +151,7 @@ class ExecutorRuntime:
         positions = {}
         supplied = {}
         captures = []
-        requested = _boundary_queries(plan)
+        requested = boundary_queries(plan)
         for role, values in inputs.items():
             for index, artifact in enumerate(values):
                 address = OccurrenceAddress(
@@ -299,12 +307,17 @@ class ExecutorRuntime:
                 occurrences.add(canonical[address])
 
     def _software(
-        self, plan: CompiledPlan, inventory: Sequence[Artifact], root: Path
+        self, plan: CompiledPlan, inventory: Sequence[Artifact], root: Path | None
     ) -> ExecuteAdapter:
+        selections = select_tool_environments(plan)
+        if not selections:
+            return lambda _operation, _path: LocalExecuteRouter()
+        assert root is not None
+        from artisan.execution.local_software import local_software
+
+        software = local_software()
         worker = observe_current_worker(TRANSPORT_PACKAGES)
-        separate = any(
-            item.declaration is not None for item in select_tool_environments(plan)
-        )
+        separate = any(item.declaration is not None for item in selections)
         docker = None
         apptainer = None
         if separate and self.tool_backend != "pixi":
@@ -330,9 +343,9 @@ class ExecutorRuntime:
         bindings = bind_local_software(
             plan,
             worker,
-            cache_root=self.cache_root,
-            pixi=Path.home() / ".pixi/bin/pixi",
-            system_env=Path("/usr/bin/env"),
+            cache_root=self.cache_root or software.cache_root,
+            pixi=software.pixi,
+            system_env=software.system_env,
             tool_backend=self.tool_backend,
             docker=docker,
             apptainer=apptainer,
@@ -343,8 +356,16 @@ class ExecutorRuntime:
             for path in (root, *files):
                 validate_container_bind_path(path, bindings.container_runtime)
         return lambda operation, path: bindings.adapter(
-            operation, path, runtime_env={}, input_files=files
+            operation, path, runtime_env=software.runtime_env, input_files=files
         )
+
+
+def _requires_files(plan: CompiledPlan) -> bool:
+    if plan.recipe.definition.kind != "creator":
+        return any(_requires_files(call.plan) for call in plan.calls)
+    return plan.recipe.execution.mode != "native" or any(
+        spec.materialize or spec.resolve_references for spec in plan.recipe.inputs
+    )
 
 
 def _validate_local_carriers(artifacts: Sequence[Artifact]) -> None:
@@ -356,43 +377,3 @@ def _validate_local_carriers(artifacts: Sequence[Artifact]) -> None:
                 msg = "Standalone inputs require available local artifact carriers"
                 raise ValueError(msg)
             artifact.verify_external_content(fs=LocalFileSystem())
-
-
-def _boundary_queries(plan: CompiledPlan) -> dict[str, set[str]]:
-    """Follow only static boundary wiring; produced values get graph-local queries."""
-    queries: dict[str, set[str]] = {}
-
-    def visit(
-        node: CompiledPlan, origins: Mapping[str, set[str]]
-    ) -> dict[str, set[str]]:
-        for spec in node.recipe.inputs:
-            for role in origins.get(spec.role, ()):
-                queries.setdefault(role, set()).update(spec.with_associated)
-        calls: dict[str, dict[str, set[str]]] = {}
-        for compiled, recorded in zip(node.calls, node.recipe.calls, strict=True):
-            child = {
-                binding.role: set().union(
-                    *(
-                        origins.get(source.role, set())
-                        if source.call is None
-                        else calls[source.call].get(source.role, set())
-                        for source in binding.sources
-                    )
-                )
-                for binding in recorded.inputs
-            }
-            calls[compiled.name] = visit(compiled.plan, child)
-        return {
-            binding.role: set().union(
-                *(
-                    origins.get(source.role, set())
-                    if source.call is None
-                    else calls[source.call].get(source.role, set())
-                    for source in binding.sources
-                )
-            )
-            for binding in node.recipe.exports
-        }
-
-    visit(plan, {spec.role: {spec.role} for spec in plan.recipe.inputs})
-    return queries

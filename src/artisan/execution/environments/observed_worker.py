@@ -21,6 +21,7 @@ from artisan.execution.environments.native_gpu import (
     native_gpu_command,
     native_gpu_environment,
 )
+from artisan.execution.local_software import LOCAL_SOFTWARE_ENV, LocalSoftware
 from artisan.execution.runtime_compatibility import (
     capture_runtime_compatibility,
     verify_runtime_compatibility,
@@ -111,7 +112,11 @@ def observe_current_worker(names: Sequence[str]) -> ObservedWorker:
         Path(sys.base_prefix),
         _file_digest(executable),
         capture_runtime_compatibility(names),
-        strip_internal_attachment(os.environ),
+        {
+            key: value
+            for key, value in strip_internal_attachment(os.environ).items()
+            if key != LOCAL_SOFTWARE_ENV
+        },
     )
     worker.verify()
     return worker
@@ -153,6 +158,7 @@ class ObservedCommandEnvironment:
     env: Mapping[str, str] = field(default_factory=dict)
     witness: WitnessInvocation | None = None
     gpu: NativeGPUAllocation | None = None
+    local_software: LocalSoftware | None = None
     cancellation_scope: ClassVar[Literal["process_group"]] = "process_group"
     public_env: ClassVar[tuple[str, ...]] = ()
 
@@ -202,6 +208,7 @@ class ObservedCommandEnvironment:
             "TMPDIR": str(temporary),
             **self.env,
             **native_gpu_environment(self.gpu, self.env),
+            **(self.local_software.environment() if self.local_software else {}),
         }
 
 

@@ -18,7 +18,7 @@ class LocalExecuteRouter(ExecuteRouter):
         self,
         operation: OperationDefinition,
         execute_inputs: list[ExecuteInput],
-        sandbox_root: str,
+        sandbox_root: str | None,
     ) -> list[Any]:
         if operation.is_command_op():
             msg = "Command execution requires a selected prepared software adapter"
