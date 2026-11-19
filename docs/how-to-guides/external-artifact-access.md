@@ -101,6 +101,33 @@ the tool package. Use `ExternalFilesArtifact.draft(...)` for generic bundles or
 A checkpoint change changes the artifact identity. A different physical location
 for the same descriptor does not.
 
+When a trusted manifest already supplies SHA256 hashes and sizes, declare them
+directly. Constructing a descriptor reads no payload bytes and does not download
+the files. Explicit preparation later verifies the declared algorithm against the
+existing installation. The algorithm is part of the descriptor identity; Artisan's
+ordinary artifact-ID hashing is unchanged.
+
+```python
+from artisan.schemas.external_artifacts import ExternalFile, ExternalFilesDescriptor
+
+# Example manifest for an existing three-byte file containing b"abc".
+descriptor = ExternalFilesDescriptor(
+    files=(
+        ExternalFile(
+            path="reference.bin",
+            hash_algorithm="sha256",
+            content_hash="ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+            size_bytes=3,
+        ),
+    )
+)
+assert descriptor.files[0].hash_algorithm == "sha256"
+```
+
+Descriptors also support `xxh3_128`, the default for existing Artisan-generated
+inventories. Keep a tool preset's trusted digest declaration consistent; two
+algorithms produce distinct descriptors even when they describe the same bytes.
+
 ## Use a retained pipeline
 
 External artifact types are optional. Import `artisan.schemas.external_artifacts`

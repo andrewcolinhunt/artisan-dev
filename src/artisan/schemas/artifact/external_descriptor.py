@@ -16,13 +16,27 @@ EXTERNAL_FILES_RECEIPT = ".artisan-external-files.json"
 
 
 class ExternalFile(BaseModel):
-    """One regular file in a closed external installation."""
+    """One regular file identified by its declared content-hash algorithm.
+
+    SHA256 manifests can be used directly without reading the installation.
+    The algorithm is part of descriptor identity and explicit preparation
+    verifies the corresponding digest.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     path: str
-    content_hash: str = Field(pattern=r"^[0-9a-f]{32}$")
+    content_hash: str = Field(pattern=r"^[0-9a-f]+$")
+    hash_algorithm: Literal["xxh3_128", "sha256"] = "xxh3_128"
     size_bytes: int = Field(ge=0, strict=True)
+
+    @model_validator(mode="after")
+    def _hash_length(self) -> Self:
+        expected_length = 32 if self.hash_algorithm == "xxh3_128" else 64
+        if len(self.content_hash) != expected_length:
+            msg = f"External content hash requires {expected_length} hexadecimal characters"
+            raise ValueError(msg)
+        return self
 
     @field_validator("path")
     @classmethod

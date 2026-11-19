@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 import os
 import stat
 import tempfile
 from collections.abc import Sequence
 from pathlib import Path, PurePosixPath
+from typing import BinaryIO, Literal
 
 from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.external_descriptor import (
@@ -17,7 +19,7 @@ from artisan.schemas.artifact.external_descriptor import (
     expected_receipt_bytes,
     expected_receipt_digest,
 )
-from artisan.utils.hashing import compute_stream_digest
+from artisan.utils.hashing import STREAM_CHUNK_BYTES, compute_stream_digest
 
 __all__ = [
     "PreparedExternalFiles",
@@ -50,7 +52,7 @@ def prepare_external_files(
     _verify_layout(root, descriptor)
     for member in descriptor.files:
         with (root / member.path).open("rb") as stream:
-            actual = compute_stream_digest(stream)
+            actual = _external_stream_digest(stream, member.hash_algorithm)
         if actual != (member.content_hash, member.size_bytes):
             msg = f"External file content differs from descriptor: {member.path}"
             raise ArtifactIntegrityError(msg)
@@ -60,6 +62,19 @@ def prepare_external_files(
         descriptor=descriptor,
         receipt_digest=expected_receipt_digest(descriptor),
     )
+
+
+def _external_stream_digest(
+    stream: BinaryIO, algorithm: Literal["xxh3_128", "sha256"]
+) -> tuple[str, int]:
+    if algorithm == "xxh3_128":
+        return compute_stream_digest(stream)
+    digest = hashlib.sha256()
+    size_bytes = 0
+    while chunk := stream.read(STREAM_CHUNK_BYTES):
+        digest.update(chunk)
+        size_bytes += len(chunk)
+    return digest.hexdigest(), size_bytes
 
 
 def verify_prepared_external_files(
