@@ -105,6 +105,8 @@ def verify_wheel_installation(wheels: tuple[Path, ...], *, interpreter: Path) ->
             [
                 str(interpreter),
                 "-I",
+                # Isolated mode ignores PYTHONDONTWRITEBYTECODE, including at startup.
+                "-B",
                 "-c",
                 "import sysconfig; print(sysconfig.get_path('purelib'))",
             ],
