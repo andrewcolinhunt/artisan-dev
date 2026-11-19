@@ -7,6 +7,8 @@ import csv
 import hashlib
 import io
 import json
+import sysconfig
+import venv
 from pathlib import Path
 from unittest.mock import patch
 from zipfile import ZipFile
@@ -149,3 +151,60 @@ def test_installed_wheel_checks_actual_payload_membership_wrapper_and_editabilit
         else:
             with pytest.raises(ValueError, match="differs|does not bind|noneditably"):
                 verify_wheel_installation((wheel,), interpreter=interpreter)
+
+
+@pytest.mark.parametrize("change", [None, "changed", "missing"])
+def test_installed_wheel_verification_preserves_cold_prefix(
+    tmp_path: Path, change: str | None
+) -> None:
+    prefix = tmp_path / "prefix"
+    venv.EnvBuilder(with_pip=False, symlinks=True).create(prefix)
+    interpreter = prefix / "bin/python"
+    site = Path(
+        sysconfig.get_path(
+            "purelib", vars={"base": str(prefix), "platbase": str(prefix)}
+        )
+    )
+    wheel = _wheel(tmp_path / "probe.whl")
+    for name, content in wheel_contents(wheel).items():
+        path = site / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(content)
+    (site / "probe-0.1.0.dist-info/direct_url.json").write_text("{}")
+    wrapper = interpreter.parent / "ProbeCLI"
+    wrapper.write_text(f"#!{interpreter}\nfrom probe import main\nmain()\n")
+    wrapper.chmod(0o755)
+    marker = tmp_path / "startup-ran"
+    (site / "_startup_probe.py").write_text(
+        f"with open({str(marker)!r}, 'w') as stream:\n    stream.write('started')\n"
+    )
+    (site / "startup.pth").write_text("import _startup_probe\n")
+    payload = site / "probe/__init__.py"
+    if change == "changed":
+        payload.write_text("changed")
+    elif change == "missing":
+        payload.unlink()
+    assert not list(prefix.rglob("__pycache__"))
+    before = _prefix_entries(prefix)
+
+    if change is None:
+        verify_wheel_installation((wheel,), interpreter=interpreter)
+    else:
+        with pytest.raises(ValueError, match="Installed wheel payload differs"):
+            verify_wheel_installation((wheel,), interpreter=interpreter)
+
+    assert marker.read_text() == "started"
+    assert _prefix_entries(prefix) == before
+    assert not list(prefix.rglob("__pycache__"))
+
+
+def _prefix_entries(prefix: Path) -> dict[str, tuple[int, int, int]]:
+    return {
+        path.relative_to(prefix).as_posix(): (
+            entry.st_mode,
+            entry.st_size,
+            entry.st_mtime_ns,
+        )
+        for path in prefix.rglob("*")
+        for entry in (path.lstat(),)
+    }
