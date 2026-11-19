@@ -35,7 +35,8 @@ repos:
           (?x)^(
             docs/tutorials/[^/]+/runs/|
             tests/qualification/environments/source/assets/factor\.json$|
-            tests/qualification/environments/source/runtime/config\.json$
+            tests/qualification/environments/source/runtime/config\.json$|
+            tests/fixtures/recipes/generator(-behavior)?-v1\.json$
           )
       - id: mixed-line-ending # Replaces or checks mixed line ending.
       - id: name-tests-test # verifies that test files are named correctly.
@@ -66,7 +67,8 @@ repos:
           (?x)^(
             recipe/meta\.yaml$|
             tests/qualification/environments/source/assets/factor\.json$|
-            tests/qualification/environments/source/runtime/config\.json$
+            tests/qualification/environments/source/runtime/config\.json$|
+            tests/fixtures/recipes/generator(-behavior)?-v1\.json$
           )
 
   - repo: https://github.com/astral-sh/ruff-pre-commit

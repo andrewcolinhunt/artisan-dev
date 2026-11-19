@@ -1209,9 +1209,13 @@ def test_cacheable_is_class_only_and_bound_into_resolved_recipe(
 
 
 @pytest.mark.parametrize("length", [2, 3])
-def test_indirect_output_lineage_cycles_rejected(length: int) -> None:
+@pytest.mark.parametrize("optional", [False, True])
+def test_indirect_output_lineage_cycles_rejected(length: int, optional: bool) -> None:
     specs = {
-        f"role{i}": OutputSpec(derives_from={"outputs": [f"role{(i + 1) % length}"]})
+        f"role{i}": OutputSpec(
+            derives_from={"outputs": [f"role{(i + 1) % length}"]},
+            optional_parent_roles=(f"role{(i + 1) % length}",) if optional else (),
+        )
         for i in range(length)
     }
     with pytest.raises(TypeError, match="cycle in output lineage"):

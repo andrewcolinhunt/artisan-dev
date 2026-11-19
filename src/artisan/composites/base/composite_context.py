@@ -97,6 +97,12 @@ class CompositeContext:
         recipe = ExecutionRecipe.model_validate(
             {
                 **self._recipe.model_dump(),
+                "schema_version": max(
+                    self._recipe.recipe_version,
+                    *(call.recipe.schema_version for call in self._wiring),
+                )
+                if self._wiring
+                else self._recipe.recipe_version,
                 "calls": tuple(self._wiring),
                 "exports": tuple(
                     self._exports[item.role] for item in self._recipe.outputs

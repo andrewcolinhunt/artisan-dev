@@ -18,6 +18,7 @@ from artisan.orchestration.runner_api import (
     CommandOwnershipError,
     InertCallResult,
     OwnershipState,
+    WorkerOwner,
 )
 from artisan_modal.diagnostics import CallObservation, CallPhase, redacted_message
 from artisan_modal.pack_control import (
@@ -474,3 +475,25 @@ class ModalPackOwner:
         """Return redacted phase evidence independently of the result future."""
         with self._lock:
             return tuple(self._observations)
+
+
+def modal_owner_observations(owner: WorkerOwner) -> tuple[CallObservation, ...]:
+    """Read a Modal owner's bounded diagnostic snapshot without polling or waiting.
+
+    Observations do not establish cleanup. Check the owner's ownership_state()
+    separately; only CLOSED confirms that its required cleanup has finished.
+
+    Args:
+        owner: The worker owner returned by the Modal runner.
+
+    Returns:
+        Up to 64 frozen, redacted observations in their recorded order. Later
+        observations do not change a previously returned tuple.
+
+    Raises:
+        TypeError: If the owner is not a Modal worker owner.
+    """
+    if not isinstance(owner, ModalPackOwner):
+        msg = "Expected a Modal worker owner"
+        raise TypeError(msg)
+    return owner.observations
