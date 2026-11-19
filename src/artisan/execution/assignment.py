@@ -18,6 +18,7 @@ from artisan.execution.composition import (
 from artisan.execution.compute.prepared import freeze_runtime_injections
 from artisan.execution.exceptions import AssignmentExecutionError
 from artisan.execution.executor import Executor
+from artisan.execution.external_access import verify_external_access
 from artisan.execution.recording.delivery_diagnostics import (
     capture_delivery_diagnostics,
 )
@@ -31,6 +32,7 @@ from artisan.schemas.execution.assignment import (
     SuccessfulDelivery,
 )
 from artisan.schemas.execution.delivery_diagnostics import DeliveryDiagnostics
+from artisan.schemas.execution.external_access import ExternalAccessRecord
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.execution.worker_transport import RuntimeCompatibility
 from artisan.schemas.provenance.occurrence import OccurrenceAddress
@@ -83,6 +85,7 @@ class Assignment:
     )
     input_attribution: tuple[BoundaryInputAttribution, ...] = ()
     step_number: int | None = None
+    external_access: ExternalAccessRecord | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -130,6 +133,15 @@ def execute_assignment(
     delivery = DeliveryIdentity.new(assignment.attempt)
     runtime_env = freeze_runtime_injections(runtime_env)
     verify_assignment(assignment, bindings)
+    verify_external_access(
+        assignment.attempt,
+        (
+            *(artifact for values in assignment.inputs.values() for artifact in values),
+            *assignment.context_artifacts.values(),
+        ),
+        assignment.external_access,
+        bindings,
+    )
     adapter = bindings.create_adapter(
         assignment, working_root=working_root, runtime_env=runtime_env
     )

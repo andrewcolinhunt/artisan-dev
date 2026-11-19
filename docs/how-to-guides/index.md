@@ -22,6 +22,8 @@ Build operations, configure pipelines, and work with results.
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and runner configuration
+- [Use External Artifacts Without Copying Their Files](external-artifact-access.md) --
+  Bind prepared weights or reference bundles and inspect explicit model defaults
 - [Run Remote Workers](running-remote-workers.md) -- Deploy command operations
   and configure object-store input/output delivery
 - [Debug a Recorded Execution](debugging-executions.md) -- Replay one unit and

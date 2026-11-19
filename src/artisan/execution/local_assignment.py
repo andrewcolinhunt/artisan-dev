@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from collections.abc import Mapping, Sequence
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Literal
 
@@ -50,16 +50,19 @@ from artisan.execution.environments.prepared_sif import (
 )
 from artisan.execution.environments.requirements import select_tool_environments
 from artisan.execution.executor import Executor
+from artisan.execution.external_access import freeze_external_files
 from artisan.execution.local_profile import LocalLauncherIdentity, LocalWorkerProfile
 from artisan.execution.local_software import LocalSoftware
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.command_witness import PreparedCommandWitness
 from artisan.schemas.execution.container_environment import (
     ContainerLauncherIdentity,
     PreparedOCIEnvironment,
     PreparedSIFEnvironment,
 )
+from artisan.schemas.execution.external_access import ExternalAccessMount
 from artisan.schemas.execution.gpu import GPUDriverIdentity, NativeGPUAllocation
 from artisan.schemas.execution.prepared_environment import PreparedNativeEnvironment
 from artisan.schemas.execution.worker_transport import RuntimeCompatibility
@@ -98,8 +101,12 @@ class PreparedLocalBindings:
     native_gpu: NativeGPUAllocation | None = None
     application_modules: tuple[str, ...] = ()
     cache_root: Path | None = None
+    external_files: Mapping[str, PreparedExternalFiles] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "external_files", freeze_external_files(self.external_files)
+        )
         object.__setattr__(
             self,
             "application_modules",
@@ -136,6 +143,16 @@ class PreparedLocalBindings:
         ):
             msg = "Allocated container GPUs require qualified driver evidence"
             raise ValueError(msg)
+
+    @property
+    def external_provider(self) -> Literal["local"]:
+        """Identify local placement without adding it to software cache identity."""
+        return "local"
+
+    @property
+    def external_mounts(self) -> tuple[ExternalAccessMount, ...]:
+        """Local installations require no separately named provider volumes."""
+        return ()
 
     @property
     def software_cacheable(self) -> bool:
@@ -304,25 +321,32 @@ class PreparedLocalBindings:
         """Validate local carriers/binds once and freeze this assignment's routing."""
         if self.native_gpu is not None:
             verify_native_gpu_loader(self.native_gpu)
-        input_files = (
-            container_input_files(
-                (
-                    *[
-                        artifact
-                        for values in assignment.inputs.values()
-                        for artifact in values
-                    ],
-                    *assignment.context_artifacts.values(),
-                )
-            )
-            if self.container_runtime is not None
-            else ()
+        inventory = (
+            *(artifact for values in assignment.inputs.values() for artifact in values),
+            *assignment.context_artifacts.values(),
         )
+        input_files: tuple[Path, ...] = ()
+        external_files: tuple[PreparedExternalFiles, ...] = ()
         if self.container_runtime is not None:
-            for path in (working_root, *input_files):
+            input_files = container_input_files(inventory)
+            external_files = container_external_files(inventory, self.external_files)
+            if external_files and not isinstance(self.container_runtime, DockerRuntime):
+                msg = (
+                    "External artifact mounts are supported only by the Docker backend"
+                )
+                raise ValueError(msg)
+            for path in (
+                working_root,
+                *input_files,
+                *(item.root for item in external_files),
+            ):
                 validate_container_bind_path(path, self.container_runtime)
         return lambda operation, path: self.adapter(
-            operation, path, runtime_env=runtime_env, input_files=input_files
+            operation,
+            path,
+            runtime_env=runtime_env,
+            input_files=input_files,
+            external_files=external_files,
         )
 
     def adapter(
@@ -332,6 +356,7 @@ class PreparedLocalBindings:
         *,
         runtime_env: Mapping[str, str],
         input_files: tuple[Path, ...] = (),
+        external_files: tuple[PreparedExternalFiles, ...] = (),
     ) -> PreparedExecuteRouter:
         """Select the admitted call binding without rereading environment defaults."""
         target: (
@@ -388,6 +413,7 @@ class PreparedLocalBindings:
                     runtime_env,
                     input_files,
                     witness,
+                    external_files,
                 ),
                 witness=self.command_witness,
             )
@@ -467,6 +493,7 @@ def bind_local_software(
     apptainer: ApptainerRuntime | None = None,
     native_gpu: NativeGPUAllocation | None = None,
     application_modules: tuple[str, ...] = (),
+    external_files: Mapping[str, PreparedExternalFiles] | None = None,
 ) -> PreparedLocalBindings:
     """Resolve the complete selected command software before cache or dispatch."""
     resolved: dict[
@@ -527,6 +554,7 @@ def bind_local_software(
         native_gpu,
         application_modules,
         cache_root,
+        freeze_external_files(external_files),
     )
     bindings.verify(plan)
     return bindings
@@ -563,6 +591,32 @@ def container_input_files(artifacts: Sequence[Artifact]) -> tuple[Path, ...]:
                 raise ValueError(msg)
             files.add(path)
     return tuple(sorted(files))
+
+
+def container_external_files(
+    artifacts: Sequence[Artifact],
+    configured: Mapping[str, PreparedExternalFiles],
+) -> tuple[PreparedExternalFiles, ...]:
+    """Select only admitted external roots, including captured context inputs."""
+    roots: dict[Path, PreparedExternalFiles] = {}
+    for artifact in artifacts:
+        if not artifact.EXTERNAL_REFERENCE:
+            continue
+        artifact.finalize()
+        assert artifact.artifact_id is not None
+        prepared = configured.get(artifact.artifact_id)
+        if (
+            prepared is None
+            or prepared.descriptor != artifact.external_descriptor()
+            or prepared.root != artifact.external_root
+        ):
+            msg = "Container external access differs from the admitted artifact binding"
+            raise ValueError(msg)
+        previous = roots.setdefault(prepared.root, prepared)
+        if previous != prepared:
+            msg = "One external root has conflicting prepared descriptors"
+            raise ValueError(msg)
+    return tuple(roots[root] for root in sorted(roots))
 
 
 def _command_paths(

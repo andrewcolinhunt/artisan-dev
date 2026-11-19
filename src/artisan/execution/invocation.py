@@ -17,6 +17,7 @@ from artisan.execution.exceptions import AssignmentExecutionError
 from artisan.execution.inputs.materialization import (
     materialize_captured_inputs,
     materialize_captured_references,
+    requires_materialization,
 )
 from artisan.execution.lineage.validation import (
     validate_artifacts_match_specs,
@@ -153,18 +154,16 @@ def prepare_invocation(
         raise ValueError(msg)
     _validate_operation_outputs(type(operation))
     _validate_captured_context(operation, context)
-    if paths.materialized is None and any(
-        spec.materialize or spec.resolve_references
-        for spec in operation.inputs.values()
-    ):
-        msg = "Operation materialization requires work_dir"
-        raise ValueError(msg)
     references = dict(materialization_references)
     for (role, index), captured in context.references.items():
         config_id = context.artifacts[role][index].artifact_id
         assert config_id is not None
         references[config_id] = captured
     artifacts = {role: list(values) for role, values in context.artifacts.items()}
+    needs_files = requires_materialization(artifacts, operation.inputs, references)
+    if paths.materialized is None and needs_files:
+        msg = "Operation materialization requires work_dir"
+        raise ValueError(msg)
     if any(artifact.is_draft for values in artifacts.values() for artifact in values):
         msg = "Invocation inputs must be finalized artifacts"
         raise ValueError(msg)
@@ -192,9 +191,10 @@ def prepare_invocation(
                 config_id = context.artifacts[role][index].artifact_id
                 assert config_id is not None
                 for artifact_id, artifact in captured.items():
-                    artifact.materialized_path = typed_references[config_id][
-                        artifact_id
-                    ].materialized_path
+                    if not artifact.EXTERNAL_REFERENCE:
+                        artifact.materialized_path = typed_references[config_id][
+                            artifact_id
+                        ].materialized_path
     prepared.timings["setup"] += setup_elapsed
     with phase_timer("preprocess", prepared.timings), scientific_phase("preprocess"):
         values = operation.preprocess(

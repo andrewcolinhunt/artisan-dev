@@ -43,6 +43,7 @@ from artisan.execution.environments.worker_qualification import (
     controller_definition_sources,
     controller_worker_sources,
 )
+from artisan.execution.external_access import freeze_external_files
 from artisan.execution.inert_worker import (
     InertCallControl,
     InertCallResult,
@@ -75,6 +76,7 @@ from artisan.orchestration.runners.assignment import (
 )
 from artisan.orchestration.runners.curator import CuratorHandle, CuratorLaunchError
 from artisan.orchestration.runners.local import LocalRunner
+from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.assignment import AssignmentAttempt, SealedDelivery
 from artisan.schemas.execution.command_witness import PreparedCommandWitness
 from artisan.schemas.execution.container_environment import (
@@ -82,6 +84,7 @@ from artisan.schemas.execution.container_environment import (
     PreparedSIFEnvironment,
 )
 from artisan.schemas.execution.curator_admission import CuratorAdmissionReference
+from artisan.schemas.execution.external_access import ExternalAccessMount
 from artisan.schemas.execution.gpu import NativeGPUAllocation, NativeGPUSoftware
 from artisan.schemas.execution.prepared_environment import (
     DerivedWheel,
@@ -134,6 +137,7 @@ __all__ = [
     "Environment",
     "EnvironmentSource",
     "ExecuteAdapter",
+    "ExternalAccessMount",
     "InertCallControl",
     "InertCallResult",
     "InertWorkerCall",
@@ -149,6 +153,7 @@ __all__ = [
     "PreparedAssignmentSoftware",
     "PreparedCommandWitness",
     "PreparedCuratorSoftware",
+    "PreparedExternalFiles",
     "PreparedLocalBindings",
     "PreparedNativeEnvironment",
     "PreparedSIFEnvironment",
@@ -170,6 +175,7 @@ __all__ = [
     "execute_admitted_assignment",
     "execute_admitted_curator",
     "execute_inert_call",
+    "freeze_external_files",
     "launch_inert_calls",
     "merge_runner_resources",
     "observed_controller_sources",

@@ -181,6 +181,7 @@ class TestMaterializeAsForwarded:
         artifact.is_hydrated = True
         artifact.artifact_id = "a" * 32
         artifact.EXTERNALLY_BACKED = False
+        artifact.EXTERNAL_REFERENCE = False
         artifact.materialize_to.return_value = str(tmp_path / "out.csv")
 
         specs = {"data": InputSpec(materialize=True, materialize_as=".csv")}
@@ -201,6 +202,7 @@ class TestMaterializeAsForwarded:
         artifact.is_hydrated = True
         artifact.artifact_id = "b" * 32
         artifact.EXTERNALLY_BACKED = False
+        artifact.EXTERNAL_REFERENCE = False
         artifact.materialize_to.return_value = str(tmp_path / "out.json")
 
         specs = {"metric": InputSpec(materialize=True)}
@@ -227,6 +229,7 @@ class TestMaterializeAsForwarded:
         ref_artifact.is_hydrated = True
         ref_artifact.artifact_id = "c" * 32
         ref_artifact.EXTERNALLY_BACKED = False
+        ref_artifact.EXTERNAL_REFERENCE = False
         ref_artifact.materialize_to.return_value = str(tmp_path / "ref.dat")
 
         mock_store = MagicMock()

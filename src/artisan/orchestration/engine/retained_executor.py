@@ -20,6 +20,7 @@ from artisan.execution.assignment_transport import (
     AssignmentDispatch,
 )
 from artisan.execution.exceptions import AssignmentExecutionError
+from artisan.execution.external_access import capture_external_access
 from artisan.execution.recording.commands import CommandRecorder
 from artisan.execution.recording.retained_replay import (
     record_replay_diagnostic,
@@ -765,6 +766,9 @@ def _publish_assignment(
         fs=committer.fs,
         artifact_fs=committer.fs,
         verify_producer=committer._verify_producer,
+        external_access=capture_external_access(
+            attempt, prepared.artifacts.values(), software
+        ),
     )
     committer.journal.admit(attempt, admission_digest=reference.record_digest)
     return reference
