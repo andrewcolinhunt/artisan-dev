@@ -213,6 +213,46 @@ class ProvenanceStore:
     # -------------------------------------------------------------------------
 
     @with_read_scope
+    def load_direct_edges_df(
+        self,
+        target_artifact_ids: set[str] | list[str],
+        *,
+        include_roles: bool = False,
+        execution_ids: set[str] | list[str] | None = None,
+    ) -> pl.DataFrame:
+        """Read direct retained relations for explicit target content IDs.
+
+        This uses the same visible ordinary graph as get_direct_ancestors,
+        including parents without an origin step. Target IDs alone do not
+        select one execution or the current attempt of a pipeline run.
+
+        Args:
+            target_artifact_ids: Target content IDs. Repeated IDs do not repeat
+                rows; an empty selection returns an empty frame.
+            include_roles: Include source_role, target_role, and group_id.
+            execution_ids: Restrict to these executions when supplied. Obtain
+                current-run IDs from authoritative membership; None includes
+                all visible ordinary executions, and an empty set matches none.
+
+        Returns:
+            String columns source_artifact_id and target_artifact_id, followed
+            by the optional role columns. Empty results retain the same schema.
+            Rows retain relation multiplicity across roles and executions; row
+            order is unspecified. Diagnostic replay relations are excluded.
+        """
+        columns = ["source_artifact_id", "target_artifact_id"]
+        if include_roles:
+            columns.extend(["source_role", "target_role", "group_id"])
+        if not target_artifact_ids or (execution_ids is not None and not execution_ids):
+            return pl.DataFrame(schema=dict.fromkeys(columns, pl.String))
+        edges = self._scan(TablePath.ARTIFACT_EDGES, direct=True).filter(
+            pl.col("target_artifact_id").is_in(target_artifact_ids)
+        )
+        if execution_ids is not None:
+            edges = edges.filter(pl.col("execution_run_id").is_in(execution_ids))
+        return edges.select(columns).collect()
+
+    @with_read_scope
     def get_direct_ancestors(self, artifact_id: str) -> list[str]:
         """Return direct ancestor (source) artifact IDs.
 
