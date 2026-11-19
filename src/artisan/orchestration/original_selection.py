@@ -8,7 +8,7 @@ from artisan.errors import StoreIntegrityError
 from artisan.orchestration.engine.retained_step_tracker import RetainedStepTracker
 from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.composites.plan import ExecutionRecipe
-from artisan.schemas.execution.admission import AdmissionRecord, AdmissionReference
+from artisan.schemas.execution.admission import AdmissionReference, AnyAdmissionRecord
 from artisan.schemas.execution.step_admission import StepAdmission
 from artisan.schemas.orchestration.step_lifecycle import TERMINAL_STEP_STATUSES
 from artisan.storage.cache.retained_identity import _input_semantics
@@ -70,7 +70,7 @@ def _resolve_original_selection(
     seen = set()
     steps = []
     references = []
-    previous: AdmissionRecord | None = None
+    previous: AnyAdmissionRecord | None = None
     tracker = RetainedStepTracker(snapshot.committer, "")
     while execution_run_id not in seen:
         seen.add(execution_run_id)
@@ -102,7 +102,7 @@ def _verified_step(
     tracker: RetainedStepTracker,
     source: _ScientificSource,
     reference: AdmissionReference,
-) -> tuple[StepAdmission, tuple[AdmissionRecord, ...]]:
+) -> tuple[StepAdmission, tuple[AnyAdmissionRecord, ...]]:
     identity = reference.attempt.assignment
     _, state = tracker._read_state(identity.step_run_id, snapshot)
     step = tracker._admission_for(state)
@@ -144,7 +144,7 @@ def _source_reference(source: _ScientificSource) -> AdmissionReference:
     )
 
 
-def _require_same_inputs(first: AdmissionRecord, second: AdmissionRecord) -> None:
+def _require_same_inputs(first: AnyAdmissionRecord, second: AnyAdmissionRecord) -> None:
     if _input_semantics(first.boundary) != _input_semantics(second.boundary):
         msg = "Replay source chain changed exact admitted input semantics"
         raise StoreIntegrityError(msg)
@@ -163,7 +163,7 @@ def _require_grouping_shape(
 
 
 def _require_nonempty_inventory(
-    recipe: ExecutionRecipe, records: tuple[AdmissionRecord, ...]
+    recipe: ExecutionRecipe, records: tuple[AnyAdmissionRecord, ...]
 ) -> None:
     nonempty = {
         role
