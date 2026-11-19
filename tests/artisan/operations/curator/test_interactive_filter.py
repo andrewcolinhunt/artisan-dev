@@ -943,13 +943,29 @@ class TestCommit:
         with pytest.raises(ValueError, match="No criteria set"):
             filt.commit()
 
-    def test_commit_raises_on_empty_filtered(self, delta_root: Path) -> None:
+    def test_commit_records_empty_filtered(self, delta_root: Path) -> None:
+        from artisan.orchestration.engine.current_outputs import (
+            read_current_step_outputs,
+        )
+
         filt = InteractiveFilter(delta_root)
         filt.load()
-        # Set criteria that nothing passes
         filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 999}])
-        with pytest.raises(ValueError, match="No artifacts pass"):
-            filt.commit()
+
+        result = filt.commit()
+
+        assert result.status is StepStatus.SUCCEEDED
+        assert result.total_count == result.succeeded_count == 1
+        assert result.metadata["diagnostics"]["total_input"] == 4
+        assert result.metadata["diagnostics"]["total_passed"] == 0
+        assert result.metadata["diagnostics"]["criteria"][0]["value"] == 999
+        assert result.output("passthrough").source.step_run_id == result.step_run_id
+        outputs = read_current_step_outputs(
+            inspection_store(delta_root), result.step_run_id
+        )
+        assert len(outputs) == 1
+        assert outputs[0].role == "passthrough"
+        assert outputs[0].occurrences == ()
 
 
 # ---------------------------------------------------------------------------
