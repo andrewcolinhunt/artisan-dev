@@ -105,7 +105,7 @@ def source_entry(root: Path | Traversable, name: str) -> Path | Traversable:
 def read_environment_inputs(
     declaration: Environment, *, platform: str
 ) -> EnvironmentInputs:
-    """Read selected Pixi references and an explicit exact-file asset extension."""
+    """Read exact files for one environment and unambiguous physical subdir."""
     root = cast("Path | Traversable", getattr(declaration.manifest, "parent", None))
     if isinstance(root, Path) and root.resolve() != root:
         msg = "Environment source root must be resolved and free of symbolic links"
@@ -251,11 +251,17 @@ def _locked_local_inputs(
     if document.get("version") != 7:
         msg = "Environment preparation requires Pixi lock format 7"
         raise ValueError(msg)
+    environments = _table(document.get("environments"), "locked environments")
     try:
-        references = document["environments"][environment]["packages"][platform]
+        selected_environment = _table(environments[environment], "locked environment")
+        by_platform = _table(
+            selected_environment.get("packages"), "locked platform packages"
+        )
     except KeyError as error:
         msg = f"Lock has no {environment} environment for {platform}"
         raise ValueError(msg) from error
+    selected_platform = _locked_platform_key(document, by_platform, platform)
+    references = by_platform[selected_platform]
     selected = {reference["pypi"] for reference in references if "pypi" in reference}
     local_files, packages = [], []
     for record in document.get("packages", []):
@@ -296,6 +302,52 @@ def _locked_local_inputs(
     return tuple(sorted(set(local_files))), tuple(
         sorted(packages, key=lambda item: item.root)
     )
+
+
+def _locked_platform_key(
+    document: dict[str, Any], packages: dict[str, Any], requested: str
+) -> str:
+    """Select one locked platform without ranking host virtual-package variants."""
+    if "platforms" not in document:
+        # Keep exact-key capture for plain locks without a descriptor table.
+        candidates = [requested] if requested in packages else []
+    else:
+        subdirs = _locked_platform_subdirs(document["platforms"])
+        if packages.keys() - subdirs.keys():
+            msg = "Locked environment references unknown platform descriptor names"
+            raise ValueError(msg)
+        # Preparation requests an OS/architecture subdir, not a variant name.
+        # A bare-name entry has no priority over another matching rich entry.
+        candidates = [name for name in packages if subdirs[name] == requested]
+    if len(candidates) != 1:
+        msg = f"Lock requires exactly one platform for {requested!r} in the selected environment; found {candidates}"
+        raise ValueError(msg)
+    return candidates[0]
+
+
+def _locked_platform_subdirs(value: object) -> dict[str, str]:
+    """Validate the format-7 platform names used by environment package maps."""
+    if not isinstance(value, list):
+        msg = "Expected a list of locked platform descriptors"
+        raise ValueError(msg)
+    subdirs: dict[str, str] = {}
+    for entry in value:
+        descriptor = _table(entry, "locked platform descriptor")
+        name = descriptor.get("name")
+        subdir = descriptor.get("subdir", name)
+        if (
+            not isinstance(name, str)
+            or not name
+            or not isinstance(subdir, str)
+            or not subdir
+        ):
+            msg = "Locked platform descriptors require nonempty name and subdir strings"
+            raise ValueError(msg)
+        if name in subdirs:
+            msg = "Locked platform descriptors contain duplicate names"
+            raise ValueError(msg)
+        subdirs[name] = subdir
+    return subdirs
 
 
 def _validate_unselected_metadata(
