@@ -7,6 +7,7 @@ without embedding the file bytes in Delta Lake storage.
 from __future__ import annotations
 
 import os
+from pathlib import PureWindowsPath
 from typing import Any, ClassVar
 
 import polars as pl
@@ -130,8 +131,9 @@ class FileRefArtifact(Artifact):
     def _materialize_content(self, directory: str, *, fs: Any = None) -> str:
         """Stream verified bytes into an artifact-ID subdirectory.
 
-        Preserve the source basename inside that subdirectory so distinct
-        artifacts with the same basename cannot overwrite each other.
+        Restore the original name and complete extension when a name is recorded;
+        otherwise preserve the current location's basename. Distinct artifacts
+        with the same filename remain isolated in their own subdirectories.
 
         Args:
             directory: Target directory for the output file.
@@ -141,7 +143,8 @@ class FileRefArtifact(Artifact):
             Path to the written file.
 
         Raises:
-            ValueError: If the artifact is not finalized or has no location.
+            ValueError: If the artifact is not finalized, has no location, or
+                its materialized filename is not a single ordinary filename.
         """
         if self.artifact_id is None:
             msg = "Cannot materialize: artifact not finalized (no artifact_id)"
@@ -150,9 +153,21 @@ class FileRefArtifact(Artifact):
             msg = "Cannot materialize: artifact not hydrated"
             raise ValueError(msg)
         self._assert_identity_intact()
+        filename = (
+            self.original_name + (self.extension or "")
+            if self.original_name
+            else os.path.basename(self.path)
+        )
+        if (
+            filename in {"", ".", ".."}
+            or any(char in filename for char in ("/", "\\", "\0"))
+            or PureWindowsPath(filename).drive
+        ):
+            msg = "Materialized filename must be a single ordinary filename"
+            raise ValueError(msg)
         artifact_dir = os.path.join(directory, self.artifact_id)
         os.makedirs(artifact_dir, exist_ok=True)
-        dest = os.path.join(artifact_dir, os.path.basename(self.path))
+        dest = os.path.join(artifact_dir, filename)
         copy_verified_file(
             artifact_id=self.artifact_id,
             artifact_type=self.artifact_type,
