@@ -205,6 +205,12 @@ def test_registration_retains_complete_filename_after_source_loss(
     assert artifact.original_name + artifact.extension == filename
     assert artifact.path.endswith(".bin")
     assert artifact.read_content(fs=reopened.fs) == b"x\n1\n"
+    destination = Path(
+        artifact.materialize_to(str(tmp_path / "materialized"), fs=reopened.fs)
+    )
+    assert destination.name == filename
+    assert destination.read_bytes() == b"x\n1\n"
+    assert artifact.artifact_id == plan.inputs[0].artifact_id
 
 
 @pytest.mark.parametrize(

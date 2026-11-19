@@ -18,7 +18,13 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.hashing import STREAM_CHUNK_BYTES
 
 
-def _draft_at(path: str, content: bytes = b"hello") -> FileRefArtifact:
+def _draft_at(
+    path: str,
+    content: bytes = b"hello",
+    *,
+    original_name: str | None = "x",
+    extension: str | None = "",
+) -> FileRefArtifact:
     """Create a finalized FileRefArtifact pointing at the given path."""
     from artisan.utils.hashing import compute_content_digest
 
@@ -29,8 +35,8 @@ def _draft_at(path: str, content: bytes = b"hello") -> FileRefArtifact:
             content_hash=compute_content_digest(content),
             size_bytes=len(content),
             step_number=0,
-            original_name="x",
-            extension="",
+            original_name=original_name,
+            extension=extension,
         ).finalize(),
     )
 
@@ -90,7 +96,7 @@ def test_materialize_infers_memory_filesystem(tmp_path: Path) -> None:
     fs = fsspec.filesystem("memory")
     fs.pipe(uri, b"memory-bytes")
     try:
-        artifact = _draft_at(uri, b"memory-bytes")
+        artifact = _draft_at(uri, b"memory-bytes", original_name=None)
         destination = Path(artifact.materialize_to(str(tmp_path)))
         assert destination.read_bytes() == b"memory-bytes"
         assert destination.name == "blob.bin"
@@ -142,7 +148,90 @@ def test_materialize_rejects_changed_bytes_and_removes_partial_file(
     destination = tmp_path / "destination"
     with pytest.raises(ArtifactIntegrityError):
         artifact.materialize_to(str(destination))
-    assert not list(destination.rglob("*.bin"))
+    assert not any(path.is_file() for path in destination.rglob("*"))
+
+
+@pytest.mark.parametrize(
+    ("original_name", "extension", "filename"),
+    [
+        ("result", ".cif", "result.cif"),
+        ("sample.v1", ".cif.gz", "sample.v1.cif.gz"),
+        ("README", None, "README"),
+        ("README", "", "README"),
+        (None, ".unused", "carrier.bin"),
+        ("", ".unused", "carrier.bin"),
+    ],
+)
+def test_materialize_restores_logical_filename_after_relocation(
+    tmp_path: Path,
+    original_name: str | None,
+    extension: str | None,
+    filename: str,
+) -> None:
+    source = tmp_path / "source"
+    source.write_bytes(b"retained bytes")
+    artifact = _draft_at(
+        str(source), b"retained bytes", original_name=original_name, extension=extension
+    )
+    identity = artifact.model_dump(exclude={"path", "materialized_path"})
+    carrier = source.rename(tmp_path / "carrier.bin")
+    artifact.path = str(carrier)
+
+    destination = Path(artifact.materialize_to(str(tmp_path / "materialized")))
+
+    assert destination == tmp_path / "materialized" / artifact.artifact_id / filename
+    assert destination.read_bytes() == b"retained bytes"
+    assert artifact.model_dump(exclude={"path", "materialized_path"}) == identity
+    assert artifact.materialized_path == str(destination)
+    assert artifact._cached_content is None
+
+
+def test_materialize_isolates_identical_logical_names(tmp_path: Path) -> None:
+    destinations = []
+    for index, content in enumerate((b"first", b"second")):
+        source = tmp_path / f"carrier-{index}.bin"
+        source.write_bytes(content)
+        artifact = _draft_at(
+            str(source), content, original_name="result", extension=".cif"
+        )
+        destination = Path(artifact.materialize_to(str(tmp_path / "materialized")))
+        assert destination.name == "result.cif"
+        assert destination.parent.name == artifact.artifact_id
+        destinations.append((destination, content))
+
+    assert destinations[0][0] != destinations[1][0]
+    for destination, content in destinations:
+        assert destination.read_bytes() == content
+
+
+@pytest.mark.parametrize(
+    ("original_name", "extension"),
+    [
+        ("../outside", ".cif"),
+        ("/outside", ".cif"),
+        (r"..\outside", ".cif"),
+        (r"C:\outside", ".cif"),
+        ("C:outside", ".cif"),
+        ("bad\0name", ".cif"),
+        (".", None),
+        ("..", None),
+        ("result", "/outside"),
+        ("result", r"\outside"),
+        ("result", ".cif/../../outside"),
+        ("result", "\0"),
+    ],
+)
+def test_materialize_rejects_unsafe_logical_names_before_writing(
+    tmp_path: Path, original_name: str, extension: str | None
+) -> None:
+    artifact = _draft_at(
+        str(tmp_path / "missing.bin"), original_name=original_name, extension=extension
+    )
+    destination = tmp_path / "destination"
+    with pytest.raises(ValueError, match="filename"):
+        artifact.materialize_to(str(destination))
+    assert not destination.exists()
+    assert artifact.materialized_path is None
 
 
 def test_complete_file_type_registration() -> None:
