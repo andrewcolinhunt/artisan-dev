@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import os
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Literal, cast
@@ -42,6 +42,7 @@ from artisan.execution.environments.worker_qualification import (
     lookup_worker_qualification,
     prepare_worker_qualification,
 )
+from artisan.execution.external_access import freeze_external_files
 from artisan.execution.local_assignment import (
     PreparedLocalBindings,
     bind_local_software,
@@ -65,6 +66,7 @@ from artisan.orchestration.runners.assignment import (
 )
 from artisan.orchestration.runners.curator import CuratorHandle, CuratorLaunchError
 from artisan.registry import bootstrap_applications
+from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.prepared_environment import PreparedNativeEnvironment
 from artisan.schemas.operation_config.environment import Environment
 from artisan.schemas.operation_config.runner_resources import (
@@ -99,9 +101,13 @@ class LocalRunner:
     docker: DockerRuntime | None = None
     apptainer: ApptainerRuntime | None = None
     base_image: str | None = None
+    external_files: Mapping[str, PreparedExternalFiles] = field(default_factory=dict)
     name: ClassVar[str] = "local"
 
     def __post_init__(self) -> None:
+        object.__setattr__(
+            self, "external_files", freeze_external_files(self.external_files)
+        )
         if (
             not self.cache_root.is_absolute()
             or not self.pixi.is_absolute()
@@ -339,6 +345,7 @@ class LocalRunner:
             apptainer=self.apptainer,
             native_gpu=allocation,
             application_modules=application_modules,
+            external_files=self.external_files,
         )
 
     def launch(

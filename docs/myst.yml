@@ -118,6 +118,7 @@ project:
           children:
             - file: how-to-guides/configuring-execution.md
             - file: how-to-guides/execute-environments.md
+            - file: how-to-guides/external-artifact-access.md
             - file: how-to-guides/running-remote-workers.md
             - file: how-to-guides/debugging-executions.md
             - file: how-to-guides/configuring-s3.md

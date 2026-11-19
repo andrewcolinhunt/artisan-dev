@@ -10,7 +10,7 @@ import polars as pl
 
 from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
-from artisan.schemas.execution.admission import AdmissionRecord
+from artisan.schemas.execution.admission import AnyAdmissionRecord
 from artisan.schemas.execution.curator_admission import CuratorAdmission
 from artisan.schemas.execution.step_admission import ADMISSION_DIGEST
 from artisan.storage.io.admission import read_admission_record
@@ -36,7 +36,7 @@ class ScientificExecutionSource:
     """An accepted delivery and its exact required recipe and input metadata."""
 
     plan: RetainedCommitPlan
-    admission: AdmissionRecord
+    admission: AnyAdmissionRecord
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,7 @@ class FailedScientificExecutionSource:
 
     plan: StepResultPlan
     unit: StepUnitResolution
-    admission: AdmissionRecord
+    admission: AnyAdmissionRecord
 
 
 @dataclass(frozen=True)

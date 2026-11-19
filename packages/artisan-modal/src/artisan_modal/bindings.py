@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Self
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from artisan.orchestration.runner_api import (
     DerivedWheel,
@@ -16,6 +16,7 @@ from artisan.orchestration.runner_api import (
     PreparedCommandWitness,
     PreparedNativeEnvironment,
 )
+from artisan_modal.volumes import ModalVolumeMount, validate_volume_mounts
 
 PIXI = Path("/usr/local/bin/artisan-pixi")
 BUILDER = Path("/opt/artisan/builder")
@@ -160,3 +161,48 @@ class ModalFunctionRuntime(_ClosedModel):
     gpu_type: str
     max_inputs: int = Field(ge=1, le=1, strict=True)
     timeout_seconds: int = Field(gt=0, strict=True)
+
+    def mount_inventory(self) -> tuple[ModalVolumeMount, ...]:
+        """Return the original profile's empty mount selection."""
+        return ()
+
+    def scientific_profile(self) -> dict[str, object]:
+        """Return the scientific resource profile independently of file placement."""
+        return self.model_dump(mode="json")
+
+
+class ModalFunctionRuntimeWithVolumes(ModalFunctionRuntime):
+    """Versioned endpoint profile retaining exact external-volume placement."""
+
+    model_config = ConfigDict(
+        extra="forbid", frozen=True, revalidate_instances="always"
+    )
+
+    schema_version: Literal[2] = 2
+    volumes: tuple[ModalVolumeMount, ...] = Field(min_length=1)
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _strict_version(cls, value: object) -> object:
+        if type(value) is not int:
+            message = "Modal function profile version must be an integer"
+            raise ValueError(message)
+        return value
+
+    @model_validator(mode="after")
+    def _ordered_mounts(self) -> Self:
+        if self.volumes != validate_volume_mounts(self.volumes):
+            message = "Modal volume inventory must be canonically ordered"
+            raise ValueError(message)
+        return self
+
+    def mount_inventory(self) -> tuple[ModalVolumeMount, ...]:
+        """Return the full explicitly selected endpoint mount inventory."""
+        return self.volumes
+
+    def scientific_profile(self) -> dict[str, object]:
+        """Exclude only the new placement fields from the original profile."""
+        return self.model_dump(mode="json", exclude={"schema_version", "volumes"})
+
+
+type ModalFunctionProfile = ModalFunctionRuntime | ModalFunctionRuntimeWithVolumes

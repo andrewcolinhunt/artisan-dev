@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from pathlib import Path
 
 from artisan.orchestration.runner_api import (
@@ -9,6 +10,7 @@ from artisan.orchestration.runner_api import (
     Environment,
     NativeGPUSoftware,
     OperationDefinition,
+    PreparedExternalFiles,
     PreparedLocalBindings,
     PreparedToolBinding,
     RunnerResources,
@@ -22,9 +24,16 @@ from artisan.orchestration.runner_api import (
     select_tool_environments,
     verify_runtime_compatibility,
 )
-from artisan_modal.bindings import PIXI, ModalFunctionRuntime, PreparedModalImage
+from artisan_modal.bindings import (
+    PIXI,
+    ModalFunctionProfile,
+    ModalFunctionRuntime,
+    ModalFunctionRuntimeWithVolumes,
+    PreparedModalImage,
+)
 from artisan_modal.image_store import ImageSelection
 from artisan_modal.software import ModalSoftware
+from artisan_modal.volumes import ModalVolumeMount
 
 
 def requirements(
@@ -52,7 +61,12 @@ def requirements(
     return names, ()
 
 
-def function_profile(image_id: str, resources: RunnerResources) -> ModalFunctionRuntime:
+def function_profile(
+    image_id: str,
+    resources: RunnerResources,
+    *,
+    volumes: tuple[ModalVolumeMount, ...] = (),
+) -> ModalFunctionProfile:
     """Translate explicit portable resources without choosing an accelerator fallback."""
     import re
 
@@ -66,7 +80,7 @@ def function_profile(image_id: str, resources: RunnerResources) -> ModalFunction
         message = "Modal GPU resources require an explicit canonical gpu_type"
         raise ValueError(message)
     hours, minutes, seconds = (int(value) for value in resources.time_limit.split(":"))
-    return ModalFunctionRuntime(
+    profile = ModalFunctionRuntime(
         image_id=image_id,
         milli_cpu=resources.cpus * 1000,
         memory_mb=resources.memory_gb * 1024,
@@ -75,6 +89,9 @@ def function_profile(image_id: str, resources: RunnerResources) -> ModalFunction
         max_inputs=1,
         timeout_seconds=hours * 3600 + minutes * 60 + seconds,
     )
+    if volumes:
+        return ModalFunctionRuntimeWithVolumes(**profile.model_dump(), volumes=volumes)
+    return profile
 
 
 def controller_compatibility(
@@ -115,6 +132,9 @@ def bind_software(
     resources: RunnerResources,
     applications: tuple[str, ...],
     gpu: NativeGPUSoftware | None = None,
+    *,
+    external_files: Mapping[str, PreparedExternalFiles] | None = None,
+    volumes: tuple[ModalVolumeMount, ...] = (),
 ) -> ModalSoftware:
     """Bind call paths to already resolved targets without reopening source files."""
     image = selected.image
@@ -141,5 +161,8 @@ def bind_software(
         launcher=image.startup.launcher,
         command_witness=image.startup.layout.witness if tools else None,
         application_modules=applications,
+        external_files=external_files or {},
     )
-    return ModalSoftware(image, local, function_profile(image.image_id, resources), gpu)
+    return ModalSoftware(
+        image, local, function_profile(image.image_id, resources, volumes=volumes), gpu
+    )

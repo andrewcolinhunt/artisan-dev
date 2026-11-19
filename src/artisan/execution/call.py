@@ -14,9 +14,11 @@ from fsspec import AbstractFileSystem
 from artisan.composites.base.compiler import Definition, Parameters
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.executor_runtime import ExecutorRuntime
+from artisan.execution.external_access import freeze_external_files
 from artisan.execution.invocation import InvocationPaths, invoke_operation
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.specs.input_models import FrozenInputContext
 from artisan.utils.command_supervisor import has_command_scope, managed_invocation
@@ -32,6 +34,7 @@ def run_operation(
     work_dir: Path | None = None,
     associations: Mapping[tuple[str, int, str], Sequence[Artifact]] | None = None,
     config_references: Mapping[tuple[str, int], Mapping[str, Artifact]] | None = None,
+    external_files: Mapping[str, PreparedExternalFiles] | None = None,
 ) -> ArtifactResult:
     """Run an operation or static composite in the calling process.
 
@@ -48,6 +51,8 @@ def run_operation(
         associations: Explicit association membership by original input position
             and artifact type. Omitted membership differs from an empty sequence.
         config_references: Exact configuration referents by original input position.
+        external_files: Explicit prepared installations keyed by artifact ID.
+            External payloads remain in place and are never materialized.
 
     Returns:
         Finalized outputs, explicit lineage, and retained reference support.
@@ -60,6 +65,7 @@ def run_operation(
         msg = "Operation calls must be sequential and nonrecursive"
         raise RuntimeError(msg)
     try:
+        external_files = freeze_external_files(external_files)
         identity = uuid4().hex
         context = FrozenInputContext(
             identity,
@@ -79,6 +85,7 @@ def run_operation(
             partial(_invoke, root=root),
             root,
             explicit_context=context,
+            external_files=external_files,
         )
     finally:
         _call_lock.release()

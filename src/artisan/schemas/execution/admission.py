@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import Literal
+import json
+from typing import Literal, Self
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -44,11 +45,11 @@ class AdmissionReference(_AdmissionModel):
     record_digest: ContentDigest
 
 
-class AdmissionRecord(_AdmissionModel):
+class _AdmissionRecord(_AdmissionModel):
     """Required recipe and exact input evidence persisted before dispatch."""
 
     domain: Literal["artisan.assignment-admission"] = "artisan.assignment-admission"
-    schema_version: Literal[1] = 1
+    schema_version: int
     attempt: AssignmentAttempt
     step_number: int = Field(ge=0, strict=True)
     recipe: ExecutionRecipe
@@ -66,7 +67,7 @@ class AdmissionRecord(_AdmissionModel):
         return value
 
     @model_validator(mode="after")
-    def _validate_evidence(self) -> AdmissionRecord:
+    def _validate_evidence(self) -> Self:
         if (
             self.recipe.digest != self.attempt.recipe_digest
             or self.boundary.input_context_digest != self.attempt.input_context_digest
@@ -97,3 +98,47 @@ class AdmissionRecord(_AdmissionModel):
             msg = "Admission carrier membership contains missing or orphaned files"
             raise ValueError(msg)
         return self
+
+
+class AdmissionRecord(_AdmissionRecord):
+    """Canonical version-one admission for managed or embedded artifacts."""
+
+    schema_version: Literal[1] = 1
+
+
+class AdmissionRecordWithAccess(_AdmissionRecord):
+    """Admission that authenticates an external access record and its membership."""
+
+    schema_version: Literal[2] = 2
+    access_digest: ContentDigest
+    access_artifact_ids: tuple[ContentDigest, ...] = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def _validate_access_membership(self) -> Self:
+        if list(self.access_artifact_ids) != sorted(set(self.access_artifact_ids)):
+            msg = "Admitted external artifact IDs must be unique and sorted"
+            raise ValueError(msg)
+        if set(self.access_artifact_ids) & {
+            binding.artifact_id for binding in self.external_bindings
+        }:
+            msg = "An artifact cannot have both managed and external access bindings"
+            raise ValueError(msg)
+        return self
+
+
+type AnyAdmissionRecord = AdmissionRecord | AdmissionRecordWithAccess
+
+
+def parse_admission_record(encoded: bytes) -> AnyAdmissionRecord:
+    """Decode an explicit version without changing historical canonical fields."""
+    data = json.loads(encoded)
+    version = data.get("schema_version") if isinstance(data, dict) else None
+    if type(version) is not int:
+        msg = "Admission requires an explicit integer schema version"
+        raise ValueError(msg)
+    if version == 1:
+        return AdmissionRecord.model_validate(data)
+    if version == 2:
+        return AdmissionRecordWithAccess.model_validate(data)
+    msg = f"Unsupported admission schema version: {version}"
+    raise ValueError(msg)

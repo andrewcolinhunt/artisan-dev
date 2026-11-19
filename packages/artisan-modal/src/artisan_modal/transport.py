@@ -16,7 +16,7 @@ from artisan.orchestration.runner_api import (
     execute_inert_call,
     verify_runtime_compatibility,
 )
-from artisan_modal.bindings import ModalFunctionRuntime, ModalRuntimePayload
+from artisan_modal.bindings import ModalFunctionProfile, ModalRuntimePayload
 from artisan_modal.gpu import capture_worker_gpu
 from artisan_modal.runtime import verify_modal_function, verify_modal_runtime
 from artisan_modal.worker import verify_worker_activation
@@ -33,7 +33,7 @@ class ModalCall(BaseModel):
 
     domain: Literal["artisan.modal-call"] = "artisan.modal-call"
     schema_version: Literal[1] = 1
-    function: ModalFunctionRuntime
+    function: ModalFunctionProfile
     runtime: ModalRuntimePayload
     gpu: NativeGPUSoftware | None = None
     header: WorkerTransportHeader

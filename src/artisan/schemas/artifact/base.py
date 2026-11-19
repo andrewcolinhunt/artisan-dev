@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator
 
 from artisan.errors import ArtifactIntegrityError
 from artisan.schemas.artifact.common import metadata_from_json, metadata_to_json
+from artisan.schemas.artifact.external_descriptor import ExternalFilesDescriptor
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.hashing import (
     canonical_json_bytes,
@@ -41,6 +42,7 @@ class Artifact(BaseModel):
     # to_row/from_row iterate. Concrete subclasses assign it.
     POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]]
     EXTERNALLY_BACKED: ClassVar[bool] = False
+    EXTERNAL_REFERENCE: ClassVar[bool] = False
     LOCATOR_FIELDS: ClassVar[frozenset[str]] = frozenset()
 
     artifact_id: str | None = Field(
@@ -72,6 +74,7 @@ class Artifact(BaseModel):
         description="Temporary path where content was written for execution.",
     )
 
+    _external_root: Path | None = PrivateAttr(default=None)
     _identity_payload_snapshot: tuple[int, str] | None = PrivateAttr(default=None)
     _protected_fields_snapshot: bytes | None = PrivateAttr(default=None)
 
@@ -127,6 +130,31 @@ class Artifact(BaseModel):
         Origin metadata and external file locations do not determine hydration.
         """
         return self._identity_payload() is not None
+
+    def external_descriptor(self) -> ExternalFilesDescriptor:
+        """Return an external-reference inventory when supported by this type."""
+        msg = f"{type(self).__name__} is not an external-reference artifact"
+        raise TypeError(msg)
+
+    @property
+    def external_root(self) -> Path:
+        """Return the explicitly bound runtime root of an external artifact."""
+        if not self.EXTERNAL_REFERENCE or self._external_root is None:
+            msg = "Artifact has no bound external installation"
+            raise ValueError(msg)
+        self._assert_identity_intact()
+        return self._external_root
+
+    def bind_external_root(self, root: Path) -> None:
+        """Attach verified execution placement without changing durable identity."""
+        if not self.EXTERNAL_REFERENCE or not self.is_finalized:
+            msg = "External root binding requires a finalized external reference"
+            raise ValueError(msg)
+        if not root.is_absolute() or ".." in root.parts:
+            msg = "External root binding requires an absolute path"
+            raise ValueError(msg)
+        self._assert_identity_intact()
+        self._external_root = root
 
     def materialize_to(
         self, directory: str, *, format: str | None = None, fs: Any = None

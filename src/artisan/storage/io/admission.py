@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import MappingProxyType
+from typing import cast
 
 from fsspec import AbstractFileSystem
 from fsspec.implementations.local import LocalFileSystem
@@ -22,11 +23,15 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.composites.plan import ExecutionRecipe
 from artisan.schemas.execution.admission import (
     AdmissionRecord,
+    AdmissionRecordWithAccess,
     AdmissionReference,
+    AnyAdmissionRecord,
     ManagedArtifactBinding,
     ManagedCarrier,
+    parse_admission_record,
 )
 from artisan.schemas.execution.assignment import AssignmentAttempt
+from artisan.schemas.execution.external_access import ExternalAccessRecord
 from artisan.schemas.execution.retained_result import RetainedTableFile
 from artisan.schemas.provenance.occurrence import OccurrenceAddress
 from artisan.schemas.provenance.projection import (
@@ -57,12 +62,13 @@ type ProducerVerifier = Callable[[AcceptedProducer, ProjectedOccurrence], None]
 
 @dataclass(frozen=True)
 class CapturedAdmission:
-    """Validated immutable input records and managed external carrier references."""
+    """Validated input records with managed carriers and external access evidence."""
 
-    record: AdmissionRecord
+    record: AnyAdmissionRecord
     reference: AdmissionReference
     artifacts: Mapping[OccurrenceAddress, Artifact]
     carriers: Mapping[str, ManagedCarrier]
+    external_access: ExternalAccessRecord | None = None
 
 
 def admission_directory(delta_root: str, attempt: AssignmentAttempt) -> str:
@@ -87,13 +93,15 @@ def publish_admission(
     fs: AbstractFileSystem,
     artifact_fs: AbstractFileSystem | None = None,
     verify_producer: ProducerVerifier | None = None,
+    external_access: ExternalAccessRecord | None = None,
 ) -> AdmissionReference:
     """Publish required typed input evidence without starting work or claiming it.
 
     The caller records the returned digest in the assignment journal before
-    dispatch. Existing managed carriers are verified and reused; other external
-    inputs are copied once to immutable managed locations. Source objects remain
-    unchanged. Optional diagnostics do not participate in this evidence.
+    dispatch. Existing managed carriers are verified and reused; other managed
+    file inputs are copied once to immutable locations. Externally owned bundles
+    retain only descriptors and access evidence. Source objects remain unchanged.
+    Optional diagnostics do not participate in this evidence.
     """
     assert_retained_store(delta_root, fs)
     attempt = AssignmentAttempt.model_validate(attempt)
@@ -112,6 +120,7 @@ def publish_admission(
     )
     _verify_producers(boundary, verify_producer)
     content = _unique_content(validated)
+    external_access = _validate_external_content(attempt, content, external_access)
     directory = admission_directory(delta_root, attempt)
     with TemporaryDirectory(prefix="artisan-admission-stage-") as temporary:
         scratch = Path(temporary)
@@ -119,7 +128,7 @@ def publish_admission(
             content, files_root, scratch, fs, artifact_fs
         )
         tables = _stage_input_tables(content, directory, scratch, fs)
-        record = AdmissionRecord(
+        record: AnyAdmissionRecord = AdmissionRecord(
             attempt=attempt,
             step_number=step_number,
             recipe=recipe,
@@ -128,6 +137,19 @@ def publish_admission(
             carriers=carriers,
             external_bindings=bindings,
         )
+        if external_access is not None:
+            record = AdmissionRecordWithAccess(
+                **record.model_dump(exclude={"schema_version"}),
+                access_digest=external_access.digest,
+                access_artifact_ids=tuple(
+                    binding.artifact_id for binding in external_access.bindings
+                ),
+            )
+            publish_immutable_bytes(
+                fs,
+                uri_join(directory, "external-access.json"),
+                canonical_json_bytes(external_access.model_dump(mode="json")),
+            )
         encoded = canonical_json_bytes(record.model_dump(mode="json"))
         publish_immutable_bytes(fs, uri_join(directory, "admission.json"), encoded)
     return AdmissionReference(
@@ -148,6 +170,7 @@ def capture_admission(
     reference = AdmissionReference.model_validate(reference)
     record = read_admission_record(reference, delta_root=delta_root, fs=fs)
     directory = admission_directory(delta_root, reference.attempt)
+    external_access = _read_external_access(record, directory, fs)
     locations = {}
     for carrier in record.carriers:
         location = uri_join(files_root, carrier.relative_path)
@@ -168,6 +191,7 @@ def capture_admission(
             for item in record.boundary.occurrences
         }
         validate_retained_membership(record.boundary, {}, artifacts, artifact_fs=fs)
+        _validate_external_content(record.attempt, content, external_access)
         _verify_producers(record.boundary, verify_producer)
         by_digest = {item.digest: item for item in record.carriers}
         yield CapturedAdmission(
@@ -180,6 +204,7 @@ def capture_admission(
                     for item in record.external_bindings
                 }
             ),
+            external_access,
         )
 
 
@@ -188,7 +213,7 @@ def read_admission_record(
     *,
     delta_root: str,
     fs: AbstractFileSystem,
-) -> AdmissionRecord:
+) -> AnyAdmissionRecord:
     """Read exact admitted metadata without granting content or reuse authority.
 
     This checks the immutable record and input contract only. Acceptance, replay
@@ -204,7 +229,7 @@ def read_admission_record(
     if compute_content_digest(encoded) != reference.record_digest:
         msg = "Admitted input record digest changed"
         raise StoreIntegrityError(msg)
-    record = AdmissionRecord.model_validate_json(encoded)
+    record = parse_admission_record(encoded)
     if (
         record.attempt != reference.attempt
         or canonical_json_bytes(record.model_dump(mode="json")) != encoded
@@ -212,7 +237,68 @@ def read_admission_record(
         msg = "Admitted input record has changed ownership or noncanonical encoding"
         raise StoreIntegrityError(msg)
     _validate_input_contract(record.recipe, record.boundary)
+    _read_external_access(record, directory, fs)
     return record
+
+
+def _read_external_access(
+    record: AnyAdmissionRecord, directory: str, fs: AbstractFileSystem
+) -> ExternalAccessRecord | None:
+    expected = {
+        item.artifact_id
+        for item in record.boundary.occurrences
+        if cast(
+            type[Artifact], ArtifactTypeDef.get(item.artifact_type).model
+        ).EXTERNAL_REFERENCE
+    }
+    if isinstance(record, AdmissionRecord):
+        if expected:
+            msg = "External reference artifacts require versioned access evidence"
+            raise StoreIntegrityError(msg)
+        return None
+    with fs.open(
+        uri_join(directory, "external-access.json"), "rb", cache_type="none"
+    ) as stream:
+        encoded = stream.read()
+    if compute_content_digest(encoded) != record.access_digest:
+        msg = "Admitted external access record digest changed"
+        raise StoreIntegrityError(msg)
+    access = ExternalAccessRecord.model_validate_json(encoded)
+    if (
+        canonical_json_bytes(access.model_dump(mode="json")) != encoded
+        or access.attempt != record.attempt
+        or tuple(binding.artifact_id for binding in access.bindings)
+        != record.access_artifact_ids
+        or set(record.access_artifact_ids) != expected
+    ):
+        msg = "External access record does not match exact admitted membership"
+        raise StoreIntegrityError(msg)
+    return access
+
+
+def _validate_external_content(
+    attempt: AssignmentAttempt,
+    content: Mapping[str, Artifact],
+    access: ExternalAccessRecord | None,
+) -> ExternalAccessRecord | None:
+    expected = {
+        artifact_id: artifact.external_descriptor()
+        for artifact_id, artifact in content.items()
+        if artifact.EXTERNAL_REFERENCE
+    }
+    if access is None:
+        if expected:
+            msg = "External reference inputs require explicit access bindings"
+            raise StoreIntegrityError(msg)
+        return None
+    access = ExternalAccessRecord.model_validate(access)
+    selected = {
+        binding.artifact_id: binding.prepared.descriptor for binding in access.bindings
+    }
+    if access.attempt != attempt or selected != expected:
+        msg = "External access bindings differ from admitted artifact descriptors"
+        raise StoreIntegrityError(msg)
+    return access
 
 
 def verify_managed_carrier(

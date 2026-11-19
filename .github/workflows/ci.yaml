@@ -323,6 +323,8 @@ jobs:
       - name: Verify owned container cancellation and working directory
         run: |
           ~/.pixi/bin/pixi run --locked -e dev test-docker \
+            tests/integration/test_docker_cancellation.py \
+            tests/integration/test_docker_working_directory.py \
             -q -ra --junitxml=docker-cancellation-results/junit.xml \
             2>&1 | tee docker-cancellation-results/pytest.log
           ~/.pixi/bin/pixi run --locked -e dev python - <<'PY'

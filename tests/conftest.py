@@ -383,3 +383,51 @@ def pytest_collection_modifyitems(
             item.add_marker(pytest.mark.docker)
         if "s3_fs" in fixtures or "minio_endpoint" in fixtures:
             item.add_marker(s3_marker)
+
+
+@pytest.fixture(autouse=True)
+def isolate_optional_artifact_types(
+    request: pytest.FixtureRequest,
+) -> Iterator[None]:
+    """Keep optional imports during collection out of unrelated store schemas."""
+    if "external_artifact_types" in request.fixturenames:
+        yield
+        return
+    from artisan.schemas import ArtifactTypeDef, ArtifactTypes
+
+    optional = {"external_files", "model_weights"}
+    with pytest.MonkeyPatch.context() as patch:
+        for owner in (ArtifactTypeDef, ArtifactTypes):
+            patch.setattr(
+                owner,
+                "_registry",
+                {
+                    key: value
+                    for key, value in owner._registry.items()
+                    if key not in optional
+                },
+            )
+        for key in optional:
+            patch.delattr(ArtifactTypes, key.upper(), raising=False)
+        yield
+
+
+@pytest.fixture
+def external_artifact_types() -> Iterator[None]:
+    """Select optional external schemas explicitly for one feature test."""
+    from artisan.schemas import ArtifactTypeDef, ArtifactTypes
+    from artisan.schemas.external_artifacts import (
+        ExternalFilesTypeDef,
+        ModelWeightsTypeDef,
+    )
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(ArtifactTypeDef, "_registry", dict(ArtifactTypeDef._registry))
+        patch.setattr(ArtifactTypes, "_registry", dict(ArtifactTypes._registry))
+        for definition in (ExternalFilesTypeDef, ModelWeightsTypeDef):
+            ArtifactTypeDef._registry[definition.key] = definition
+            ArtifactTypes._registry[definition.key] = definition.key
+            patch.setattr(
+                ArtifactTypes, definition.key.upper(), definition.key, raising=False
+            )
+        yield

@@ -75,6 +75,7 @@ def localize_admission(
         },
         input_attribution=boundary.input_attribution,
         step_number=captured.record.step_number,
+        external_access=captured.external_access,
     )
 
 

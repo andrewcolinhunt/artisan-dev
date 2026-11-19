@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import errno
 import json
+import os
 import platform
 import shutil
 import subprocess
@@ -16,15 +17,32 @@ import pytest
 from artisan.execution.compute.prepared import PreparedExecuteRouter
 from artisan.execution.environments.command_witness import (
     BUILD_MANIFEST,
+    COMPILE_FLAGS,
+    COMPILER,
+    SOURCE,
     WitnessInvocation,
     lookup_command_witness,
     prepare_command_witness,
     verify_command_witness,
 )
+from artisan.execution.environments.external_preflight import (
+    encode_external_preflight,
+    write_external_preflight,
+)
+from artisan.execution.environments.native import lookup_native_environment
+from artisan.execution.environments.native_target import native_executable
 from artisan.execution.exceptions import AssignmentExecutionError
 from artisan.execution.scientific_failure import assignment_science
+from artisan.schemas.artifact.external_descriptor import (
+    ExternalFile,
+    ExternalFilesDescriptor,
+    PreparedExternalFiles,
+)
 from artisan.schemas.execution.command_witness import PreparedCommandWitness
+from artisan.schemas.operation_config.environment import Environment
 from artisan.schemas.specs.input_models import ExecuteInput
+from artisan.storage.external_access import prepare_external_files
+from artisan.utils.hashing import compute_content_digest
 
 pytestmark = pytest.mark.integration
 
@@ -323,3 +341,262 @@ def test_changed_helper_payload_rejects_before_execution(
     target = prepared[1].model_copy(update={"executable": executable})
     with pytest.raises(ValueError, match="identity changed"):
         verify_command_witness(target)
+
+
+@pytest.fixture(scope="module")
+def readonly_witness(
+    prepared: tuple[Path, PreparedCommandWitness],
+    tmp_path_factory: pytest.TempPathFactory,
+) -> PreparedCommandWitness:
+    """Mock only readonly mount observation using the same locked C toolchain."""
+    root = tmp_path_factory.mktemp("external-witness")
+    shim = root / "readonly.c"
+    shim.write_text(
+        "#include <sys/statvfs.h>\n"
+        "int __real_fstatvfs(int fd, struct statvfs *value);\n"
+        "int __wrap_fstatvfs(int fd, struct statvfs *value) {\n"
+        "  int status = __real_fstatvfs(fd, value);\n"
+        "  if (status == 0) value->f_flag |= ST_RDONLY;\n"
+        "  return status;\n}\n"
+    )
+    builder = lookup_native_environment(
+        Environment.from_pixi(BUILD_MANIFEST), cache_root=prepared[0]
+    )
+    compiler = native_executable(builder, COMPILER)
+    executable = root / "witness"
+    subprocess.run(
+        [
+            str(compiler),
+            *COMPILE_FLAGS,
+            "-Wl,--wrap=fstatvfs",
+            str(SOURCE),
+            str(shim),
+            "-o",
+            str(executable),
+        ],
+        env={"PATH": str(builder.prefix / "bin"), "LANG": "C", "TMPDIR": str(root)},
+        check=True,
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+    return prepared[1].model_copy(update={"executable": executable})
+
+
+def _external_installation(root: Path) -> PreparedExternalFiles:
+    content = {"config.json": b"{}", "nested/content.bin": b"external-data"}
+    for name, value in content.items():
+        path = root / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(value)
+    return prepare_external_files(
+        root,
+        ExternalFilesDescriptor(
+            files=tuple(
+                ExternalFile(
+                    path=name,
+                    content_hash=compute_content_digest(value),
+                    size_bytes=len(value),
+                )
+                for name, value in content.items()
+            )
+        ),
+    )
+
+
+def test_external_preflight_checks_metadata_then_preserves_actual_tool_exit(
+    readonly_witness: PreparedCommandWitness,
+    tmp_path: Path,
+) -> None:
+    installation = _external_installation(tmp_path / "installation")
+    payload = installation.root / "nested/content.bin"
+    payload.chmod(0o000)
+    record = write_external_preflight((installation,), tmp_path / "control/access.bin")
+    invocation = WitnessInvocation(readonly_witness, tmp_path / "exits")
+    try:
+        result = subprocess.run(
+            invocation.wrap(["/bin/sh", "-c", "exit 17"], external_access=record),
+            check=False,
+            capture_output=True,
+        )
+        assert result.returncode == 17, result.stderr
+        assert invocation.verify_exit(17)
+    finally:
+        payload.chmod(0o600)
+
+
+def test_external_preflight_rejects_real_writable_installation_before_tool(
+    prepared: tuple[Path, PreparedCommandWitness],
+    tmp_path: Path,
+) -> None:
+    installation = _external_installation(tmp_path / "installation")
+    record = write_external_preflight((installation,), tmp_path / "control/access.bin")
+    invocation = WitnessInvocation(prepared[1], tmp_path / "exits")
+    marker = tmp_path / "ran"
+    result = subprocess.run(
+        invocation.wrap(["/bin/touch", str(marker)], external_access=record),
+        check=False,
+        capture_output=True,
+    )
+    assert result.returncode == 125
+    assert b"External artifact access check failed" in result.stderr
+    assert not marker.exists()
+    assert not invocation.receipt.exists()
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        "receipt",
+        "missing",
+        "size",
+        "extra",
+        "empty_directory",
+        "symlink_file",
+        "symlink_directory",
+        "symlink_root",
+    ],
+)
+def test_external_preflight_rejects_changed_layout_before_tool(
+    readonly_witness: PreparedCommandWitness,
+    tmp_path: Path,
+    change: str,
+) -> None:
+    installation = _external_installation(tmp_path / "installation")
+    root = installation.root
+    if change == "receipt":
+        (root / ".artisan-external-files.json").write_bytes(b"wrong")
+    elif change == "missing":
+        (root / "config.json").unlink()
+    elif change == "size":
+        (root / "config.json").write_bytes(b"different-size")
+    elif change == "extra":
+        (root / "extra.bin").write_bytes(b"extra")
+    elif change == "empty_directory":
+        (root / "extra").mkdir()
+    elif change == "symlink_file":
+        (root / "config.json").unlink()
+        (root / "config.json").symlink_to(root / "nested/content.bin")
+    elif change == "symlink_directory":
+        (root / "nested").rename(tmp_path / "moved")
+        (root / "nested").symlink_to(tmp_path / "moved", target_is_directory=True)
+    else:
+        alias = tmp_path / "alias"
+        alias.symlink_to(root, target_is_directory=True)
+        installation = installation.model_copy(update={"root": alias})
+    record = write_external_preflight((installation,), tmp_path / "control/access.bin")
+    invocation = WitnessInvocation(readonly_witness, tmp_path / "exits")
+    marker = tmp_path / "ran"
+    result = subprocess.run(
+        invocation.wrap(["/bin/touch", str(marker)], external_access=record),
+        check=False,
+        capture_output=True,
+    )
+    assert result.returncode == 125
+    assert not marker.exists()
+    assert not invocation.receipt.exists()
+
+
+@pytest.mark.parametrize(
+    "malformed", ["magic", "truncated", "extra", "relative_escape"]
+)
+def test_external_preflight_rejects_malformed_evidence_before_tool(
+    readonly_witness: PreparedCommandWitness,
+    tmp_path: Path,
+    malformed: str,
+) -> None:
+    installation = _external_installation(tmp_path / "installation")
+    encoded = encode_external_preflight((installation,))
+    if malformed == "magic":
+        encoded = b"INVALID!" + encoded[8:]
+    elif malformed == "truncated":
+        encoded = encoded[:-1]
+    elif malformed == "extra":
+        encoded += b"trailing"
+    else:
+        # Replace the member after its occurrence in the receipt bytes.
+        offset = encoded.rfind(b"nested/content.bin")
+        encoded = (
+            encoded[:offset]
+            + b"../bad/content.bin"
+            + encoded[offset + len(b"nested/content.bin") :]
+        )
+    record = tmp_path / "access.bin"
+    record.write_bytes(encoded)
+    invocation = WitnessInvocation(readonly_witness, tmp_path / "exits")
+    marker = tmp_path / "ran"
+    result = subprocess.run(
+        invocation.wrap(["/bin/touch", str(marker)], external_access=record),
+        check=False,
+        capture_output=True,
+    )
+    assert result.returncode == 125
+    assert not marker.exists()
+    assert not invocation.receipt.exists()
+
+
+@pytest.mark.parametrize("receipt_state", ["valid", "missing", "wrong"])
+def test_external_preflight_uses_real_docker_readonly_mounts(
+    prepared: tuple[Path, PreparedCommandWitness],
+    docker_image: str,
+    tmp_path: Path,
+    receipt_state: str,
+) -> None:
+    installation = _external_installation(tmp_path / "installation")
+    record = write_external_preflight((installation,), tmp_path / "control/access.bin")
+    receipt = installation.root / ".artisan-external-files.json"
+    if receipt_state == "missing":
+        receipt.unlink()
+    elif receipt_state == "wrong":
+        receipt.write_bytes(b"wrong")
+    invocation = WitnessInvocation(prepared[1], tmp_path / "exits")
+    marker = invocation.directory / "science"
+    command = invocation.wrap(
+        [
+            "/bin/sh",
+            "-c",
+            'test "$(cat "$1/nested/content.bin")" = external-data || exit 90; '
+            'if echo changed > "$1/nested/content.bin" 2>/dev/null; then exit 91; fi; '
+            'touch "$2"; exit 17',
+            "probe",
+            str(installation.root),
+            str(marker),
+        ],
+        external_access=record,
+    )
+    mounts = [
+        f"type=bind,source={installation.root},target={installation.root},readonly,bind-propagation=rprivate,bind-recursive=readonly",
+        f"type=bind,source={record},target={record},readonly",
+        f"type=bind,source={prepared[1].executable},target={prepared[1].executable},readonly",
+        f"type=bind,source={invocation.directory},target={invocation.directory}",
+    ]
+    result = subprocess.run(
+        [
+            "docker",
+            "run",
+            "--rm",
+            "--pull=never",
+            "--read-only",
+            "--network=none",
+            "--user",
+            f"{os.getuid()}:{os.getgid()}",
+            *[argument for mount in mounts for argument in ("--mount", mount)],
+            "--entrypoint",
+            command[0],
+            docker_image,
+            *command[1:],
+        ],
+        check=False,
+        capture_output=True,
+        timeout=60,
+    )
+    assert (installation.root / "nested/content.bin").read_bytes() == b"external-data"
+    if receipt_state == "valid":
+        assert result.returncode == 17, result.stderr
+        assert marker.exists()
+        assert invocation.verify_exit(17)
+    else:
+        assert result.returncode == 125, result.stderr
+        assert b"External artifact access check failed" in result.stderr
+        assert not marker.exists()
+        assert not invocation.receipt.exists()
