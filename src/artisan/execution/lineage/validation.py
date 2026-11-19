@@ -70,22 +70,30 @@ def validate_lineage_completeness(
     for role, artifact_list in artifacts.items():
         spec = output_specs.get(role)
         required_roles = (
-            set(next(iter(spec.derives_from.values())))
-            - set(spec.optional_parent_roles)
-            if spec and spec.derives_from
+            {
+                (kind, parent_role)
+                for kind, roles in (spec.derives_from or {}).items()
+                for parent_role in roles
+                if parent_role not in spec.optional_parent_roles
+            }
+            if spec
             else set()
         )
-        roles_by_index: dict[int, set[str]] = {}
+        roles_by_index: dict[int, set[tuple[str, str]]] = {}
         for mapping in lineage[role]:
+            kind = "outputs" if mapping.source_output_index is not None else "inputs"
             roles_by_index.setdefault(mapping.draft_index, set()).add(
-                mapping.source_role
+                (kind, mapping.source_role)
             )
         for index in range(len(artifact_list)):
             missing_roles = required_roles - roles_by_index.get(index, set())
             if missing_roles:
+                missing_names = sorted(
+                    f"{kind}.{parent_role}" for kind, parent_role in missing_roles
+                )
                 msg = (
                     f"Output {role!r}[{index}] is missing lineage mappings "
-                    f"from source roles: {sorted(missing_roles)}"
+                    f"from source roles: {missing_names}"
                 )
                 raise LineageCompletenessError(msg)
 
@@ -93,16 +101,15 @@ def validate_lineage_completeness(
 def _lineage_contract(
     target_role: str,
     output_specs: dict[str, OutputSpec],
-) -> tuple[str, set[str]]:
-    """Return the source namespace and roles allowed for an emitted role."""
+) -> dict[str, set[str]]:
+    """Return the roles allowed in each parent namespace for an emitted role."""
     if not output_specs:
-        return "inputs", set()
+        return {"inputs": set()}
     spec = output_specs.get(target_role)
     if spec is None or spec.derives_from is None:
         msg = f"Artifact output role {target_role!r} must declare derives_from"
         raise LineageIntegrityError(msg)
-    kind, roles = next(iter(spec.derives_from.items()))
-    return kind, set(roles)
+    return {kind: set(roles) for kind, roles in spec.derives_from.items()}
 
 
 def _validate_mapping_reference(
@@ -217,22 +224,28 @@ def validate_lineage_integrity(
         else {role: set(ids) for role, ids in input_artifact_ids.items()}
     )
     for target_role, mappings in lineage.items():
-        kind, allowed_roles = _lineage_contract(target_role, output_specs)
-        if not allowed_roles and mappings:
+        contract = _lineage_contract(target_role, output_specs)
+        if not any(contract.values()) and mappings:
             msg = f"Root output role {target_role!r} must have empty lineage"
             raise LineageIntegrityError(msg)
-        seen: set[tuple[int, str, str | int | None, int | None]] = set()
+        seen: set[tuple[int, str, str, str | int | None]] = set()
         for mapping in mappings:
             if not 0 <= mapping.draft_index < len(output_artifacts[target_role]):
                 msg = f"Lineage references non-existent output {target_role!r}[{mapping.draft_index}]"
                 raise LineageIntegrityError(msg)
+            kind = "outputs" if mapping.source_output_index is not None else "inputs"
+            allowed_roles = contract.get(kind, set())
             if mapping.source_role not in allowed_roles:
                 msg = (
                     f"Output {target_role!r}[{mapping.draft_index}] has forbidden source role "
-                    f"{mapping.source_role!r}; allowed roles: {sorted(allowed_roles)}"
+                    f"{mapping.source_role!r} in {kind}; allowed roles: {sorted(allowed_roles)}"
                 )
                 raise LineageIntegrityError(msg)
-            source: str | int | None = mapping.source_artifact_id
+            source: str | int | None = (
+                mapping.source_output_index
+                if kind == "outputs"
+                else mapping.source_artifact_id
+            )
             if kind == "inputs" and invocation_id is not None:
                 source = resolve_input_index(
                     mapping, input_artifact_ids, invocation_id=invocation_id
@@ -244,9 +257,9 @@ def validate_lineage_integrity(
                 _validate_mapping_reference(mapping, input_ids, output_artifacts, kind)
             key = (
                 mapping.draft_index,
+                kind,
                 mapping.source_role,
                 source,
-                mapping.source_output_index,
             )
             if key in seen:
                 msg = (

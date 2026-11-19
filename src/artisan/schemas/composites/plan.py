@@ -66,6 +66,37 @@ class OutputContract(_RecipeModel):
         return self
 
 
+class MixedOutputContract(_RecipeModel):
+    """Capture input and sibling-output parent contracts without merging roles."""
+
+    role: str = Field(min_length=1)
+    artifact_type: str = Field(min_length=1)
+    required: bool
+    input_parent_roles: tuple[str, ...]
+    output_parent_roles: tuple[str, ...] = Field(min_length=1)
+    optional_parent_roles: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda roles: not roles
+    )
+
+    @model_validator(mode="after")
+    def _validate_parent_roles(self) -> MixedOutputContract:
+        for roles in (self.input_parent_roles, self.output_parent_roles):
+            if any(not role for role in roles) or len(roles) != len(set(roles)):
+                msg = "Mixed parent namespaces require nonempty unique role names"
+                raise ValueError(msg)
+        optional = self.optional_parent_roles
+        allowed = {*self.input_parent_roles, *self.output_parent_roles}
+        if len(optional) != len(set(optional)) or any(
+            not role or role not in allowed for role in optional
+        ):
+            msg = "Optional parent roles must be unique declared parent roles"
+            raise ValueError(msg)
+        return self
+
+
+type OutputRoleContract = OutputContract | MixedOutputContract
+
+
 class InvocationPolicy(_RecipeModel):
     """Scientific partitioning, independent of transport packing or placement."""
 
@@ -148,7 +179,7 @@ class DefinitionContract(_RecipeModel):
     definition: DefinitionIdentity
     params_json: str
     inputs: tuple[InputContract, ...]
-    outputs: tuple[OutputContract, ...]
+    outputs: tuple[OutputRoleContract, ...]
     policy: InvocationPolicy
     execution: ExecutionContract
     cacheable: bool
@@ -226,7 +257,10 @@ class ExecutionRecipe(DefinitionContract):
                 msg = "A creator recipe cannot contain composition wiring"
                 raise ValueError(msg)
             return self
-        if any(spec.parent_kind is not None for spec in self.outputs):
+        if any(
+            isinstance(spec, MixedOutputContract) or spec.parent_kind is not None
+            for spec in self.outputs
+        ):
             msg = "Composite outputs cannot declare derives_from"
             raise ValueError(msg)
         available: dict[str | None, dict[str, str]] = {
@@ -267,7 +301,7 @@ class ExecutionRecipe(DefinitionContract):
 
 def _validate_bindings(
     bindings: tuple[RoleBinding, ...],
-    expected: Mapping[str, InputContract | OutputContract],
+    expected: Mapping[str, InputContract | OutputRoleContract],
     available: dict[str | None, dict[str, str]],
     *,
     require_all: bool,

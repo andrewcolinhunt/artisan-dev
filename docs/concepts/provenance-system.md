@@ -97,20 +97,28 @@ for examples.
 ## Lineage declaration
 
 The [`derives_from`](operations-model.md#output-specs) field on `OutputSpec`
-constrains the mappings supplied for each output occurrence:
+constrains the mappings supplied for each output occurrence. With no
+`optional_parent_roles`, every listed role is required:
 
 | Pattern | Required declaration |
 | --- | --- |
 | `{"inputs": ["data"]}` | At least one parent from input role `data`, and no other roles |
 | `{"inputs": ["left", "right"]}` | At least one input parent from each role; multiple parents within a role are allowed |
 | `{"outputs": ["processed"]}` | At least one co-produced output addressed by its index in `processed` |
+| `{"inputs": ["reference"], "outputs": ["processed"]}` | At least one input reference and one co-produced output, both required for each occurrence |
 | `{"inputs": []}` | A root role, with an explicit empty lineage list |
+
+Use `optional_parent_roles` to permit a declared parent role to be absent from
+an individual result. This tuple contains role names. Listing a name declared
+in both input and output namespaces makes it optional in both. Every supplied
+parent still needs a valid reference in its declared namespace.
 
 Every creator output needs a contract. `None` is permitted only for passthrough
 outputs; curators that emit drafts need contracts too. A curator with no static
 outputs may emit runtime-named root roles with explicit empty lineage lists.
-Mixed input/output parent kinds, empty dictionaries, and output-role cycles are
-rejected. A present optional output role with no drafts has an empty lineage
+Input and output namespaces remain distinct even when they use the same role
+name. Empty dictionaries and output-role cycles are rejected. A present
+optional output role with no drafts has an empty lineage
 list; an omitted role appears in neither result dictionary.
 
 ### Output-to-output edges
@@ -119,6 +127,13 @@ A metric derived from a co-produced dataset declares that dataset's output
 index. Finalization resolves the index to an artifact ID without matching names.
 The operation can use the index returned by `add_artifact` or construct a
 `LineageMapping` itself.
+
+A comparison score can declare both a newly generated candidate and an
+independent input reference as parents. Its contract lists both namespaces;
+the result supplies an input ID or exact input reference and a sibling-output
+index. These parents form one joint derivation. Listing a role in both
+namespaces requires a parent from each unless that name is in
+`optional_parent_roles`.
 
 ### Config ancestry
 
@@ -183,8 +198,9 @@ agreement with the static contract, input membership in the named role, and
 duplicate exact declarations. Two different parents in one role are valid.
 
 Completeness validation requires every derived output occurrence to have a
-parent from every listed role. Roots must have no mappings. These checks run
-before recording success or staging artifact edges and do not consider filenames.
+parent from every listed role except those in `optional_parent_roles`. Roots
+must have no mappings. These checks run before recording success or staging
+artifact edges and do not consider filenames.
 
 Structural validation cannot decide whether the author selected the scientifically
 correct parents. That responsibility belongs to the operation and its tests.

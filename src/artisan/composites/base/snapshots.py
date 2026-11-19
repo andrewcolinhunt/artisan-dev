@@ -16,7 +16,9 @@ from artisan.schemas.composites.plan import (
     ExecutionContract,
     InputContract,
     InvocationPolicy,
+    MixedOutputContract,
     OutputContract,
+    OutputRoleContract,
     ToolContract,
 )
 
@@ -53,9 +55,9 @@ def input_contracts(definition: Definition) -> tuple[InputContract, ...]:
     )
 
 
-def output_contracts(definition: Definition) -> tuple[OutputContract, ...]:
-    """Freeze declared output membership and the exact parent namespace."""
-    outputs = []
+def output_contracts(definition: Definition) -> tuple[OutputRoleContract, ...]:
+    """Freeze declared output membership and every exact parent namespace."""
+    outputs: list[OutputRoleContract] = []
     for role, spec in definition.outputs.items():
         if (
             issubclass(definition, CompositeDefinition)
@@ -63,6 +65,18 @@ def output_contracts(definition: Definition) -> tuple[OutputContract, ...]:
         ):
             msg = "Composite outputs derive lineage from their calls; leave derives_from unset"
             raise ValueError(msg)
+        if spec.derives_from is not None and len(spec.derives_from) == 2:
+            outputs.append(
+                MixedOutputContract(
+                    role=role,
+                    artifact_type=spec.artifact_type,
+                    required=spec.required,
+                    input_parent_roles=tuple(spec.derives_from["inputs"]),
+                    output_parent_roles=tuple(spec.derives_from["outputs"]),
+                    optional_parent_roles=spec.optional_parent_roles,
+                )
+            )
+            continue
         kind, roles = (
             next(iter(spec.derives_from.items())) if spec.derives_from else (None, ())
         )
