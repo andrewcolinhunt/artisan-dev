@@ -9,7 +9,9 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
+import polars as pl
 import pytest
+from fixtures.input_contract_operations import AnchoredOffset, named_metric
 from pydantic import BaseModel, Field
 
 from artisan.composites.base.compiled import CompiledPlan
@@ -638,3 +640,192 @@ def test_spawned_native_worker_records_preset_inputs_without_materializing(
         assert result.output("result")[0].artifact.values == {"value": 6.0}
     assert not list((tmp_path / "files").rglob("scale.txt"))
     assert not list((tmp_path / "work").rglob("scale.txt"))
+
+
+class _AnchoredExternalOffset(AnchoredOffset):
+    name = "anchored_external_offset"
+    inputs: ClassVar = {
+        **AnchoredOffset.inputs,
+        "offset": InputSpec(artifact_type="any", materialize=False),
+    }
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        artifact = inputs.input_artifacts["offset"][0]
+        assert artifact.EXTERNAL_REFERENCE
+        assert artifact.materialized_path is None
+        offset = int((artifact.external_root / "index.bin").read_text())
+        return {
+            "values": [
+                source.values["value"] + offset
+                for source in inputs.input_artifacts["source"]
+            ]
+        }
+
+
+def _anchored_external_inputs(artifact: Artifact) -> dict[str, list[Artifact]]:
+    return {
+        "source": [named_metric(name, index) for index, name in enumerate("ABCDEF")],
+        "offset": [artifact],
+        "context": [named_metric("F", 20)],
+    }
+
+
+def test_external_singleton_anchored_selection_survives_cache_and_replay_chain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from artisan.composites.base.compiler import compile_definition
+    from artisan.orchestration.original_selection import resolve_original_selection
+
+    artifact, first = _installation(tmp_path / "original")
+    _, replica = _installation(tmp_path / "replica")
+    _forbid_payload_transport(monkeypatch)
+    inputs = _anchored_external_inputs(artifact)
+    with _manager(tmp_path / "store", {artifact.artifact_id: first}) as manager:
+        result = manager.run(_AnchoredExternalOffset, inputs=inputs)
+        assert result.status is StepStatus.SUCCEEDED, result.error
+        sources = _sources(manager, result.step_run_id)
+        assert len(sources) == 2
+        reader = RetainedReader(manager.committer)
+        values = []
+        for source in sources:
+            assert isinstance(source.admission, AdmissionRecordWithAccess)
+            assert source.admission.recipe.schema_version == 2
+            roles = source.admission.boundary.input_roles()
+            assert len(roles["offset"]) == 1
+            assert roles["offset"][0].index == 0
+            with reader.capture_inputs(source.plan.receipt) as captured:
+                assert captured.record.carriers == ()
+                assert captured.record.external_bindings == ()
+                assert len(captured.external_access.bindings) == 1
+                assert captured.external_access.bindings[0].prepared == first
+            accepted = reader.read(source.plan.receipt)
+            for item in accepted.output("metrics"):
+                values.append(item.artifact.values["value"])
+                assert [
+                    edge.source.index
+                    for edge in accepted.projection.parents
+                    if edge.target == item.reference.address
+                    and edge.source.role == "offset"
+                ] == [0]
+        assert sorted(values) == list(range(7, 13))
+        provenance = ArtifactStore(
+            manager.config.delta_root, files_root=manager.config.files_root
+        ).provenance
+        assert provenance.get_artifact_step_number(artifact.artifact_id) is None
+        targets = {
+            item.artifact.artifact_id
+            for source in sources
+            for item in reader.read(source.plan.receipt).output("metrics")
+        }
+        edges = provenance.load_direct_edges_df(
+            targets,
+            include_roles=True,
+            execution_ids={
+                source.plan.receipt.delivery.delivery_id for source in sources
+            },
+        )
+        external_parents = edges.filter(pl.col("source_role") == "offset")
+        assert external_parents.height == 6
+        assert set(external_parents["target_artifact_id"]) == targets
+        assert set(external_parents["source_artifact_id"]) == {artifact.artifact_id}
+        original = next(
+            source
+            for source in sources
+            if source.plan.admission.attempt.assignment.unit_index == 0
+        )
+        assert original.admission.boundary.input_roles()["context"] == ()
+        cached = manager.run(_AnchoredExternalOffset, inputs=inputs)
+        assert cached.status is StepStatus.SUCCEEDED, cached.error
+        assert cached.disposition is StepDisposition.CACHE_HIT
+    shutil.rmtree(first.root)
+    previous = original.plan.receipt.delivery.delivery_id
+    for index in range(2):
+        diagnostic = replay_execution(
+            previous,
+            delta_root=manager.config.delta_root,
+            files_root=manager.config.files_root,
+            operation=_AnchoredExternalOffset,
+            application_modules=_APPLICATIONS,
+            step_runner=_ExternalRunner(
+                manager.committer, {artifact.artifact_id: replica}
+            ),
+            working_root=tmp_path / f"replay-work-{index}",
+            staging_root=str(tmp_path / f"replay-staging-{index}"),
+        )
+        assert diagnostic.step_result.status is StepStatus.SUCCEEDED, (
+            diagnostic.step_result.error
+        )
+        selected = read_execution_source(manager.committer, diagnostic.execution_run_id)
+        assert isinstance(selected, ScientificExecutionSource)
+        assert isinstance(selected.admission, AdmissionRecordWithAccess)
+        assert selected.admission.boundary.input_roles()["context"] == ()
+        assert selected.admission.attempt.replay_of_execution_run_id == previous
+        with reader.capture_inputs(selected.plan.receipt) as captured:
+            assert captured.external_access.bindings[0].prepared == replica
+        assert [
+            item.artifact.artifact_id
+            for item in reader.read(selected.plan.receipt).output("metrics")
+        ] == [
+            item.artifact.artifact_id
+            for item in reader.read(original.plan.receipt).output("metrics")
+        ]
+        proof = resolve_original_selection(
+            manager.committer,
+            diagnostic.execution_run_id,
+            compile_definition(_AnchoredExternalOffset).recipe,
+        )
+        assert proof.origin_step.step_run_id == result.step_run_id
+        assert len(proof.origin_step.assignments) == 2
+        assert len(proof.selected_admissions) == index + 2
+        previous = diagnostic.execution_run_id
+    assert not list(Path(manager.config.files_root).rglob("index.bin"))
+
+
+@pytest.mark.parametrize("damage", ["missing", "changed"])
+def test_anchored_replay_rechecks_sibling_external_access_before_publication(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
+) -> None:
+    from artisan.errors import StoreIntegrityError
+    from artisan.orchestration.retained_replay import prepare_retained_replay
+    from artisan.storage.io.admission import admission_directory
+
+    artifact, prepared = _installation(tmp_path / "database")
+    _forbid_payload_transport(monkeypatch)
+    with _manager(tmp_path / "store", {artifact.artifact_id: prepared}) as manager:
+        result = manager.run(
+            _AnchoredExternalOffset, inputs=_anchored_external_inputs(artifact)
+        )
+        assert result.status is StepStatus.SUCCEEDED, result.error
+        original = next(
+            source
+            for source in _sources(manager, result.step_run_id)
+            if source.plan.admission.attempt.assignment.unit_index == 0
+        )
+        replay = prepare_retained_replay(
+            manager.committer,
+            original.plan.receipt.delivery.delivery_id,
+            registered_definitions={
+                (
+                    _AnchoredExternalOffset.__module__,
+                    _AnchoredExternalOffset.__qualname__,
+                ): _AnchoredExternalOffset,
+            },
+            runtime_replacements={},
+            allow_code_change=False,
+        )
+        assert replay.original_selection is not None
+        sibling = replay.original_selection.origin_step.assignments[1]
+        path = (
+            Path(admission_directory(manager.config.delta_root, sibling.attempt))
+            / "external-access.json"
+        )
+        if damage == "missing":
+            path.unlink()
+        else:
+            path.write_bytes(path.read_bytes() + b" ")
+        expected = FileNotFoundError if damage == "missing" else StoreIntegrityError
+        with pytest.raises(expected):
+            replay.validate_selection(
+                manager.committer, replay.delivery.attempt.software_digest
+            )
+        assert manager.committer.journal.state(replay.identity) is None

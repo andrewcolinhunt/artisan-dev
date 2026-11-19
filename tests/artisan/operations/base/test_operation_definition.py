@@ -1225,11 +1225,15 @@ def test_cacheable_is_class_only_and_bound_into_resolved_recipe(
 
 @pytest.mark.parametrize("length", [2, 3])
 @pytest.mark.parametrize("mixed", [False, True])
-def test_indirect_output_lineage_cycles_rejected(length: int, mixed: bool) -> None:
+@pytest.mark.parametrize("optional", [False, True])
+def test_indirect_output_lineage_cycles_rejected(
+    length: int, mixed: bool, optional: bool
+) -> None:
     specs = {
         f"role{i}": OutputSpec(
             derives_from={"outputs": [f"role{(i + 1) % length}"]}
-            | ({"inputs": []} if mixed else {})
+            | ({"inputs": []} if mixed else {}),
+            optional_parent_roles=(f"role{(i + 1) % length}",) if optional else (),
         )
         for i in range(length)
     }

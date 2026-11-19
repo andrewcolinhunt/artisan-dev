@@ -97,7 +97,8 @@ for examples.
 ## Lineage declaration
 
 The [`derives_from`](operations-model.md#output-specs) field on `OutputSpec`
-constrains the mappings supplied for each output occurrence:
+constrains the mappings supplied for each output occurrence. With no
+`optional_parent_roles`, every listed role is required:
 
 | Pattern | Required declaration |
 | --- | --- |
@@ -106,6 +107,11 @@ constrains the mappings supplied for each output occurrence:
 | `{"outputs": ["processed"]}` | At least one co-produced output addressed by its index in `processed` |
 | `{"inputs": ["reference"], "outputs": ["processed"]}` | At least one input reference and one co-produced output, both required for each occurrence |
 | `{"inputs": []}` | A root role, with an explicit empty lineage list |
+
+Use `optional_parent_roles` to permit a declared parent role to be absent from
+an individual result. This tuple contains role names. Listing a name declared
+in both input and output namespaces makes it optional in both. Every supplied
+parent still needs a valid reference in its declared namespace.
 
 Every creator output needs a contract. `None` is permitted only for passthrough
 outputs; curators that emit drafts need contracts too. A curator with no static
@@ -126,7 +132,8 @@ A comparison score can declare both a newly generated candidate and an
 independent input reference as parents. Its contract lists both namespaces;
 the result supplies an input ID or exact input reference and a sibling-output
 index. These parents form one joint derivation. Listing a role in both
-namespaces requires a parent from each, even if the names are identical.
+namespaces requires a parent from each unless that name is in
+`optional_parent_roles`.
 
 ### Config ancestry
 
@@ -191,8 +198,9 @@ agreement with the static contract, input membership in the named role, and
 duplicate exact declarations. Two different parents in one role are valid.
 
 Completeness validation requires every derived output occurrence to have a
-parent from every listed role. Roots must have no mappings. These checks run
-before recording success or staging artifact edges and do not consider filenames.
+parent from every listed role except those in `optional_parent_roles`. Roots
+must have no mappings. These checks run before recording success or staging
+artifact edges and do not consider filenames.
 
 Structural validation cannot decide whether the author selected the scientifically
 correct parents. That responsibility belongs to the operation and its tests.

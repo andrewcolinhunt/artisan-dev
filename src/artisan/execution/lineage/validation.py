@@ -74,6 +74,7 @@ def validate_lineage_completeness(
                 (kind, parent_role)
                 for kind, roles in (spec.derives_from or {}).items()
                 for parent_role in roles
+                if parent_role not in spec.optional_parent_roles
             }
             if spec
             else set()

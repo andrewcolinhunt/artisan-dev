@@ -11,6 +11,11 @@ from artisan.execution.inputs.grouping import validate_stem_match_uniqueness
 from artisan.execution.inputs.lineage_matching import match_by_ancestry
 from artisan.execution.inputs.partitioning import partition_local_inputs
 from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
+from artisan.schemas.composites.input_contracts import (
+    split_shared_inputs,
+    validate_nonempty_selection,
+)
 from artisan.schemas.composites.plan import InvocationPolicy
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.provenance.occurrence import OccurrenceAddress
@@ -56,6 +61,27 @@ def partition_occurrence_inputs(
     lineage: LineageSnapshot | None = None,
 ) -> Iterator[dict[str, tuple[InputSelection, ...]]]:
     """Pair once at the boundary and reuse local scientific partition semantics."""
+    validate_nonempty_selection(inputs, policy)
+    paired, shared = split_shared_inputs(inputs, policy.shared_input_roles)
+    if shared:
+        if not any(paired.values()):
+            return
+        policy = policy.model_copy(
+            update={"shared_input_roles": (), "required_nonempty_inputs": ()}
+        )
+        for partition in partition_occurrence_inputs(paired, policy, lineage=lineage):
+            yield {
+                role: shared[role] if role in shared else partition[role]
+                for role in inputs
+            }
+        return
+    if isinstance(policy.group_by, AnchoredNameGrouping):
+        yield from partition_local_inputs(
+            inputs,
+            policy,
+            name_for=lambda item: getattr(item.artifact, "original_name", None),
+        )
+        return
     if not inputs or not any(inputs.values()) or policy.independent_input_streams:
         yield from partition_local_inputs(inputs, policy)
         return

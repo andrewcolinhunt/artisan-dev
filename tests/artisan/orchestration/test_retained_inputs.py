@@ -1107,3 +1107,48 @@ def test_unrelated_diagnostic_endpoints_do_not_poison_ordinary_associations(
         _recipe("data"), {"data": [diagnostic]}, step_run_id="d" * 32, reader=reader
     )[0]
     assert selected.boundary.input_attribution[0].producer == diagnostic.reference
+
+
+def test_shared_unscoped_dependency_is_excluded_from_lineage_selection(
+    reader: RetainedReader,
+) -> None:
+    _, receipt = _seed(reader)
+    result = reader.read(receipt)
+    first, other = result.output("structures")
+    score = result.output("metrics")[0]
+    policy = InvocationPolicy(
+        group_by=GroupByStrategy.LINEAGE,
+        shared_input_roles=("reference",),
+        artifacts_per_unit=2,
+    )
+    recipe = _recipe("structure", "metric", "reference", policy=policy).model_copy(
+        update={"schema_version": 2}
+    )
+    dependency = _csv(42)
+    units = prepare_step_inputs(
+        recipe,
+        {
+            "reference": [dependency],
+            "structure": [other, first, first, first],
+            "metric": [score],
+        },
+        step_run_id="b" * 32,
+        reader=reader,
+    )
+    assert [len(unit.boundary.input_roles()["structure"]) for unit in units] == [2, 1]
+    for unit in units:
+        roles = unit.boundary.input_roles()
+        assert len(roles["reference"]) == 1
+        assert (
+            unit.artifacts[roles["reference"][0]].artifact_id == dependency.artifact_id
+        )
+        attribution = {
+            item.boundary: item.producer for item in unit.boundary.input_attribution
+        }
+        assert attribution[roles["reference"][0]] is None
+        assert all(
+            attribution[address] == first.reference for address in roles["structure"]
+        )
+        assert all(
+            attribution[address] == score.reference for address in roles["metric"]
+        )

@@ -40,6 +40,16 @@ def operation_behavior(operation: OperationDefinition) -> dict[str, Any]:
         "inputs": {
             key: spec.model_dump(mode="json") for key, spec in operation.inputs.items()
         },
+        **(
+            {"shared_input_roles": list(operation.shared_input_roles)}
+            if operation.shared_input_roles
+            else {}
+        ),
+        **(
+            {"required_nonempty_inputs": list(operation.required_nonempty_inputs)}
+            if operation.required_nonempty_inputs
+            else {}
+        ),
         "outputs": {
             key: spec.model_dump(mode="json") for key, spec in operation.outputs.items()
         },
