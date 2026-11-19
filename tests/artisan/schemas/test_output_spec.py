@@ -78,14 +78,23 @@ class TestDerivesFrom:
         )
         assert spec.derives_from == {"outputs": ["data"]}
 
-    def test_rejects_combined_inputs_outputs(self):
-        """Test that combined inputs+outputs (old GROUP pattern) is rejected."""
-        with pytest.raises(ValidationError) as exc_info:
-            OutputSpec(
-                artifact_type=ArtifactTypes.METRIC,
-                derives_from={"inputs": ["data"], "outputs": ["data"]},
-            )
-        assert "no longer supported" in str(exc_info.value)
+    def test_derives_from_combined_namespaces(self) -> None:
+        spec = OutputSpec(
+            artifact_type=ArtifactTypes.METRIC,
+            derives_from={"inputs": ["data"], "outputs": ["data"]},
+        )
+        assert spec.derives_from == {"inputs": ["data"], "outputs": ["data"]}
+
+    @pytest.mark.parametrize("kind", ["inputs", "outputs"])
+    def test_combined_namespaces_reject_duplicate_roles(self, kind: str) -> None:
+        parents = {"inputs": ["data"], "outputs": ["data"]}
+        parents[kind].append("data")
+        with pytest.raises(ValidationError, match="Duplicate roles"):
+            OutputSpec(derives_from=parents)
+
+    def test_combined_namespaces_reject_empty_outputs(self) -> None:
+        with pytest.raises(ValidationError, match="at least one output role"):
+            OutputSpec(derives_from={"inputs": ["data"], "outputs": []})
 
     def test_derives_from_generative(self):
         """Test OutputSpec with generative operation (no parents)."""
@@ -238,6 +247,8 @@ def test_optional_parents_are_an_explicit_subset(kind: str) -> None:
         ({"inputs": ["source"]}, ("other",)),
         ({"inputs": ["source"]}, ("source", "source")),
         ({"inputs": ["source"]}, ("",)),
+        ({"inputs": ["source"], "outputs": ["candidate"]}, ("other",)),
+        ({"inputs": ["source"], "outputs": ["candidate"]}, ("source", "source")),
     ],
 )
 def test_invalid_optional_parent_contract_fails(

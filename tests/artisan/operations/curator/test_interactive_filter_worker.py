@@ -20,8 +20,9 @@ from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.storage.io.retained_store import open_configured_store
 
 
+@pytest.mark.parametrize("threshold", [0.5, 1.0])
 def test_interactive_selection_uses_actual_local_worker_and_closes_owner(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, threshold: float
 ) -> None:
     root = tmp_path / "delta"
     data = CSVArtifact.draft(b"value\n1\n", "sample.csv", 0).finalize()
@@ -52,18 +53,19 @@ def test_interactive_selection_uses_actual_local_worker_and_closes_owner(
     monkeypatch.setattr(LocalRunner, "launch_curator", tracked_launch)
     selected = InteractiveFilter(str(root))
     selected.load()
-    selected.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5}])
+    selected.set_criteria([{"metric": "score", "operator": "gt", "value": threshold}])
     result = selected.commit()
     assert result.status == StepStatus.SUCCEEDED
     assert result.total_count == result.succeeded_count == 1
-    assert result.metadata["diagnostics"]["total_passed"] == 1
+    expected_ids = [data.artifact_id] if threshold < 0.9 else []
+    assert result.metadata["diagnostics"]["total_passed"] == len(expected_ids)
     assert result.step_run_id is not None
     outputs = read_current_step_outputs(
         open_configured_store(str(root)), result.step_run_id
     )
     assert [
         item.artifact.artifact_id for group in outputs for item in group.occurrences
-    ] == [data.artifact_id]
+    ] == expected_ids
     assert len(handles) == 1
     assert handles[0].ownership_state() == OwnershipState.CLOSED
     if handles[0].worker_owner is not None:

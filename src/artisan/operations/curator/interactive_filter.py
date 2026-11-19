@@ -630,7 +630,8 @@ class InteractiveFilter:
 
         Writes step, execution, and execution_edge records to the Delta store,
         making the filter result available for downstream pipeline steps via
-        ``result.output("passthrough")``.
+        ``result.output("passthrough")``. A selection with no passing artifacts
+        records the criteria and an empty output.
 
         Args:
             step_name: Name for the committed step.
@@ -639,8 +640,7 @@ class InteractiveFilter:
             StepResult for downstream wiring.
 
         Raises:
-            ValueError: If data not loaded, criteria not set, or no artifacts
-                pass the filter.
+            ValueError: If data not loaded or criteria not set.
         """
         if self._wide_df is None:
             msg = "No data loaded. Call load() first."
@@ -650,9 +650,6 @@ class InteractiveFilter:
             raise ValueError(msg)
 
         filtered = self.filtered_ids
-        if not filtered:
-            msg = "No artifacts pass the current criteria. Adjust thresholds."
-            raise ValueError(msg)
 
         from artisan.execution.assignment_transport import AssignmentDispatch
         from artisan.operations.curator._interactive_selection import (

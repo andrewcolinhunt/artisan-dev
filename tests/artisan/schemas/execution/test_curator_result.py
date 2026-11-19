@@ -90,8 +90,6 @@ def test_indices_are_role_local_and_can_address_siblings() -> None:
         {"dataset": [-1]},
         {"dataset": ["bad"]},
         {"dataset": [1.5]},
-        {"dataset": [0, "a" * 32]},
-        {"dataset": ["a" * 32], "other": [0]},
         {"": ["a" * 32]},
     ],
 )

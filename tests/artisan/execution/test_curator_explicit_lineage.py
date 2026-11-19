@@ -246,6 +246,33 @@ def test_required_parent_roles_are_enforced(execute_declared_result):
         )
 
 
+def test_mixed_parents_share_one_derivation_without_merging_namespaces(
+    execute_declared_result,
+) -> None:
+    candidate, score = _draft("candidate.csv"), _draft("comparison.csv")
+    result = ArtifactResult()
+    candidate_index = result.add_artifact("data", candidate, sources={})
+    result.add_artifact("score", score, sources={"data": ["a" * 32, candidate_index]})
+    edges = execute_declared_result(
+        result,
+        inputs={"data": ["a" * 32]},
+        specs={
+            "data": OutputSpec(artifact_type="csv", derives_from={"inputs": []}),
+            "score": OutputSpec(
+                artifact_type="csv",
+                derives_from={"inputs": ["data"], "outputs": ["data"]},
+            ),
+        },
+    )
+    assert {edge.source_artifact_id for edge in edges} == {
+        "a" * 32,
+        candidate.artifact_id,
+    }
+    assert {edge.target_artifact_id for edge in edges} == {score.artifact_id}
+    assert len({edge.group_id for edge in edges}) == 1
+    assert edges[0].group_id is not None
+
+
 def test_fan_in_uses_declared_parents_without_hydrating(execute_declared_result):
     output = _draft()
     result = ArtifactResult(

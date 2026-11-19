@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import time
 import weakref
+from collections.abc import Iterator
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
@@ -140,6 +141,32 @@ def test_stream_assigns_outer_origin_before_persisting(
         assert pl.read_parquet(execute.path / filename)[
             "origin_step_number"
         ].to_list() == [execute.context.step_number]
+
+
+def test_stream_rejects_mixed_parent_contract_before_consuming_items(
+    execute: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        StreamTestOp,
+        "outputs",
+        {
+            "csv": OutputSpec(
+                artifact_type="csv",
+                derives_from={"inputs": ["source"], "outputs": ["sibling"]},
+            )
+        },
+    )
+    consumed = False
+
+    def items() -> Iterator[ArtifactEmission]:
+        nonlocal consumed
+        consumed = True
+        yield _emission()
+
+    result = execute(items())
+    assert not result.success
+    assert "explicit input-parent lineage" in result.error
+    assert not consumed
 
 
 def test_stream_releases_artifacts_and_snapshots_nested_metadata(execute):
