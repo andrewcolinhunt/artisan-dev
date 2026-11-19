@@ -45,6 +45,35 @@ def test_repeated_content_can_name_both_distinct_input_positions() -> None:
     validate([exact(0), exact(1)], [SOURCE, SOURCE])
 
 
+def test_mixed_parents_keep_equal_input_and_output_positions_distinct() -> None:
+    artifact = MetricArtifact.draft({"value": 1}, "value.json", 1)
+    sibling = LineageMapping(draft_index=0, source_role="data", source_output_index=0)
+    mappings = [exact(0), exact(1), sibling]
+    specs = {
+        "data": OutputSpec(artifact_type="metric", derives_from={"inputs": []}),
+        "metrics": OutputSpec(
+            artifact_type="metric",
+            derives_from={"inputs": ["data"], "outputs": ["data"]},
+        ),
+    }
+    validate_lineage_integrity(
+        {"data": [], "metrics": mappings},
+        {"data": [SOURCE, SOURCE]},
+        {"data": [artifact], "metrics": [artifact]},
+        specs,
+        invocation_id="call",
+    )
+    for duplicate in (exact(0), sibling):
+        with pytest.raises(LineageIntegrityError, match="Duplicate"):
+            validate_lineage_integrity(
+                {"data": [], "metrics": [*mappings, duplicate]},
+                {"data": [SOURCE, SOURCE]},
+                {"data": [artifact], "metrics": [artifact]},
+                specs,
+                invocation_id="call",
+            )
+
+
 def test_id_only_reference_requires_unique_occurrence() -> None:
     mapping = LineageMapping(
         draft_index=0, source_role="data", source_artifact_id=SOURCE

@@ -205,12 +205,15 @@ role; it does not enforce a fixed number of outputs per input artifact.
 |---------|--------|----------|
 | Derived from input(s) | `{"inputs": ["role_name"]}` | Output transforms a named input |
 | Derived from output | `{"outputs": ["role_name"]}` | Output derives from another output of the same operation |
+| Derived from both | `{"inputs": ["reference"], "outputs": ["candidate"]}` | Output jointly uses an input reference and a newly produced candidate |
 | Generative | `{"inputs": []}` | Output has no parents |
 
 `None` is only valid for passthrough outputs. Artifact-producing curators
 follow the same explicit contract as creators. `{}` (empty dict) always raises
-`ValidationError`. Combined `{"inputs": [...], "outputs": [...]}` is not
-supported — use separate output roles instead.
+`ValidationError`. You can combine `"inputs"` and `"outputs"`; each listed
+role is required independently in its namespace. In `add_artifact`, use input
+IDs or exact input references for input parents and integer indices for
+sibling outputs. The reference types keep identically named roles distinct.
 
 ---
 
@@ -946,7 +949,6 @@ See [Configuring Execution](configuring-execution.md) for resource and batching 
 | `TypeError: must implement preprocess()` | Creator with non-empty `inputs` but no preprocess | Override `preprocess()` |
 | `TypeError: must set derives_from` | Creator output with `derives_from=None` | Set to `{"inputs": [...]}` or `{"inputs": []}` |
 | `ValidationError` on `OutputSpec` | Used `{}` for lineage | Use `{"inputs": []}` for generative outputs |
-| `ValidationError` on `OutputSpec` | Combined `{"inputs": [...], "outputs": [...]}` | Use separate output roles instead |
 | Empty artifacts after postprocess | Wrong file extension filter or missing files | Check `file_outputs` contents in the execute directory |
 | Missing lineage | An emitted role or derived draft has no declaration | Return exact parents for each derived draft, and an empty list for roots |
 | `ValidationError` on `LineageMapping` | Set both source fields, or neither | Use `source_artifact_id` for input parents or `source_output_index` for co-produced outputs |

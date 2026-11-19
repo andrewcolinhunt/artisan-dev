@@ -22,7 +22,11 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.composites.plan import ExecutionRecipe, RoleBinding
+from artisan.schemas.composites.plan import (
+    ExecutionRecipe,
+    MixedOutputContract,
+    RoleBinding,
+)
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult
 from artisan.schemas.execution.result_support import ArtifactResultSupport
@@ -245,16 +249,25 @@ def _validate_plan_bindings(plan: CompiledPlan) -> None:
 
 
 def _output_specs(recipe: ExecutionRecipe) -> dict[str, OutputSpec]:
-    return {
-        spec.role: OutputSpec(
+    outputs = {}
+    for spec in recipe.outputs:
+        if isinstance(spec, MixedOutputContract):
+            lineage = {
+                "inputs": list(spec.input_parent_roles),
+                "outputs": list(spec.output_parent_roles),
+            }
+        else:
+            lineage = (
+                None
+                if spec.parent_kind is None
+                else {spec.parent_kind: list(spec.parent_roles)}
+            )
+        outputs[spec.role] = OutputSpec(
             artifact_type=spec.artifact_type,
             required=spec.required,
-            derives_from=None
-            if spec.parent_kind is None
-            else {spec.parent_kind: list(spec.parent_roles)},
+            derives_from=lineage,
         )
-        for spec in recipe.outputs
-    }
+    return outputs
 
 
 class _PlanRuntime:

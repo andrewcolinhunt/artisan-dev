@@ -517,6 +517,21 @@ class TestLineageRoleValidation:
                 {"outputs": ["result"]},
                 "cannot derive lineage from itself",
             ),
+            (
+                "_mixed_unknown_input_lineage",
+                {"inputs": ["missing"], "outputs": ["intermediate"]},
+                "references unknown input roles",
+            ),
+            (
+                "_mixed_unknown_output_lineage",
+                {"inputs": ["source"], "outputs": ["missing"]},
+                "references unknown output roles",
+            ),
+            (
+                "_mixed_self_output_lineage",
+                {"inputs": ["source"], "outputs": ["result"]},
+                "cannot derive lineage from itself",
+            ),
         ],
     )
     def test_invalid_role_reference_raises_without_registration(
@@ -1209,9 +1224,13 @@ def test_cacheable_is_class_only_and_bound_into_resolved_recipe(
 
 
 @pytest.mark.parametrize("length", [2, 3])
-def test_indirect_output_lineage_cycles_rejected(length: int) -> None:
+@pytest.mark.parametrize("mixed", [False, True])
+def test_indirect_output_lineage_cycles_rejected(length: int, mixed: bool) -> None:
     specs = {
-        f"role{i}": OutputSpec(derives_from={"outputs": [f"role{(i + 1) % length}"]})
+        f"role{i}": OutputSpec(
+            derives_from={"outputs": [f"role{(i + 1) % length}"]}
+            | ({"inputs": []} if mixed else {})
+        )
         for i in range(length)
     }
     with pytest.raises(TypeError, match="cycle in output lineage"):
