@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import errno
+import hashlib
 from pathlib import Path
+from typing import Literal
 
 import pytest
 
@@ -23,22 +25,32 @@ from artisan.storage.external_access import (
 from artisan.utils.hashing import compute_content_digest
 
 
-def _installation(root: Path) -> ExternalFilesDescriptor:
+def _installation(
+    root: Path, hash_algorithm: Literal["xxh3_128", "sha256"] = "xxh3_128"
+) -> ExternalFilesDescriptor:
     (root / "nested").mkdir()
     (root / "nested/weights.bin").write_bytes(b"abc")
     return ExternalFilesDescriptor(
         files=(
             ExternalFile(
                 path="nested/weights.bin",
-                content_hash=compute_content_digest(b"abc"),
+                hash_algorithm=hash_algorithm,
+                content_hash=(
+                    hashlib.sha256(b"abc").hexdigest()
+                    if hash_algorithm == "sha256"
+                    else compute_content_digest(b"abc")
+                ),
                 size_bytes=3,
             ),
         )
     )
 
 
-def test_preparation_writes_only_completion_receipt(tmp_path: Path) -> None:
-    descriptor = _installation(tmp_path)
+@pytest.mark.parametrize("hash_algorithm", ["xxh3_128", "sha256"])
+def test_preparation_writes_only_completion_receipt(
+    tmp_path: Path, hash_algorithm: Literal["xxh3_128", "sha256"]
+) -> None:
+    descriptor = _installation(tmp_path, hash_algorithm)
     payload = tmp_path / descriptor.files[0].path
     before = payload.stat()
     prepared = prepare_external_files(tmp_path, descriptor)
@@ -53,11 +65,13 @@ def test_preparation_writes_only_completion_receipt(tmp_path: Path) -> None:
     assert prepare_external_files(tmp_path, descriptor) == prepared
 
 
+@pytest.mark.parametrize("hash_algorithm", ["xxh3_128", "sha256"])
 def test_repeated_verification_never_reads_or_hashes_payload(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    hash_algorithm: Literal["xxh3_128", "sha256"],
 ) -> None:
-    prepared = prepare_external_files(tmp_path, _installation(tmp_path))
+    prepared = prepare_external_files(tmp_path, _installation(tmp_path, hash_algorithm))
     original_open = Path.open
 
     def guard(path: Path, *args: object, **kwargs: object):
@@ -97,8 +111,11 @@ def test_external_layout_changes_are_rejected(tmp_path: Path, kind: str) -> None
         verify_prepared_external_files(prepared)
 
 
-def test_same_size_mutation_requires_explicit_reverification(tmp_path: Path) -> None:
-    prepared = prepare_external_files(tmp_path, _installation(tmp_path))
+@pytest.mark.parametrize("hash_algorithm", ["xxh3_128", "sha256"])
+def test_same_size_mutation_requires_explicit_reverification(
+    tmp_path: Path, hash_algorithm: Literal["xxh3_128", "sha256"]
+) -> None:
+    prepared = prepare_external_files(tmp_path, _installation(tmp_path, hash_algorithm))
     (tmp_path / "nested/weights.bin").write_bytes(b"xyz")
     assert verify_prepared_external_files(prepared) == tmp_path
     with pytest.raises(ArtifactIntegrityError, match="content differs"):
@@ -119,8 +136,11 @@ def test_receipt_identity_is_checked(tmp_path: Path, kind: str) -> None:
         verify_prepared_external_files(prepared)
 
 
-def test_preparation_does_not_publish_for_wrong_bytes(tmp_path: Path) -> None:
-    descriptor = _installation(tmp_path)
+@pytest.mark.parametrize("hash_algorithm", ["xxh3_128", "sha256"])
+def test_preparation_does_not_publish_for_wrong_bytes(
+    tmp_path: Path, hash_algorithm: Literal["xxh3_128", "sha256"]
+) -> None:
+    descriptor = _installation(tmp_path, hash_algorithm)
     (tmp_path / "nested/weights.bin").write_bytes(b"xyz")
     with pytest.raises(ArtifactIntegrityError, match="content differs"):
         prepare_external_files(tmp_path, descriptor)
@@ -247,3 +267,29 @@ def test_preparation_propagates_other_filesystem_errors(
     assert caught.value.errno == errno.EIO
     assert not (tmp_path / EXTERNAL_FILES_RECEIPT).exists()
     assert not list(tmp_path.glob(".artisan-prepare-*"))
+
+
+def test_preparation_accepts_mixed_declared_hash_algorithms(tmp_path: Path) -> None:
+    (tmp_path / "first.bin").write_bytes(b"abc")
+    (tmp_path / "second.bin").write_bytes(b"xyz")
+    descriptor = ExternalFilesDescriptor(
+        files=(
+            ExternalFile(
+                path="first.bin",
+                hash_algorithm="sha256",
+                content_hash=hashlib.sha256(b"abc").hexdigest(),
+                size_bytes=3,
+            ),
+            ExternalFile(
+                path="second.bin",
+                hash_algorithm="xxh3_128",
+                content_hash=compute_content_digest(b"xyz"),
+                size_bytes=3,
+            ),
+        )
+    )
+    prepared = prepare_external_files(tmp_path, descriptor)
+    assert verify_prepared_external_files(prepared) == tmp_path
+    assert (tmp_path / EXTERNAL_FILES_RECEIPT).read_bytes() == expected_receipt_bytes(
+        descriptor
+    )

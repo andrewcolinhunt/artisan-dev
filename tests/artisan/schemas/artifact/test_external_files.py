@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import hashlib
 import subprocess
 import sys
 from pathlib import Path
-from typing import ClassVar
+from typing import ClassVar, Literal
 
 import pytest
 from pydantic import Field, ValidationError
@@ -30,13 +31,20 @@ pytestmark = pytest.mark.usefixtures("external_artifact_types")
 
 
 def _descriptor(
-    path: str = "weights.bin", content: bytes = b"abc"
+    path: str = "weights.bin",
+    content: bytes = b"abc",
+    hash_algorithm: Literal["xxh3_128", "sha256"] = "xxh3_128",
 ) -> ExternalFilesDescriptor:
     return ExternalFilesDescriptor(
         files=(
             ExternalFile(
                 path=path,
-                content_hash=compute_content_digest(content),
+                hash_algorithm=hash_algorithm,
+                content_hash=(
+                    hashlib.sha256(content).hexdigest()
+                    if hash_algorithm == "sha256"
+                    else compute_content_digest(content)
+                ),
                 size_bytes=len(content),
             ),
         )
@@ -108,6 +116,47 @@ def test_external_descriptor_rejects_unknown_or_coerced_version(
         )
 
 
+@pytest.mark.parametrize(
+    ("algorithm", "digest"),
+    [
+        ("sha256", "a" * 32),
+        ("xxh3_128", "a" * 64),
+        ("sha256", "A" * 64),
+        ("md5", "a" * 32),
+        ("", "a" * 32),
+    ],
+)
+def test_external_file_rejects_inconsistent_digest_declarations(
+    algorithm: str, digest: str
+) -> None:
+    with pytest.raises(ValidationError):
+        ExternalFile.model_validate(
+            {
+                "path": "reference.bin",
+                "content_hash": digest,
+                "hash_algorithm": algorithm,
+                "size_bytes": 3,
+            }
+        )
+
+
+def test_external_descriptor_records_algorithms_in_identity() -> None:
+    first = _descriptor()
+    second = _descriptor(hash_algorithm="sha256")
+    assert first.files[0].hash_algorithm == "xxh3_128"
+    assert b'"hash_algorithm":"xxh3_128"' in first.canonical_bytes()
+    assert b'"hash_algorithm":"sha256"' in second.canonical_bytes()
+    assert first.digest != second.digest
+    assert expected_receipt_digest(first) != expected_receipt_digest(second)
+    assert (
+        ExternalFilesArtifact.draft(first).finalize().artifact_id
+        != ExternalFilesArtifact.draft(second).finalize().artifact_id
+    )
+    assert (
+        ExternalFilesDescriptor.model_validate_json(second.canonical_bytes()) == second
+    )
+
+
 def test_prepared_metadata_requires_no_filesystem_access(tmp_path: Path) -> None:
     descriptor = _descriptor()
     prepared = PreparedExternalFiles(
@@ -127,11 +176,13 @@ def test_prepared_metadata_requires_no_filesystem_access(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize("weights", [False, True])
+@pytest.mark.parametrize("hash_algorithm", ["xxh3_128", "sha256"])
 def test_external_artifact_rows_and_runtime_root_preserve_identity(
     tmp_path: Path,
     weights: bool,
+    hash_algorithm: Literal["xxh3_128", "sha256"],
 ) -> None:
-    descriptor = _descriptor()
+    descriptor = _descriptor(hash_algorithm=hash_algorithm)
     artifact = (
         ModelWeightsArtifact.draft_weights(descriptor, model_family="example")
         if weights
