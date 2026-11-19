@@ -163,6 +163,14 @@ def test_original_curator_edge_columns_and_deduplicated_execution_membership_rou
     assert facade_edges.sort(facade_edges.columns).equals(
         expected.select(facade_edges.columns).sort(facade_edges.columns)
     )
+    direct = store.provenance.load_direct_edges_df(
+        set(expected["target_artifact_id"]),
+        include_roles=True,
+        execution_ids={execution},
+    )
+    assert direct.sort(direct.columns).equals(
+        expected.select(direct.columns).sort(direct.columns)
+    )
     assert store._read_scope is not None
     with store._read_scope.activate():
         assert store._view is not None

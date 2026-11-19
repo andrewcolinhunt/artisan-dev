@@ -71,6 +71,7 @@ def validate_lineage_completeness(
         spec = output_specs.get(role)
         required_roles = (
             set(next(iter(spec.derives_from.values())))
+            - set(spec.optional_parent_roles)
             if spec and spec.derives_from
             else set()
         )

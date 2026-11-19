@@ -159,6 +159,20 @@ The descendant query follows every reachable derivation edge. Do not restrict
 it to the source artifact's origin step: descendants can originate in later
 steps or other runs.
 
+To keep the roles on direct relations, continue with the same store and artifact:
+
+```python
+edges = store.provenance.load_direct_edges_df({artifact_id}, include_roles=True)
+```
+
+This includes parents without an origin step, such as externally referenced
+artifacts. It reads the visible ordinary direct graph across executions; selecting
+accepted target content IDs alone does not select the execution that produced
+them. Pass `execution_ids` from authoritative run or attempt membership when you
+need that narrower scope. An explicitly empty execution selection matches no
+edges. The existing `load_edges_df` method instead filters both endpoints by
+their first origin step numbers.
+
 To load directly associated metrics as artifact objects:
 
 ```python

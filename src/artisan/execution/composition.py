@@ -22,6 +22,13 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
+from artisan.schemas.composites.input_contracts import (
+    partition_work_size,
+    split_shared_inputs,
+    validate_nonempty_selection,
+    validate_partition_shape,
+)
 from artisan.schemas.composites.plan import ExecutionRecipe, RoleBinding
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -122,6 +129,14 @@ def validate_local_inputs(
     _validate_plan_bindings(plan)
     _validate_local_policy(plan)
     _validate_input_artifacts(plan.recipe, inputs)
+    if isinstance(plan.recipe.policy.group_by, AnchoredNameGrouping):
+        # Validate the complete selection before a standalone cache lookup.
+        for _ in partition_local_inputs(
+            inputs,
+            plan.recipe.policy,
+            name_for=lambda artifact: getattr(artifact, "original_name", None),
+        ):
+            pass
     for role, values in inputs.items():
         for index, artifact in enumerate(values):
             ArtifactOccurrence(
@@ -131,7 +146,9 @@ def validate_local_inputs(
 
 
 def _validate_local_policy(plan: CompiledPlan) -> None:
-    if plan.recipe.policy.group_by not in (
+    if not isinstance(
+        plan.recipe.policy.group_by, AnchoredNameGrouping
+    ) and plan.recipe.policy.group_by not in (
         None,
         GroupByStrategy.ZIP,
         GroupByStrategy.CROSS_PRODUCT,
@@ -160,7 +177,9 @@ def execute_local_plan(
     specs = _output_specs(plan.recipe)
     exports: dict[str, list[OccurrenceAddress]] = {role: [] for role in specs}
     for index, partition in enumerate(
-        partition_local_inputs(boundary, plan.recipe.policy)
+        partition_local_inputs(
+            boundary, plan.recipe.policy, name_for=runtime.original_name
+        )
     ):
         runtime.invocation_id = f"{invocation_id}/root/{index}"
         produced = runtime.execute(plan, partition, path=(), admitted=True)
@@ -212,6 +231,7 @@ def _finish_plan(
 def _validate_input_artifacts(
     recipe: ExecutionRecipe, inputs: Mapping[str, Sequence[Artifact]]
 ) -> None:
+    split_shared_inputs(inputs, recipe.policy.shared_input_roles)
     specs = {spec.role: spec for spec in recipe.inputs}
     missing = {
         role for role, spec in specs.items() if spec.required and role not in inputs
@@ -249,6 +269,7 @@ def _output_specs(recipe: ExecutionRecipe) -> dict[str, OutputSpec]:
         spec.role: OutputSpec(
             artifact_type=spec.artifact_type,
             required=spec.required,
+            optional_parent_roles=spec.optional_parent_roles,
             derives_from=None
             if spec.parent_kind is None
             else {spec.parent_kind: list(spec.parent_roles)},
@@ -312,6 +333,8 @@ class _PlanRuntime:
         admitted: bool = False,
     ) -> OccurrenceStreams:
         self._validate_inputs(plan.recipe, inputs)
+        if not admitted:
+            validate_nonempty_selection(inputs, plan.recipe.policy)
         if plan.recipe.definition.kind == "creator":
             return self._creator(plan, inputs, path, admitted=admitted)
         calls: dict[str, OccurrenceStreams] = {}
@@ -338,6 +361,13 @@ class _PlanRuntime:
             },
         )
 
+    def original_name(self, address: OccurrenceAddress) -> object:
+        return getattr(
+            self.graph.nodes[self.graph.original(address)].artifact,
+            "original_name",
+            None,
+        )
+
     def _creator(
         self,
         plan: CompiledPlan,
@@ -347,14 +377,13 @@ class _PlanRuntime:
         admitted: bool,
     ) -> OccurrenceStreams:
         policy = plan.recipe.policy
-        if (
-            admitted
-            and not policy.independent_input_streams
-            and len({len(values) for values in inputs.values()}) > 1
-        ):
-            msg = "An admitted paired creator partition must have equal input lengths"
-            raise ValueError(msg)
-        partitions = (inputs,) if admitted else partition_local_inputs(inputs, policy)
+        if admitted:
+            validate_partition_shape(inputs, policy, name_for=self.original_name)
+        partitions = (
+            (inputs,)
+            if admitted
+            else partition_local_inputs(inputs, policy, name_for=self.original_name)
+        )
         outputs: dict[str, list[OccurrenceAddress]] = {
             spec.role: [] for spec in plan.recipe.outputs
         }
@@ -374,10 +403,9 @@ class _PlanRuntime:
                 result = self.invoke(
                     operation,
                     context,
-                    batch_size=max(
-                        (len(values) for values in partition.values()), default=1
-                    )
-                    or 1,
+                    batch_size=partition_work_size(
+                        partition, policy, name_for=self.original_name
+                    ),
                     execute_router=router,
                     materialization_references=references,
                     step_number=self.step_number,

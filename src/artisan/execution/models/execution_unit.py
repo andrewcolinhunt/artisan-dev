@@ -12,6 +12,8 @@ from pydantic import BaseModel, Field, model_validator
 
 from artisan.execution.inputs._validation import is_hex_id
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
+from artisan.schemas.composites.input_contracts import split_shared_inputs
 from artisan.schemas.execution.replay import ReplayAssociation, ReplaySnapshot
 
 
@@ -20,7 +22,8 @@ class ExecutionUnit(BaseModel):
 
     Maps each input role to a list of artifact IDs.  All roles must have
     the same batch size unless the operation declares
-    ``independent_input_streams``.
+    ``independent_input_streams``. Declared shared roles instead contain exactly
+    one occurrence and do not contribute to the paired batch size.
 
     Attributes:
         operation: Fully configured operation instance.
@@ -96,9 +99,18 @@ class ExecutionUnit(BaseModel):
                     )
                     raise ValueError(msg)
 
+        if isinstance(self.operation.group_by, AnchoredNameGrouping):
+            msg = "Anchored grouping requires retained occurrence admission"
+            raise ValueError(msg)
+        paired, shared = split_shared_inputs(
+            self.inputs, self.operation.shared_input_roles
+        )
+        if shared and not any(paired.values()):
+            msg = "Shared inputs alone contain no admitted work"
+            raise ValueError(msg)
         independent = getattr(self.operation, "independent_input_streams", False)
         if self.inputs and not independent:
-            sizes = {role: len(ids) for role, ids in self.inputs.items()}
+            sizes = {role: len(ids) for role, ids in paired.items()}
             unique_sizes = set(sizes.values())
             if len(unique_sizes) > 1:
                 msg = f"All input roles must have same batch size. Got: {sizes}"
@@ -108,9 +120,8 @@ class ExecutionUnit(BaseModel):
 
     def get_batch_size(self) -> int:
         """Return the number of items in this batch (0 for generative ops)."""
-        if not self.inputs:
-            return 0
-        return len(next(iter(self.inputs.values())))
+        paired, _ = split_shared_inputs(self.inputs, self.operation.shared_input_roles)
+        return len(next(iter(paired.values()), ()))
 
     def get_input_artifact_ids(self) -> dict[str, list[str]]:
         """Copy the role mapping and each input artifact ID list."""
