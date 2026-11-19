@@ -10,12 +10,18 @@ from fsspec import AbstractFileSystem
 from artisan.errors import StoreIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.schemas.execution.curator_admission import (
+    CuratorAdmission,
     CuratorCompletedControl,
     CuratorReadSnapshot,
     CuratorTableVersion,
 )
 from artisan.schemas.execution.curator_cache import CuratorCacheExclusion
 from artisan.storage.core.committed_scan import _visibility_expression
+from artisan.storage.core.curator_membership import (
+    ACCEPTED_STEP_VIEW,
+    accepted_step_frame,
+    owning_pipeline_run,
+)
 from artisan.storage.core.curator_provenance import (
     RetainedProjections,
     artifact_edges,
@@ -106,6 +112,8 @@ class CuratorView:
         )
         self._projections: RetainedProjections | None = None
         self._read_recorder: CuratorReadRecorder | None = None
+        self._admission: CuratorAdmission | None = None
+        self._pipeline_run_id: str | None = None
 
     @property
     def files_root(self) -> str:
@@ -115,6 +123,28 @@ class CuratorView:
     def _at(self, snapshot: CuratorReadSnapshot) -> CuratorView:
         """Validate another exact view within the same finite read, when present."""
         return CuratorView(self.committer, snapshot, _read=self._read)
+
+    def bind_admission(self, admission: CuratorAdmission) -> None:
+        """Bind query defaults to immutable invocation ownership before observation."""
+        if self.snapshot != admission.view or (
+            self._admission is not None and self._admission != admission
+        ):
+            msg = "Curator query context differs from its exact admission"
+            raise StoreIntegrityError(msg)
+        self._admission = admission
+
+    def accepted_artifact_ids_by_step(self, artifact_type: str) -> dict[int, set[str]]:
+        """Return accepted exports in the bound run, preserving repeated membership."""
+        rows = (
+            self.scan(ACCEPTED_STEP_VIEW)
+            .filter(pl.col("artifact_type") == artifact_type)
+            .select("step_number", "artifact_id")
+            .collect()
+        )
+        selected: dict[int, set[str]] = {}
+        for number, artifact_id in rows.iter_rows():
+            selected.setdefault(number, set()).add(artifact_id)
+        return selected
 
     def exclude_cache(self, reason: CuratorCacheExclusion) -> None:
         """Record an unsupported authored dependency without preventing execution."""
@@ -142,6 +172,15 @@ class CuratorView:
         """Read current names only from the captured lifecycle table version."""
         from artisan.orchestration.engine.step_tracker import StepTracker
 
+        if pipeline_run_id is None and self._admission is not None:
+            rows = (
+                self.scan(ACCEPTED_STEP_VIEW)
+                .filter(pl.col("step_number").is_not_null())
+                .select("step_number", "step_name")
+                .unique()
+                .collect()
+            )
+            return dict(rows.iter_rows())
         rows = self.scan(TablePath.STEPS).collect()
         if rows.is_empty():
             return {}
@@ -166,6 +205,10 @@ class CuratorView:
         """Scan registered rows at the captured version and completion boundary."""
         table_path = table.value if isinstance(table, TablePath) else table
         self._observe(table_path)
+        if table_path == ACCEPTED_STEP_VIEW:
+            if self._admission is not None and self._pipeline_run_id is None:
+                self._pipeline_run_id = owning_pipeline_run(self, self._admission)
+            return accepted_step_frame(self).lazy()
         if table_path == TablePath.LOGICAL_COMMITS.value:
             return self.controls.lazy()
         if table_path == TablePath.ARTIFACT_EDGES.value:
