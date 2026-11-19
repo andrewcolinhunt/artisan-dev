@@ -5,10 +5,18 @@ from __future__ import annotations
 from enum import StrEnum
 from typing import Any, ClassVar
 
+from pydantic import BaseModel, model_validator
+
 from artisan.composites import CompositeContext
 from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.operations.base import OperationDefinition, PerArtifact
-from artisan.schemas import ArtifactResult, InputSpec, MetricArtifact, OutputSpec
+from artisan.schemas import (
+    AnchoredNameGrouping,
+    ArtifactResult,
+    InputSpec,
+    MetricArtifact,
+    OutputSpec,
+)
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.specs.input_models import (
     ExecuteInput,
@@ -128,3 +136,83 @@ class NestedSharedOffset(CompositeDefinition):
             inputs={"source": ctx.input("source"), "offset": offset.output("offset")},
         )
         ctx.output("metrics", result.output("metrics"))
+
+
+def named_metric(name: str, value: int) -> MetricArtifact:
+    return MetricArtifact.draft({"value": value}, name).finalize()
+
+
+class AnchoredOffset(SharedOffset):
+    name = "contract_anchored_offset"
+    group_by: AnchoredNameGrouping = AnchoredNameGrouping(
+        primary_role="source", matched_roles=("context",)
+    )
+    batch_strategy: BatchStrategy = BatchStrategy(
+        artifacts_per_unit=5, max_artifacts_per_unit=5
+    )
+
+    class Params(BaseModel):
+        """Select whether the complete selection must include context.
+
+        Attributes:
+            require_context: Require at least one context occurrence globally.
+        """
+
+        require_context: bool = True
+
+    params: Params = Params()
+
+    @model_validator(mode="after")
+    def _context_requirement(self) -> AnchoredOffset:
+        self.required_nonempty_inputs = (
+            ("context",) if self.params.require_context else ()
+        )
+        return self
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        result = ArtifactResult()
+        contexts = {
+            artifact.original_name: index
+            for index, artifact in enumerate(inputs.input_artifacts.get("context", ()))
+        }
+        for index, value in enumerate(inputs.memory_outputs["values"]):
+            source = inputs.input_artifacts["source"][index]
+            parents = {
+                "source": [inputs.ref("source", index=index)],
+                "offset": [inputs.ref("offset", index=0)],
+            }
+            if source.original_name in contexts:
+                parents["context"] = [
+                    inputs.ref("context", index=contexts[source.original_name])
+                ]
+            result.add_artifact(
+                "metrics",
+                MetricArtifact.draft({"value": value}, source.original_name),
+                sources=parents,
+            )
+        return result
+
+
+class NestedAnchoredOffset(NestedSharedOffset):
+    name = "contract_nested_anchored_offset"
+    batch_strategy: BatchStrategy = BatchStrategy(artifacts_per_unit=20)
+
+    def compose(self, ctx: CompositeContext) -> None:
+        offset = ctx.call(OffsetGenerator)
+        result = ctx.call(
+            AnchoredOffset,
+            params={"require_context": False},
+            inputs={"source": ctx.input("source"), "offset": offset.output("offset")},
+        )
+        ctx.output("metrics", result.output("metrics"))
+
+
+class InvalidAnchoredOffset(AnchoredOffset):
+    name = "contract_invalid_anchored_offset"
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        result = super().postprocess(inputs)
+        result.add_artifact(
+            "metrics", MetricArtifact.draft({"value": -1}, "invalid"), sources={}
+        )
+        return result

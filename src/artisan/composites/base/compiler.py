@@ -21,6 +21,7 @@ from artisan.composites.base.snapshots import (
     parameter_class,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.composites.plan import ExecutionRecipe, InvocationPolicy
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
@@ -34,7 +35,7 @@ def compile_definition(
     definition: Definition,
     *,
     params: Parameters = None,
-    group_by: GroupByStrategy | None = None,
+    group_by: GroupByStrategy | AnchoredNameGrouping | None = None,
     batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
     tool: ToolSpec | Mapping[str, object] | None = None,
 ) -> CompiledPlan:
@@ -72,6 +73,23 @@ def compile_captured_definition(
                 "independent_input_streams": declared.independent_input_streams,
                 "per_artifact_dispatch": declared.per_artifact_dispatch,
                 "shared_input_roles": declared.shared_input_roles,
+                "required_nonempty_inputs": declared.required_nonempty_inputs,
+                **(
+                    {
+                        "max_artifacts_per_unit": declared.max_artifacts_per_unit,
+                        "artifacts_per_unit": min(
+                            recipe.policy.artifacts_per_unit,
+                            declared.max_artifacts_per_unit
+                            or recipe.policy.artifacts_per_unit,
+                        ),
+                    }
+                    if isinstance(declared.group_by, AnchoredNameGrouping)
+                    else {}
+                ),
+                "group_by": declared.group_by
+                if isinstance(declared.group_by, AnchoredNameGrouping)
+                or isinstance(recipe.policy.group_by, AnchoredNameGrouping)
+                else recipe.policy.group_by,
             }
         )
     )
@@ -135,10 +153,15 @@ def _validate_creator_policy(instance: OperationDefinition, *, nested: bool) -> 
     if instance.runtime_defined_inputs:
         msg = "Composition calls require statically declared input roles"
         raise ValueError(msg)
-    if nested and instance.group_by not in (
-        None,
-        GroupByStrategy.ZIP,
-        GroupByStrategy.CROSS_PRODUCT,
+    if (
+        nested
+        and not isinstance(instance.group_by, AnchoredNameGrouping)
+        and instance.group_by
+        not in (
+            None,
+            GroupByStrategy.ZIP,
+            GroupByStrategy.CROSS_PRODUCT,
+        )
     ):
         msg = "Composition calls do not support NAME or LINEAGE grouping"
         raise ValueError(msg)

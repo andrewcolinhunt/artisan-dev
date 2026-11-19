@@ -2,10 +2,15 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from itertools import batched, product
 
-from artisan.schemas.composites.input_contracts import split_shared_inputs
+from artisan.schemas.composites.anchored_inputs import partition_anchored_inputs
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
+from artisan.schemas.composites.input_contracts import (
+    split_shared_inputs,
+    validate_nonempty_selection,
+)
 from artisan.schemas.composites.plan import InvocationPolicy
 from artisan.schemas.enums import GroupByStrategy
 
@@ -13,6 +18,8 @@ from artisan.schemas.enums import GroupByStrategy
 def partition_local_inputs[T](
     inputs: Mapping[str, Sequence[T]],
     policy: InvocationPolicy,
+    *,
+    name_for: Callable[[T], object] | None = None,
 ) -> Iterator[dict[str, tuple[T, ...]]]:
     """Yield child lifecycle partitions in declared pairing and input order.
 
@@ -20,16 +27,27 @@ def partition_local_inputs[T](
     streams mean no invocation. Independent whole-stream inputs remain complete,
     including any explicitly empty role. Command splitting is a separate policy.
     """
+    validate_nonempty_selection(inputs, policy)
     paired, shared = split_shared_inputs(inputs, policy.shared_input_roles)
     if shared:
         if not any(paired.values()):
             return
-        policy = policy.model_copy(update={"shared_input_roles": ()})
-        for shared_partition in partition_local_inputs(paired, policy):
+        policy = policy.model_copy(
+            update={"shared_input_roles": (), "required_nonempty_inputs": ()}
+        )
+        for shared_partition in partition_local_inputs(
+            paired, policy, name_for=name_for
+        ):
             yield {
                 role: shared[role] if role in shared else shared_partition[role]
                 for role in inputs
             }
+        return
+    if isinstance(policy.group_by, AnchoredNameGrouping):
+        if name_for is None:
+            msg = "Anchored grouping requires captured original names"
+            raise ValueError(msg)
+        yield from partition_anchored_inputs(inputs, policy, name_for)
         return
     if not inputs:
         yield {}
