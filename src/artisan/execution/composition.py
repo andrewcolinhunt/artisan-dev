@@ -22,6 +22,10 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.input_contracts import (
+    split_shared_inputs,
+    validate_partition_shape,
+)
 from artisan.schemas.composites.plan import ExecutionRecipe, RoleBinding
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult
@@ -212,6 +216,7 @@ def _finish_plan(
 def _validate_input_artifacts(
     recipe: ExecutionRecipe, inputs: Mapping[str, Sequence[Artifact]]
 ) -> None:
+    split_shared_inputs(inputs, recipe.policy.shared_input_roles)
     specs = {spec.role: spec for spec in recipe.inputs}
     missing = {
         role for role, spec in specs.items() if spec.required and role not in inputs
@@ -249,6 +254,7 @@ def _output_specs(recipe: ExecutionRecipe) -> dict[str, OutputSpec]:
         spec.role: OutputSpec(
             artifact_type=spec.artifact_type,
             required=spec.required,
+            optional_parent_roles=spec.optional_parent_roles,
             derives_from=None
             if spec.parent_kind is None
             else {spec.parent_kind: list(spec.parent_roles)},
@@ -347,13 +353,8 @@ class _PlanRuntime:
         admitted: bool,
     ) -> OccurrenceStreams:
         policy = plan.recipe.policy
-        if (
-            admitted
-            and not policy.independent_input_streams
-            and len({len(values) for values in inputs.values()}) > 1
-        ):
-            msg = "An admitted paired creator partition must have equal input lengths"
-            raise ValueError(msg)
+        if admitted:
+            validate_partition_shape(inputs, policy)
         partitions = (inputs,) if admitted else partition_local_inputs(inputs, policy)
         outputs: dict[str, list[OccurrenceAddress]] = {
             spec.role: [] for spec in plan.recipe.outputs
@@ -375,7 +376,12 @@ class _PlanRuntime:
                     operation,
                     context,
                     batch_size=max(
-                        (len(values) for values in partition.values()), default=1
+                        (
+                            len(values)
+                            for role, values in partition.items()
+                            if role not in policy.shared_input_roles
+                        ),
+                        default=1,
                     )
                     or 1,
                     execute_router=router,

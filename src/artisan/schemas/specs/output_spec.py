@@ -7,7 +7,7 @@ step connections.
 
 from __future__ import annotations
 
-from pydantic import BaseModel, ConfigDict, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.specs._validators import validate_artifact_type_str
@@ -24,7 +24,8 @@ class OutputSpec(BaseModel):
         required: Whether the output role must be present with a nonempty
             artifact list. Execution validation fails if it is missing or
             empty. This does not specify an output count per input.
-        derives_from: Required and allowed parent roles for every output occurrence.
+        derives_from: Allowed parent roles for every output occurrence. Each role
+            is required unless listed in optional_parent_roles.
             Three patterns supported:
             - {"inputs": ["role"]}: Explicit input role(s) as parent
             - {"outputs": ["role"]}: Output role(s) as parent (output->output)
@@ -39,6 +40,9 @@ class OutputSpec(BaseModel):
 
             IMPORTANT: Empty dict {} is INVALID and will raise ValidationError.
             Combined {"inputs": [...], "outputs": [...]} is NOT supported.
+
+        optional_parent_roles: Declared parent roles that may be absent from an
+            individual result. Exact references are still required when used.
 
     Examples:
         # Data derived from specific input
@@ -75,6 +79,20 @@ class OutputSpec(BaseModel):
     description: str = ""
     required: bool = True
     derives_from: dict[str, list[str]] | None = None
+    optional_parent_roles: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda roles: not roles
+    )
+
+    @model_validator(mode="after")
+    def _validate_optional_parents(self) -> OutputSpec:
+        roles = self.optional_parent_roles
+        allowed = next(iter(self.derives_from.values())) if self.derives_from else ()
+        if len(roles) != len(set(roles)) or any(
+            not role or role not in allowed for role in roles
+        ):
+            msg = "Optional parent roles must be unique declared parent roles"
+            raise ValueError(msg)
+        return self
 
     @field_validator("artifact_type")
     @classmethod
@@ -145,5 +163,6 @@ class OutputSpec(BaseModel):
                 self.description,
                 self.required,
                 lineage_tuple,
+                self.optional_parent_roles,
             )
         )

@@ -71,6 +71,7 @@ def compile_captured_definition(
                 **recipe.policy.model_dump(),
                 "independent_input_streams": declared.independent_input_streams,
                 "per_artifact_dispatch": declared.per_artifact_dispatch,
+                "shared_input_roles": declared.shared_input_roles,
             }
         )
     )
@@ -108,7 +109,9 @@ def _compile_instance(
         _validate_creator_policy(instance, nested=bool(stack))
         return CompiledPlan(
             definition,
-            ExecutionRecipe(**recipe.model_dump()),
+            ExecutionRecipe(
+                schema_version=recipe.recipe_version, **recipe.model_dump()
+            ),
             root_selection=selection,
         )
     context = CompositeContext(recipe, (*stack, definition))

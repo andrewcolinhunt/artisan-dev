@@ -42,6 +42,7 @@ class RootSelection:
                 self.policy.independent_input_streams
                 != declared.independent_input_streams
                 or self.policy.per_artifact_dispatch != declared.per_artifact_dispatch
+                or self.policy.shared_input_roles != declared.shared_input_roles
             ):
                 msg = "Root selection cannot change declared invocation behavior"
                 raise ValueError(msg)

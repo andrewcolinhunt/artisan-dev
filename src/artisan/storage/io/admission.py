@@ -20,6 +20,7 @@ from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.external import open_external
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.input_contracts import validate_partition_shape
 from artisan.schemas.composites.plan import ExecutionRecipe
 from artisan.schemas.execution.admission import (
     AdmissionRecord,
@@ -344,6 +345,11 @@ def _validate_input_contract(
 ) -> None:
     specs = {item.role: item for item in recipe.inputs}
     roles = boundary.input_roles()
+    if recipe.policy.shared_input_roles:
+        try:
+            validate_partition_shape(roles, recipe.policy)
+        except ValueError as error:
+            raise StoreIntegrityError(str(error)) from error
     if (
         roles.keys() - specs.keys()
         or {role for role, spec in specs.items() if spec.required} - roles.keys()
