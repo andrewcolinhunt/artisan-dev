@@ -15,12 +15,7 @@ from artisan.errors import ArtisanError, ErrorCode, StoreIntegrityError
 from artisan.execution.compute.prepared import freeze_runtime_injections
 from artisan.execution.recording.retained_replay import read_replay_configuration
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.orchestration.original_selection import (
-    OriginalSelectionProof,
-    resolve_original_selection,
-)
 from artisan.schemas.artifact.base import Artifact
-from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.composites.plan import ExecutionRecipe
 from artisan.schemas.execution.admission import AdmissionReference
 from artisan.schemas.execution.assignment import (
@@ -68,7 +63,6 @@ class RetainedReplayPreparation:
     artifacts: Mapping[OccurrenceAddress, Artifact]
     runtime_env: Mapping[str, str] = field(repr=False)
     allow_code_change: bool
-    original_selection: OriginalSelectionProof | None = None
 
     @property
     def delivery(self) -> DeliveryIdentity:
@@ -93,15 +87,6 @@ class RetainedReplayPreparation:
         """Recheck authority and the actual resolved software before publication."""
         if read_execution_source(committer, self.delivery.delivery_id) != self.source:
             msg = "Replay source changed after preparation"
-            raise StoreIntegrityError(msg)
-        if (
-            self.original_selection is not None
-            and resolve_original_selection(
-                committer, self.delivery.delivery_id, self.plan.recipe
-            )
-            != self.original_selection
-        ):
-            msg = "Original replay selection changed after preparation"
             raise StoreIntegrityError(msg)
         if isinstance(self.source, ScientificExecutionSource):
             RetainedReader(committer).read(self.source.plan.receipt)
@@ -177,17 +162,11 @@ def prepare_retained_replay(
                 ErrorCode.REPLAY_CODE_CHANGED,
                 "Replay recipe changed; explicit changed-code replay is required",
             )
-        original_selection = (
-            resolve_original_selection(committer, execution_run_id, plan.recipe)
-            if isinstance(plan.recipe.policy.group_by, AnchoredNameGrouping)
-            or isinstance(captured.record.recipe.policy.group_by, AnchoredNameGrouping)
-            else None
-        )
         identity = AssignmentIdentity(step_run_id=uuid4().hex, unit_index=0)
         boundary, artifacts = _rebind_inputs(
             captured.record.boundary, captured.artifacts, identity.assignment_id
         )
-        _validate_input_contract(plan.recipe, boundary, artifacts)
+        _validate_input_contract(plan.recipe, boundary)
     return RetainedReplayPreparation(
         identity,
         source,
@@ -196,7 +175,6 @@ def prepare_retained_replay(
         artifacts,
         runtime,
         allow_code_change,
-        original_selection,
     )
 
 
