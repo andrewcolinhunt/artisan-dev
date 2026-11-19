@@ -147,11 +147,36 @@ def test_result_helper_preserves_exact_references_atomically() -> None:
         result.add_artifact(
             "metrics", metric(3), sources={"wrong": [inputs.ref("data", index=0)]}
         )
-    with pytest.raises(ValueError, match="Cannot mix"):
+    with pytest.raises(ValueError, match="Sources must be"):
         result.add_artifact(
-            "metrics", metric(3), sources={"data": [inputs.ref("data", index=0), 0]}
+            "metrics", metric(3), sources={"data": [inputs.ref("data", index=0), True]}
         )
     assert result.model_dump() == before
+
+
+def test_exact_input_and_sibling_index_share_a_role_without_losing_identity() -> None:
+    source = metric(1)
+    context = FrozenInputContext("call", {"data": [source]})
+    result = ArtifactResult()
+    result.add_artifact("data", metric(2), sources={})
+    result.add_artifact(
+        "metrics",
+        metric(3),
+        sources={"data": [context.ref("data", index=0), 0]},
+    )
+
+    input_parent, output_parent = result.lineage["metrics"]
+    assert input_parent.source_role == output_parent.source_role == "data"
+    assert input_parent.source_artifact_id == source.artifact_id
+    assert (input_parent.source_input_index, input_parent.source_invocation) == (
+        0,
+        "call",
+    )
+    assert input_parent.source_output_index is None
+    assert output_parent.source_output_index == 0
+    assert output_parent.source_artifact_id is None
+    assert output_parent.source_input_index is None
+    assert output_parent.source_invocation is None
 
 
 def test_exact_and_id_references_share_the_input_namespace() -> None:

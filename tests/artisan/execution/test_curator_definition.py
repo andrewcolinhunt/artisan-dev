@@ -40,6 +40,7 @@ from artisan.schemas.operation_config.environment import Environment
 from artisan.storage.cache.curator_dependencies import CuratorReadRecorder
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.curator_view import CuratorView
+from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 
 
 class ConfiguredCurator(OperationDefinition):
@@ -105,6 +106,66 @@ def test_curator_contract_hashes_canonical_parameters_without_storing_values() -
         CuratorDefinitionContract.model_validate(
             {**contract.model_dump(), "params_json": "{}"}
         )
+
+
+def test_existing_curator_output_contract_bytes_and_digest_stay_unchanged() -> None:
+    contract = capture_curator_definition(ConfiguredCurator())
+    historical = contract.model_dump(mode="json")
+    historical["outputs"] = [
+        {
+            "role": "selected",
+            "artifact_type": "config",
+            "required": False,
+            "parent_kind": "inputs",
+            "parent_roles": ["config"],
+        }
+    ]
+    encoded = canonical_json_bytes(historical)
+    restored = CuratorDefinitionContract.model_validate_json(encoded)
+    assert canonical_json_bytes(restored.model_dump(mode="json")) == encoded
+    assert (
+        restored.digest
+        == contract.digest
+        == compute_content_digest(b"artisan.curator-definition-v1\0" + encoded)
+    )
+
+
+def test_curator_contract_records_both_parent_namespaces(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        ConfiguredCurator,
+        "outputs",
+        {
+            "source": OutputSpec(artifact_type="config", derives_from={"inputs": []}),
+            "selected": OutputSpec(
+                artifact_type="config",
+                required=False,
+                derives_from={"inputs": ["config"], "outputs": ["source"]},
+            ),
+        },
+    )
+    operation = ConfiguredCurator()
+    contract = capture_curator_definition(operation)
+    assert (
+        CuratorDefinitionContract.model_validate_json(contract.model_dump_json())
+        == contract
+    )
+    for parents in ({"inputs": ["config"]}, {"outputs": ["source"]}):
+        monkeypatch.setattr(
+            ConfiguredCurator,
+            "outputs",
+            {
+                "source": OutputSpec(
+                    artifact_type="config", derives_from={"inputs": []}
+                ),
+                "selected": OutputSpec(
+                    artifact_type="config", required=False, derives_from=parents
+                ),
+            },
+        )
+        with pytest.raises(ValueError, match="exact admitted configuration"):
+            verify_curator_definition(operation, contract)
 
 
 @pytest.mark.parametrize(

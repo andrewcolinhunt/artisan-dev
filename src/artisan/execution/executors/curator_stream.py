@@ -76,7 +76,7 @@ def _validate_contract(context: ExecutionContext) -> None:
         msg = "Artifact streams require static output roles"
         raise ArtifactValidationError(msg)
     for role, spec in outputs.items():
-        if spec.derives_from is None or "inputs" not in spec.derives_from:
+        if spec.derives_from is None or set(spec.derives_from) != {"inputs"}:
             msg = f"Stream output {role!r} requires explicit input-parent lineage"
             raise ArtifactValidationError(msg)
 

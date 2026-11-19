@@ -104,13 +104,15 @@ constrains the mappings supplied for each output occurrence:
 | `{"inputs": ["data"]}` | At least one parent from input role `data`, and no other roles |
 | `{"inputs": ["left", "right"]}` | At least one input parent from each role; multiple parents within a role are allowed |
 | `{"outputs": ["processed"]}` | At least one co-produced output addressed by its index in `processed` |
+| `{"inputs": ["reference"], "outputs": ["processed"]}` | At least one input reference and one co-produced output, both required for each occurrence |
 | `{"inputs": []}` | A root role, with an explicit empty lineage list |
 
 Every creator output needs a contract. `None` is permitted only for passthrough
 outputs; curators that emit drafts need contracts too. A curator with no static
 outputs may emit runtime-named root roles with explicit empty lineage lists.
-Mixed input/output parent kinds, empty dictionaries, and output-role cycles are
-rejected. A present optional output role with no drafts has an empty lineage
+Input and output namespaces remain distinct even when they use the same role
+name. Empty dictionaries and output-role cycles are rejected. A present
+optional output role with no drafts has an empty lineage
 list; an omitted role appears in neither result dictionary.
 
 ### Output-to-output edges
@@ -119,6 +121,12 @@ A metric derived from a co-produced dataset declares that dataset's output
 index. Finalization resolves the index to an artifact ID without matching names.
 The operation can use the index returned by `add_artifact` or construct a
 `LineageMapping` itself.
+
+A comparison score can declare both a newly generated candidate and an
+independent input reference as parents. Its contract lists both namespaces;
+the result supplies an input ID or exact input reference and a sibling-output
+index. These parents form one joint derivation. Listing a role in both
+namespaces requires a parent from each, even if the names are identical.
 
 ### Config ancestry
 

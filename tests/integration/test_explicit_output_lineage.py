@@ -99,6 +99,36 @@ class StructureAndMetricCurator(OperationDefinition):
         return result
 
 
+class MixedParentMetricCurator(StructureAndMetricCurator):
+    """Derive each metric jointly from its input dataset and sibling structure."""
+
+    name = "mixed_parent_metric_curator"
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        **StructureAndMetricCurator.outputs,
+        "metrics": OutputSpec(
+            artifact_type=ArtifactTypes.METRIC,
+            derives_from={"inputs": ["datasets"], "outputs": ["structures"]},
+        ),
+    }
+
+    def execute_curator(
+        self,
+        inputs: Mapping[str, pl.DataFrame],
+        step_number: int,
+        artifact_store: ArtifactStore,
+    ) -> ArtifactResult:
+        result = super().execute_curator(inputs, step_number, artifact_store)
+        for index, dataset_id in enumerate(inputs["datasets"]["artifact_id"]):
+            result.lineage["metrics"].append(
+                LineageMapping(
+                    draft_index=index,
+                    source_role="datasets",
+                    source_artifact_id=dataset_id,
+                )
+            )
+        return result
+
+
 def test_explicit_output_to_output_lineage(pipeline_env: dict[str, str]) -> None:
     """An output index resolves to the exact persisted sibling artifact."""
     delta_root = pipeline_env["delta_root"]
@@ -142,6 +172,40 @@ def test_explicit_output_to_output_lineage(pipeline_env: dict[str, str]) -> None
         f"Expected output->output edge from structure {structure_a.artifact_id} "
         f"to metric {metric_a.artifact_id}, got targets {edge_targets}."
     )
+
+
+def test_mixed_input_and_output_lineage_persists_joint_parents(
+    pipeline_env: dict[str, str],
+) -> None:
+    """Reopened accepted results retain each input and sibling as joint parents."""
+    pipeline = create_native_pipeline(name="mixed_parent_lineage", **pipeline_env)
+    generated = pipeline.run(DataGenerator, params={"count": 2, "seed": 7})
+    pipeline.run(
+        MixedParentMetricCurator,
+        inputs={"datasets": generated.output("datasets")},
+    )
+    assert pipeline.finalize()["overall_success"]
+
+    store = ArtifactStore(pipeline_env["delta_root"])
+    metric_ids = store.provenance.load_artifact_ids_by_type(
+        ArtifactTypes.METRIC, step_numbers=[1]
+    )
+    metrics = store.get_artifacts_by_type(list(metric_ids), ArtifactTypes.METRIC)
+    by_name = {artifact.original_name: artifact for artifact in metrics.values()}
+    edges = store.provenance.load_edges_df(0, 1, include_roles=True)
+
+    for index in range(2):
+        structure = by_name[f"sample_{index:03d}_structure"]
+        metric = by_name[f"sample_{index:03d}_structure_energy"]
+        parents = edges.filter(pl.col("target_artifact_id") == metric.artifact_id)
+        assert parents.height == 2
+        assert set(parents.select("source_artifact_id", "source_role").iter_rows()) == {
+            (metric.values["dataset_id"], "datasets"),
+            (structure.artifact_id, "structures"),
+        }
+        assert set(parents["target_role"]) == {"metrics"}
+        assert parents["group_id"].null_count() == 0
+        assert parents["group_id"].n_unique() == 1
 
 
 class TwoInputParity(OperationDefinition):
