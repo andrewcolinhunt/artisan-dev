@@ -251,6 +251,7 @@ def _validate_plan_bindings(plan: CompiledPlan) -> None:
 def _output_specs(recipe: ExecutionRecipe) -> dict[str, OutputSpec]:
     outputs = {}
     for spec in recipe.outputs:
+        lineage: dict[str, list[str]] | None
         if isinstance(spec, MixedOutputContract):
             lineage = {
                 "inputs": list(spec.input_parent_roles),
