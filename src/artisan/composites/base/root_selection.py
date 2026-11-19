@@ -15,6 +15,7 @@ from artisan.composites.base.snapshots import (
     invocation_policy,
 )
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.composites.plan import (
     DefinitionContract,
     InvocationPolicy,
@@ -43,9 +44,12 @@ class RootSelection:
                 != declared.independent_input_streams
                 or self.policy.per_artifact_dispatch != declared.per_artifact_dispatch
                 or self.policy.shared_input_roles != declared.shared_input_roles
+                or self.policy.required_nonempty_inputs
+                != declared.required_nonempty_inputs
             ):
                 msg = "Root selection cannot change declared invocation behavior"
                 raise ValueError(msg)
+            _validate_anchored_override(declared, self.policy)
             instance.group_by = self.policy.group_by
             instance.batch_strategy = BatchStrategy.model_validate(
                 {
@@ -68,7 +72,7 @@ class RootSelection:
 def normalize_root_selection(
     instance: Instance,
     *,
-    group_by: GroupByStrategy | None = None,
+    group_by: GroupByStrategy | AnchoredNameGrouping | None = None,
     batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
     tool: ToolSpec | Mapping[str, object] | None = None,
 ) -> RootSelection:
@@ -78,11 +82,20 @@ def normalize_root_selection(
     Whole-stream rejection uses supplied keys before merging, so a request to
     split those streams cannot disappear merely because it equals a default.
     """
-    if group_by is not None and not isinstance(cast(object, group_by), GroupByStrategy):
-        msg = "group_by must be a GroupByStrategy member"
+    if group_by is not None and not isinstance(
+        cast(object, group_by), (GroupByStrategy, AnchoredNameGrouping)
+    ):
+        msg = "group_by must be a GroupByStrategy member or AnchoredNameGrouping"
         raise TypeError(msg)
     batch_patch = _patch(batch_strategy, BatchStrategy)
     policy = invocation_policy(instance)
+    if (
+        isinstance(policy.group_by, AnchoredNameGrouping)
+        and group_by is not None
+        and group_by != policy.group_by
+    ):
+        msg = "Caller selection cannot change the declared anchored grouping"
+        raise ValueError(msg)
     scientific = bool(_SCIENTIFIC_BATCH_FIELDS & batch_patch.keys())
     if policy.independent_input_streams and (group_by is not None or scientific):
         msg = "Whole-stream creators reject explicit pairing or scientific batching"
@@ -97,6 +110,8 @@ def normalize_root_selection(
                 **batch.model_dump(include=_SCIENTIFIC_BATCH_FIELDS),
             }
         )
+    if selected_policy is not None:
+        _validate_anchored_override(policy, selected_policy)
     selected_tool = None
     if tool is not None:
         _require_command_tool(instance)
@@ -107,6 +122,25 @@ def normalize_root_selection(
         )
         selected_tool = ToolContract(**resolved.model_dump())
     return RootSelection(selected_policy, selected_tool)
+
+
+def _validate_anchored_override(
+    declared: InvocationPolicy, selected: InvocationPolicy
+) -> None:
+    if not isinstance(declared.group_by, AnchoredNameGrouping):
+        if isinstance(selected.group_by, AnchoredNameGrouping):
+            msg = "Anchored grouping must be declared by the operation"
+            raise ValueError(msg)
+        return
+    if selected.group_by != declared.group_by:
+        msg = "Caller selection cannot change the declared anchored grouping"
+        raise ValueError(msg)
+    maximum = declared.max_artifacts_per_unit
+    if selected.max_artifacts_per_unit != maximum or (
+        maximum is not None and selected.artifacts_per_unit > maximum
+    ):
+        msg = "Anchored group bounds must retain the declared maximum"
+        raise ValueError(msg)
 
 
 def merge_batch_strategy(

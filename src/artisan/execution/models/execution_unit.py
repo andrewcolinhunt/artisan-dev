@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from artisan.execution.inputs._validation import is_hex_id
 from artisan.operations.base.operation_definition import OperationDefinition
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.composites.input_contracts import split_shared_inputs
 from artisan.schemas.execution.replay import ReplayAssociation, ReplaySnapshot
 
@@ -98,6 +99,9 @@ class ExecutionUnit(BaseModel):
                     )
                     raise ValueError(msg)
 
+        if isinstance(self.operation.group_by, AnchoredNameGrouping):
+            msg = "Anchored grouping requires retained occurrence admission"
+            raise ValueError(msg)
         paired, shared = split_shared_inputs(
             self.inputs, self.operation.shared_input_roles
         )

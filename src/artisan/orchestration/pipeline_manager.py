@@ -62,6 +62,7 @@ from artisan.registry import bootstrap_applications
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external import validate_persistable_uri
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.storage_config import StorageConfig
@@ -712,7 +713,7 @@ class PipelineManager:
         step_runner: PipelineRunner | None = None,
         runner_resources: RunnerResources | Mapping[str, object] | None = None,
         batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
-        group_by: GroupByStrategy | None = None,
+        group_by: GroupByStrategy | AnchoredNameGrouping | None = None,
         tool: ToolSpec | Mapping[str, object] | None = None,
         skip_cache: bool | None = None,
         cache_policy: CachePolicy | None = None,
@@ -873,7 +874,7 @@ class PipelineManager:
         step_runner: PipelineRunner | None = None,
         runner_resources: RunnerResources | Mapping[str, object] | None = None,
         batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
-        group_by: GroupByStrategy | None = None,
+        group_by: GroupByStrategy | AnchoredNameGrouping | None = None,
         tool: ToolSpec | Mapping[str, object] | None = None,
         skip_cache: bool | None = None,
         cache_policy: CachePolicy | None = None,

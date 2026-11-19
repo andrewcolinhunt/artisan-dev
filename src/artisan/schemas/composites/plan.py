@@ -9,6 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.enums import GroupByStrategy
 from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
 
@@ -68,12 +69,16 @@ class OutputContract(_RecipeModel):
 class InvocationPolicy(_RecipeModel):
     """Scientific partitioning, independent of transport packing or placement."""
 
-    group_by: GroupByStrategy | None = None
+    group_by: GroupByStrategy | AnchoredNameGrouping | None = None
     independent_input_streams: bool = False
     per_artifact_dispatch: bool = True
     artifacts_per_unit: int = Field(default=1, ge=1, strict=True)
     max_artifacts_per_unit: int | None = Field(default=None, ge=1, strict=True)
     shared_input_roles: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda roles: not roles
+    )
+
+    required_nonempty_inputs: tuple[str, ...] = Field(
         default=(), exclude_if=lambda roles: not roles
     )
 
@@ -85,6 +90,17 @@ class InvocationPolicy(_RecipeModel):
             raise ValueError(msg)
         if roles and self.independent_input_streams:
             msg = "Shared input roles cannot be combined with independent streams"
+            raise ValueError(msg)
+        required = self.required_nonempty_inputs
+        if len(required) != len(set(required)) or any(not role for role in required):
+            msg = "Required nonempty inputs must be unique nonempty names"
+            raise ValueError(msg)
+        anchored = isinstance(self.group_by, AnchoredNameGrouping)
+        if required and not anchored:
+            msg = "Required nonempty inputs require anchored grouping"
+            raise ValueError(msg)
+        if anchored and (self.independent_input_streams or self.per_artifact_dispatch):
+            msg = "Anchored grouping requires intact group dispatch"
             raise ValueError(msg)
         return self
 
@@ -163,6 +179,18 @@ class DefinitionContract(_RecipeModel):
         ):
             msg = "Shared roles require declared required creator inputs and a nonshared role"
             raise ValueError(msg)
+        names = {spec.role for spec in self.inputs}
+        if not set(self.policy.required_nonempty_inputs) <= names:
+            msg = "Required nonempty inputs must name declared roles"
+            raise ValueError(msg)
+        grouping = self.policy.group_by
+        if isinstance(grouping, AnchoredNameGrouping) and (
+            self.definition.kind != "creator"
+            or grouping.primary_role not in required
+            or {grouping.primary_role, *grouping.matched_roles} != names - shared
+        ):
+            msg = "Anchored grouping must cover all nonshared creator roles with a required primary"
+            raise ValueError(msg)
         return self
 
     @property
@@ -171,6 +199,8 @@ class DefinitionContract(_RecipeModel):
         return (
             2
             if self.policy.shared_input_roles
+            or isinstance(self.policy.group_by, AnchoredNameGrouping)
+            or self.policy.required_nonempty_inputs
             or any(spec.optional_parent_roles for spec in self.outputs)
             else 1
         )
