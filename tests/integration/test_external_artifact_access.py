@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 
 import polars as pl
 import pytest
-from fixtures.input_contract_operations import AnchoredOffset, named_metric
+from fixtures.input_contract_operations import SharedOffset, named_metric
 from pydantic import BaseModel, Field
 
 from artisan.composites.base.compiled import CompiledPlan
@@ -38,9 +38,10 @@ from artisan.schemas.artifact.external_descriptor import (
     PreparedExternalFiles,
 )
 from artisan.schemas.artifact.metric import MetricArtifact
-from artisan.schemas.enums import FailurePolicy
+from artisan.schemas.enums import FailurePolicy, GroupByStrategy
 from artisan.schemas.execution.admission import AdmissionRecordWithAccess
 from artisan.schemas.execution.assignment import SealedDelivery
+from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.external_access import ExternalAccessMount
 from artisan.schemas.execution.storage_config import StorageConfig
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -642,10 +643,12 @@ def test_spawned_native_worker_records_preset_inputs_without_materializing(
     assert not list((tmp_path / "work").rglob("scale.txt"))
 
 
-class _AnchoredExternalOffset(AnchoredOffset):
-    name = "anchored_external_offset"
+class _NamedExternalOffset(SharedOffset):
+    name = "named_external_offset"
+    group_by: GroupByStrategy | None = GroupByStrategy.NAME
+    batch_strategy: BatchStrategy = BatchStrategy(artifacts_per_unit=3)
     inputs: ClassVar = {
-        **AnchoredOffset.inputs,
+        **SharedOffset.inputs,
         "offset": InputSpec(artifact_type="any", materialize=False),
     }
 
@@ -662,26 +665,25 @@ class _AnchoredExternalOffset(AnchoredOffset):
         }
 
 
-def _anchored_external_inputs(artifact: Artifact) -> dict[str, list[Artifact]]:
+def _named_external_inputs(artifact: Artifact) -> dict[str, list[Artifact]]:
     return {
         "source": [named_metric(name, index) for index, name in enumerate("ABCDEF")],
         "offset": [artifact],
-        "context": [named_metric("F", 20)],
+        "context": [
+            named_metric(name, 20 + index) for index, name in enumerate("FEDCBA")
+        ],
     }
 
 
-def test_external_singleton_anchored_selection_survives_cache_and_replay_chain(
+def test_external_singleton_name_pairing_survives_cache_and_replay_chain(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from artisan.composites.base.compiler import compile_definition
-    from artisan.orchestration.original_selection import resolve_original_selection
-
     artifact, first = _installation(tmp_path / "original")
     _, replica = _installation(tmp_path / "replica")
     _forbid_payload_transport(monkeypatch)
-    inputs = _anchored_external_inputs(artifact)
+    inputs = _named_external_inputs(artifact)
     with _manager(tmp_path / "store", {artifact.artifact_id: first}) as manager:
-        result = manager.run(_AnchoredExternalOffset, inputs=inputs)
+        result = manager.run(_NamedExternalOffset, inputs=inputs)
         assert result.status is StepStatus.SUCCEEDED, result.error
         sources = _sources(manager, result.step_run_id)
         assert len(sources) == 2
@@ -733,8 +735,8 @@ def test_external_singleton_anchored_selection_survives_cache_and_replay_chain(
             for source in sources
             if source.plan.admission.attempt.assignment.unit_index == 0
         )
-        assert original.admission.boundary.input_roles()["context"] == ()
-        cached = manager.run(_AnchoredExternalOffset, inputs=inputs)
+        assert len(original.admission.boundary.input_roles()["context"]) == 3
+        cached = manager.run(_NamedExternalOffset, inputs=inputs)
         assert cached.status is StepStatus.SUCCEEDED, cached.error
         assert cached.disposition is StepDisposition.CACHE_HIT
     shutil.rmtree(first.root)
@@ -744,7 +746,7 @@ def test_external_singleton_anchored_selection_survives_cache_and_replay_chain(
             previous,
             delta_root=manager.config.delta_root,
             files_root=manager.config.files_root,
-            operation=_AnchoredExternalOffset,
+            operation=_NamedExternalOffset,
             application_modules=_APPLICATIONS,
             step_runner=_ExternalRunner(
                 manager.committer, {artifact.artifact_id: replica}
@@ -758,7 +760,7 @@ def test_external_singleton_anchored_selection_survives_cache_and_replay_chain(
         selected = read_execution_source(manager.committer, diagnostic.execution_run_id)
         assert isinstance(selected, ScientificExecutionSource)
         assert isinstance(selected.admission, AdmissionRecordWithAccess)
-        assert selected.admission.boundary.input_roles()["context"] == ()
+        assert len(selected.admission.boundary.input_roles()["context"]) == 3
         assert selected.admission.attempt.replay_of_execution_run_id == previous
         with reader.capture_inputs(selected.plan.receipt) as captured:
             assert captured.external_access.bindings[0].prepared == replica
@@ -769,20 +771,12 @@ def test_external_singleton_anchored_selection_survives_cache_and_replay_chain(
             item.artifact.artifact_id
             for item in reader.read(original.plan.receipt).output("metrics")
         ]
-        proof = resolve_original_selection(
-            manager.committer,
-            diagnostic.execution_run_id,
-            compile_definition(_AnchoredExternalOffset).recipe,
-        )
-        assert proof.origin_step.step_run_id == result.step_run_id
-        assert len(proof.origin_step.assignments) == 2
-        assert len(proof.selected_admissions) == index + 2
         previous = diagnostic.execution_run_id
     assert not list(Path(manager.config.files_root).rglob("index.bin"))
 
 
 @pytest.mark.parametrize("damage", ["missing", "changed"])
-def test_anchored_replay_rechecks_sibling_external_access_before_publication(
+def test_replay_rechecks_selected_external_access_before_publication(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, damage: str
 ) -> None:
     from artisan.errors import StoreIntegrityError
@@ -793,7 +787,7 @@ def test_anchored_replay_rechecks_sibling_external_access_before_publication(
     _forbid_payload_transport(monkeypatch)
     with _manager(tmp_path / "store", {artifact.artifact_id: prepared}) as manager:
         result = manager.run(
-            _AnchoredExternalOffset, inputs=_anchored_external_inputs(artifact)
+            _NamedExternalOffset, inputs=_named_external_inputs(artifact)
         )
         assert result.status is StepStatus.SUCCEEDED, result.error
         original = next(
@@ -806,17 +800,17 @@ def test_anchored_replay_rechecks_sibling_external_access_before_publication(
             original.plan.receipt.delivery.delivery_id,
             registered_definitions={
                 (
-                    _AnchoredExternalOffset.__module__,
-                    _AnchoredExternalOffset.__qualname__,
-                ): _AnchoredExternalOffset,
+                    _NamedExternalOffset.__module__,
+                    _NamedExternalOffset.__qualname__,
+                ): _NamedExternalOffset,
             },
             runtime_replacements={},
             allow_code_change=False,
         )
-        assert replay.original_selection is not None
-        sibling = replay.original_selection.origin_step.assignments[1]
         path = (
-            Path(admission_directory(manager.config.delta_root, sibling.attempt))
+            Path(
+                admission_directory(manager.config.delta_root, replay.admission.attempt)
+            )
             / "external-access.json"
         )
         if damage == "missing":

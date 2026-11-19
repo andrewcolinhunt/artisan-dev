@@ -165,3 +165,29 @@ def test_historical_operation_behavior_keeps_exact_bytes() -> None:
         / "fixtures/recipes/generator-behavior-v1.json"
     ).read_bytes()
     assert canonical_json_bytes(operation_behavior(DataGenerator())) == encoded
+
+
+@pytest.mark.parametrize(
+    ("definition", "filename", "digest"),
+    [
+        (SharedOffset, "shared-offset-v2.json", "7b699c4625a5328ea21101c7d913b674"),
+        (
+            NestedSharedOffset,
+            "nested-shared-offset-v2.json",
+            "13b9627ab24395071a0b95d26895a077",
+        ),
+    ],
+)
+def test_shared_optional_recipe_keeps_published_canonical_identity(
+    definition: type, filename: str, digest: str
+) -> None:
+    from pathlib import Path
+
+    encoded = (
+        Path(__file__).resolve().parents[2] / "fixtures/recipes" / filename
+    ).read_bytes()
+    recipe = ExecutionRecipe.model_validate_json(encoded)
+    assert recipe.schema_version == 2
+    assert canonical_json_bytes(recipe.model_dump(mode="json")) == encoded
+    assert recipe.digest == digest
+    assert compile_captured_definition(definition, recipe).recipe == recipe

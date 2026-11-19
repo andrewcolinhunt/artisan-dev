@@ -11,7 +11,6 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy, TablePath
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import (
@@ -44,7 +43,6 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
 __all__ = [
-    "AnchoredNameGrouping",
     "AppendableArtifact",
     "Artifact",
     "ArtifactEmission",

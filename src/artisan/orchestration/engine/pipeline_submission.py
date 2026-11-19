@@ -27,7 +27,6 @@ from artisan.composites.base.snapshots import (
 from artisan.execution.recording.commands import CommandRecorder
 from artisan.execution.recording.durable import configuration_recorder
 from artisan.operations.base.operation_definition import OperationDefinition
-from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import (
@@ -43,7 +42,7 @@ class PipelineSubmission:
 
     definition: Definition
     params_json: str = field(repr=False)
-    group_by: GroupByStrategy | AnchoredNameGrouping | None
+    group_by: GroupByStrategy | None
     batch_patch: BatchStrategy | None
     tool_patch: Mapping[str, object] | None
     resources: RunnerResources
@@ -100,7 +99,7 @@ def freeze_submission(
     definition: Definition,
     *,
     params: Parameters = None,
-    group_by: GroupByStrategy | AnchoredNameGrouping | None = None,
+    group_by: GroupByStrategy | None = None,
     batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
     tool: ToolSpec | Mapping[str, object] | None = None,
     runner_resources: RunnerResources | Mapping[str, object] | None = None,
