@@ -27,6 +27,10 @@ class QueryView(Protocol):
 
     def step_names(self, pipeline_run_id: str | None) -> dict[int, str]: ...
 
+    def accepted_artifact_ids_by_step(
+        self, artifact_type: str
+    ) -> dict[int, set[str]]: ...
+
 
 class QueryScope(Protocol):
     """Own fresh visibility and temporary captures for each outer query."""

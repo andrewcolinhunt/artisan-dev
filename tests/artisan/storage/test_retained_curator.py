@@ -36,6 +36,7 @@ from artisan.schemas.artifact.file_ref import FileRefArtifact
 from artisan.schemas.artifact.metric import MetricArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.enums import TablePath
+from artisan.schemas.execution.curator_admission import CuratorInputAssociation
 from artisan.schemas.execution.curator_cache import CuratorCacheProof
 from artisan.schemas.execution.curator_result import ArtifactResult, PassthroughResult
 from artisan.schemas.orchestration.step_lifecycle import (
@@ -507,6 +508,142 @@ def _measured(
     )
     committer.accept(receipt)
     return RetainedReader(committer).read(receipt).output("data")[0]
+
+
+class _ConfigurationCurator(OperationDefinition):
+    name = "configuration_curator_fixture"
+
+    class InputRole(StrEnum):
+        source = "source"
+        context = "context"
+
+    class OutputRole(StrEnum):
+        config = "config"
+
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "source": InputSpec(artifact_type="csv", with_associated=("metric",)),
+        "context": InputSpec(artifact_type="metric", required=False),
+    }
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        "config": OutputSpec(
+            artifact_type="config", derives_from={"inputs": ["source"]}
+        )
+    }
+    _metric_id: str = PrivateAttr()
+
+    def execute_curator(
+        self,
+        inputs: Mapping[str, pl.DataFrame],
+        step_number: int,
+        artifact_store: ArtifactStore,
+    ) -> ArtifactResult:
+        primary = inputs["source"]["artifact_id"][0]
+        config = ExecutionConfigArtifact.draft(
+            {
+                "source": {"$artifact": primary},
+                "metric": {"$artifact": self._metric_id},
+            },
+            "config.json",
+            step_number,
+        )
+        result = ArtifactResult()
+        result.add_artifact("config", config, sources={"source": [primary]})
+        return result
+
+
+@pytest.mark.parametrize("explicit_context", [False, True])
+def test_curator_config_resolves_only_required_admitted_associations(
+    raw_backend_fs: Backend, explicit_context: bool
+) -> None:
+    fs, storage, root = raw_backend_fs
+    committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
+    primary = _measured(committer, "a", "chosen")
+    other = _measured(committer, "b", "unused")
+    reader = RetainedReader(committer)
+    chosen = reader.associated(primary.reference, "metric")[0]
+    unused = reader.associated(other.reference, "metric")[0]
+    operation = _ConfigurationCurator()
+    operation._metric_id = chosen.artifact.artifact_id
+    inputs = {"source": (primary,)}
+    if explicit_context:
+        inputs["context"] = (chosen,)
+    association = CuratorInputAssociation(
+        primary_id=primary.artifact.artifact_id,
+        artifact_type="metric",
+        artifact_ids=tuple(
+            sorted((chosen.artifact.artifact_id, unused.artifact.artifact_id))
+        ),
+    )
+    coordinator, admission, reference = admit_curator(
+        committer,
+        operation,
+        inputs,
+        step_run_id="c" * 32,
+        associations=(association,),
+    )
+    staged, terminal = stage_curator(coordinator, admission, operation)
+    assert staged.success, staged.error
+    assert staged.execution_run_id is not None
+    coordinator.finish(reference, staged.execution_run_id, terminal)
+    plan = read_curator_plan(committer.delta_root, reference.step_run_id, fs)
+    assert plan is not None
+    result = CuratorReader(committer).read_result(plan.step_run_id, plan.plan_digest)
+    capture = result.projection.references[0]
+    assert {result.artifacts[key].artifact_id for key in capture.members} == {
+        primary.artifact.artifact_id,
+        chosen.artifact.artifact_id,
+    }
+    assert {result.artifacts[key].artifact_id for key in capture.direct_parents} == {
+        primary.artifact.artifact_id
+    }
+    assert unused.artifact.artifact_id not in {
+        artifact.artifact_id for artifact in result.artifacts.values()
+    }
+    assert len(result.projection.lineage) == 1
+    edge = result.projection.lineage[0]
+    assert result.artifacts[edge.source].artifact_id == primary.artifact.artifact_id
+    assert edge.target == capture.source
+
+
+@pytest.mark.parametrize("publication", ["before_admission", "after_admission"])
+def test_curator_config_cannot_discover_unadmitted_association(
+    raw_backend_fs: Backend, publication: str
+) -> None:
+    fs, storage, root = raw_backend_fs
+    committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
+    primary = _measured(committer, "a", "captured")
+    captured = RetainedReader(committer).associated(primary.reference, "metric")[0]
+    operation = _ConfigurationCurator()
+    operation._metric_id = (
+        MetricArtifact.draft({"unadmitted": 1}, "unadmitted.json", 7)
+        .finalize()
+        .artifact_id
+    )
+    if publication == "before_admission":
+        _measured(committer, "b", "unadmitted")
+    coordinator, admission, reference = admit_curator(
+        committer,
+        operation,
+        {"source": (primary,)},
+        step_run_id="c" * 32,
+        associations=(
+            CuratorInputAssociation(
+                primary_id=primary.artifact.artifact_id,
+                artifact_type="metric",
+                artifact_ids=(captured.artifact.artifact_id,),
+            ),
+        ),
+    )
+    if publication == "after_admission":
+        _measured(committer, "b", "unadmitted")
+    staged, terminal = stage_curator(coordinator, admission, operation)
+    assert staged.success, staged.error
+    assert staged.execution_run_id is not None
+    with pytest.raises(
+        ValueError, match="Configuration referent is missing or ambiguous"
+    ):
+        coordinator.finish(reference, staged.execution_run_id, terminal)
+    assert read_curator_plan(committer.delta_root, reference.step_run_id, fs) is None
 
 
 def test_curator_explicit_diagnostic_input_does_not_expand_ordinary_queries(

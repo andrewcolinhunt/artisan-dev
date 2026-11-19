@@ -59,12 +59,13 @@ def admit_curator(
     *,
     step_run_id: str,
     step_number: int = 8,
+    pipeline_run_id: str = "synthetic-pipeline",
     software_digest: str | None = None,
     software_cacheable: bool = True,
     associations: tuple[CuratorInputAssociation, ...] = (),
 ) -> tuple[CuratorResults, CuratorAdmission, CuratorAdmissionReference]:
     coordinator = CuratorResults(
-        RetainedStepTracker(committer, "synthetic-pipeline"),
+        RetainedStepTracker(committer, pipeline_run_id),
         f"{committer.delta_root}/curator-staging",
     )
     coordinator.initialize()

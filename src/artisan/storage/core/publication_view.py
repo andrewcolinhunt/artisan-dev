@@ -355,3 +355,19 @@ class _PublicationView:
             state.step_number: state.step_name
             for state in StepTracker._select_current_states(attempts, pipeline_run_id)
         }
+
+    def accepted_artifact_ids_by_step(self, artifact_type: str) -> dict[int, set[str]]:
+        """Read current accepted exports from the captured publication inventory."""
+        from artisan.orchestration.engine.publication_runs import (
+            _exports,
+            _validate_run_rows,
+        )
+        from artisan.orchestration.engine.step_tracker import StepTracker
+
+        attempts = _validate_run_rows(self.manifest, self._lifecycle().collect())
+        selected: dict[int, set[str]] = {}
+        for state in StepTracker._select_current_states(attempts):
+            for item in _exports(self.manifest, state):
+                if item.artifact_type == artifact_type:
+                    selected.setdefault(state.step_number, set()).add(item.artifact_id)
+        return selected

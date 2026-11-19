@@ -33,4 +33,5 @@ def curator_source_matches(
     ):
         return False
     validate_curator_cache_proof(proof, view._at(source.view), admission=source)
+    view.bind_admission(current)
     return curator_views_match(proof, view)
