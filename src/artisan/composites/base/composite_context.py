@@ -13,7 +13,7 @@ from artisan.schemas.composites.plan import (
     DefinitionContract,
     ExecutionRecipe,
     InputContract,
-    OutputContract,
+    OutputRoleContract,
     RecipeCall,
     RecipeReference,
     RoleBinding,
@@ -169,7 +169,7 @@ class CompositeContext:
         return tuple(result)
 
     def _reference_type(self, reference: CompositeRef) -> str:
-        contracts: tuple[InputContract | OutputContract, ...]
+        contracts: tuple[InputContract | OutputRoleContract, ...]
         if reference.call is None:
             contracts = self._recipe.inputs
         elif reference.call in self._calls:

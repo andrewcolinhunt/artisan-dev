@@ -103,7 +103,8 @@ class ArtifactResult(BaseModel):
             role: Output role receiving the artifact.
             artifact: Artifact to append without finalization or renaming.
             sources: Parent role to input IDs, precise input references, or
-                sibling-output indices. Input and output kinds cannot mix.
+                sibling-output indices. Reference types distinguish input and
+                output parents, including when both share a role name.
                 An empty dictionary explicitly declares a root.
 
         Returns:
@@ -122,7 +123,6 @@ class ArtifactResult(BaseModel):
             raise TypeError(msg)
         index = len(self.artifacts.get(role, []))
         mappings: list[LineageMapping] = []
-        kinds: set[str] = set()
         for source_role, references in sources.items():
             if not references:
                 msg = f"Source role {source_role!r} has no references"
@@ -140,7 +140,6 @@ class ArtifactResult(BaseModel):
                     if reference.role != source_role:
                         msg = "Precise input reference belongs to another source role"
                         raise ValueError(msg)
-                    kinds.add("inputs")
                     mappings.append(
                         LineageMapping(
                             draft_index=index,
@@ -151,7 +150,6 @@ class ArtifactResult(BaseModel):
                         )
                     )
                     continue
-                kinds.add("inputs" if isinstance(reference, str) else "outputs")
                 mappings.append(
                     LineageMapping(
                         draft_index=index,
@@ -164,9 +162,6 @@ class ArtifactResult(BaseModel):
                         else None,
                     )
                 )
-        if len(kinds) > 1:
-            msg = "Cannot mix input IDs and sibling-output indices"
-            raise ValueError(msg)
         self.artifacts.setdefault(role, []).append(artifact)
         self.lineage.setdefault(role, []).extend(mappings)
         return index

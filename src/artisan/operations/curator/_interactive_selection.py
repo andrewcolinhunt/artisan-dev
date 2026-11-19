@@ -33,7 +33,9 @@ class InteractiveSelection(OperationDefinition):
     inputs: ClassVar[dict[str, InputSpec]] = {
         InputRole.passthrough: InputSpec(hydrate=False)
     }
-    outputs: ClassVar[dict[str, OutputSpec]] = {OutputRole.passthrough: OutputSpec()}
+    outputs: ClassVar[dict[str, OutputSpec]] = {
+        OutputRole.passthrough: OutputSpec(required=False)
+    }
 
     class Params(BaseModel):
         selected_ids: list[str] = Field(

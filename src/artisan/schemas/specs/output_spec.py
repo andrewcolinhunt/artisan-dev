@@ -26,9 +26,11 @@ class OutputSpec(BaseModel):
             empty. This does not specify an output count per input.
         derives_from: Allowed parent roles for every output occurrence. Each role
             is required unless listed in optional_parent_roles.
-            Three patterns supported:
+            Supported patterns:
             - {"inputs": ["role"]}: Explicit input role(s) as parent
             - {"outputs": ["role"]}: Output role(s) as parent (output->output)
+            - {"inputs": ["reference"], "outputs": ["data"]}: Parents from both
+                namespaces; required roles are checked independently.
             - {"inputs": []}: Generative operation (no lineage - no parents)
 
             Artifact-producing operations must set this explicitly.
@@ -39,10 +41,10 @@ class OutputSpec(BaseModel):
             Multiple parents from each required role are allowed.
 
             IMPORTANT: Empty dict {} is INVALID and will raise ValidationError.
-            Combined {"inputs": [...], "outputs": [...]} is NOT supported.
 
         optional_parent_roles: Declared parent roles that may be absent from an
             individual result. Exact references are still required when used.
+            A name listed in both namespaces is optional in both.
 
     Examples:
         # Data derived from specific input
@@ -86,7 +88,9 @@ class OutputSpec(BaseModel):
     @model_validator(mode="after")
     def _validate_optional_parents(self) -> OutputSpec:
         roles = self.optional_parent_roles
-        allowed = next(iter(self.derives_from.values())) if self.derives_from else ()
+        allowed = {
+            role for roles in (self.derives_from or {}).values() for role in roles
+        }
         if len(roles) != len(set(roles)) or any(
             not role or role not in allowed for role in roles
         ):
@@ -108,8 +112,8 @@ class OutputSpec(BaseModel):
         """Validate derives_from configuration.
 
         Raises:
-            ValueError: If value is an empty dict, contains invalid
-                keys, or combines both "inputs" and "outputs".
+            ValueError: If value is an empty dict, contains invalid keys or
+                duplicate roles within a namespace, or has an empty output list.
         """
         if v is None:
             return v
@@ -132,21 +136,13 @@ class OutputSpec(BaseModel):
             )
             raise ValueError(msg)
 
-        # Reject combined inputs+outputs
-        if "inputs" in v and "outputs" in v:
-            msg = (
-                "Combined inputs+outputs pattern is no longer supported. "
-                "Use separate output roles instead."
-            )
-            raise ValueError(msg)
-
-        reference_kind, roles = next(iter(v.items()))
-        if reference_kind == "outputs" and not roles:
-            msg = "Output lineage must reference at least one output role."
-            raise ValueError(msg)
-        if len(roles) != len(set(roles)):
-            msg = f"Duplicate roles are not allowed in derives_from: {roles!r}"
-            raise ValueError(msg)
+        for reference_kind, roles in v.items():
+            if reference_kind == "outputs" and not roles:
+                msg = "Output lineage must reference at least one output role."
+                raise ValueError(msg)
+            if len(roles) != len(set(roles)):
+                msg = f"Duplicate roles are not allowed in derives_from: {roles!r}"
+                raise ValueError(msg)
 
         return v
 

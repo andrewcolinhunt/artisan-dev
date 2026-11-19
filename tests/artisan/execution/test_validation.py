@@ -360,10 +360,61 @@ class TestExplicitLineageValidation:
             "data": OutputSpec(derives_from={"inputs": []}),
             "out": OutputSpec(derives_from={kind: ["data"]}),
         }
-        with pytest.raises(LineageIntegrityError, match="lineage requires source_"):
+        with pytest.raises(LineageIntegrityError, match="forbidden source role"):
             validate_lineage_integrity(
                 {"data": [], "out": [mapping]},
                 {"data": ["a" * 32]},
+                {"data": [draft_artifact], "out": [draft_artifact]},
+                specs,
+            )
+
+    @pytest.mark.parametrize("missing_kind", ["inputs", "outputs"])
+    def test_mixed_namespaces_require_each_role_independently(
+        self, draft_artifact, missing_kind: str
+    ) -> None:
+        specs = {
+            "data": OutputSpec(derives_from={"inputs": []}),
+            "out": OutputSpec(derives_from={"inputs": ["data"], "outputs": ["data"]}),
+        }
+        parents = {
+            "inputs": self.mapping(role="data"),
+            "outputs": LineageMapping(
+                draft_index=0, source_role="data", source_output_index=0
+            ),
+        }
+        outputs = {"data": [draft_artifact], "out": [draft_artifact]}
+        lineage = {
+            "data": [],
+            "out": [parents[kind] for kind in parents if kind != missing_kind],
+        }
+        validate_lineage_integrity(lineage, {"data": ["a" * 32]}, outputs, specs)
+        with pytest.raises(LineageCompletenessError, match=rf"{missing_kind}\.data"):
+            validate_lineage_completeness(outputs, specs, lineage)
+        lineage["out"].append(parents[missing_kind])
+        validate_lineage_integrity(lineage, {"data": ["a" * 32]}, outputs, specs)
+        validate_lineage_completeness(outputs, specs, lineage)
+
+    @pytest.mark.parametrize("kind", ["inputs", "outputs"])
+    def test_mixed_contract_does_not_allow_role_in_wrong_namespace(
+        self, draft_artifact, kind: str
+    ) -> None:
+        specs = {
+            "data": OutputSpec(derives_from={"inputs": []}),
+            "out": OutputSpec(
+                derives_from={"inputs": ["reference"], "outputs": ["data"]}
+            ),
+        }
+        parent = (
+            self.mapping(role="data")
+            if kind == "inputs"
+            else LineageMapping(
+                draft_index=0, source_role="reference", source_output_index=0
+            )
+        )
+        with pytest.raises(LineageIntegrityError, match="forbidden source role"):
+            validate_lineage_integrity(
+                {"data": [], "out": [parent]},
+                {"data": ["a" * 32], "reference": ["b" * 32]},
                 {"data": [draft_artifact], "out": [draft_artifact]},
                 specs,
             )

@@ -9,7 +9,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from artisan.schemas.composites.plan import (
     InputContract,
     InvocationPolicy,
-    OutputContract,
+    OutputRoleContract,
 )
 from artisan.schemas.execution.assignment import ContentDigest
 from artisan.utils.hashing import canonical_json_bytes, compute_content_digest
@@ -29,7 +29,7 @@ class CuratorDefinitionContract(BaseModel):
     qualname: str = Field(min_length=1, strict=True)
     params_digest: ContentDigest
     inputs: tuple[InputContract, ...]
-    outputs: tuple[OutputContract, ...]
+    outputs: tuple[OutputRoleContract, ...]
     policy: InvocationPolicy
     runtime_defined_inputs: bool = Field(strict=True)
     hydrate_inputs: bool = Field(strict=True)
