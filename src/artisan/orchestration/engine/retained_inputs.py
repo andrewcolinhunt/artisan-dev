@@ -17,6 +17,7 @@ from artisan.execution.lineage.graph import OccurrenceGraph
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.input_contracts import split_shared_inputs
 from artisan.schemas.composites.plan import ExecutionRecipe
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.assignment import AssignmentIdentity, SealedDelivery
@@ -70,10 +71,11 @@ def prepare_step_inputs(
     sources = _InputSources(reader)
     selected = sources.select(inputs)
     _validate_inputs(recipe, selected)
+    paired, _ = split_shared_inputs(selected, recipe.policy.shared_input_roles)
     associations = sources.associated(recipe, selected)
     lineage = (
-        sources.lineage(selected)
-        if recipe.policy.group_by == GroupByStrategy.LINEAGE and any(selected.values())
+        sources.lineage(paired)
+        if recipe.policy.group_by == GroupByStrategy.LINEAGE and any(paired.values())
         else None
     )
     return tuple(

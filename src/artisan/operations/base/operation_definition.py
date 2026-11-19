@@ -186,6 +186,14 @@ class OperationDefinition(BaseModel):
             independent_input_streams = True  # Unions streams of any size
     """
 
+    shared_input_roles: ClassVar[tuple[str, ...]] = ()
+    """Required singleton inputs attached once to every bounded invocation.
+
+    These roles do not participate in pairing or ancestry matching. Callers
+    supply exactly one occurrence through ordinary inputs; no default is inferred.
+    Use ``inputs.ref(role, index=0)`` to declare the shared dependency.
+    """
+
     group_by: GroupByStrategy | None = None
     """Strategy for pairing multiple input streams before delivery to the operation.
 

@@ -48,6 +48,21 @@ class OutputContract(_RecipeModel):
     required: bool
     parent_kind: Literal["inputs", "outputs"] | None
     parent_roles: tuple[str, ...]
+    optional_parent_roles: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda roles: not roles
+    )
+
+    @model_validator(mode="after")
+    def _validate_optional_parents(self) -> OutputContract:
+        roles = self.optional_parent_roles
+        if roles and (
+            self.parent_kind is None
+            or len(roles) != len(set(roles))
+            or any(not role or role not in self.parent_roles for role in roles)
+        ):
+            msg = "Optional parent roles must be unique declared parent roles"
+            raise ValueError(msg)
+        return self
 
 
 class InvocationPolicy(_RecipeModel):
@@ -58,6 +73,20 @@ class InvocationPolicy(_RecipeModel):
     per_artifact_dispatch: bool = True
     artifacts_per_unit: int = Field(default=1, ge=1, strict=True)
     max_artifacts_per_unit: int | None = Field(default=None, ge=1, strict=True)
+    shared_input_roles: tuple[str, ...] = Field(
+        default=(), exclude_if=lambda roles: not roles
+    )
+
+    @model_validator(mode="after")
+    def _validate_shared_roles(self) -> InvocationPolicy:
+        roles = self.shared_input_roles
+        if len(roles) != len(set(roles)) or any(not role for role in roles):
+            msg = "Shared input roles must be unique nonempty names"
+            raise ValueError(msg)
+        if roles and self.independent_input_streams:
+            msg = "Shared input roles cannot be combined with independent streams"
+            raise ValueError(msg)
+        return self
 
 
 class ToolContract(_RecipeModel):
@@ -125,18 +154,43 @@ class DefinitionContract(_RecipeModel):
             if len(roles) != len(set(roles)):
                 msg = "Definition contracts contain duplicate roles"
                 raise ValueError(msg)
+        shared = set(self.policy.shared_input_roles)
+        required = {spec.role for spec in self.inputs if spec.required}
+        if shared and (
+            self.definition.kind != "creator"
+            or not shared <= required
+            or not ({spec.role for spec in self.inputs} - shared)
+        ):
+            msg = "Shared roles require declared required creator inputs and a nonshared role"
+            raise ValueError(msg)
         return self
+
+    @property
+    def recipe_version(self) -> Literal[1, 2]:
+        """Select the extended format only when a new contract is declared."""
+        return (
+            2
+            if self.policy.shared_input_roles
+            or any(spec.optional_parent_roles for spec in self.outputs)
+            else 1
+        )
 
 
 class ExecutionRecipe(DefinitionContract):
     """Closed scientific recipe; prepared software is bound separately."""
 
-    schema_version: Literal[1] = 1
+    schema_version: Literal[1, 2] = 1
     calls: tuple[RecipeCall, ...] = ()
     exports: tuple[RoleBinding, ...] = ()
 
     @model_validator(mode="after")
     def _validate_wiring(self) -> ExecutionRecipe:
+        if self.schema_version == 1 and (
+            self.recipe_version == 2
+            or any(call.recipe.schema_version == 2 for call in self.calls)
+        ):
+            msg = "Extended input or parent contracts require recipe schema version 2"
+            raise ValueError(msg)
         if self.definition.kind == "creator":
             if self.calls or self.exports:
                 msg = "A creator recipe cannot contain composition wiring"
@@ -176,7 +230,7 @@ class ExecutionRecipe(DefinitionContract):
     def digest(self) -> str:
         """Identify parameters, nested definitions, contracts and ordered wiring."""
         return compute_content_digest(
-            b"execution-recipe-v1\0"
+            f"execution-recipe-v{self.schema_version}\0".encode()
             + canonical_json_bytes(self.model_dump(mode="json"))
         )
 

@@ -179,7 +179,8 @@ such as metrics or configs.
 ### Outputs
 
 Map each output role to an `OutputSpec`. Set `derives_from` to declare its
-required and allowed parent roles; select exact parents in postprocess:
+allowed parent roles; select exact parents in postprocess. Each declared parent
+role is required on every output occurrence unless explicitly optional:
 
 ```python
 outputs: ClassVar[dict[str, OutputSpec]] = {
@@ -198,6 +199,28 @@ A required output role must be present and contain at least one artifact.
 Missing roles and empty required lists fail execution. Set `required=False`
 when an output may legitimately be absent. This validates each returned output
 role; it does not enforce a fixed number of outputs per input artifact.
+
+### Optional parents on individual results
+
+Use `optional_parent_roles` when a declared input or output role contributes to
+only some results. For example, this output declaration requires a `source`
+parent on every result and permits a `context` parent when that result uses it:
+
+```python
+from artisan.schemas import OutputSpec
+
+result_spec = OutputSpec(
+    artifact_type="metric",
+    derives_from={"inputs": ["source", "context"]},
+    optional_parent_roles=("context",),
+)
+```
+
+Include the exact context reference in `ArtifactResult` whenever you use it.
+The operation must validate which context applies; Artisan checks that every
+supplied reference names an actual occurrence in the declared role. Making an
+input role optional with `InputSpec(required=False)` does not make its output
+parent optional.
 
 ### Lineage patterns
 
@@ -891,6 +914,32 @@ class AlignOp(OperationDefinition):
 | `ZIP` | Pairs by position (index-aligned) | Inputs in a known, consistent order |
 | `CROSS_PRODUCT` | Every combination across roles | Every input combined with every other |
 | `NAME` | Pairs artifacts whose `original_name` stems match | Independently-ingested streams that share filename conventions but no ancestry |
+
+#### Share one selected input across batches
+
+Declare `shared_input_roles = ("reference",)` on a creator when every bounded
+invocation uses the same selected artifact. Keep `reference` as an ordinary
+required `InputSpec`; callers supply `[reference_artifact]` or an output reference
+that resolves to exactly one occurrence. Two occurrences of the same artifact
+are still two selections and fail validation, including when the other inputs
+are empty. An empty biological selection creates no work.
+
+Shared roles are excluded from pairing. A creator with LINEAGE-paired `data`
+and `config` can therefore add a shared `reference` without making that artifact
+part of ancestry matching. Pair ordering and batch bounds still apply to `data`
+and `config`; each invocation receives one reference at index zero.
+
+In your lifecycle methods, iterate the paired roles explicitly, for example
+`zip(inputs.input_artifacts["data"], inputs.input_artifacts["config"], strict=True)`.
+Use `inputs.ref("reference", index=0)` for its output lineage. The existing
+`inputs.grouped()` method zips every role and is unsuitable for these unequal
+stream lengths. Shared roles cannot be combined with independent whole-stream
+inputs, and at least one nonshared role must remain.
+
+The selected artifact participates in ordinary dependencies, cache identity and
+replay. The declaration does not infer a default or fetch an artifact. Existing
+CROSS_PRODUCT operations keep their repeated paired references unless they
+explicitly opt into singleton sharing.
 
 #### Pairing by name
 
