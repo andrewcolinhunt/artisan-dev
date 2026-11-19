@@ -9,6 +9,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any, ClassVar
 
+import polars as pl
 import pytest
 from fixtures.input_contract_operations import AnchoredOffset, named_metric
 from pydantic import BaseModel, Field
@@ -707,6 +708,26 @@ def test_external_singleton_anchored_selection_survives_cache_and_replay_chain(
                     and edge.source.role == "offset"
                 ] == [0]
         assert sorted(values) == list(range(7, 13))
+        provenance = ArtifactStore(
+            manager.config.delta_root, files_root=manager.config.files_root
+        ).provenance
+        assert provenance.get_artifact_step_number(artifact.artifact_id) is None
+        targets = {
+            item.artifact.artifact_id
+            for source in sources
+            for item in reader.read(source.plan.receipt).output("metrics")
+        }
+        edges = provenance.load_direct_edges_df(
+            targets,
+            include_roles=True,
+            execution_ids={
+                source.plan.receipt.delivery.delivery_id for source in sources
+            },
+        )
+        external_parents = edges.filter(pl.col("source_role") == "offset")
+        assert external_parents.height == 6
+        assert set(external_parents["target_artifact_id"]) == targets
+        assert set(external_parents["source_artifact_id"]) == {artifact.artifact_id}
         original = next(
             source
             for source in sources

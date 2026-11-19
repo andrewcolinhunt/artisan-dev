@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import polars as pl
+import pytest
 from fixtures.retained_inspection import commit_inspection_attempt
 
 from artisan.schemas import CSVArtifact, MetricArtifact
@@ -99,3 +100,138 @@ def test_empty_dataframe_queries_keep_declared_columns(
         "target_role",
         "group_id",
     ]
+
+
+def test_direct_edges_include_null_origins_and_preserve_exact_roles(
+    backend_committer: RetainedCommitter,
+) -> None:
+    parent = MetricArtifact.draft({"value": 7}, "shared.json").finalize()
+    source = CSVArtifact.draft(b"x\n1\n", "source.csv", 1).finalize()
+    target = MetricArtifact.draft({"value": 8}, "target.json", 2).finalize()
+    unrelated = MetricArtifact.draft({"value": 9}, "other.json", 2).finalize()
+    commit_inspection_attempt(
+        backend_committer.delta_root,
+        committer=backend_committer,
+        number=2,
+        inputs={"source": [source], "shared": [parent]},
+        outputs={"result": [target], "other": [unrelated]},
+    )
+    provenance = _store(backend_committer).provenance
+    assert provenance.get_artifact_step_number(parent.artifact_id) is None
+    result = provenance.load_direct_edges_df(
+        [target.artifact_id, target.artifact_id], include_roles=True
+    )
+    assert result.schema == dict.fromkeys(
+        [
+            "source_artifact_id",
+            "target_artifact_id",
+            "source_role",
+            "target_role",
+            "group_id",
+        ],
+        pl.String,
+    )
+    assert result.select("source_artifact_id", "source_role").sort(
+        "source_role"
+    ).rows() == [(parent.artifact_id, "shared"), (source.artifact_id, "source")]
+    assert result["target_artifact_id"].to_list() == [target.artifact_id] * 2
+    assert result["target_role"].to_list() == ["result"] * 2
+    assert result["group_id"].to_list() == [None, None]
+    assert set(result["source_artifact_id"]) == set(
+        provenance.get_direct_ancestors(target.artifact_id)
+    )
+    # Numeric origin ranges retain their existing exclusion of null origins.
+    ranged = provenance.load_edges_df(0, 2)
+    assert parent.artifact_id not in ranged["source_artifact_id"]
+
+
+def test_direct_edges_filter_executions_without_inferring_current_membership(
+    backend_committer: RetainedCommitter,
+) -> None:
+    root = backend_committer.delta_root
+    first = MetricArtifact.draft({"value": 1}, "first.json").finalize()
+    second = MetricArtifact.draft({"value": 2}, "second.json").finalize()
+    target = MetricArtifact.draft({"value": 3}, "target.json", 1).finalize()
+    _, first_execution = commit_inspection_attempt(
+        root,
+        committer=backend_committer,
+        number=1,
+        inputs={"first": [first]},
+        outputs={"result": [target]},
+    )
+    provenance = _store(backend_committer).provenance
+    before = provenance.load_direct_edges_df({target.artifact_id}, include_roles=True)
+    assert before["source_role"].to_list() == ["first"]
+    _, second_execution = commit_inspection_attempt(
+        root,
+        committer=backend_committer,
+        number=2,
+        inputs={"second": [second]},
+        outputs={"result": [target]},
+    )
+    _, repeated_execution = commit_inspection_attempt(
+        root,
+        committer=backend_committer,
+        number=3,
+        inputs={"second": [second]},
+        outputs={"result": [target]},
+    )
+    _, diagnostic = commit_inspection_attempt(
+        root,
+        committer=backend_committer,
+        number=4,
+        replay_of=first_execution,
+        inputs={"first": [first]},
+        outputs={"result": [target]},
+    )
+    _, failed = commit_inspection_attempt(
+        root,
+        committer=backend_committer,
+        number=5,
+        status="failed",
+        inputs={"first": [first]},
+        outputs={"result": [target]},
+    )
+    assert before.height == 1
+    all_edges = provenance.load_direct_edges_df(
+        {target.artifact_id}, include_roles=True
+    )
+    assert sorted(all_edges["source_role"].to_list()) == ["first", "second", "second"]
+    assert provenance.load_direct_edges_df(
+        {target.artifact_id}, execution_ids=[first_execution]
+    ).rows() == [(first.artifact_id, target.artifact_id)]
+    assert provenance.load_direct_edges_df(
+        {target.artifact_id},
+        include_roles=True,
+        execution_ids={second_execution, repeated_execution},
+    )["source_role"].to_list() == ["second", "second"]
+    assert provenance.load_direct_edges_df(
+        {target.artifact_id}, execution_ids={diagnostic, failed}
+    ).is_empty()
+
+
+@pytest.mark.parametrize("include_roles", [False, True])
+def test_direct_edges_empty_selections_and_unknown_ids_keep_string_schema(
+    backend_committer: RetainedCommitter,
+    monkeypatch: pytest.MonkeyPatch,
+    include_roles: bool,
+) -> None:
+    provenance = _store(backend_committer).provenance
+    columns = ["source_artifact_id", "target_artifact_id"]
+    if include_roles:
+        columns.extend(["source_role", "target_role", "group_id"])
+    expected = dict.fromkeys(columns, pl.String)
+    unknown = provenance.load_direct_edges_df(["f" * 32], include_roles=include_roles)
+    assert unknown.is_empty()
+    assert unknown.schema == expected
+
+    def no_scan(*args: object, **kwargs: object) -> None:
+        pytest.fail("An explicitly empty selection must not scan edge or origin tables")
+
+    monkeypatch.setattr(provenance, "_scan", no_scan)
+    for targets, executions in (([], None), (["f" * 32], [])):
+        empty = provenance.load_direct_edges_df(
+            targets, include_roles=include_roles, execution_ids=executions
+        )
+        assert empty.is_empty()
+        assert empty.schema == expected
