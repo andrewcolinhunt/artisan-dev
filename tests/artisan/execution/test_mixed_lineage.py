@@ -12,8 +12,11 @@ from fixtures.composition_operations import PredictMeasure, coordinate, structur
 from pydantic import ValidationError
 
 from artisan.composites import CompositeContext, CompositeDefinition
-from artisan.composites.base.compiler import compile_definition
-from artisan.execution.composition import execute_compiled_plan
+from artisan.composites.base.compiler import (
+    compile_captured_definition,
+    compile_definition,
+)
+from artisan.execution.composition import _output_specs, execute_compiled_plan
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executor import Executor
 from artisan.operations.base import OperationDefinition
@@ -106,6 +109,30 @@ class ComposedGenerateAndScore(CompositeDefinition):
         ctx.output("score", result.output("score"))
 
 
+class GenerateCompareAndMeasure(GenerateAndScore):
+    name = "mixed_generate_compare_and_measure"
+    outputs: ClassVar = {
+        **GenerateAndScore.outputs,
+        "score": OutputSpec(
+            artifact_type="metric",
+            derives_from={"inputs": ["reference"], "outputs": ["candidate"]},
+            optional_parent_roles=("reference",),
+        ),
+    }
+
+    def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
+        result = super().postprocess(inputs)
+        result.add_artifact(
+            "score",
+            MetricArtifact.draft(
+                {"coordinate": coordinate(result.artifacts["candidate"][0])},
+                "coordinate.json",
+            ),
+            sources={"candidate": [0]},
+        )
+        return result
+
+
 class ScoreOnly(ComposedGenerateAndScore):
     name = "mixed_score_only"
 
@@ -158,6 +185,89 @@ def test_mixed_parents_survive_compiled_execution_and_export_projection(
         assert {
             mapping.source_role for mapping in output.result.lineage["score"]
         } == expected_roles
+
+
+def test_optional_input_parent_preserves_required_sibling_through_execution(
+    tmp_path: Path,
+) -> None:
+    plan = compile_definition(GenerateCompareAndMeasure)
+    assert plan.recipe.schema_version == 2
+    with Executor(working_root=tmp_path / "session") as executor:
+        output = execute_compiled_plan(
+            plan,
+            {"reference": [structure(2)]},
+            executor,
+            invocation_id="optional",
+            execute_adapter=lambda _operation, _path: LocalExecuteRouter(),
+        )
+    assert [artifact.values for artifact in output.result.artifacts["score"]] == [
+        {"difference": 5},
+        {"coordinate": 7},
+    ]
+    exports = output.projection.export_roles()
+    for index, score in enumerate(exports["score"]):
+        parents = {
+            edge.source for edge in output.projection.parents if edge.target == score
+        }
+        expected = {exports["candidate"][0]}
+        if index == 0:
+            expected.add(output.projection.boundary_inputs[0].occurrences[0])
+        assert parents == expected
+
+
+@pytest.mark.parametrize("definition", [GenerateAndScore, ComposedGenerateAndScore])
+@pytest.mark.parametrize("optional_role", ["reference", "candidate"])
+def test_optional_mixed_contract_roundtrips_as_v2_and_reconstructs_both_namespaces(
+    definition: type[OperationDefinition] | type[CompositeDefinition],
+    optional_role: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    original = compile_definition(definition).recipe
+    monkeypatch.setattr(
+        GenerateAndScore,
+        "outputs",
+        {
+            **GenerateAndScore.outputs,
+            "score": GenerateAndScore.outputs["score"].model_copy(
+                update={"optional_parent_roles": (optional_role,)}
+            ),
+        },
+    )
+    recipe = compile_definition(definition).recipe
+    assert original.schema_version == 1
+    assert recipe.schema_version == 2
+    assert recipe.digest != original.digest
+    assert ExecutionRecipe.model_validate_json(recipe.model_dump_json()) == recipe
+    assert compile_captured_definition(definition, recipe).recipe == recipe
+    child = recipe.calls[0].recipe if recipe.calls else recipe
+    assert child.schema_version == 2
+    assert _output_specs(child)["score"] == GenerateAndScore.outputs["score"]
+    payload = recipe.model_dump(mode="json")
+    payload["schema_version"] = 1
+    with pytest.raises(ValidationError, match="schema version 2"):
+        ExecutionRecipe.model_validate(payload)
+
+
+def test_mixed_v1_recipe_keeps_original_bytes_without_optional_parents() -> None:
+    recipe = compile_definition(GenerateAndScore).recipe
+    historical = recipe.model_dump(mode="json")
+    historical["outputs"][1] = {
+        "role": "score",
+        "artifact_type": "metric",
+        "required": True,
+        "input_parent_roles": ["reference"],
+        "output_parent_roles": ["candidate"],
+    }
+    encoded = canonical_json_bytes(historical)
+    restored = ExecutionRecipe.model_validate_json(encoded)
+    assert recipe.schema_version == restored.schema_version == 1
+    assert canonical_json_bytes(recipe.model_dump(mode="json")) == encoded
+    assert canonical_json_bytes(restored.model_dump(mode="json")) == encoded
+    assert (
+        restored.digest
+        == recipe.digest
+        == compute_content_digest(b"execution-recipe-v1\0" + encoded)
+    )
 
 
 def test_mixed_recipe_roundtrip_and_both_namespaces_affect_identity() -> None:
@@ -216,6 +326,9 @@ def test_existing_output_contract_wire_shape_and_recipe_digest_are_unchanged(
         {"output_parent_roles": ("candidate", "candidate")},
         {"input_parent_roles": ("",)},
         {"parent_kind": "inputs", "parent_roles": ("reference",)},
+        {"optional_parent_roles": ("missing",)},
+        {"optional_parent_roles": ("reference", "reference")},
+        {"optional_parent_roles": ("",)},
     ],
 )
 def test_mixed_contract_rejects_empty_duplicate_or_ambiguous_parents(

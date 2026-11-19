@@ -208,10 +208,12 @@ Creator operations must set `derives_from` on every output. Curator outputs
 may leave it as `None` only when returning passthrough artifacts. Curators
 returning new drafts receive the same runtime validation as creators.
 An empty dict `{}` and output-role dependency cycles are rejected. Each listed
-role is both required
-and allowed for every derived occurrence; reference-only inputs stay outside
-ancestry unless explicitly included. Input and output namespaces are checked
-separately, including when both contain the same role name.
+role is allowed for every derived occurrence and is required unless its name
+appears in `optional_parent_roles`. Input and output namespaces are checked
+separately. If a name appears in both namespaces, listing it in
+`optional_parent_roles` makes it optional in both. Supplied parents still require
+exact references. Reference-only inputs stay outside ancestry unless explicitly
+included.
 
 ### Role enums
 

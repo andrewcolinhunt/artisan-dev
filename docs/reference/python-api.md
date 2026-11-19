@@ -30,11 +30,19 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Assess recorded metrics or compare selected attempts | `artisan.visualization` | `OutcomeSelection`, `AssessmentSpec`, `assess_outcomes`, `ComparisonSpec`, `compare_runs` |
 | Traverse provenance | `artisan.provenance` | `provenance_edges`, `walk_forward`, `walk_backward` |
 | Implement a runner provider | `artisan.orchestration.runner_api` | `LocalRunner`, `AssignmentHandle`, `CuratorHandle`, `WorkerOwner` |
+| Inspect a Modal worker boundary | `artisan_modal` (optional package) | `ModalSoftware`, `CallObservation`, `modal_owner_observations` |
 
 For structured error definitions, see `artisan.errors`: `ArtisanError`,
 `ArtisanErrorEnvelope`, and `ErrorCode`. See
 [error handling](../concepts/error-handling.md#structured-failure-identity) for
 how these relate to failed steps and execution records.
+
+For a Modal worker handle, use `modal_owner_observations(handle.worker_owner)`
+to read its bounded, redacted diagnostic snapshot. The frozen observations do
+not prove cleanup: require `handle.worker_owner.ownership_state()` to be
+`OwnershipState.CLOSED` separately. An audit of one provider call must also
+verify its single SDK call ID, SDK call graph, and exact `ModalSoftware` identity;
+the snapshot alone does not establish those matches.
 
 ## Inspect the installed version
 

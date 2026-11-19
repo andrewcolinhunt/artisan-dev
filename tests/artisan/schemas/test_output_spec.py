@@ -227,3 +227,32 @@ class TestArtifactTypeValidator:
 def test_removed_lineage_keyword_is_rejected() -> None:
     with pytest.raises(ValidationError, match="Extra inputs"):
         OutputSpec(infer_lineage_from={"inputs": []})
+
+
+@pytest.mark.parametrize("kind", ["inputs", "outputs"])
+def test_optional_parents_are_an_explicit_subset(kind: str) -> None:
+    spec = OutputSpec(
+        derives_from={kind: ["source", "context"]}, optional_parent_roles=("context",)
+    )
+    assert OutputSpec.model_validate_json(spec.model_dump_json()) == spec
+    assert spec != spec.model_copy(update={"optional_parent_roles": ()})
+    assert hash(spec) != hash(spec.model_copy(update={"optional_parent_roles": ()}))
+
+
+@pytest.mark.parametrize(
+    ("derives_from", "optional"),
+    [
+        (None, ("source",)),
+        ({"inputs": []}, ("source",)),
+        ({"inputs": ["source"]}, ("other",)),
+        ({"inputs": ["source"]}, ("source", "source")),
+        ({"inputs": ["source"]}, ("",)),
+        ({"inputs": ["source"], "outputs": ["candidate"]}, ("other",)),
+        ({"inputs": ["source"], "outputs": ["candidate"]}, ("source", "source")),
+    ],
+)
+def test_invalid_optional_parent_contract_fails(
+    derives_from: dict[str, list[str]] | None, optional: tuple[str, ...]
+) -> None:
+    with pytest.raises(ValidationError, match="Optional parent"):
+        OutputSpec(derives_from=derives_from, optional_parent_roles=optional)

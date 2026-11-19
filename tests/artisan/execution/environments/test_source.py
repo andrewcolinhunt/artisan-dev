@@ -341,3 +341,166 @@ def test_source_captures_only_static_metadata_of_unselected_local_dependencies(
     )
     with pytest.raises(ValueError, match="static Hatch metadata"):
         read_environment_inputs(declaration, platform="linux-64")
+
+
+@pytest.mark.parametrize("variant", ["linux-64-glibc-2-34", "linux-64-cuda-12-6", "p1"])
+def test_source_resolves_named_subdir_variant_and_relocates_exact_locked_wheel(
+    source: Path,
+    variant: str,
+) -> None:
+    wheel = source / "example-1.0-py3-none-any.whl"
+    wheel.write_bytes(b"locked local wheel bytes")
+    lock = {
+        "version": 7,
+        "platforms": [
+            {
+                "name": variant,
+                "subdir": "linux-64",
+                "virtual-packages": ["__glibc=2.34"],
+            }
+        ],
+        "environments": {
+            "default": {"packages": {variant: [{"pypi": "./" + wheel.name}]}}
+        },
+        "packages": [{"pypi": "./" + wheel.name, "name": "example", "version": "1.0"}],
+    }
+    original = json.dumps(lock, indent=2).encode() + b"\n"
+    (source / "pixi.lock").write_bytes(original)
+    declaration = Environment.from_pixi(source / "pixi.toml")
+    inputs = read_environment_inputs(declaration, platform="linux-64")
+    assert wheel.name in inputs.paths
+    assert inputs.packages == ()
+    captured = capture_environment_source(inputs)
+    relocated = source / "relocated"
+    captured.write(relocated)
+    assert (relocated / "pixi.lock").read_bytes() == original
+    assert (relocated / wheel.name).read_bytes() == wheel.read_bytes()
+    assert (source / "pixi.lock").read_bytes() == original
+    assert (
+        capture_environment_source(
+            read_environment_inputs(
+                Environment.from_pixi(relocated / "pixi.toml"), platform="linux-64"
+            )
+        ).source
+        == captured.source
+    )
+
+
+def test_source_variant_selection_uses_only_the_selected_environment(
+    source: Path,
+) -> None:
+    package = source / "selected"
+    package.mkdir()
+    (package / "pyproject.toml").write_text(
+        '[project]\nname="selected"\nversion="1.0"\n'
+    )
+    lock = {
+        "version": 7,
+        "platforms": [
+            {"name": "cpu", "subdir": "linux-64"},
+            {"name": "gpu", "subdir": "linux-64"},
+        ],
+        "environments": {
+            "default": {"packages": {"cpu": [{"pypi": "./selected"}]}},
+            "other": {"packages": {"gpu": []}},
+        },
+        "packages": [{"pypi": "./selected", "name": "selected", "version": "1.0"}],
+    }
+    (source / "pixi.lock").write_text(json.dumps(lock))
+    inputs = read_environment_inputs(
+        Environment.from_pixi(source / "pixi.toml"), platform="linux-64"
+    )
+    assert [package.root for package in inputs.packages] == ["selected"]
+    with pytest.raises(ValueError, match="exactly one platform"):
+        read_environment_inputs(
+            Environment.from_pixi(source / "pixi.toml"), platform="gpu"
+        )
+
+
+@pytest.mark.parametrize("names", [("cpu", "gpu"), ("linux-64", "gpu")])
+def test_source_rejects_ambiguous_subdir_even_when_a_bare_name_exists(
+    source: Path, names: tuple[str, str]
+) -> None:
+    lock = {
+        "version": 7,
+        "platforms": [{"name": name, "subdir": "linux-64"} for name in names],
+        "environments": {"default": {"packages": {name: [] for name in names}}},
+        "packages": [],
+    }
+    (source / "pixi.lock").write_text(json.dumps(lock))
+    declaration = Environment.from_pixi(source / "pixi.toml")
+    with pytest.raises(ValueError, match="exactly one platform"):
+        read_environment_inputs(declaration, platform="linux-64")
+    with pytest.raises(ValueError, match="exactly one platform"):
+        read_environment_inputs(declaration, platform="gpu")
+
+
+@pytest.mark.parametrize(
+    ("platforms", "packages", "message"),
+    [
+        (
+            [{"name": "linux-64"}, {"name": "linux-64"}],
+            {"linux-64": []},
+            "duplicate names",
+        ),
+        ([{"name": "linux-64"}], {"unknown": []}, "unknown platform"),
+        (
+            [{"name": "arm", "subdir": "linux-aarch64"}],
+            {"arm": []},
+            "exactly one platform",
+        ),
+        (
+            [{"name": "linux-64", "subdir": "osx-arm64"}],
+            {"linux-64": []},
+            "exactly one platform",
+        ),
+        ([{"name": "gpu", "subdir": None}], {"gpu": []}, "nonempty"),
+        ([{"name": "", "subdir": "linux-64"}], {"": []}, "nonempty"),
+        ({"linux-64": {}}, {"linux-64": []}, "list"),
+        (["linux-64"], {"linux-64": []}, "table"),
+    ],
+)
+def test_source_rejects_invalid_or_foreign_platform_descriptors(
+    source: Path, platforms: object, packages: dict, message: str
+) -> None:
+    (source / "pixi.lock").write_text(
+        json.dumps(
+            {
+                "version": 7,
+                "platforms": platforms,
+                "environments": {"default": {"packages": packages}},
+                "packages": [],
+            }
+        )
+    )
+    with pytest.raises(ValueError, match=message):
+        read_environment_inputs(
+            Environment.from_pixi(source / "pixi.toml"), platform="linux-64"
+        )
+
+
+def test_source_plain_descriptor_can_omit_redundant_subdir(source: Path) -> None:
+    lock = json.loads((source / "pixi.lock").read_text())
+    lock["platforms"] = [{"name": "linux-64", "virtual-packages": ["__linux=4.18"]}]
+    (source / "pixi.lock").write_text(json.dumps(lock))
+    assert (
+        read_environment_inputs(
+            Environment.from_pixi(source / "pixi.toml"), platform="linux-64"
+        ).packages
+        == ()
+    )
+
+
+@pytest.mark.parametrize(
+    "environments", [[], {"default": []}, {"default": {"packages": []}}]
+)
+def test_source_rejects_malformed_locked_environment_tables(
+    source: Path, environments: object
+) -> None:
+    (source / "pixi.lock").write_text(
+        json.dumps({"version": 7, "environments": environments, "packages": []})
+    )
+    with pytest.raises(ValueError, match="table"):
+        read_environment_inputs(
+            Environment.from_pixi(source / "pixi.toml"), platform="linux-64"
+        )

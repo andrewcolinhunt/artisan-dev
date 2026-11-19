@@ -19,6 +19,7 @@ from artisan.operations.base._role_docs import (
     get_registered,
     validate_role_enums,
 )
+from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.operation_config.runner_resources import RunnerResources
@@ -62,7 +63,7 @@ class CompositeDefinition(BaseModel):
     )
     """Default root input partitioning and worker packing; ignored when nested."""
 
-    group_by: GroupByStrategy | None = None
+    group_by: GroupByStrategy | AnchoredNameGrouping | None = None
     """Default root input pairing; nested composites expand without regrouping."""
 
     # ---------- Compose ----------
