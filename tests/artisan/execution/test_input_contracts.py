@@ -10,15 +10,21 @@ from fixtures.input_contract_operations import (
     SharedOffset,
     SplitSharedOffset,
     metric,
+    named_metric,
 )
 
 from artisan.composites.base.compiler import compile_definition
 from artisan.execution.composition import execute_local_plan, validate_local_inputs
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executor import Executor
+from artisan.execution.inputs.occurrence_grouping import (
+    InputSelection,
+    partition_occurrence_inputs,
+)
 from artisan.execution.inputs.partitioning import partition_local_inputs
 from artisan.schemas.composites.plan import InvocationPolicy
 from artisan.schemas.enums import GroupByStrategy
+from artisan.schemas.provenance.occurrence import OccurrenceAddress
 from artisan.schemas.provenance.projection import FrozenBoundaryContext
 
 
@@ -142,3 +148,43 @@ def test_admission_shape_rejects_invalid_shared_membership(
         _validate_input_contract(
             compile_definition(SharedOffset).recipe, graph.project({}, {})
         )
+
+
+def test_name_pairing_matches_stems_without_pairing_the_shared_dependency() -> None:
+    artifacts = {
+        "source": [
+            named_metric("b.tar.gz", 0),
+            named_metric("a.json", 1),
+            named_metric("unmatched.bin", 2),
+        ],
+        "context": [named_metric("a.cfg", 20), named_metric("b.csv", 21)],
+        "offset": [named_metric("reference.json", 10)],
+    }
+    selected = {
+        role: tuple(
+            InputSelection(
+                artifact,
+                OccurrenceAddress(invocation_id="supplied", role=role, index=index),
+            )
+            for index, artifact in enumerate(values)
+        )
+        for role, values in artifacts.items()
+    }
+    policy = InvocationPolicy(
+        group_by=GroupByStrategy.NAME,
+        shared_input_roles=("offset",),
+        artifacts_per_unit=1,
+    )
+    units = list(partition_occurrence_inputs(selected, policy))
+    assert units == [
+        {
+            "source": (selected["source"][1],),
+            "context": (selected["context"][0],),
+            "offset": selected["offset"],
+        },
+        {
+            "source": (selected["source"][0],),
+            "context": (selected["context"][1],),
+            "offset": selected["offset"],
+        },
+    ]
