@@ -142,11 +142,28 @@ class RecipeReference(_RecipeModel):
     role: str = Field(min_length=1)
 
 
+class ConstantArtifact(_RecipeModel):
+    """Content identity of one ordinary captured constant input occurrence."""
+
+    artifact_id: str = Field(pattern=r"^[0-9a-fA-F]{32}$", strict=True)
+    artifact_type: str = Field(min_length=1, strict=True)
+
+
 class RoleBinding(_RecipeModel):
     """An ordered concatenation, including explicit empty streams and repeats."""
 
     role: str = Field(min_length=1)
     sources: tuple[RecipeReference, ...]
+    constants: tuple[ConstantArtifact, ...] | None = Field(
+        default=None, exclude_if=lambda value: value is None
+    )
+
+    @model_validator(mode="after")
+    def _validate_source(self) -> RoleBinding:
+        if self.constants is not None and self.sources:
+            msg = "Constant input bindings cannot also contain stream references"
+            raise ValueError(msg)
+        return self
 
 
 class RecipeCall(_RecipeModel):
@@ -210,7 +227,7 @@ class DefinitionContract(_RecipeModel):
 class ExecutionRecipe(DefinitionContract):
     """Closed scientific recipe; prepared software is bound separately."""
 
-    schema_version: Literal[1, 2] = 1
+    schema_version: Literal[1, 2, 3] = 1
     calls: tuple[RecipeCall, ...] = ()
     exports: tuple[RoleBinding, ...] = ()
 
@@ -218,9 +235,17 @@ class ExecutionRecipe(DefinitionContract):
     def _validate_wiring(self) -> ExecutionRecipe:
         if self.schema_version == 1 and (
             self.recipe_version == 2
-            or any(call.recipe.schema_version == 2 for call in self.calls)
+            or any(call.recipe.schema_version >= 2 for call in self.calls)
         ):
             msg = "Extended input or parent contracts require recipe schema version 2"
+            raise ValueError(msg)
+        constants = any(
+            binding.constants is not None
+            for call in self.calls
+            for binding in call.inputs
+        ) or any(call.recipe.schema_version == 3 for call in self.calls)
+        if constants != (self.schema_version == 3):
+            msg = "Constant input bindings require recipe schema version 3"
             raise ValueError(msg)
         if self.definition.kind == "creator":
             if self.calls or self.exports:
@@ -287,6 +312,17 @@ def _validate_bindings(
         raise ValueError(msg)
     for binding in bindings:
         spec = expected[binding.role]
+        if binding.constants is not None:
+            if require_all:
+                msg = "Composite outputs cannot bind constant artifacts"
+                raise ValueError(msg)
+            if any(
+                not ArtifactTypes.matches(spec.artifact_type, item.artifact_type)
+                for item in binding.constants
+            ):
+                msg = "Constant input has an incompatible artifact type"
+                raise ValueError(msg)
+            continue
         if require_all and spec.required and not binding.sources:
             msg = "Required public outputs cannot be explicitly empty"
             raise ValueError(msg)

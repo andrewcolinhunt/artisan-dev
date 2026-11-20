@@ -50,7 +50,7 @@ def definition_snapshot(instance: Instance) -> DefinitionContract:
 def input_contracts(definition: Definition) -> tuple[InputContract, ...]:
     """Freeze declared scientific input behavior without descriptive prose."""
     return tuple(
-        InputContract(role=role, **spec.model_dump(exclude={"description"}))
+        InputContract(role=role, **spec.model_dump(exclude={"description", "default"}))
         for role, spec in definition.inputs.items()
     )
 
