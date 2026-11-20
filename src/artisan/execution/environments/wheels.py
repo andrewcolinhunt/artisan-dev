@@ -8,8 +8,10 @@ import csv
 import hashlib
 import io
 import json
+import os
 import stat
 import subprocess
+import sys
 from email.parser import BytesParser
 from pathlib import Path, PurePosixPath
 from zipfile import ZipFile
@@ -60,6 +62,10 @@ def verify_wheel_metadata(
 
 def wheel_contents(wheel: Path) -> dict[str, bytes]:
     """Verify a pure wheel's complete RECORD before using any installed payload."""
+    return _wheel_contents(wheel, scripts=False)
+
+
+def _wheel_contents(wheel: Path, *, scripts: bool) -> dict[str, bytes]:
     with ZipFile(wheel) as archive:
         contents = {}
         for entry in archive.infolist():
@@ -69,7 +75,9 @@ def wheel_contents(wheel: Path) -> dict[str, bytes]:
             if name in contents or stat.S_ISLNK(entry.external_attr >> 16):
                 msg = "Derived wheel contains duplicate or symbolic-link payloads"
                 raise ValueError(msg)
-            if any(part.endswith(".data") for part in PurePosixPath(name).parts):
+            if not scripts and any(
+                part.endswith(".data") for part in PurePosixPath(name).parts
+            ):
                 msg = "Local source wheel data schemes are unsupported; supply an ordinary wheel"
                 raise ValueError(msg)
             contents[name] = archive.read(entry)
@@ -78,6 +86,9 @@ def wheel_contents(wheel: Path) -> dict[str, bytes]:
         msg = "Derived wheel requires exactly one RECORD"
         raise ValueError(msg)
     record_name = records[0]
+    if scripts:
+        for name in contents:
+            _wheel_script_name(name, record_name)
     rows = list(csv.reader(io.StringIO(contents[record_name].decode())))
     if len(rows) != len(contents) or {row[0] for row in rows} != contents.keys():
         msg = "Derived wheel RECORD does not cover its exact file set"
@@ -99,7 +110,14 @@ def wheel_contents(wheel: Path) -> dict[str, bytes]:
 
 
 def verify_wheel_installation(wheels: tuple[Path, ...], *, interpreter: Path) -> None:
-    """Check wheel payload, entrypoint wrappers and installed application file sets."""
+    """Check wheel payload, wrappers and installed application file sets.
+
+    Ordinary wheels may include flat ``.data/scripts`` entries installed by
+    Pixi on Linux. Other data schemes remain unsupported. Static source-wheel
+    capture continues to require pure wheels. Script names must not overlap
+    declared entrypoints, and Python script interpreter paths must not contain
+    apostrophes or line breaks.
+    """
     site = Path(
         subprocess.check_output(
             [
@@ -120,9 +138,16 @@ def verify_wheel_installation(wheels: tuple[Path, ...], *, interpreter: Path) ->
         raise ValueError(msg)
     expected_payload: set[str] = set()
     for wheel in wheels:
-        contents = wheel_contents(wheel)
+        contents = _wheel_contents(wheel, scripts=True)
+        record_name = next(
+            name for name in contents if name.endswith(".dist-info/RECORD")
+        )
         for name, content in contents.items():
             if name.endswith(".dist-info/RECORD"):
+                continue
+            script = _wheel_script_name(name, record_name)
+            if script is not None:
+                _verify_wheel_script(script, content, contents, site, interpreter)
                 continue
             path = site / name
             if path.is_symlink() or not path.is_file() or path.read_bytes() != content:
@@ -135,6 +160,115 @@ def verify_wheel_installation(wheels: tuple[Path, ...], *, interpreter: Path) ->
         _verify_entrypoints(contents, interpreter)
         _verify_noneditable(contents, site)
     _verify_application_membership(site, expected_payload)
+
+
+def _wheel_script_name(name: str, record_name: str) -> str | None:
+    parts = PurePosixPath(name).parts
+    if not any(part.endswith(".data") for part in parts):
+        return None
+    record_parts = PurePosixPath(record_name).parts
+    if (
+        len(record_parts) != 2
+        or len(parts) != 3
+        or parts[0] != record_parts[0].removesuffix(".dist-info") + ".data"
+        or parts[1] != "scripts"
+    ):
+        msg = "Wheel installation verification supports only flat .data/scripts entries"
+        raise ValueError(msg)
+    return parts[2]
+
+
+def _script_entrypoint_names(contents: dict[str, bytes]) -> set[str]:
+    names: set[str] = set()
+    for name, content in contents.items():
+        if name.endswith(".dist-info/entry_points.txt"):
+            parser = _EntryPoints(interpolation=None)
+            parser.read_string(content.decode())
+            for section in ("console_scripts", "gui_scripts"):
+                if parser.has_section(section):
+                    names.update(parser.options(section))
+    return names
+
+
+def _installed_script_bytes(content: bytes, interpreter: Path) -> bytes:
+    if sys.platform != "linux":
+        msg = "Wheel .data/scripts verification is supported only on Linux"
+        raise ValueError(msg)
+    if not content.startswith(b"#!python"):
+        return content
+    executable = str(interpreter).encode()
+    if any(character in executable for character in (b"'", b"\n", b"\r")):
+        msg = "Unsupported quoting in target Python script path"
+        raise ValueError(msg)
+    shebang = b"#!" + executable
+    if len(executable) + 3 > 127 or b" " in executable:
+        shebang = b"#!/bin/sh\n'''exec' '" + executable + b"' \"$0\" \"$@\"\n' '''"
+    # Pixi's installer replaces the entire first line, including any suffix.
+    first_end = next(
+        (i for i, byte in enumerate(content) if byte in (10, 13)), len(content)
+    )
+    body = content[first_end:]
+    if body.startswith(b"\r\n"):
+        body = body[2:]
+    elif body:
+        body = body[1:]
+    return shebang + b"\n" + body
+
+
+def _verify_wheel_script(
+    name: str,
+    content: bytes,
+    contents: dict[str, bytes],
+    site: Path,
+    interpreter: Path,
+) -> None:
+    entrypoint_name = name
+    for suffix in (".exe", "-script.py", ".pya"):
+        if name.endswith(suffix):
+            entrypoint_name = name.removesuffix(suffix)
+            break
+    if entrypoint_name in _script_entrypoint_names(contents):
+        msg = "Wheel script overlaps a declared entrypoint"
+        raise ValueError(msg)
+    path = interpreter.parent / name
+    expected = _installed_script_bytes(content, interpreter)
+    if (
+        path.is_symlink()
+        or not path.is_file()
+        or not path.resolve().is_relative_to(interpreter.parent.parent.resolve())
+        or path.stat().st_mode & 0o111 != 0o111
+        or path.read_bytes() != expected
+    ):
+        msg = f"Installed wheel script differs from the archive: {name}"
+        raise ValueError(msg)
+    _verify_script_record(contents, site, path, expected)
+
+
+def _verify_script_record(
+    contents: dict[str, bytes], site: Path, script: Path, content: bytes
+) -> None:
+    record_name = next(name for name in contents if name.endswith(".dist-info/RECORD"))
+    record_path = site / record_name
+    if (
+        record_path.is_symlink()
+        or not record_path.is_file()
+        or not record_path.resolve().is_relative_to(site.resolve())
+    ):
+        msg = "Installed wheel script requires an ordinary RECORD file"
+        raise ValueError(msg)
+    rows = list(csv.reader(io.StringIO(record_path.read_text())))
+    relative = Path(os.path.relpath(script, site)).as_posix()
+    checksum = (
+        "sha256="
+        + base64.urlsafe_b64encode(hashlib.sha256(content).digest())
+        .rstrip(b"=")
+        .decode()
+    )
+    if any(len(row) != 3 for row in rows) or [
+        row for row in rows if row[0] == relative
+    ] != [[relative, checksum, str(len(content))]]:
+        msg = "Installed wheel script differs from its RECORD"
+        raise ValueError(msg)
 
 
 def _verify_application_membership(site: Path, expected: set[str]) -> None:
