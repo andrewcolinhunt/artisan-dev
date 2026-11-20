@@ -9,11 +9,44 @@ from unittest.mock import patch
 import pytest
 
 from artisan.execution.environments.native import (
+    _install_locked,
+    _pixi,
     lookup_native_environment,
     prepare_native_environment,
 )
 from artisan.execution.environments.native_target import verify_native_environment
 from artisan.schemas.operation_config.environment import Environment
+
+
+@pytest.mark.parametrize("offline", [None, "true", "false"])
+@pytest.mark.parametrize("command", ["lock", "install"])
+def test_native_pixi_preserves_offline_policy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, offline: str | None, command: str
+) -> None:
+    monkeypatch.delenv("PIXI_OFFLINE", raising=False)
+    if offline is not None:
+        monkeypatch.setenv("PIXI_OFFLINE", offline)
+    monkeypatch.setenv("PIXI_CACHE_DIR", str(tmp_path / "cache"))
+    monkeypatch.setenv("PIXI_PROJECT_ROOT", "/unrelated/workspace")
+    monkeypatch.setenv("PIXI_ENVIRONMENT_NAME", "unrelated")
+    manifest = tmp_path / "pixi.toml"
+    with (
+        patch(
+            "artisan.execution.environments.native.pixi_executable", return_value="pixi"
+        ),
+        patch("artisan.execution.environments.native.subprocess.run") as run,
+    ):
+        if command == "lock":
+            _pixi(["lock", "--no-config"], manifest)
+        else:
+            _install_locked(manifest, "default")
+    environment = run.call_args.kwargs["env"]
+    assert environment.get("PIXI_OFFLINE") == offline
+    assert environment["PIXI_CACHE_DIR"] == str(tmp_path / "cache")
+    assert "PIXI_PROJECT_ROOT" not in environment
+    assert "PIXI_ENVIRONMENT_NAME" not in environment
+    assert run.call_args.args[0][1] == command
+    assert run.call_args.kwargs["check"] is True
 
 
 @pytest.fixture
