@@ -20,11 +20,7 @@ from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.external import open_external
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
-from artisan.schemas.composites.grouping import AnchoredNameGrouping
-from artisan.schemas.composites.input_contracts import (
-    split_shared_inputs,
-    validate_partition_shape,
-)
+from artisan.schemas.composites.input_contracts import validate_partition_shape
 from artisan.schemas.composites.plan import ExecutionRecipe
 from artisan.schemas.execution.admission import (
     AdmissionRecord,
@@ -119,7 +115,7 @@ def publish_admission(
         boundary=boundary,
         tables=(),
     )
-    _validate_input_contract(recipe, boundary, artifacts)
+    _validate_input_contract(recipe, boundary)
     validated = validate_retained_membership(
         boundary, {}, artifacts, artifact_fs=artifact_fs or fs
     )
@@ -195,7 +191,7 @@ def capture_admission(
             item.address: content[item.artifact_id]
             for item in record.boundary.occurrences
         }
-        _validate_input_contract(record.recipe, record.boundary, artifacts)
+        _validate_input_contract(record.recipe, record.boundary)
         validate_retained_membership(record.boundary, {}, artifacts, artifact_fs=fs)
         _validate_external_content(record.attempt, content, external_access)
         _verify_producers(record.boundary, verify_producer)
@@ -348,25 +344,12 @@ def _verify_producers(
 def _validate_input_contract(
     recipe: ExecutionRecipe,
     boundary: BoundaryProjection,
-    artifacts: Mapping[OccurrenceAddress, Artifact] | None = None,
 ) -> None:
     specs = {item.role: item for item in recipe.inputs}
     roles = boundary.input_roles()
-    anchored = isinstance(recipe.policy.group_by, AnchoredNameGrouping)
-    if recipe.policy.shared_input_roles or anchored:
+    if recipe.policy.shared_input_roles:
         try:
-            if anchored and artifacts is None:
-                split_shared_inputs(roles, recipe.policy.shared_input_roles)
-            else:
-                validate_partition_shape(
-                    roles,
-                    recipe.policy,
-                    name_for=lambda address: getattr(
-                        artifacts[address], "original_name", None
-                    )
-                    if artifacts is not None
-                    else None,
-                )
+            validate_partition_shape(roles, recipe.policy)
         except ValueError as error:
             raise StoreIntegrityError(str(error)) from error
     if (

@@ -19,7 +19,7 @@ if TYPE_CHECKING:
     from artisan.registry.models import OperationMetadata, OperationSummary
     from artisan.storage.core.artifact_store import ArtifactStore
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict
 
 from artisan.errors import ArtisanError, ErrorCode
 from artisan.operations.base._param_docs import (
@@ -32,7 +32,6 @@ from artisan.operations.base._role_docs import (
     validate_role_enums,
 )
 from artisan.operations.base.operation_example import OperationExample
-from artisan.schemas.composites.grouping import AnchoredNameGrouping
 from artisan.schemas.enums import GroupByStrategy
 from artisan.schemas.execution.batch_strategy import BatchStrategy
 from artisan.schemas.execution.curator_result import ArtifactResult, CuratorResult
@@ -195,16 +194,7 @@ class OperationDefinition(BaseModel):
     Use ``inputs.ref(role, index=0)`` to declare the shared dependency.
     """
 
-    required_nonempty_inputs: tuple[str, ...] = Field(
-        default=(), exclude_if=lambda roles: not roles
-    )
-    """Roles that must contain an occurrence in the complete anchored selection.
-
-    Subclasses may derive this declaration from Params during construction.
-    Sparse admitted partitions are checked against their original full selection.
-    """
-
-    group_by: GroupByStrategy | AnchoredNameGrouping | None = None
+    group_by: GroupByStrategy | None = None
     """Strategy for pairing multiple input streams before delivery to the operation.
 
     Default ``None`` for single-input operations; subclasses set ``LINEAGE``,

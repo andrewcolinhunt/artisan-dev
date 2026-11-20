@@ -256,9 +256,6 @@ def invocation_policy(instance: Instance) -> InvocationPolicy:
         else True,
         artifacts_per_unit=instance.batch_strategy.artifacts_per_unit,
         max_artifacts_per_unit=instance.batch_strategy.max_artifacts_per_unit,
-        required_nonempty_inputs=instance.required_nonempty_inputs
-        if isinstance(instance, OperationDefinition)
-        else (),
         shared_input_roles=instance.shared_input_roles
         if isinstance(instance, OperationDefinition)
         else (),

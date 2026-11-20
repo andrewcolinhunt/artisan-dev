@@ -949,52 +949,6 @@ replay. The declaration does not infer a default or fetch an artifact. Existing
 CROSS_PRODUCT operations keep their repeated paired references unless they
 explicitly opt into singleton sharing.
 
-#### Keep named groups intact with sparse context
-
-Use `AnchoredNameGrouping` when one primary stream defines the work and optional
-streams contain context for only some names. Add these declarations to a creator
-whose input specs declare `source`, optional `context`, and required `reference`:
-
-```python
-from artisan.schemas import AnchoredNameGrouping, BatchStrategy
-
-# Inside your OperationDefinition subclass:
-group_by = AnchoredNameGrouping(primary_role="source", matched_roles=("context",))
-shared_input_roles = ("reference",)
-per_artifact_dispatch = False
-batch_strategy = BatchStrategy(artifacts_per_unit=5, max_artifacts_per_unit=5)
-required_nonempty_inputs = ("context",)
-```
-
-Primary artifacts with the same exact `original_name` stay together, even when
-interleaved in the selection. Names are case-sensitive and retain extensions.
-Groups follow their first primary occurrence; members keep their relative order.
-Each matched role may supply at most one occurrence per primary name. Duplicate
-matched names, names absent from the primary selection, and missing or empty
-names fail before any work is admitted.
-
-The batch bound counts name groups. With primary names `A` through `F` and only
-one context named `F`, the first invocation receives `A` through `E` and an empty
-`context` tuple; the second receives `F` and its context. A multi-artifact `F`
-group stays intact. Supplied context keeps its relative order, and an omitted
-role stays omitted. Lifecycle methods must match context by name and emit the
-exact source and context references used by each result.
-
-`required_nonempty_inputs` checks the complete selection before cache lookup or
-dispatch. It is supported only with anchored grouping. An operation can derive
-this tuple from its Params during construction; reconstruction must produce the
-same declaration. A sparse admitted batch need not contain every globally
-required role. Diagnostic replay verifies the original ordinary step's full
-admission inventory, including across replay chains, and fails if that required
-evidence is unavailable or changed.
-
-The anchor, matched roles and whole-group delivery are fixed operation contracts.
-Callers can select a smaller positive `artifacts_per_unit` within the declared
-maximum. They cannot replace this grouping strategy or remove its maximum.
-Changed-code replay rechecks current nonempty requirements against the original
-selection and rejects a changed grouping shape or a bound too small for the
-captured batch. A fresh submission is required to regroup inputs.
-
 #### Pairing by name
 
 Use `NAME` for independent input streams with matching filename stems. Artisan

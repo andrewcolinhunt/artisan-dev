@@ -182,7 +182,6 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "write_container_payload",
     ),
     "artisan.schemas": (
-        "AnchoredNameGrouping",
         "AppendableArtifact",
         "Artifact",
         "ArtifactEmission",
