@@ -6,8 +6,12 @@ they are delivered (materialized to disk or passed in memory).
 
 from __future__ import annotations
 
+from typing import cast
+
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from artisan.schemas.artifact.base import Artifact
+from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.specs._validators import validate_artifact_type_str
 
@@ -24,6 +28,8 @@ class InputSpec(BaseModel):
         materialize: If True (default), write content to disk and set the input
             artifact's ``materialized_path``. If False, skip file creation.
             Both modes pass Artifact models; ``hydrate`` controls loaded content.
+        default: Fixed finalized artifacts used only when this named input is
+            omitted. Explicit inputs, including empty sequences, take precedence.
 
     Examples:
         # Required data input (default: materialized to disk)
@@ -52,6 +58,7 @@ class InputSpec(BaseModel):
     artifact_type: str = ArtifactTypes.ANY
     required: bool = True
     description: str = ""
+    default: tuple[Artifact, ...] | None = Field(default=None, exclude=True)
     materialize: bool = True
     resolve_references: bool = False
     """Resolve direct config references for both preparation and postprocessing.
@@ -92,6 +99,31 @@ class InputSpec(BaseModel):
     def _validate_artifact_type(cls, v: str) -> str:
         """Reject unregistered artifact type strings."""
         return validate_artifact_type_str(v)
+
+    @field_validator("default", mode="before")
+    @classmethod
+    def _validate_default(cls, value: object) -> tuple[Artifact, ...] | None:
+        if value is None:
+            return None
+        if not isinstance(value, (tuple, list)):
+            msg = "Input defaults require an ordered sequence of finalized artifacts"
+            raise ValueError(msg)
+        return tuple(_snapshot_default(artifact) for artifact in value)
+
+    @model_validator(mode="after")
+    def _validate_default_types(self) -> InputSpec:
+        if self.default is not None and any(
+            not self.accepts_type(artifact.artifact_type) for artifact in self.default
+        ):
+            msg = "Input default has an incompatible artifact type"
+            raise ValueError(msg)
+        return self
+
+    def snapshot_default(self) -> tuple[Artifact, ...] | None:
+        """Detach selected defaults and validate their finalized identity again."""
+        if self.default is None:
+            return None
+        return tuple(_snapshot_default(artifact) for artifact in self.default)
 
     @model_validator(mode="after")
     def _validate_materialize_as(self) -> InputSpec:
@@ -142,3 +174,18 @@ class InputSpec(BaseModel):
             If self.artifact_type is ArtifactTypes.ANY, accepts any type.
         """
         return ArtifactTypes.matches(self.artifact_type, artifact_type)
+
+
+def _snapshot_default(value: object) -> Artifact:
+    if not isinstance(value, Artifact) or not value.is_finalized:
+        msg = "Input defaults require finalized artifact objects"
+        raise ValueError(msg)
+    model = cast("type[Artifact]", ArtifactTypeDef.get(value.artifact_type).model)
+    if not isinstance(value, model):
+        msg = "Input default does not match its registered artifact model"
+        raise ValueError(msg)
+    value.to_row()
+    artifact = value.model_copy(deep=True)
+    artifact.materialized_path = None
+    artifact._external_root = None
+    return artifact

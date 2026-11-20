@@ -55,8 +55,10 @@ from artisan.schemas.provenance.occurrence import OccurrenceAddress, ReferenceCo
 from artisan.schemas.provenance.projection import (
     FrozenAssociation,
     FrozenBoundaryContext,
+    FrozenConstant,
     FrozenReferences,
 )
+from artisan.schemas.specs.input_defaults import capture_input_defaults
 from artisan.schemas.specs.input_models import FrozenInputContext
 
 
@@ -89,6 +91,7 @@ class ExecutorRuntime:
         """Validate all captured inputs before selecting software or invoking science."""
         inputs = {role: tuple(values) for role, values in inputs.items()}
         plan = compile_definition(definition, params=params)
+        inputs.update(capture_input_defaults(definition.inputs, inputs.keys()))
         validate_local_inputs(plan, inputs)
         select_tool_environments(plan)
         identity = explicit_context.invocation_id if explicit_context else uuid4().hex
@@ -163,6 +166,7 @@ class ExecutorRuntime:
     ]:
         positions = {}
         supplied = {}
+        captured: dict[OccurrenceAddress, Artifact] = {}
         captures = []
         requested = boundary_queries(plan)
         for role, values in inputs.items():
@@ -189,6 +193,26 @@ class ExecutorRuntime:
                         )
                     )
                     captures.append((address, kind, members))
+        constants = []
+        for binding in plan.constants:
+            addresses = []
+            for artifact in binding.artifacts:
+                address = OccurrenceAddress(
+                    invocation_id=f"{identity}/context",
+                    role="constant",
+                    index=len(captured),
+                )
+                positions[address] = address
+                supplied[address] = artifact
+                captured[address] = artifact
+                addresses.append(address)
+            constants.append(
+                FrozenConstant(
+                    call_path=binding.call_path,
+                    role=binding.role,
+                    occurrences=tuple(addresses),
+                )
+            )
         representatives: dict[OccurrenceAddress, OccurrenceAddress] = {}
         for address, source in positions.items():
             representatives.setdefault(source, address)
@@ -220,7 +244,6 @@ class ExecutorRuntime:
                 if member not in required:
                     required[member] = None
                     pending.append(member)
-        captured = {}
         for source in required:
             if source not in representatives:
                 address = OccurrenceAddress(
@@ -232,6 +255,8 @@ class ExecutorRuntime:
                 positions[address] = source
                 captured[address] = self.artifacts[source]
         context = FrozenBoundaryContext(
+            schema_version=2 if constants else 1,
+            constants=tuple(constants),
             associations=tuple(
                 FrozenAssociation(
                     primary=address,

@@ -176,6 +176,37 @@ complete input contract and available materialization options.
 Set `materialize=False` for inputs you read directly through `artifact.content`,
 such as metrics or configs.
 
+### Fixed artifact defaults
+
+Set `InputSpec.default` to finalized artifacts when an input has a fixed default.
+Continuing with `ScaleData` above, this subclass supplies a small default dataset:
+
+```python
+sample = CSVArtifact.draft(b"id,value\n1,2\n", "sample.csv").finalize()
+
+
+class SampleScaleData(ScaleData):
+    name = "sample_scale_data"
+    inputs: ClassVar[dict[str, InputSpec]] = {
+        "dataset": InputSpec(artifact_type="csv", default=(sample,)),
+    }
+```
+
+With an existing `pipeline`, `pipeline.run(SampleScaleData)` uses that dataset.
+Pass `inputs={"dataset": [another_dataset]}` to replace it in the same call.
+Explicit empty inputs also replace the default and follow ordinary validation;
+they do not request fallback. A top-level `inputs=[]` retains its no-work meaning.
+
+The selected artifacts become ordinary recorded dependencies before execution.
+Replay keeps the recorded selection even if the declaration later changes;
+ordinary code and software compatibility checks still apply.
+Defaults are fixed data, so parameters do not silently select different artifacts.
+Normal grouping and shared-input rules still apply.
+
+An external artifact default records a descriptor of existing files. Supply its
+installation through the runner's normal external access configuration; selecting
+a default does not download or materialize those files.
+
 ### Outputs
 
 Map each output role to an `OutputSpec`. Set `derives_from` to declare its

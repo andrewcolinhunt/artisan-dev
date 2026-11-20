@@ -97,14 +97,53 @@ class FrozenReferences(_ProjectionModel):
     direct_parents: tuple[OccurrenceAddress, ...] = ()
 
 
+class FrozenConstant(_ProjectionModel):
+    """Bind one compiled child input to exact admitted constant occurrences."""
+
+    call_path: tuple[str, ...] = Field(min_length=1)
+    role: str = Field(min_length=1, strict=True)
+    occurrences: tuple[OccurrenceAddress, ...]
+
+    @model_validator(mode="after")
+    def _validate_positions(self) -> FrozenConstant:
+        if any(not name for name in self.call_path) or len(self.occurrences) != len(
+            set(self.occurrences)
+        ):
+            msg = "Constant bindings require named calls and distinct input positions"
+            raise ValueError(msg)
+        return self
+
+
 class FrozenBoundaryContext(_ProjectionModel):
     """Explicit dependency snapshots; no missing capture implies an empty query."""
 
     associations: tuple[FrozenAssociation, ...] = ()
     references: tuple[FrozenReferences, ...] = ()
+    schema_version: Literal[1, 2] = Field(
+        default=1, exclude_if=lambda value: value == 1
+    )
+    constants: tuple[FrozenConstant, ...] = Field(
+        default=(), exclude_if=lambda values: not values
+    )
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _strict_version(cls, value: object) -> object:
+        if type(value) is not int:
+            msg = "Boundary context schema version must be an integer"
+            raise ValueError(msg)
+        return value
 
     @model_validator(mode="after")
     def _validate_captures(self) -> FrozenBoundaryContext:
+        if (self.schema_version == 2) != bool(self.constants):
+            msg = "Constant input captures require boundary context schema version 2"
+            raise ValueError(msg)
+        bindings = [(item.call_path, item.role) for item in self.constants]
+        positions = [address for item in self.constants for address in item.occurrences]
+        if len(bindings) != len(set(bindings)) or len(positions) != len(set(positions)):
+            msg = "Constant input bindings and their occurrences must be distinct"
+            raise ValueError(msg)
         associations = [
             (item.primary, item.artifact_type) for item in self.associations
         ]
@@ -169,7 +208,19 @@ class FrozenBoundaryContext(_ProjectionModel):
         for reference in self.references:
             addresses.add(reference.source)
             addresses.update(reference.members)
+        for constant in self.constants:
+            addresses.update(constant.occurrences)
         return frozenset(addresses)
+
+    def constant(
+        self, call_path: tuple[str, ...], role: str
+    ) -> tuple[OccurrenceAddress, ...]:
+        """Return an already captured constant stream, including explicit empty."""
+        for binding in self.constants:
+            if (binding.call_path, binding.role) == (call_path, role):
+                return binding.occurrences
+        msg = "Compiled constant input was not captured"
+        raise ValueError(msg)
 
 
 class BoundaryProjection(_ProjectionModel):
@@ -338,7 +389,8 @@ class BoundaryProjection(_ProjectionModel):
             "frozen_context": self.frozen_context.model_dump(mode="json"),
         }
         return compute_content_digest(
-            b"artisan.input-context-v1\0" + canonical_json_bytes(snapshot)
+            f"artisan.input-context-v{self.frozen_context.schema_version}\0".encode()
+            + canonical_json_bytes(snapshot)
         )
 
     def export_roles(self) -> Mapping[str, tuple[OccurrenceAddress, ...]]:

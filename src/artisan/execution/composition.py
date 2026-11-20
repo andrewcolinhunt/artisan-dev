@@ -22,6 +22,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.constants import validate_constant_context
 from artisan.schemas.composites.input_contracts import (
     partition_work_size,
     split_shared_inputs,
@@ -113,6 +114,7 @@ def execute_compiled_plan(
         fs,
     )
     boundary = runtime.admit(inputs, context_artifacts or {}, input_attribution)
+    runtime.validate_constants(plan, input_attribution)
     if expected_input_context_digest is not None:
         admitted = runtime.graph.project(
             {}, {}, frozen_context=runtime.context, input_attribution=input_attribution
@@ -166,6 +168,7 @@ def execute_local_plan(
         invoke, invocation_id, execute_adapter, frozen_context, None, None
     )
     boundary = runtime.admit(inputs, context_artifacts, None)
+    runtime.validate_constants(plan, None)
     specs = _output_specs(plan.recipe)
     exports: dict[str, list[OccurrenceAddress]] = {role: [] for role in specs}
     for index, partition in enumerate(
@@ -337,13 +340,32 @@ class _PlanRuntime:
             return self._creator(plan, inputs, path, admitted=admitted)
         calls: dict[str, OccurrenceStreams] = {}
         for compiled, recorded in zip(plan.calls, plan.recipe.calls, strict=True):
-            child_inputs = _resolve_bindings(recorded.inputs, inputs, calls)
+            child_path = (*path, compiled.name)
+            constants = {
+                binding.role: self.context.constant(child_path, binding.role)
+                for binding in recorded.inputs
+                if binding.constants is not None
+            }
+            child_inputs = _resolve_bindings(
+                recorded.inputs, inputs, calls, constants=constants
+            )
             calls[compiled.name] = self.execute(
                 compiled.plan,
                 child_inputs,
-                path=(*path, compiled.name),
+                path=child_path,
             )
         return _resolve_bindings(plan.recipe.exports, inputs, calls, export=True)
+
+    def validate_constants(
+        self,
+        plan: CompiledPlan,
+        attribution: tuple[BoundaryInputAttribution, ...] | None,
+    ) -> None:
+        """Reject incomplete or altered constant bindings before authored execution."""
+        boundary = self.graph.project(
+            {}, {}, frozen_context=self.context, input_attribution=attribution
+        )
+        validate_constant_context(plan.recipe, boundary)
 
     def _validate_inputs(
         self, recipe: ExecutionRecipe, inputs: OccurrenceStreams
@@ -488,9 +510,16 @@ def _resolve_bindings(
     calls: Mapping[str, OccurrenceStreams],
     *,
     export: bool = False,
+    constants: Mapping[str, tuple[OccurrenceAddress, ...]] | None = None,
 ) -> OccurrenceStreams:
     resolved: OccurrenceStreams = {}
     for binding in bindings:
+        if binding.constants is not None:
+            if constants is None or binding.role not in constants:
+                msg = "Constant input has no admitted occurrence binding"
+                raise ValueError(msg)
+            resolved[binding.role] = constants[binding.role]
+            continue
         values: list[OccurrenceAddress] = []
         present = not binding.sources or export
         for source in binding.sources:

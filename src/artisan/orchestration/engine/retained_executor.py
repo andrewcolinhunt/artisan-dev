@@ -94,9 +94,11 @@ class RetainedStepExecution:
         recorder: CommandRecorder | None = None,
         before_resolve: Callable[[], StepResult | None] | None = None,
         replay: RetainedReplayPreparation | None = None,
+        capture_plan: bool = False,
     ) -> None:
         self.record = record
         self.resolve_plan = resolve_plan
+        self.capture_plan = capture_plan
         self.resolve_inputs = resolve_inputs
         self.tracker = tracker
         self.results = RetainedStepResults(tracker)
@@ -129,6 +131,7 @@ class RetainedStepExecution:
         self._handles: list[AssignmentHandle] = []
         self._worker_owners: list[WorkerOwner] = []
         self._future: Future[StepResult] | None = None
+        self._plan: CompiledPlan | None = None
         self._cancel_deadline: float | None = None
         self._user_cancelled = False
         self._closure_unknown = False
@@ -201,13 +204,15 @@ class RetainedStepExecution:
             return tuple(self._worker_owners)
 
     def submit(self, pool: Executor) -> StepFuture:
-        """Create the pending snapshot before scheduling any operational resolver."""
+        """Persist ownership and optionally capture the plan before scheduling work."""
         with self._lock:
             if self._future is not None:
                 msg = "A step execution can only be submitted once"
                 raise RuntimeError(msg)
             state = self.tracker.create_attempt(self.record)
             try:
+                if self.capture_plan:
+                    self._plan = self.resolve_plan()
                 self._future = pool.submit(contextvars.copy_context().run, self._run)
             except Exception as error:
                 self._future = Future()
@@ -285,7 +290,7 @@ class RetainedStepExecution:
                         self.record.step_run_id, skipped
                     )
                 self._check_stopped()
-            plan = self.resolve_plan()
+            plan = self._plan if self._plan is not None else self.resolve_plan()
             self._check_stopped()
             prepared = self.resolve_inputs(plan)
             self._check_stopped()
