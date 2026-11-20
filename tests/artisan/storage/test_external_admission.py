@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 from unittest.mock import patch
 
 import pytest
@@ -123,15 +124,29 @@ def _publish(
     )
 
 
+@pytest.mark.parametrize("provider", ["local", "modal"])
 def test_external_admission_retains_descriptor_without_payload_access(
-    tmp_path: Path,
+    tmp_path: Path, provider: Literal["local", "modal"]
 ) -> None:
     case = _case(tmp_path)
+    access = ExternalAccessRecord(
+        attempt=case.attempt,
+        provider=provider,
+        bindings=case.access.bindings,
+        mounts=(ExternalAccessMount(source_id="vo-example", target=tmp_path),)
+        if provider == "modal"
+        else (),
+    )
     with patch(
         "artisan.storage.io.admission.open_external",
         side_effect=AssertionError("External payload was opened"),
     ):
-        reference = _publish(case, case.access)
+        reference = _publish(case, access)
+        record = read_admission_record(
+            reference, delta_root=case.root, fs=LocalFileSystem()
+        )
+        assert isinstance(record, AdmissionRecordWithAccess)
+        assert record.access_digest == access.digest
         with capture_admission(
             reference,
             delta_root=case.root,
@@ -139,7 +154,8 @@ def test_external_admission_retains_descriptor_without_payload_access(
             fs=LocalFileSystem(),
         ) as captured:
             assert isinstance(captured.record, AdmissionRecordWithAccess)
-            assert captured.external_access == case.access
+            assert captured.record == record
+            assert captured.external_access == access
             assert captured.record.carriers == captured.record.external_bindings == ()
             assert (
                 next(iter(captured.artifacts.values())).to_row()
@@ -284,6 +300,10 @@ def test_external_access_mounts_preserve_exact_provider_scope(tmp_path: Path) ->
     )
     assert modal.digest != case.access.digest
     assert modal.bindings == case.access.bindings
+    restored = ExternalAccessRecord.model_validate_json(modal.model_dump_json())
+    assert restored == modal
+    assert restored.digest == modal.digest
+    assert restored.model_dump_json() == modal.model_dump_json()
     with pytest.raises(ValueError, match="exactly one"):
         ExternalAccessRecord(
             attempt=case.attempt,
@@ -300,18 +320,71 @@ def test_external_access_mounts_preserve_exact_provider_scope(tmp_path: Path) ->
         )
 
 
+@pytest.mark.parametrize("target", ["/models", Path("/models")])
+def test_external_access_mount_roundtrips_json(target: str | Path) -> None:
+    mount = ExternalAccessMount(source_id="vo-example", target=target)
+    restored = ExternalAccessMount.model_validate_json(mount.model_dump_json())
+    assert restored == mount
+    assert restored.target == Path("/models")
+    assert isinstance(restored.target, Path)
+    assert ExternalAccessMount.model_validate(mount) == mount
+    assert restored.model_dump_json() == mount.model_dump_json()
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
 @pytest.mark.parametrize(
-    "target", ["relative", "/", "/model/../other", "/model//other", "/model,path"]
+    "target",
+    [
+        "relative",
+        "",
+        "/",
+        "/model/../other",
+        "/model//other",
+        "/model/./other",
+        "/model/",
+        "/model,path",
+        "/model:path",
+        "/model\x00path",
+        "/model\npath",
+        "/model\rpath",
+        "/model\\path",
+    ],
 )
-def test_external_access_mount_rejects_ambiguous_paths(target: str) -> None:
+def test_external_access_mount_rejects_ambiguous_paths(
+    target: str, json_mode: bool
+) -> None:
+    data = {"source_id": "vo-example", "target": target}
     with pytest.raises(ValueError, match="canonical absolute"):
-        ExternalAccessMount(source_id="vo-example", target=target)
+        if json_mode:
+            ExternalAccessMount.model_validate_json(json.dumps(data))
+        else:
+            ExternalAccessMount.model_validate(data)
 
 
-@pytest.mark.parametrize("readonly", [False, 1, "true"])
-def test_external_access_mount_requires_literal_readonly(readonly: object) -> None:
+@pytest.mark.parametrize("json_mode", [False, True])
+@pytest.mark.parametrize("target", [None, 1, ["/models"], {"path": "/models"}])
+def test_external_access_mount_rejects_nonpath_targets(
+    target: object, json_mode: bool
+) -> None:
+    data = {"source_id": "vo-example", "target": target}
+    with pytest.raises(ValueError, match="absolute filesystem path"):
+        if json_mode:
+            ExternalAccessMount.model_validate_json(json.dumps(data))
+        else:
+            ExternalAccessMount.model_validate(data)
+
+
+@pytest.mark.parametrize("json_mode", [False, True])
+@pytest.mark.parametrize("readonly", [False, 1, "true", None])
+def test_external_access_mount_requires_literal_readonly(
+    readonly: object, json_mode: bool
+) -> None:
+    data = {"source_id": "vo-example", "target": "/models", "readonly": readonly}
     with pytest.raises(ValueError, match="read-only"):
-        ExternalAccessMount(source_id="vo-example", target="/models", readonly=readonly)
+        if json_mode:
+            ExternalAccessMount.model_validate_json(json.dumps(data))
+        else:
+            ExternalAccessMount.model_validate(data)
 
 
 def test_external_admission_roundtrips_shared_s3_without_payload_access(

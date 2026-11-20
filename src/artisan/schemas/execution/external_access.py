@@ -44,7 +44,7 @@ class ExternalAccessMount(_ExternalAccessModel):
 
     @field_validator("target", mode="before")
     @classmethod
-    def _target(cls, value: object) -> Path:
+    def _target(cls, value: object) -> str | Path:
         if not isinstance(value, (str, Path)):
             msg = "External mount target must be an absolute filesystem path"
             raise ValueError(msg)
@@ -58,7 +58,7 @@ class ExternalAccessMount(_ExternalAccessModel):
         ):
             msg = "External mount target must be a canonical absolute directory"
             raise ValueError(msg)
-        return path
+        return value
 
     @field_validator("readonly", mode="before")
     @classmethod
