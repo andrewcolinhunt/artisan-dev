@@ -232,16 +232,26 @@ def _verify_wheel_script(
         raise ValueError(msg)
     path = interpreter.parent / name
     expected = _installed_script_bytes(content, interpreter)
+    msg = f"Installed wheel script differs from the archive: {name}"
     if (
         path.is_symlink()
         or not path.is_file()
         or not path.resolve().is_relative_to(interpreter.parent.parent.resolve())
         or path.stat().st_mode & 0o111 != 0o111
-        or path.read_bytes() != expected
     ):
-        msg = f"Installed wheel script differs from the archive: {name}"
         raise ValueError(msg)
-    _verify_script_record(contents, site, path, expected)
+    installed = path.read_bytes()
+    if installed != expected and content.startswith(b"#!python"):
+        canonical = interpreter.resolve()
+        # Resolving a venv interpreter into another prefix changes its environment.
+        if (
+            canonical.parent == interpreter.parent.resolve()
+            and canonical.is_relative_to(interpreter.parent.parent.resolve())
+        ):
+            expected = _installed_script_bytes(content, canonical)
+    if installed != expected:
+        raise ValueError(msg)
+    _verify_script_record(contents, site, path, installed)
 
 
 def _verify_script_record(

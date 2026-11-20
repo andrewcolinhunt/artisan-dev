@@ -224,6 +224,7 @@ def _install_script_wheel(
     script_name: str = "run-probe",
     source: bytes = b"#!python\nprint('probe')\n",
     prefix_name: str = "prefix",
+    script_python: str = "python",
 ) -> tuple[Path, Path, Path, Path]:
     member = f"probe-0.1.0.data/scripts/{script_name}"
     wheel = _wheel(root / "probe.whl", extra_files={member: source})
@@ -232,6 +233,10 @@ def _install_script_wheel(
     prefix = root / prefix_name
     interpreter = prefix / "bin/python"
     interpreter.parent.mkdir(parents=True)
+    canonical = interpreter.with_name("python3.12")
+    canonical.write_bytes(b"synthetic interpreter")
+    canonical.chmod(0o755)
+    interpreter.symlink_to(canonical.name)
     site = prefix / "lib/python3.12/site-packages"
     for name, content in contents.items():
         if name != member:
@@ -245,7 +250,7 @@ def _install_script_wheel(
     (interpreter.parent / "ProbeCLI").chmod(0o755)
     script = interpreter.parent / script_name
     if source.startswith(b"#!python"):
-        executable = str(interpreter)
+        executable = str(interpreter.parent / script_python)
         if len(executable.encode()) + 3 > 127 or " " in executable:
             header = f"#!/bin/sh\n'''exec' '{executable}' \"$0\" \"$@\"\n' '''\n"
         else:
@@ -291,15 +296,20 @@ def test_source_wheel_capture_still_rejects_script_data(
 
 
 @pytest.mark.parametrize("prefix_name", ["prefix", "with spaces", "long-" + "a" * 140])
+@pytest.mark.parametrize("script_python", ["python", "python3.12"])
 @pytest.mark.parametrize(
     "source", [b"#!python\nprint('probe')\n", b"#!/bin/sh\necho probe\n"]
 )
 def test_installed_data_script_checks_relocated_or_unchanged_bytes(
-    tmp_path: Path, prefix_name: str, source: bytes
+    tmp_path: Path, prefix_name: str, source: bytes, script_python: str
 ) -> None:
-    wheel, site, interpreter, _ = _install_script_wheel(
-        tmp_path, prefix_name=prefix_name, source=source
+    wheel, site, interpreter, script = _install_script_wheel(
+        tmp_path, prefix_name=prefix_name, source=source, script_python=script_python
     )
+    if source.startswith(b"#!python"):
+        assert script.read_bytes().startswith(b"#!/bin/sh\n") == (
+            prefix_name != "prefix"
+        )
     before = _prefix_entries(interpreter.parent.parent)
     with (
         patch("subprocess.check_output", return_value=str(site)),
@@ -309,6 +319,7 @@ def test_installed_data_script_checks_relocated_or_unchanged_bytes(
     assert _prefix_entries(interpreter.parent.parent) == before
 
 
+@pytest.mark.parametrize("script_python", ["python", "python3.12"])
 @pytest.mark.parametrize(
     "change",
     [
@@ -323,9 +334,11 @@ def test_installed_data_script_checks_relocated_or_unchanged_bytes(
     ],
 )
 def test_installed_data_script_rejects_byte_identity_and_record_changes(
-    tmp_path: Path, change: str
+    tmp_path: Path, change: str, script_python: str
 ) -> None:
-    wheel, site, interpreter, script = _install_script_wheel(tmp_path)
+    wheel, site, interpreter, script = _install_script_wheel(
+        tmp_path, script_python=script_python
+    )
     record = site / "probe-0.1.0.dist-info/RECORD"
     if change == "body":
         script.write_bytes(script.read_bytes().replace(b"probe", b"other"))
@@ -358,6 +371,65 @@ def test_installed_data_script_rejects_byte_identity_and_record_changes(
         patch("subprocess.check_output", return_value=str(site)),
         patch("artisan.execution.environments.wheels.sys.platform", "linux"),
         pytest.raises(ValueError, match="Installed wheel script"),
+    ):
+        verify_wheel_installation((wheel,), interpreter=interpreter)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+@pytest.mark.parametrize("canonical_script", [False, True])
+def test_installed_data_script_keeps_selected_venv_interpreter(
+    tmp_path: Path, nested: bool, canonical_script: bool
+) -> None:
+    base = tmp_path / "prefix" if nested else tmp_path
+    canonical = base / "other-env/bin/python3.12"
+    wheel, site, interpreter, _ = _install_script_wheel(
+        tmp_path, script_python=str(canonical) if canonical_script else "python"
+    )
+    canonical.parent.mkdir(parents=True)
+    canonical.write_bytes(b"different installation")
+    canonical.chmod(0o755)
+    interpreter.unlink()
+    interpreter.symlink_to(canonical)
+    with (
+        patch("subprocess.check_output", return_value=str(site)),
+        patch("artisan.execution.environments.wheels.sys.platform", "linux"),
+    ):
+        if canonical_script:
+            with pytest.raises(ValueError, match="script differs from the archive"):
+                verify_wheel_installation((wheel,), interpreter=interpreter)
+        else:
+            verify_wheel_installation((wheel,), interpreter=interpreter)
+
+
+def test_installed_data_script_rejects_rebound_interpreter_alias(
+    tmp_path: Path,
+) -> None:
+    wheel, site, interpreter, _ = _install_script_wheel(
+        tmp_path, script_python="python3.12"
+    )
+    replacement = interpreter.with_name("other-python")
+    replacement.write_bytes(b"different interpreter")
+    replacement.chmod(0o755)
+    interpreter.unlink()
+    interpreter.symlink_to(replacement.name)
+    with (
+        patch("subprocess.check_output", return_value=str(site)),
+        patch("artisan.execution.environments.wheels.sys.platform", "linux"),
+        pytest.raises(ValueError, match="script differs from the archive"),
+    ):
+        verify_wheel_installation((wheel,), interpreter=interpreter)
+
+
+def test_installed_data_script_keeps_selected_spelling_with_quoted_canonical_path(
+    tmp_path: Path,
+) -> None:
+    wheel, site, interpreter, _ = _install_script_wheel(tmp_path)
+    canonical = interpreter.resolve().rename(interpreter.with_name("python'3.12"))
+    interpreter.unlink()
+    interpreter.symlink_to(canonical.name)
+    with (
+        patch("subprocess.check_output", return_value=str(site)),
+        patch("artisan.execution.environments.wheels.sys.platform", "linux"),
     ):
         verify_wheel_installation((wheel,), interpreter=interpreter)
 
