@@ -38,7 +38,7 @@ from artisan.schemas.operation_config.tool_spec import ToolSpec
 
 @dataclass(frozen=True)
 class PipelineSubmission:
-    """Detached caller choices; composition and software lookup remain deferred."""
+    """Detached caller choices; compile after ownership and defer software lookup."""
 
     definition: Definition
     params_json: str = field(repr=False)

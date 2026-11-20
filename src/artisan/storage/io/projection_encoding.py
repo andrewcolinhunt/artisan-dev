@@ -19,6 +19,7 @@ from artisan.schemas.provenance.projection import (
     BoundaryProjection,
     FrozenAssociation,
     FrozenBoundaryContext,
+    FrozenConstant,
     FrozenReferences,
     OccurrenceRelation,
     ProjectedOccurrence,
@@ -90,6 +91,18 @@ def encode_projection(
                     "members": [member.key for member in members],
                 }
             )
+    for position, constant in enumerate(projection.frozen_context.constants):
+        rows["context"].append(
+            {
+                "kind": "constants_v2",
+                "position": position,
+                "primary_key": json.dumps(
+                    [list(constant.call_path), constant.role], separators=(",", ":")
+                ),
+                "artifact_type": "",
+                "members": [address.key for address in constant.occurrences],
+            }
+        )
     return {
         table.name: pl.DataFrame(
             [{"delivery_id": delivery.delivery_id, **row} for row in rows[table.name]],
@@ -297,7 +310,15 @@ def _decode_context(frame: pl.DataFrame) -> FrozenBoundaryContext:
     ):
         msg = "Captured references require matching original-parent evidence"
         raise StoreIntegrityError(msg)
+    constants = tuple(
+        _decode_constant(row)
+        for row in frame.filter(pl.col("kind") == "constants_v2")
+        .sort("position")
+        .iter_rows(named=True)
+    )
     return FrozenBoundaryContext(
+        schema_version=2 if constants else 1,
+        constants=constants,
         associations=tuple(
             FrozenAssociation(
                 primary=_address(row["primary_key"]),
@@ -318,6 +339,18 @@ def _decode_context(frame: pl.DataFrame) -> FrozenBoundaryContext:
                 references.iter_rows(named=True), parents["members"], strict=True
             )
         ),
+    )
+
+
+def _decode_constant(row: dict[str, Any]) -> FrozenConstant:
+    key = json.loads(row["primary_key"])
+    if not isinstance(key, list) or len(key) != 2 or not isinstance(key[0], list):
+        msg = "Constant input key must contain its call path and role"
+        raise StoreIntegrityError(msg)
+    return FrozenConstant(
+        call_path=tuple(key[0]),
+        role=key[1],
+        occurrences=tuple(_address(value) for value in row["members"]),
     )
 
 

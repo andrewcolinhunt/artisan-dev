@@ -6,10 +6,11 @@ from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, cast
 from uuid import uuid4
 
-from artisan.composites.base.compiled import CompiledCall, CompiledPlan
+from artisan.composites.base.compiled import CompiledCall, CompiledPlan, ConstantInput
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.composites.composite_ref import CompositeCall, CompositeRef
 from artisan.schemas.composites.plan import (
+    ConstantArtifact,
     DefinitionContract,
     ExecutionRecipe,
     InputContract,
@@ -27,7 +28,11 @@ class CompositeContext:
     """Build one immutable scientific composition without dispatch or storage."""
 
     def __init__(
-        self, recipe: DefinitionContract, stack: tuple[Definition, ...]
+        self,
+        recipe: DefinitionContract,
+        stack: tuple[Definition, ...],
+        *,
+        captured: ExecutionRecipe | None = None,
     ) -> None:
         self._owner = uuid4().hex
         self._recipe = recipe
@@ -35,6 +40,8 @@ class CompositeContext:
         self._calls: dict[str, CompiledPlan] = {}
         self._wiring: list[RecipeCall] = []
         self._exports: dict[str, RoleBinding] = {}
+        self._constants: list[ConstantInput] = []
+        self._captured = captured
 
     def input(self, role: str) -> CompositeRef:
         """Reference a declared boundary role without resolving any artifacts."""
@@ -61,8 +68,16 @@ class CompositeContext:
             raise ValueError(msg)
         from artisan.composites.base.compiler import _compile
 
-        child = _compile(definition, params, self._stack)
-        bindings = self._bind_inputs(child.recipe, {} if inputs is None else inputs)
+        recorded = self._captured_call(call_name)
+        child = _compile(
+            definition,
+            params,
+            self._stack,
+            captured=None if recorded is None else recorded.recipe,
+        )
+        bindings = self._bind_inputs(
+            child, {} if inputs is None else inputs, call_name, recorded
+        )
         self._calls[call_name] = child
         self._wiring.append(
             RecipeCall(name=call_name, inputs=bindings, recipe=child.recipe)
@@ -100,6 +115,13 @@ class CompositeContext:
                 "schema_version": max(
                     self._recipe.recipe_version,
                     *(call.recipe.schema_version for call in self._wiring),
+                    3
+                    if any(
+                        binding.constants is not None
+                        for call in self._wiring
+                        for binding in call.inputs
+                    )
+                    else 1,
                 )
                 if self._wiring
                 else self._recipe.recipe_version,
@@ -115,12 +137,36 @@ class CompositeContext:
             self._stack[-1],
             recipe,
             tuple(CompiledCall(name, child) for name, child in self._calls.items()),
+            constants=self._all_constants(),
         )
+
+    def _all_constants(self) -> tuple[ConstantInput, ...]:
+        constants: list[ConstantInput] = []
+        for name, child in self._calls.items():
+            constants.extend(
+                item for item in self._constants if item.call_path == (name,)
+            )
+            constants.extend(
+                ConstantInput((name, *item.call_path), item.role, item.artifacts)
+                for item in child.constants
+            )
+        return tuple(constants)
+
+    def _captured_call(self, name: str) -> RecipeCall | None:
+        if self._captured is None:
+            return None
+        for call in self._captured.calls:
+            if call.name == name:
+                return call
+        msg = "Composition call is absent from the captured recipe"
+        raise ValueError(msg)
 
     def _bind_inputs(
         self,
-        recipe: ExecutionRecipe,
+        child: CompiledPlan,
         inputs: object,
+        call_name: str,
+        recorded: RecipeCall | None,
     ) -> tuple[RoleBinding, ...]:
         if not isinstance(inputs, Mapping):
             msg = "Composition inputs must map roles to plan references"
@@ -128,23 +174,60 @@ class CompositeContext:
         if any(not isinstance(role, str) for role in inputs):
             msg = "Input role names must be strings"
             raise TypeError(msg)
-        contracts = {item.role: item for item in recipe.inputs}
+        contracts = {item.role: item for item in child.recipe.inputs}
         unknown = inputs.keys() - contracts.keys()
+        bindings = []
+        for spec in contracts.values():
+            binding = self._input_binding(child, spec, inputs, call_name, recorded)
+            if binding is not None:
+                bindings.append(binding)
+        bound_roles = {item.role for item in bindings}
         missing = {
             role
             for role, spec in contracts.items()
-            if spec.required and role not in inputs
+            if spec.required and role not in bound_roles
         }
         if unknown or missing:
             msg = f"Invalid call inputs: unknown={sorted(unknown)}, missing={sorted(missing)}"
             raise ValueError(msg)
-        return tuple(
-            RoleBinding(
-                role=role,
-                sources=self._references(inputs[role], spec.artifact_type),
+        return tuple(bindings)
+
+    def _input_binding(
+        self,
+        child: CompiledPlan,
+        spec: InputContract,
+        inputs: Mapping[str, object],
+        call_name: str,
+        recorded: RecipeCall | None,
+    ) -> RoleBinding | None:
+        if spec.role in inputs:
+            return RoleBinding(
+                role=spec.role,
+                sources=self._references(inputs[spec.role], spec.artifact_type),
             )
-            for role, spec in contracts.items()
-            if role in inputs
+        if recorded is not None:
+            return next(
+                (
+                    item
+                    for item in recorded.inputs
+                    if item.role == spec.role and item.constants is not None
+                ),
+                None,
+            )
+        artifacts = child.definition.inputs[spec.role].snapshot_default()
+        if artifacts is None:
+            return None
+        self._constants.append(ConstantInput((call_name,), spec.role, artifacts))
+        return RoleBinding(
+            role=spec.role,
+            sources=(),
+            constants=tuple(
+                ConstantArtifact(
+                    artifact_id=cast(str, artifact.artifact_id),
+                    artifact_type=artifact.artifact_type,
+                )
+                for artifact in artifacts
+            ),
         )
 
     def _references(

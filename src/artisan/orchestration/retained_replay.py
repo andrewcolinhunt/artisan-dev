@@ -32,6 +32,7 @@ from artisan.schemas.provenance.projection import (
     BoundaryProjection,
     FrozenAssociation,
     FrozenBoundaryContext,
+    FrozenConstant,
     FrozenReferences,
     ProjectedOccurrence,
     RoleOccurrences,
@@ -269,6 +270,15 @@ def _rebind_inputs(
                 index=len(addresses),
             )
     context = FrozenBoundaryContext(
+        schema_version=boundary.frozen_context.schema_version,
+        constants=tuple(
+            FrozenConstant(
+                call_path=item.call_path,
+                role=item.role,
+                occurrences=tuple(addresses[address] for address in item.occurrences),
+            )
+            for item in boundary.frozen_context.constants
+        ),
         associations=tuple(
             FrozenAssociation(
                 primary=addresses[item.primary],

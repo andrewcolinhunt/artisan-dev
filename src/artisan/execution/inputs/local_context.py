@@ -8,10 +8,11 @@ from artisan.composites.base.compiled import CompiledPlan
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.execution_config import ExecutionConfigArtifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
-from artisan.schemas.provenance.occurrence import OccurrenceAddress
+from artisan.schemas.provenance.occurrence import OccurrenceAddress, ReferenceContext
 from artisan.schemas.provenance.projection import (
     FrozenAssociation,
     FrozenBoundaryContext,
+    FrozenConstant,
     FrozenReferences,
 )
 from artisan.schemas.specs.input_models import FrozenInputContext
@@ -63,11 +64,34 @@ def capture_local_context(
         )
         for (role, index), members in context.references.items()
     ]
+    constants = tuple(
+        FrozenConstant(
+            call_path=binding.call_path,
+            role=binding.role,
+            occurrences=tuple(add(artifact) for artifact in binding.artifacts),
+        )
+        for binding in plan.constants
+    )
+    constant_addresses = {
+        address for binding in constants for address in binding.occurrences
+    }
     supplied = {item.source for item in references}
     for source, artifact in {**inventory, **captured}.items():
         if ArtifactTypeDef.get(artifact.artifact_type).reference_policy() is None:
             continue
         if source in supplied:
+            continue
+        if source in constant_addresses:
+            required = ArtifactTypeDef.get(
+                artifact.artifact_type
+            ).resolve_required_references(
+                artifact, ReferenceContext({**inventory, **captured})
+            )
+            references.append(
+                FrozenReferences(
+                    source=source, members=tuple(item.address for item in required)
+                )
+            )
             continue
         if (
             isinstance(artifact, ExecutionConfigArtifact)
@@ -79,7 +103,10 @@ def capture_local_context(
         # context the direct-call API cannot supply, including historical parents.
         references.append(FrozenReferences(source=source, members=()))
     return FrozenBoundaryContext(
-        associations=associations, references=tuple(references)
+        schema_version=2 if constants else 1,
+        constants=constants,
+        associations=associations,
+        references=tuple(references),
     ), captured
 
 
