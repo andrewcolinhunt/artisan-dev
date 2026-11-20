@@ -20,6 +20,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.curator_result import ArtifactResult
+from artisan.schemas.specs.input_defaults import capture_input_defaults
 from artisan.schemas.specs.input_models import FrozenInputContext
 from artisan.utils.command_supervisor import has_command_scope, managed_invocation
 
@@ -44,7 +45,8 @@ def run_operation(
 
     Args:
         definition: Creator operation or static composite class.
-        inputs: Finalized, locally available artifacts in ordered role streams.
+        inputs: Finalized artifacts in ordered role streams. Omitted roles use
+            their declared fixed artifact defaults.
         params: Definition parameters, validated against its Params model.
         work_dir: Parent directory for files. Required by materialization and
             command adapters. Created files remain until the caller removes them.
@@ -67,9 +69,13 @@ def run_operation(
     try:
         external_files = freeze_external_files(external_files)
         identity = uuid4().hex
+        selected = dict(inputs or {})
+        selected.update(
+            capture_input_defaults(getattr(definition, "inputs", {}), selected.keys())
+        )
         context = FrozenInputContext(
             identity,
-            inputs or {},
+            selected,
             associations or {},
             config_references or {},
         )

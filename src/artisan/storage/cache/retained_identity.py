@@ -74,6 +74,14 @@ def _input_semantics(inputs: BoundaryProjection) -> dict[str, object]:
         }
         for capture in inputs.frozen_context.references
     ]
+    constants = [
+        {
+            "call_path": list(capture.call_path),
+            "role": capture.role,
+            "members": [slot(address) for address in capture.occurrences],
+        }
+        for capture in inputs.frozen_context.constants
+    ]
     occurrences = {item.address: item for item in inputs.occurrences}
     attribution = {
         item.boundary: item.producer.model_dump(mode="json")
@@ -89,9 +97,12 @@ def _input_semantics(inputs: BoundaryProjection) -> dict[str, object]:
         }
         for address in slots
     ]
-    return {
+    descriptor = {
         "roles": roles,
         "content": content,
         "associations": associations,
         "references": references,
     }
+    if constants:
+        descriptor["constants"] = constants
+    return descriptor

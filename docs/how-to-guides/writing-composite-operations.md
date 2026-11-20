@@ -130,6 +130,18 @@ data. Keep scientific choices in `Params`; do not choose calls based on worker
 resources or batch defaults. Do not read stores, dispatch workers, or install
 software inside `compose`.
 
+## Use fixed artifact defaults
+
+Operations and composites can declare [fixed artifact defaults](writing-creator-operations.md#fixed-artifact-defaults)
+on their inputs. When `ctx.call` omits a role, that child uses its own declaration.
+Explicit wiring takes precedence, including wiring that later produces no values.
+
+Artisan captures those dependencies with the outer submission before returning
+its future. They do not add steps or change the outer batch sizes. Two children
+with an input named `weights` can use different defaults. To give both the same
+parent input, explicitly wire `ctx.input("weights")` into both calls. A matching
+name alone does not connect them.
+
 ## Declare step defaults
 
 A composite can declare `runner_resources`, `batch_strategy`, and `group_by`

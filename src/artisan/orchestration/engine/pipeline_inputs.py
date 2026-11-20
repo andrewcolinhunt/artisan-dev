@@ -22,6 +22,7 @@ from artisan.schemas.orchestration.output_reference import (
 )
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 from artisan.schemas.orchestration.step_start_record import StepStartRecord
+from artisan.schemas.specs.input_defaults import capture_input_defaults
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
 from artisan.storage.core.curator_view import CuratorView, capture_curator_view
@@ -134,11 +135,9 @@ def validate_pipeline_input_contract(
     """
     if inputs.raw_paths == ():
         return
-    roles = (
-        {"file"}
-        if inputs.raw_paths is not None
-        else {group.role for group in inputs.roles}
-    )
+    roles = {group.role for group in inputs.roles}
+    if inputs.raw_paths is not None:
+        roles.add("file")
     if not runtime_defined_inputs and (
         roles - specs.keys()
         or {role for role, spec in specs.items() if spec.required} - roles
@@ -163,6 +162,23 @@ def validate_pipeline_input_contract(
             ):
                 msg = f"Pipeline input role {group.role!r} has an incompatible artifact type"
                 raise ValueError(msg)
+
+
+def complete_pipeline_inputs(
+    inputs: FrozenPipelineInputs, specs: Mapping[str, InputSpec]
+) -> FrozenPipelineInputs:
+    """Capture fixed artifacts only for omitted roles, preserving explicit no-work."""
+    if inputs.raw_paths == ():
+        return inputs
+    present = {group.role for group in inputs.roles}
+    if inputs.raw_paths is not None:
+        present.add("file")
+    roles = list(inputs.roles)
+    roles.extend(
+        FrozenInputRole(role, artifacts)
+        for role, artifacts in capture_input_defaults(specs, present).items()
+    )
+    return FrozenPipelineInputs(tuple(roles), inputs.raw_paths)
 
 
 def resolve_creator_inputs(
@@ -256,6 +272,7 @@ def _resolve(
     ):
         msg = "Input resolution requires its exact durable pending step"
         raise StoreIntegrityError(msg)
+    roles: dict[str, tuple[ResolvedMember, ...]] = {}
     if inputs.raw_paths is not None:
         if not inputs.raw_paths:
             return {"file": ()}
@@ -269,9 +286,8 @@ def _resolve(
             check_cancelled=check_cancelled,
         )
         check_cancelled()
-        return {"file": tuple(item.artifact_id for item in plan.inputs)}
+        roles["file"] = tuple(item.artifact_id for item in plan.inputs)
     outputs: dict[str, CurrentStepOutputs] = {}
-    roles: dict[str, tuple[ResolvedMember, ...]] = {}
     for group in inputs.roles:
         members: list[ResolvedMember] = []
         for member in group.members:

@@ -7,6 +7,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from types import MappingProxyType
 
+from artisan.composites.base.compiled import ConstantInput
 from artisan.execution.inputs.occurrence_grouping import (
     InputSelection,
     LineageSnapshot,
@@ -17,6 +18,10 @@ from artisan.execution.lineage.graph import OccurrenceGraph
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
+from artisan.schemas.composites.constants import (
+    constant_bindings,
+    validate_constant_context,
+)
 from artisan.schemas.composites.input_contracts import split_shared_inputs
 from artisan.schemas.composites.plan import ExecutionRecipe
 from artisan.schemas.enums import GroupByStrategy
@@ -34,6 +39,7 @@ from artisan.schemas.provenance.projection import (
     BoundaryProjection,
     FrozenAssociation,
     FrozenBoundaryContext,
+    FrozenConstant,
     FrozenReferences,
 )
 from artisan.storage.core.curator_reader import AcceptedCuratorResult, CuratorReader
@@ -60,6 +66,7 @@ def prepare_step_inputs(
     *,
     step_run_id: str,
     reader: RetainedReader,
+    constants: Sequence[ConstantInput] = (),
 ) -> tuple[PreparedAssignmentInputs, ...]:
     """Capture finite inputs once without publishing, caching or dispatching work.
 
@@ -71,6 +78,7 @@ def prepare_step_inputs(
     sources = _InputSources(reader)
     selected = sources.select(inputs)
     _validate_inputs(recipe, selected)
+    fixed = _select_constants(recipe, constants, sources)
     paired, _ = split_shared_inputs(selected, recipe.policy.shared_input_roles)
     associations = sources.associated(recipe, selected)
     lineage = (
@@ -85,11 +93,44 @@ def prepare_step_inputs(
             sources,
             associations,
             recipe,
+            fixed,
         )
         for index, partition in enumerate(
             partition_occurrence_inputs(selected, recipe.policy, lineage=lineage)
         )
     )
+
+
+def _select_constants(
+    recipe: ExecutionRecipe,
+    constants: Sequence[ConstantInput],
+    sources: _InputSources,
+) -> tuple[tuple[InputSelection, ...], ...]:
+    bindings = tuple(constant_bindings(recipe))
+    if len(bindings) != len(constants):
+        msg = "Compiled constants do not match the recipe"
+        raise ValueError(msg)
+    for binding, captured in zip(bindings, constants, strict=True):
+        if (binding.call_path, binding.role) != (
+            captured.call_path,
+            captured.role,
+        ) or tuple(
+            (item.artifact_id, item.artifact_type) for item in binding.artifacts
+        ) != tuple(
+            (item.artifact_id, item.artifact_type) for item in captured.artifacts
+        ):
+            msg = "Compiled constant artifact identity changed"
+            raise ValueError(msg)
+        if binding.spec.hydrate and any(
+            not artifact.is_hydrated for artifact in captured.artifacts
+        ):
+            msg = "Fixed input requires hydrated artifacts"
+            raise ValueError(msg)
+    selected = sources.select(
+        {str(index): item.artifacts for index, item in enumerate(constants)},
+        invocation_id="constants",
+    )
+    return tuple(selected.values())
 
 
 def _validate_inputs(
@@ -120,6 +161,7 @@ def _freeze_partition(
     sources: _InputSources,
     associations: Mapping[AssociationQuery, tuple[AcceptedProducer, ...]],
     recipe: ExecutionRecipe,
+    constants: tuple[tuple[InputSelection, ...], ...],
 ) -> PreparedAssignmentInputs:
     graph = OccurrenceGraph(boundary_invocation=assignment.assignment_id)
     representatives: dict[SelectionKey, OccurrenceAddress] = {}
@@ -154,6 +196,8 @@ def _freeze_partition(
                     )
                 )
     required = dict.fromkeys(representatives)
+    for selections in constants:
+        required.update(dict.fromkeys(item.key for item in selections))
     for _, _, members in captures:
         required.update(dict.fromkeys(members))
     pending = deque(required)
@@ -191,6 +235,17 @@ def _freeze_partition(
                 )
             )
     context = FrozenBoundaryContext(
+        schema_version=2 if constants else 1,
+        constants=tuple(
+            FrozenConstant(
+                call_path=binding.call_path,
+                role=binding.role,
+                occurrences=tuple(representatives[item.key] for item in selections),
+            )
+            for binding, selections in zip(
+                constant_bindings(recipe), constants, strict=True
+            )
+        ),
         associations=tuple(
             FrozenAssociation(
                 primary=address,
@@ -216,6 +271,7 @@ def _freeze_partition(
     boundary = graph.project(
         {}, {}, frozen_context=context, input_attribution=tuple(attribution)
     )
+    validate_constant_context(recipe, boundary)
     return PreparedAssignmentInputs(
         assignment,
         boundary,
@@ -240,7 +296,10 @@ class _InputSources:
         self._curators: dict[tuple[str, str], AcceptedCuratorResult] = {}
 
     def select(
-        self, inputs: Mapping[str, Sequence[AcceptedArtifact | Artifact]]
+        self,
+        inputs: Mapping[str, Sequence[AcceptedArtifact | Artifact]],
+        *,
+        invocation_id: str = "supplied",
     ) -> dict[str, tuple[InputSelection, ...]]:
         selected = {}
         inventory_keys = set()
@@ -248,7 +307,7 @@ class _InputSources:
             selections = []
             for index, value in enumerate(values):
                 address = OccurrenceAddress(
-                    invocation_id="supplied", role=role, index=index
+                    invocation_id=invocation_id, role=role, index=index
                 )
                 if isinstance(value, AcceptedArtifact):
                     artifact = self.artifact(value.reference)

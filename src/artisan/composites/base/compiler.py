@@ -38,7 +38,7 @@ def compile_definition(
     batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
     tool: ToolSpec | Mapping[str, object] | None = None,
 ) -> CompiledPlan:
-    """Compile caller-authorized code without inputs, execution, or provisioning."""
+    """Compile trusted code and fixed inputs without execution or provisioning."""
     instance = instantiate_parameters(_definition_class(definition), params)
     selection = normalize_root_selection(
         instance, group_by=group_by, batch_strategy=batch_strategy, tool=tool
@@ -52,8 +52,8 @@ def compile_captured_definition(
     """Rebuild permitted root choices using trusted code and captured science.
 
     Callers must compare the complete rebuilt recipe with their accepted evidence.
-    Recorded names never resolve or import definitions, and child defaults remain
-    those of the explicitly supplied live definitions.
+    Recorded names never resolve or import definitions. Used input defaults keep
+    their captured content identities without consulting current declarations.
     """
     model = parameter_class(definition)
     params = (
@@ -80,11 +80,17 @@ def compile_captured_definition(
         if execution_contract(instance).mode == recipe.execution.mode == "command"
         else None
     )
-    return _compile_instance(definition, instance, (), RootSelection(policy, tool))
+    return _compile_instance(
+        definition, instance, (), RootSelection(policy, tool), captured=recipe
+    )
 
 
 def _compile(
-    definition: Definition, params: Parameters, stack: tuple[Definition, ...]
+    definition: Definition,
+    params: Parameters,
+    stack: tuple[Definition, ...],
+    *,
+    captured: ExecutionRecipe | None = None,
 ) -> CompiledPlan:
     definition = _definition_class(definition)
     if definition in stack:
@@ -95,7 +101,7 @@ def _compile(
     selection = RootSelection(
         policy=InvocationPolicy() if isinstance(instance, CompositeDefinition) else None
     )
-    return _compile_instance(definition, instance, stack, selection)
+    return _compile_instance(definition, instance, stack, selection, captured=captured)
 
 
 def _compile_instance(
@@ -103,6 +109,8 @@ def _compile_instance(
     instance: OperationDefinition | CompositeDefinition,
     stack: tuple[Definition, ...],
     selection: RootSelection,
+    *,
+    captured: ExecutionRecipe | None = None,
 ) -> CompiledPlan:
     recipe = selection.snapshot(instance)
     if isinstance(instance, OperationDefinition):
@@ -114,7 +122,7 @@ def _compile_instance(
             ),
             root_selection=selection,
         )
-    context = CompositeContext(recipe, (*stack, definition))
+    context = CompositeContext(recipe, (*stack, definition), captured=captured)
     instance.compose(context)
     return replace(context.finish(), root_selection=selection)
 

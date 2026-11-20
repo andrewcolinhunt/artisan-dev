@@ -14,7 +14,9 @@ import pytest
 from fixtures.input_contract_operations import SharedOffset, named_metric
 from pydantic import BaseModel, Field
 
+from artisan.composites import CompositeContext
 from artisan.composites.base.compiled import CompiledPlan
+from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.execution.admitted_worker import execute_admitted_assignment
 from artisan.execution.assignment_transport import (
     AdmittedAssignment,
@@ -357,6 +359,106 @@ def _forbid_payload_transport(monkeypatch: pytest.MonkeyPatch) -> None:
         "artisan.storage.external_access.compute_stream_digest", forbidden
     )
     monkeypatch.setattr(ExternalFilesArtifact, "_materialize_content", forbidden)
+
+
+@pytest.mark.parametrize("nested", [False, True])
+def test_external_default_uses_existing_installation_as_an_ordinary_dependency(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, nested: bool
+) -> None:
+    artifact, prepared = _installation(tmp_path / "database")
+    _forbid_payload_transport(monkeypatch)
+
+    class DefaultExternal(_ReadExternal):
+        name = "read_default_external_database"
+        inputs: ClassVar = {
+            "database": InputSpec(artifact_type="any", default=(artifact,))
+        }
+
+    class DefaultComposite(CompositeDefinition):
+        name = "read_nested_default_database"
+        OutputRole: ClassVar = _ReadExternal.OutputRole
+        inputs: ClassVar = {}
+        outputs: ClassVar = {"value": OutputSpec(artifact_type="metric")}
+
+        def compose(self, ctx: CompositeContext) -> None:
+            child = ctx.call(DefaultExternal, name="read")
+            ctx.output("value", child.output("value"))
+
+    definition = DefaultComposite if nested else DefaultExternal
+    with _manager(tmp_path / "store", {artifact.artifact_id: prepared}) as manager:
+        result = manager.run(definition)
+        assert result.status is StepStatus.SUCCEEDED, result.error
+        original = _sources(manager, result.step_run_id)[0]
+        assert isinstance(original.admission, AdmissionRecordWithAccess)
+        reader = RetainedReader(manager.committer)
+        accepted = reader.read(original.plan.receipt)
+        assert accepted.output("value")[0].artifact.values == {"value": 7}
+        with reader.capture_inputs(original.plan.receipt) as captured:
+            assert captured.external_access.bindings[0].prepared == prepared
+        if nested:
+            assert original.admission.boundary.input_roles() == {}
+            assert len(original.admission.boundary.frozen_context.constants) == 1
+        else:
+            assert len(original.admission.boundary.input_roles()["database"]) == 1
+    assert not list(Path(manager.config.files_root).rglob("index.bin"))
+    declared = DefaultExternal.inputs["database"].default
+    assert declared is not None
+    with pytest.raises(ValueError, match="no bound external installation"):
+        _ = declared[0].external_root
+    from artisan.execution import run_operation
+
+    direct = run_operation(
+        definition,
+        work_dir=tmp_path / "direct",
+        external_files={artifact.artifact_id: prepared},
+    )
+    assert direct.artifacts["value"][0].values == {"value": 7}
+
+
+@pytest.mark.parametrize("selection", ["missing", "mismatched", "override"])
+def test_external_default_requires_only_the_selected_descriptor_binding(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, selection: str
+) -> None:
+    artifact, _ = _installation(tmp_path / "default")
+    replacement, prepared = _installation(tmp_path / "replacement", b"9")
+    _forbid_payload_transport(monkeypatch)
+
+    class DefaultExternal(_ReadExternal):
+        name = "select_default_external_database"
+        inputs: ClassVar = {
+            "database": InputSpec(artifact_type="any", default=(artifact,))
+        }
+
+    bindings = (
+        {}
+        if selection == "missing"
+        else {
+            artifact.artifact_id
+            if selection == "mismatched"
+            else replacement.artifact_id: prepared
+        }
+    )
+    inputs = {"database": [replacement]} if selection == "override" else None
+    with _manager(tmp_path / "store", bindings) as manager:
+        result = manager.run(DefaultExternal, inputs=inputs)
+        if selection == "override":
+            assert result.status is StepStatus.SUCCEEDED, result.error
+            original = _sources(manager, result.step_run_id)[0]
+            reader = RetainedReader(manager.committer)
+            assert reader.read(original.plan.receipt).output("value")[
+                0
+            ].artifact.values == {"value": 9}
+            assert {
+                item.artifact_id for item in original.admission.boundary.occurrences
+            } == {replacement.artifact_id}
+        else:
+            assert result.status is StepStatus.FAILED
+            expected = (
+                "Missing explicit external access"
+                if selection == "missing"
+                else "External binding descriptor differs"
+            )
+            assert expected in str(result.error)
 
 
 def test_retained_batch_records_one_binding_for_repeated_external_artifact(

@@ -30,6 +30,7 @@ from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.orchestration.engine.pipeline_inputs import (
     FrozenPipelineInputs,
     PipelineInputs,
+    complete_pipeline_inputs,
     normalize_pipeline_inputs,
     resolve_creator_inputs,
     resolve_curator_inputs,
@@ -730,7 +731,7 @@ class PipelineManager:
         Args:
             definition: Operation or composite definition class.
             inputs: Named artifact streams or output references. Ingestion also
-                accepts raw paths. None means no boundary inputs.
+                accepts raw paths. Omitted roles use declared fixed artifact defaults.
             params: Scientific parameters as a mapping or the definition's Params.
             step_runner: Placement runner. None uses the pipeline default.
             runner_resources: Worker resource patch over definition defaults.
@@ -776,6 +777,7 @@ class PipelineManager:
             selected = normalize_pipeline_inputs(
                 inputs, store_identity=self.committer.store_identity
             )
+            selected = complete_pipeline_inputs(selected, submission.definition.inputs)
             validate_pipeline_input_contract(
                 selected,
                 submission.definition.inputs,
@@ -1114,7 +1116,6 @@ class PipelineManager:
             return None
 
         def plan() -> CompiledPlan:
-            check_ready()
             return submission.compile()
 
         def creator_inputs(
@@ -1126,6 +1127,7 @@ class PipelineManager:
                 creator_values,
                 step_run_id=record.step_run_id,
                 reader=RetainedReader(self.committer),
+                constants=compiled.constants,
             )
 
         def curator_inputs() -> dict[str, tuple[AcceptedArtifact | str, ...]]:
@@ -1159,6 +1161,7 @@ class PipelineManager:
             failure_policy=failure_policy,
             recorder=submission.recorder,
             before_resolve=before_resolve,
+            capture_plan=inputs.raw_paths != (),
         )
 
     def _check_ready(self, step_run_id: str, inputs: FrozenPipelineInputs) -> None:

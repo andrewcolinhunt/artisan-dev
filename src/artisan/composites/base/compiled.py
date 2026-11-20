@@ -12,6 +12,16 @@ from artisan.schemas.composites.plan import ExecutionRecipe
 if TYPE_CHECKING:
     from artisan.composites.base.composite_definition import CompositeDefinition
     from artisan.operations.base.operation_definition import OperationDefinition
+    from artisan.schemas.artifact.base import Artifact
+
+
+@dataclass(frozen=True)
+class ConstantInput:
+    """Detached artifacts at one nested call's omitted input role."""
+
+    call_path: tuple[str, ...]
+    role: str
+    artifacts: tuple[Artifact, ...]
 
 
 @dataclass(frozen=True)
@@ -30,6 +40,7 @@ class CompiledPlan:
     recipe: ExecutionRecipe
     calls: tuple[CompiledCall, ...] = ()
     root_selection: RootSelection = field(default_factory=RootSelection)
+    constants: tuple[ConstantInput, ...] = ()
 
     def instantiate(self) -> OperationDefinition | CompositeDefinition:
         """Construct fresh scientific state without importing recorded names."""
