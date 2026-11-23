@@ -400,7 +400,7 @@ def _pixi(arguments: list[str], manifest: Path) -> None:
     environment = {
         key: value
         for key, value in os.environ.items()
-        if not key.startswith("PIXI_") or key == "PIXI_CACHE_DIR"
+        if not key.startswith("PIXI_") or key in {"PIXI_CACHE_DIR", "PIXI_OFFLINE"}
     }
     subprocess.run(
         [
