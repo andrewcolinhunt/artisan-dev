@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import sys
 from importlib.metadata import PathDistribution
 from pathlib import Path
 from typing import IO, Any
@@ -36,10 +37,11 @@ def _distribution(
     package: str,
     *,
     editable: bool = False,
+    version: str = "1.0",
 ) -> PathDistribution:
-    info = root / f"{name.replace('-', '_')}-1.0.dist-info"
+    info = root / f"{name.replace('-', '_')}-{version}.dist-info"
     info.mkdir(parents=True)
-    (info / "METADATA").write_text(f"Name: {name}\nVersion: 1.0\n")
+    (info / "METADATA").write_text(f"Name: {name}\nVersion: {version}\n")
     module = root / package / "__init__.py"
     module.parent.mkdir()
     module.write_text("raise AssertionError('package imported during measurement')\n")
@@ -75,6 +77,118 @@ def installed(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
         lambda: tuple(distributions.values()),
     )
     return root
+
+
+@pytest.fixture
+def metadata_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> tuple[Path, Path]:
+    primary = tmp_path / "primary"
+    fallback = tmp_path / "fallback"
+    fallback.mkdir()
+    for name in TRANSPORT_PACKAGES:
+        _distribution(primary, name, name.replace("-", "_"))
+    monkeypatch.setattr(sys, "path", [str(primary), str(fallback)])
+    return primary, fallback
+
+
+@pytest.mark.parametrize("reverse", [False, True])
+def test_all_metadata_uses_named_resolution_across_search_paths(
+    metadata_paths: tuple[Path, Path], reverse: bool
+) -> None:
+    primary, fallback = metadata_paths
+    _distribution(primary, "Example_Package", "example_package", version="2.0")
+    _distribution(fallback, "example-package", "example_package", version="1.0")
+    _distribution(fallback, "fallback-only", "fallback_only")
+    if reverse:
+        sys.path.reverse()
+
+    compatibility = capture_runtime_compatibility()
+
+    assert compatibility == capture_runtime_compatibility(
+        [*TRANSPORT_PACKAGES, "example-package", "fallback-only"]
+    )
+    assert capture_distribution_metadata("example-package").version == (
+        "1.0" if reverse else "2.0"
+    )
+    verify_runtime_compatibility(compatibility)
+
+
+def test_all_metadata_uses_named_resolution_without_overlapping_packages(
+    metadata_paths: tuple[Path, Path],
+) -> None:
+    primary, fallback = metadata_paths
+    _distribution(primary, "example", "example")
+    _distribution(fallback, "fallback-only", "fallback_only")
+
+    assert capture_runtime_compatibility() == capture_runtime_compatibility(
+        [*TRANSPORT_PACKAGES, "example", "fallback-only"]
+    )
+
+
+@pytest.mark.parametrize("root_index", [0, 1])
+def test_all_metadata_rejects_conflicting_versions_in_one_installation(
+    metadata_paths: tuple[Path, Path], root_index: int
+) -> None:
+    _distribution(metadata_paths[0], "example", "example")
+    root = metadata_paths[root_index]
+    _distribution(root, "example", "example_second", version="2.0")
+    if root_index:
+        _distribution(root, "example", "example_third", version="3.0")
+
+    with pytest.raises(ValueError, match="conflicting versions"):
+        capture_runtime_compatibility()
+
+
+def test_all_metadata_accepts_repeated_installation_discovery(
+    metadata_paths: tuple[Path, Path], tmp_path: Path
+) -> None:
+    primary, _ = metadata_paths
+    alias = tmp_path / "alias"
+    alias.symlink_to(primary, target_is_directory=True)
+    sys.path.extend([str(primary), str(alias)])
+
+    assert capture_runtime_compatibility() == capture_runtime_compatibility(
+        TRANSPORT_PACKAGES
+    )
+
+
+@pytest.mark.parametrize(
+    ("metadata", "expected_errors"),
+    [
+        ("Version: 1.0\n", (KeyError, ValueError)),
+        ("Name: invalid/name\nVersion: 1.0\n", (ValueError,)),
+        ("Name: example\n", (KeyError, ValueError)),
+    ],
+)
+@pytest.mark.parametrize("root_index", [0, 1])
+@pytest.mark.filterwarnings(
+    "ignore:Implicit None on return values is deprecated:DeprecationWarning"
+)
+def test_all_metadata_rejects_malformed_visible_metadata(
+    metadata_paths: tuple[Path, Path],
+    metadata: str,
+    expected_errors: tuple[type[Exception], ...],
+    root_index: int,
+) -> None:
+    primary, fallback = metadata_paths
+    _distribution(primary, "example", "example")
+    _distribution(fallback, "example", "example")
+    (metadata_paths[root_index] / "example-1.0.dist-info/METADATA").write_text(metadata)
+
+    # Missing fields raise KeyError with the metadata backport, or fail validation.
+    with pytest.raises(expected_errors):
+        capture_runtime_compatibility()
+
+
+def test_all_metadata_rejects_missing_required_package(
+    metadata_paths: tuple[Path, Path],
+) -> None:
+    primary, _ = metadata_paths
+    (primary / "cloudpickle-1.0.dist-info").rename(primary / "unrecognized")
+
+    with pytest.raises(ValueError, match="requires packages"):
+        capture_runtime_compatibility()
 
 
 def test_metadata_capture_and_verification_never_read_installed_payloads(

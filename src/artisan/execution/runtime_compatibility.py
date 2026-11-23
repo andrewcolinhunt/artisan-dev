@@ -7,6 +7,7 @@ import platform
 import re
 import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from artisan.schemas.execution.worker_transport import (
     DistributionMetadata,
@@ -81,17 +82,21 @@ def verify_runtime_compatibility(expected: RuntimeCompatibility) -> None:
 
 
 def _installed_metadata() -> tuple[DistributionMetadata, ...]:
-    packages: dict[str, DistributionMetadata] = {}
+    packages: dict[tuple[str, Path], DistributionMetadata] = {}
     for distribution in importlib.metadata.distributions():
         package = DistributionMetadata(
             name=distribution.metadata["Name"], version=distribution.version
         )
-        previous = packages.get(package.name)
+        # Search paths have precedence; conflicting metadata within one root does not.
+        root = Path(str(distribution.locate_file(""))).resolve()
+        key = (package.name, root)
+        previous = packages.get(key)
         if previous is not None and previous != package:
             msg = f"Installed package {package.name!r} has conflicting versions"
             raise ValueError(msg)
-        packages[package.name] = package
-    return tuple(packages[name] for name in sorted(packages))
+        packages[key] = package
+    names = sorted({name for name, _ in packages})
+    return tuple(capture_distribution_metadata(name) for name in names)
 
 
 def _selected_names(names: Sequence[str]) -> tuple[str, ...]:
