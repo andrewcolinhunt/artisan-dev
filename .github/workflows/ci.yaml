@@ -109,6 +109,20 @@ jobs:
       - name: Execute every CI-runnable tutorial notebook end-to-end
         run: pixi run -e dev test-notebook
 
+  docs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+
+      - uses: prefix-dev/setup-pixi@v0.10.0
+        with:
+          pixi-version: v0.83.0
+          environments: docs
+          locked: true
+
+      - name: Build documentation
+        run: ~/.pixi/bin/pixi run --locked -e docs docs-build
+
   bounded-storage:
     name: Bounded storage (${{ matrix.platform }})
     runs-on: ${{ matrix.runner }}
