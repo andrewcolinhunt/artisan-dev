@@ -404,6 +404,7 @@ class TaggedMerge(OperationDefinition):
         )
 ```
 
+(pattern-c-ingest-new-artifacts)=
 ### Pattern C: Ingest (new artifacts)
 
 Subclass `IngestFiles` and implement `convert_file()` to create artifacts from

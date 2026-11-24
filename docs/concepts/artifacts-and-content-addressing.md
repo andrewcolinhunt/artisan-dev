@@ -111,17 +111,17 @@ Config content can contain `$artifact` references: JSON objects such as
 how to use them:
 
 - With normal config materialization, Artisan writes referenced artifacts first
-  and substitutes their local paths into the config file. This path substitution
-  is local; endpoint execution rejects materialized configs with references.
+  and substitutes their local paths into the config file. These paths belong
+  to the worker that materialized the config.
 - With `materialize=False` and `resolve_references=True`, preprocessing receives
   the unchanged config plus a read-only mapping of hydrated, materialized direct
   dependencies. The mapping remains available in postprocess. References to
   other configs are rejected in this mode.
 
-For remote execution, the operation prepares portable files from those
-dependencies. Artisan does not rewrite paths embedded inside arbitrary file
-contents. Neither delivery mode creates lineage edges; the producing operation
-declares the config's parents explicitly. See
+For a command that runs in a separate tool environment, prepare files with
+paths the command can access. Artisan preserves paths embedded inside file
+contents. The producing operation declares the config's parents explicitly
+in either delivery mode. See
 [Read typed config dependencies](../how-to-guides/writing-creator-operations.md#read-typed-config-dependencies).
 
 ### External artifacts and verified locations
@@ -141,8 +141,8 @@ fails instead of returning unverified bytes.
 
 Where an operation writes a file determines how Artisan manages its location.
 Function creators can write generated files directly to `ExecuteInput.files_dir`.
-Command creators copy selected outputs into `PostprocessInput.files_dir` after
-local execution or endpoint download. After finalization, Artisan moves or
+Command creators copy selected outputs into `PostprocessInput.files_dir` in
+postprocess. After finalization, Artisan moves or
 uploads referenced files to `files_root`, updates their locators, and verifies
 their bytes before successful sandbox cleanup. Unselected command outputs remain
 temporary; references to existing files outside `files_dir` retain their
@@ -152,10 +152,9 @@ for the staging and drafting pattern.
 
 Verification and materialization stream bytes in bounded chunks and compare
 both digest and size. A finalized FileRef materializes to
-`directory/artifact_id/basename(path)`: distinct artifacts with the same source
-filename cannot overwrite each other, and filename-sensitive tools still see
-the source basename. Always use the path returned by `materialize_to()` rather
-than assuming the file sits directly in the requested directory. Drafts must
+`directory/artifact_id/original_filename`, using the recorded original name
+and extension. Distinct artifacts with the same name have separate directories.
+Use the path returned by `materialize_to()`. Drafts must
 be finalized before materialization. For small files, `read_content()` is a
 convenience that reads and caches the entire verified file in memory; for large
 files, read the materialized path incrementally.

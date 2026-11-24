@@ -75,12 +75,16 @@ class CompositeContext:
             self._stack,
             captured=None if recorded is None else recorded.recipe,
         )
-        bindings = self._bind_inputs(
+        bindings, constants = self._bind_inputs(
             child, {} if inputs is None else inputs, call_name, recorded
         )
+        recipe_call = RecipeCall(name=call_name, inputs=bindings, recipe=child.recipe)
         self._calls[call_name] = child
-        self._wiring.append(
-            RecipeCall(name=call_name, inputs=bindings, recipe=child.recipe)
+        self._wiring.append(recipe_call)
+        self._constants.extend(constants)
+        self._constants.extend(
+            ConstantInput((call_name, *item.call_path), item.role, item.artifacts)
+            for item in child.constants
         )
         return CompositeCall(
             self._owner, call_name, tuple(item.role for item in child.recipe.outputs)
@@ -137,20 +141,8 @@ class CompositeContext:
             self._stack[-1],
             recipe,
             tuple(CompiledCall(name, child) for name, child in self._calls.items()),
-            constants=self._all_constants(),
+            constants=tuple(self._constants),
         )
-
-    def _all_constants(self) -> tuple[ConstantInput, ...]:
-        constants: list[ConstantInput] = []
-        for name, child in self._calls.items():
-            constants.extend(
-                item for item in self._constants if item.call_path == (name,)
-            )
-            constants.extend(
-                ConstantInput((name, *item.call_path), item.role, item.artifacts)
-                for item in child.constants
-            )
-        return tuple(constants)
 
     def _captured_call(self, name: str) -> RecipeCall | None:
         if self._captured is None:
@@ -167,7 +159,7 @@ class CompositeContext:
         inputs: object,
         call_name: str,
         recorded: RecipeCall | None,
-    ) -> tuple[RoleBinding, ...]:
+    ) -> tuple[tuple[RoleBinding, ...], list[ConstantInput]]:
         if not isinstance(inputs, Mapping):
             msg = "Composition inputs must map roles to plan references"
             raise TypeError(msg)
@@ -177,8 +169,11 @@ class CompositeContext:
         contracts = {item.role: item for item in child.recipe.inputs}
         unknown = inputs.keys() - contracts.keys()
         bindings = []
+        constants: list[ConstantInput] = []
         for spec in contracts.values():
-            binding = self._input_binding(child, spec, inputs, call_name, recorded)
+            binding = self._input_binding(
+                child, spec, inputs, call_name, recorded, constants
+            )
             if binding is not None:
                 bindings.append(binding)
         bound_roles = {item.role for item in bindings}
@@ -190,7 +185,7 @@ class CompositeContext:
         if unknown or missing:
             msg = f"Invalid call inputs: unknown={sorted(unknown)}, missing={sorted(missing)}"
             raise ValueError(msg)
-        return tuple(bindings)
+        return tuple(bindings), constants
 
     def _input_binding(
         self,
@@ -199,6 +194,7 @@ class CompositeContext:
         inputs: Mapping[str, object],
         call_name: str,
         recorded: RecipeCall | None,
+        constants: list[ConstantInput],
     ) -> RoleBinding | None:
         if spec.role in inputs:
             return RoleBinding(
@@ -217,7 +213,7 @@ class CompositeContext:
         artifacts = child.definition.inputs[spec.role].snapshot_default()
         if artifacts is None:
             return None
-        self._constants.append(ConstantInput((call_name,), spec.role, artifacts))
+        constants.append(ConstantInput((call_name,), spec.role, artifacts))
         return RoleBinding(
             role=spec.role,
             sources=(),

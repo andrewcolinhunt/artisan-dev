@@ -125,6 +125,24 @@ def test_empty_declared_default_remains_captured_binding(
     assert plan.recipe.schema_version == 3
 
 
+def test_invalid_child_call_does_not_leave_captured_defaults() -> None:
+    class RetriedCall(DefaultPair):
+        name = "fixed_retried_call"
+
+        def compose(self, ctx: CompositeContext) -> None:
+            with pytest.raises(ValueError, match="Invalid call inputs"):
+                ctx.call(DefaultOffset, name="retry")
+            child = ctx.call(
+                DefaultOffset, inputs={"source": ctx.input("source")}, name="retry"
+            )
+            ctx.output("metrics", child.output("metrics"))
+
+    plan = compile_definition(RetriedCall)
+    assert [(item.call_path, item.role) for item in plan.constants] == [
+        (("retry",), "offset")
+    ]
+
+
 def test_captured_defaults_survive_changed_and_removed_declarations(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

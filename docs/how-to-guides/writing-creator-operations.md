@@ -961,7 +961,7 @@ invocation uses the same selected artifact. Keep `reference` as an ordinary
 required `InputSpec`; callers supply `[reference_artifact]` or an output reference
 that resolves to exactly one occurrence. Two occurrences of the same artifact
 are still two selections and fail validation, including when the other inputs
-are empty. An empty biological selection creates no work.
+are empty. An empty selection of paired inputs creates no work.
 
 Shared roles are excluded from pairing. A creator with LINEAGE-paired `data`
 and `config` can therefore add a shared `reference` without making that artifact

@@ -5,6 +5,24 @@ User-facing changes are recorded here using
 
 ## [Unreleased]
 
+### Added
+
+- Call a creator or composite in the current process with `run_operation`.
+  Use `Executor` for a scoped scratch directory across calls. See
+  [direct operation calls](docs/how-to-guides/writing-creator-operations.md#call-operation-directly).
+- Define fixed finalized artifacts in `InputSpec.default`. Omitted roles use
+  those artifacts, while explicit inputs replace them. Creators can declare
+  inputs shared across batches and optional parent roles on individual results.
+  See [creator input and lineage contracts](docs/how-to-guides/writing-creator-operations.md#declare-inputs-and-outputs).
+- Use prepared read-only access to external artifact files. A descriptor records
+  file identity, and the runner binds an existing verified installation. See
+  [external artifact access](docs/how-to-guides/external-artifact-access.md).
+- Export a portable read-only copy of a retained store with explicit
+  redaction of supported operational fields. See
+  [publication exports](docs/how-to-guides/exporting-publication-stores.md).
+- Query direct retained provenance edges, including parents without an origin
+  step. See [provenance queries](docs/how-to-guides/inspecting-provenance.md).
+
 ### Changed
 
 - **Breaking: consistent execution names.** Pipeline `run` and `submit` use
@@ -44,6 +62,9 @@ User-facing changes are recorded here using
   The default `LocalRunner()` can execute in the current Python installation but
   does not claim a locked dependency closure. Replay requires an explicitly
   imported root definition and preserves the outer operation or composite boundary.
+- Pipeline output references select the exact source attempt. Accepted input
+  occurrences, associated artifacts, and configuration referents are captured
+  before cache lookup and delivered to the worker without another lookup.
 
 - Package versions now use the static `[project].version` in `pyproject.toml`,
   starting at `0.2.0.dev0`, and stay unchanged across development commits and
@@ -70,12 +91,19 @@ User-facing changes are recorded here using
   The orchestrator needs local scratch space, including when storage uses S3.
   PyArrow 26 and delta-rs 1.4 are the minimum supported versions for this path.
 
-## [0.2.0] - 2026-10-23
+### Fixed
 
-This release changes the operation, runner, and storage contracts. Before
-upgrading, update downstream operations and start a new Delta root for store
-format 7. Existing Modal tool apps must be explicitly redeployed to adopt the
-new endpoint behavior. See the breaking changes below.
+- File reference materialization restores the recorded original filename,
+  including its extension, inside the artifact's own directory.
+- Native Pixi preparation honors an explicitly supplied `PIXI_OFFLINE` setting.
+- Prepared worker runtime checks respect Python metadata search order and
+  verify wheel-installed scripts against their canonical interpreter paths.
+
+## Earlier 0.2.0 development changes
+
+These entries describe intermediate operation, runner, and storage contracts.
+For the current upgrade path, see the unreleased changes above and the
+[installation guide](docs/getting-started/installation.md#before-upgrading).
 
 ### Added
 
@@ -507,8 +535,7 @@ new endpoint behavior. See the breaking changes below.
 - Caching and resume support
 - Jupyter Book 2 documentation site
 
-[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.2.0...HEAD
-[0.2.0]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a5...v0.2.0
+[Unreleased]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a5...HEAD
 [0.1.2a5]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a4...v0.1.2a5
 [0.1.2a4]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a3...v0.1.2a4
 [0.1.2a3]: https://github.com/dexterity-systems/artisan/compare/v0.1.2a2...v0.1.2a3

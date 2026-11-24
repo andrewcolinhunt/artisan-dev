@@ -54,9 +54,8 @@ so improvements are available wherever it is used.
 
 Another researcher or agent can inspect how a result was produced, apply a new
 evaluation to stored data, or extend an existing workflow. Artisan can reuse
-cached results when the declared inputs and settings match a previous
-computation. Later investigations can build on both the methods and the
-evidence from earlier work.
+cached results when qualified worker software, declared inputs, and settings
+match a previous computation.
 
 Artisan runs locally with worker processes. Optional runner providers place the
 same operation or composite lifecycle on Modal and Slurm. Tool dependencies are
@@ -104,6 +103,8 @@ transform them, and compute metrics. `Filter` follows provenance from each
 transformed dataset to its metrics to select results.
 
 ```python
+from pathlib import Path
+
 from artisan.orchestration import PipelineManager
 from artisan.operations.examples import DataGenerator, DataTransformer, MetricCalculator
 from artisan.operations.curator import Filter
@@ -112,7 +113,7 @@ pipeline = PipelineManager.create(
     name="my_pipeline",
     delta_root="runs/delta",
     staging_root="runs/staging",
-    working_root="runs/working",
+    working_root=str(Path("runs/working").resolve()),
 )
 output = pipeline.output
 
@@ -141,6 +142,7 @@ pipeline.run(
 )
 
 result = pipeline.finalize()
+assert result["overall_success"]
 ```
 
 ## Development setup

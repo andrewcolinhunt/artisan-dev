@@ -22,7 +22,7 @@ from artisan.orchestration import PipelineManager
 from artisan.storage import ArtifactStore, PublicationExport, export_publication
 
 with TemporaryDirectory() as temporary:
-    root = Path(temporary)
+    root = Path(temporary).resolve()
     source = root / "local-workspace"
     source.mkdir()
     incoming = source / "input.csv"

@@ -3,7 +3,7 @@
 Choose Artisan when a Python pipeline needs reusable tool integrations, typed
 artifacts, explicit per-artifact lineage, and queryable results.
 Artisan runs locally without an orchestration server. Cluster execution uses a
-separate runner provider; remote tools require deployed endpoints.
+separate runner provider to prepare and place the entire Artisan worker.
 
 Use the linked framework documentation to check behavior for the version you
 plan to use.

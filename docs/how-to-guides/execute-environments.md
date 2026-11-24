@@ -64,6 +64,10 @@ environment in a composite once and reuses existing compatible targets. If
 parameters change which tools the composite uses, supply those parameters to
 both preparation and submission.
 
+For native Pixi preparation, set `PIXI_OFFLINE=true` to use packages already
+available in the local cache. Preparation fails if required packages are
+unavailable in offline mode.
+
 Preparation uses the operation or composite's authored `runner_resources` by
 default. A supplied `RunnerResources` model patches only its explicit fields,
 matching submission. If you override the eventual allocation, pass the same

@@ -22,14 +22,16 @@ Build operations, configure pipelines, and work with results.
 
 - [Configuring Execution](configuring-execution.md) -- Resource allocation,
   batching, and runner configuration
+- [Prepare Execute Environments](execute-environments.md) -- Declare and prepare
+  command software with Pixi, Docker, or Apptainer
 - [Use External Artifacts Without Copying Their Files](external-artifact-access.md) --
   Bind prepared weights or reference bundles and inspect explicit model defaults
-- [Run Remote Workers](running-remote-workers.md) -- Deploy command operations
-  and configure object-store input/output delivery
+- [Run Remote Workers](running-remote-workers.md) -- Prepare a provider worker
+  and configure shared result storage
 - [Debug a Recorded Execution](debugging-executions.md) -- Replay one unit and
   retain diagnostic evidence
-- [Op Container Images](op-container-images.md) -- Build, resolve, and pin
-  the image an operation runs in, for Modal and external harnesses
+- [Prepare Tool Container Images](op-container-images.md) -- Build OCI or SIF
+  tool images from a locked Pixi project
 - [Configuring S3-Compatible Storage](configuring-s3.md) -- Point Delta
   Lake, staging, and inputs at S3, MinIO, or any S3-compatible backend
 

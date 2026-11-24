@@ -14,9 +14,10 @@ and its storage/service access; see [Run Remote Workers](running-remote-workers.
 
 ## Select a checkpoint and prepare its existing files
 
-This complete CPU example uses a synthetic checkpoint: a `scale.txt` file
-containing the number two. The installed example command multiplies each input
-value by that number. It does not download or copy the checkpoint.
+Run this CPU example on Linux x86_64, which supports Artisan's managed command
+preparation. It creates a synthetic checkpoint, a `scale.txt` file containing
+the number two. The installed command reads the file in place and multiplies
+each input value by that number.
 
 ```python
 from pathlib import Path
