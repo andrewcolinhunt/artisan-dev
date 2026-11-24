@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from pathlib import Path
-
 from artisan.execution import Executor
 from artisan.operations.examples import DataGenerator
 from artisan.schemas import CSVArtifact
@@ -11,7 +9,7 @@ from artisan.schemas import CSVArtifact
 
 def main() -> None:
     """Generate deterministic CSV artifacts without creating a results store."""
-    with Executor(working_root=Path("/tmp/artisan-demo")) as executor:
+    with Executor() as executor:
         result = executor.run(
             DataGenerator, params={"count": 3, "rows_per_file": 5, "seed": 42}
         )
@@ -20,11 +18,12 @@ def main() -> None:
         assert len(datasets) == 3
         for dataset in datasets:
             assert isinstance(dataset, CSVArtifact)
-            assert dataset.is_finalized and dataset.row_count == 5
+            assert dataset.is_finalized
+            assert dataset.row_count == 5
             assert dataset.content is not None
-            print(f"{dataset.original_name}: {dataset.row_count} rows")
+            print(f"{dataset.original_name}: {dataset.row_count} rows")  # noqa: T201
     assert executor.cleanup_complete
-    print("SUCCESS")
+    print("SUCCESS")  # noqa: T201
 
 
 if __name__ == "__main__":

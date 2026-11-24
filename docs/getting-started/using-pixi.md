@@ -221,7 +221,7 @@ contains their exact commands. Invoke a task with `pixi run -e ENV TASK`.
 | `prepare-docker-tests` | Check the selected Docker engine and prepare or reuse the pinned test image |
 | `test-s3` | S3 tests; needs Docker/MinIO or `ARTISAN_S3_ENDPOINT` |
 | `test-notebook` | CI-runnable tutorial notebooks; excludes Modal notebooks |
-| `test-notebook-modal` | Optional Modal tutorials; needs deployed endpoints and credentials, plus object storage for the R2 tutorial |
+| `test-notebook-modal` | Optional Modal tutorials; requires a locked worker project, Modal credentials, and writable S3-compatible storage |
 | `test-seq` | Sequential tests for debugging; requires local Docker, excludes notebooks and Modal, includes S3 |
 | `test-modal` | Optional live Modal tests; needs cloud credentials and each test's prerequisites |
 | `fmt` | Format and lint the codebase |

@@ -24,7 +24,7 @@ requirements:
   run:
     - python >=3.12
     - cloudpickle >=3,<4
-    - deltalake >=0.14.0
+    - deltalake >=1.4.0
     - fsspec
     - graphviz
     - python-graphviz
@@ -33,10 +33,14 @@ requirements:
     - ipython
     - ipywidgets
     - matplotlib-base
+    - packaging >=24
     - polars >=1.30.0
-    - pydantic >=2
+    - pyarrow >=26.0.0
+    - pydantic >=2.12
     - python-dotenv
+    - pyyaml >=6,<7
     - rich
+    - tomli >=2.4,<3
     - xxhash
 
 test:

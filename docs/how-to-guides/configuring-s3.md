@@ -15,6 +15,8 @@ Pass `protocol="s3"` to use credentials from an IAM role,
 `~/.aws/credentials`, or `AWS_*` environment variables:
 
 ```python
+from pathlib import Path
+
 from artisan.orchestration import PipelineManager
 from artisan.schemas import StorageConfig
 
@@ -23,7 +25,7 @@ pipeline = PipelineManager.create(
     delta_root="s3://my-bucket/delta",
     staging_root="s3://my-bucket/staging",
     files_root="s3://my-bucket/files",
-    working_root="runs/working",  # local sandboxes
+    working_root=str(Path("runs/working").resolve()),
     storage=StorageConfig(protocol="s3"),
 )
 ```
@@ -31,10 +33,10 @@ pipeline = PipelineManager.create(
 `create()` assigns a fresh run ID while keeping this run's history in the
 selected store. Call `pipeline.finalize()` when you finish submitting work.
 
-Keep `working_root` local for worker sandboxes. Failure logs are published
-through the configured filesystem under `<parent of delta_root>/logs/failures/`,
-using each source execution's UTC start time in the filename. If `delta_root`
-is a bare bucket URI, the logs directory remains inside that bucket.
+Set `working_root` to an absolute local path for worker sandboxes. Artisan
+publishes failure logs under `<parent of delta_root>/logs/failures/`, using each
+source execution's UTC start time in the filename. If `delta_root` is a bare
+bucket URI, the logs directory stays inside that bucket.
 
 Pipeline session file logging is disabled for cloud stores, so
 `pipeline.log_path` is `None`; console logging remains available. Local stores

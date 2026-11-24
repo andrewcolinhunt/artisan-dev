@@ -62,12 +62,13 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/artisan", "src/artisan_mcp"]
+exclude = ["/src/artisan/_version.py"]
 
 [tool.hatch.build.targets.wheel.force-include]
 "skills/pipeline-operate" = "artisan/inspection/_skills/pipeline-operate"
 
 [tool.hatch.build.targets.sdist]
-exclude = ["/.agents/skills", "/.claude/skills"]
+exclude = ["/.agents/skills", "/.claude", "/src/artisan/_version.py"]
 skip-excluded-dirs = true
 
 [tool.pixi.workspace]
@@ -106,7 +107,6 @@ beartype = "*"
 pydantic = "*"
 fsspec = "*"
 griffe = "*"          # Google-style docstring parsing for agent-facing schemas
-# Tool-endpoint HTTP service
 starlette = "*"
 fastapi = "*"
 
@@ -123,8 +123,8 @@ graphviz = "*"          # Python bindings for Graphviz (provenance graph visuali
 
 # Cloud compute routing
 modal = "*"             # Modal SDK for remote compute routing
-httpx = "*"             # Tool-endpoint client (submit/poll/download/cancel)
-python-dotenv = "*"     # .env fallback for proxy-auth token discovery
+httpx = "*"             # Redaction of URLs in persisted configuration
+python-dotenv = "*"     # Read local environment configuration
 s3fs = "*"              # Worker-side s3:// input refs + stored-output delivery
                         # (the artisan-worker image installs this environment)
 
@@ -142,7 +142,7 @@ jupyterlab = ">=4.5.0,<5"
 pytest = "*"
 pytest-xdist = "*"  # Parallel test execution
 nbval = "*"  # Notebook execution as pytest items (see [tool.pytest.ini_options] markers)
-python-multipart = "*"  # FastAPI form parsing — tool-endpoint route tests (TestClient)
+python-multipart = "*"
 
 # Linting and formatting
 ruff = "==0.13.2"

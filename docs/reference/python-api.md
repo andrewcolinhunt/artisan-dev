@@ -29,6 +29,7 @@ signature and docstring for arguments, defaults, return values, and exceptions.
 | Save and reload complete reports | `artisan.inspection` | `export_evidence`, `load_evidence_export` |
 | Assess recorded metrics or compare selected attempts | `artisan.visualization` | `OutcomeSelection`, `AssessmentSpec`, `assess_outcomes`, `ComparisonSpec`, `compare_runs` |
 | Traverse provenance | `artisan.provenance` | `provenance_edges`, `walk_forward`, `walk_backward` |
+| Read direct retained edges, with optional role and execution filters | `artisan.storage` | `ArtifactStore.provenance.load_direct_edges_df` |
 | Implement a runner provider | `artisan.orchestration.runner_api` | `LocalRunner`, `AssignmentHandle`, `CuratorHandle`, `WorkerOwner` |
 | Inspect a Modal worker boundary | `artisan_modal` (optional package) | `ModalSoftware`, `CallObservation`, `modal_owner_observations` |
 

@@ -128,7 +128,8 @@ To prepare a release, using `0.2.0` as the example:
 2. Run `pixi install -e dev` and complete the required checks. A version-only
    change does not require a lockfile update. If dependencies or environment
    requirements also changed, review and keep the required lockfile changes.
-3. Remove old build artifacts from `dist/`, then build and validate:
+3. Build and validate the distributions. The `build-dist` task clears `dist/`
+   before it builds.
 
    ```bash
    pixi run --locked -e dev build-dist

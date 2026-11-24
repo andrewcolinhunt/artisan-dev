@@ -2,6 +2,7 @@
 name = "artisan-modal"
 version = "0.1.0.dev0"
 description = "Modal assignment workers for Artisan"
+readme = "README.md"
 requires-python = ">=3.12"
 license = {text = "BSD-3-Clause"}
 dependencies = [

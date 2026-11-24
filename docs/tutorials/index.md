@@ -5,9 +5,8 @@ reusable operations. Complete [Installation](../getting-started/installation.md)
 first, including the source checkout and Jupyter kernel. Some tutorials read
 fixtures or companion modules from that checkout.
 
-Follow the sections below for the local learning path. The three optional cloud
-tutorials appear at the end in prerequisite order; each needs accounts and
-credentials.
+Follow the sections below for the local learning path. The two optional Modal
+tutorials appear at the end. Both need Modal and object-storage credentials.
 
 Each notebook creates a named directory under `runs/`. Rerunning its
 `tutorial_setup` cell deletes that tutorial's previous results unless the call
@@ -36,8 +35,7 @@ sets `clean=False`. The caching examples show when to preserve a previous run.
 ## Batching
 
 - [Batching and Performance](04-batching/01-batching-and-performance.ipynb) (~20 min) — Group artifacts into units and pack units into worker tasks
-
-The optional cloud batching comparison is listed under Cloud tutorials below.
+- [Pack Scientific Units into Workers](04-batching/02-batch-execute.ipynb) (~10 min) — Compare two worker pack sizes and verify that the transformed contents match
 
 ## Errors and control
 
@@ -52,7 +50,7 @@ The optional cloud batching comparison is listed under Cloud tutorials below.
 
 ## Compute routing
 
-- [Compute Routing](07-compute-backends/01-compute-routing.ipynb) (~15 min) — Distinguish the step runner from the execute-phase provider, using local examples
+- [Select a Worker and Tool Environment](07-compute-backends/01-compute-routing.ipynb) (~15 min) — Choose where the worker runs and which software its commands use
 
 ## Analysis
 
@@ -69,14 +67,12 @@ The optional cloud batching comparison is listed under Cloud tutorials below.
 
 ## Cloud tutorials (optional)
 
-These tutorials make billable cloud calls. Running on Modal sets up authentication
-and the endpoint used by the batching example. Object storage also needs a bucket,
-storage credentials, and its own endpoint. Deploy each endpoint before running
-the tutorial; pipelines require an existing compatible app.
+These tutorials make billable Modal and object-storage calls. Set up Modal
+authentication, a locked worker project, and a writable S3-compatible bucket
+before starting. Each notebook prepares its own named worker deployment.
 
-1. [Running on Modal](07-compute-backends/04-modal-execution.ipynb) (~15 min) — Deploy a command operation, compare local and remote execution, and inspect remote markers
-2. [Per-Artifact Batch Execute](04-batching/02-batch-execute.ipynb) (~10 min) — Compare concurrent and sequential endpoint calls within the same unit size
-3. [Delivering Outputs to Object Storage](07-compute-backends/05-modal-r2-outputs.ipynb) (~10 min) — Deliver remote outputs to an allowed S3-compatible prefix, verify them, and clean up
+1. [Run Full Workers on Modal](07-compute-backends/04-modal-execution.ipynb) (~15 min) — Run the same command operation locally and on Modal, then inspect its invocation markers
+2. [Delivering Outputs to Object Storage](07-compute-backends/05-modal-r2-outputs.ipynb) (~10 min) — Publish remote outputs to an S3-compatible prefix, verify them, and clean up
 
 ## Related documentation
 
