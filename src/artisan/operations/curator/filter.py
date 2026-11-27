@@ -366,33 +366,6 @@ def _build_funnel(criteria: list[Criterion], counts: list[int]) -> list[dict[str
     return funnel
 
 
-def _criterion_stats(
-    wide: pl.DataFrame, crit: Criterion
-) -> tuple[int, dict[str, float] | None]:
-    """Compute a criterion's pass count and numeric min/max/mean stats.
-
-    Args:
-        wide: Wide DataFrame with metric columns.
-        crit: Criterion whose metric column to summarize.
-
-    Returns:
-        Tuple of (pass count, stats dict with min/max/mean, or None when the
-        metric column holds no numeric values).
-    """
-    pass_count = wide.select(_criterion_to_expr(crit).fill_null(False).sum()).item()
-    numeric = _numeric_values(wide[crit.metric])
-    if numeric.len() == 0:
-        return pass_count, None
-    minimum = cast(float, numeric.min())
-    maximum = cast(float, numeric.max())
-    mean = cast(float, numeric.mean())
-    return pass_count, {
-        "min": minimum,
-        "max": maximum,
-        "mean": round(mean, 6),
-    }
-
-
 def _numeric_values(values: pl.Series) -> pl.Series:
     """Select values usable in numeric summaries without changing comparisons."""
     return values.drop_nulls().cast(pl.Float64, strict=False).drop_nulls()
@@ -407,9 +380,8 @@ def _assemble_diagnostics(
     metric_sources: list[dict[str, Any]],
     criteria: list[dict[str, Any]],
     funnel: list[dict[str, Any]],
-    interactive: bool = False,
 ) -> dict[str, Any]:
-    """Assemble the v4 diagnostics dict shared by Filter and InteractiveFilter.
+    """Assemble the v4 filter diagnostics.
 
     Args:
         total_input: Passthrough artifacts entering the filter.
@@ -419,26 +391,20 @@ def _assemble_diagnostics(
         metric_sources: Per-step metric-source descriptors.
         criteria: Per-criterion diagnostics rows.
         funnel: Cumulative AND funnel rows.
-        interactive: Whether the diagnostics come from InteractiveFilter.
 
     Returns:
         The v4 diagnostics dict.
     """
-    diagnostics: dict[str, Any] = {"version": 4}
-    if interactive:
-        diagnostics["interactive"] = True
-    diagnostics.update(
-        {
-            "total_input": total_input,
-            "total_evaluated": total_evaluated,
-            "total_metrics_discovered": total_metrics_discovered,
-            "total_passed": total_passed,
-            "metric_sources": metric_sources,
-            "criteria": criteria,
-            "funnel": funnel,
-        }
-    )
-    return diagnostics
+    return {
+        "version": 4,
+        "total_input": total_input,
+        "total_evaluated": total_evaluated,
+        "total_metrics_discovered": total_metrics_discovered,
+        "total_passed": total_passed,
+        "metric_sources": metric_sources,
+        "criteria": criteria,
+        "funnel": funnel,
+    }
 
 
 class _DiagnosticsAccumulator:

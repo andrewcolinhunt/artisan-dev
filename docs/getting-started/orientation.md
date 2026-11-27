@@ -62,8 +62,7 @@ There are two kinds:
 
 The framework ships with example creators (`DataGenerator`, `DataTransformer`,
 `MetricCalculator`) and built-in curators (`Filter`, `Merge`, `IngestFiles`,
-`IngestCSV`, `IngestPipelineStep`). There is also an `InteractiveFilter` tool
-for exploratory filtering in notebooks, though it is not a pipeline operation.
+`IngestCSV`, `IngestPipelineStep`).
 
 Bundle operations you repeatedly run together, such as transform followed by
 scoring, into a **composite**. A `CompositeDefinition` declares inputs and outputs

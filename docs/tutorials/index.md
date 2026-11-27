@@ -56,7 +56,6 @@ sets `clean=False`. The caching examples show when to preserve a previous run.
 
 - [Provenance Graphs](08-analysis/01-provenance-graphs.ipynb) (~10 min) — Read macro graphs, micro graphs, and cumulative snapshots
 - [Lineage Tracing](08-analysis/02-lineage-tracing.ipynb) (~15 min) — Find ancestors and descendants in code
-- [Interactive Filter](08-analysis/03-interactive-filter.ipynb) (~15 min) — Explore metrics, choose thresholds, and commit the selection
 - [Timing Analysis](08-analysis/04-timing-analysis.ipynb) (~10 min) — Find slow steps and inspect their execution timings
 
 ## Writing operations

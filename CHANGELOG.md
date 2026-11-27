@@ -353,6 +353,14 @@ For the current upgrade path, see the unreleased changes above and the
 - Optional dependencies load lazily, MCP surfaces are bounded, and packaged
   examples and documentation reflect the current release contracts.
 
+### Removed
+
+- Removed the notebook `InteractiveFilter` and its selection operation. For new
+  selections, see the [Metrics and Filtering tutorial](docs/tutorials/02-pipeline-design/03-metrics-and-filtering.ipynb).
+  Existing selections in retained stores remain readable through ordinary
+  inspection. Replay of an old selection requires a matching Artisan revision
+  that includes its operation definition.
+
 ## [0.1.2a5] - 2026-04-06
 
 ### Added

@@ -606,47 +606,6 @@ artifact X in the destination. Importing a CSV alongside that config creates a
 new CSV identity, so it does not satisfy the reference to X. Unresolved required
 references reject the import without publishing its outputs.
 
-### InteractiveFilter
-
-Inspect metric distributions in a notebook, choose thresholds, then commit the
-filtered result as a pipeline step:
-
-```python
-from artisan.operations.curator import InteractiveFilter
-
-filt = InteractiveFilter(delta_root="/runs/my_pipeline/delta")
-filt.load(step_numbers=[1], artifact_type="csv", pipeline_run_id=run_id)
-
-# Explore metrics
-filt.wide_df   # one row per artifact, metrics as columns
-filt.tidy_df   # long format: one row per (artifact, metric_name)
-
-# Set criteria and preview
-filt.set_criteria([
-    {"metric": "score", "operator": "gt", "value": 0.5},
-])
-filt.summary()           # per-criterion statistics and cumulative funnel
-filt.plot()              # histograms with threshold lines (requires matplotlib)
-filt.filtered_ids        # artifact IDs that pass
-filt.filtered_wide_df    # wide DataFrame filtered to passing rows
-
-# Commit as a pipeline step
-result = filt.commit(step_name="interactive_filter")
-# result.output("passthrough") is available for downstream steps
-```
-
-Here `run_id` identifies the run to inspect. `load()` selects its current accepted
-outputs at the requested logical steps, including exact cache sources. Without
-`pipeline_run_id`, it selects the newest run. Content origins remain unchanged;
-see [run selection](inspecting-provenance.md#select-the-run-you-want-to-inspect).
-
-The `load()` method discovers descendant metrics via forward provenance walk.
-`set_criteria()` validates metric names against loaded data and checks for
-ambiguous field names across steps. `commit()` submits the captured selection
-through the selected curator worker and preserves the loaded source attempts.
-It does not rerun the criteria against newer metrics. The accepted result is
-available for downstream wiring.
-
 ---
 
 ## Testing
