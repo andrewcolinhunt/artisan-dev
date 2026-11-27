@@ -850,34 +850,72 @@ class TestForwardMetricDiscovery:
 class TestCollisionDetection:
     """Tests for field collision detection across steps."""
 
-    def test_same_field_two_steps_raises(self):
+    @pytest.mark.parametrize("field", ["score", "_score", "_step_names"])
+    @pytest.mark.parametrize("chunk_size", [1, 100])
+    def test_same_field_two_steps_raises(self, field: str, chunk_size: int) -> None:
         """Same field name from two different steps raises ValueError."""
-        pt_id = pad_id("pt")
+        first_id = pad_id("pt_a")
+        second_id = pad_id("pt_b")
         m1_id = pad_id("m1")
         m2_id = pad_id("m2")
 
         store = _build_forward_walk_store(
-            step_map={pt_id: 0, m1_id: 1, m2_id: 2},
-            edges=[(pt_id, m1_id), (pt_id, m2_id)],
+            step_map={first_id: 0, second_id: 0, m1_id: 1, m2_id: 2},
+            edges=[(first_id, m1_id), (second_id, m2_id)],
             metric_values={
-                m1_id: {"score": 0.9},
-                m2_id: {"score": 0.8},
+                m1_id: {field: 0.9},
+                m2_id: {field: 0.8},
             },
             step_name_map={0: "generator", 1: "calc_a", 2: "calc_b"},
         )
 
         op = Filter(
             params=Filter.Params(
-                criteria=[Criterion(metric="score", operator="gt", value=0.5)]
+                criteria=[Criterion(metric=field, operator="gt", value=0.5)],
+                chunk_size=chunk_size,
             )
         )
 
-        with pytest.raises(ValueError, match="multiple steps"):
+        with pytest.raises(ValueError, match="multiple steps") as error:
             op.execute_curator(
-                inputs={"passthrough": _df([pt_id])},
+                inputs={"passthrough": _df([first_id, second_id])},
                 step_number=0,
                 artifact_store=store,
             )
+        assert f"Field '{field}'" in str(error.value)
+        assert 'step 1 ("calc_a")' in str(error.value)
+        assert 'step 2 ("calc_b")' in str(error.value)
+
+    def test_only_non_null_metrics_supply_step_membership(self) -> None:
+        first_id, second_id = pad_id("pt_a"), pad_id("pt_b")
+        first_metric, second_metric = pad_id("m1"), pad_id("m2")
+        store = _build_forward_walk_store(
+            step_map={first_id: 0, second_id: 0, first_metric: 1, second_metric: 2},
+            edges=[(first_id, first_metric), (second_id, second_metric)],
+            metric_values={
+                first_metric: {"_step_names": 0.9},
+                second_metric: {"_step_names": None},
+            },
+            step_name_map={1: "calc_a", 2: "calc_b"},
+        )
+        operation = Filter(
+            params=Filter.Params(
+                criteria=[Criterion(metric="_step_names", operator="gt", value=0.5)],
+                chunk_size=1,
+            )
+        )
+
+        result = operation.execute_curator(
+            inputs={"passthrough": _df([second_id, first_id, first_id, second_id])},
+            step_number=3,
+            artifact_store=store,
+        )
+
+        assert result.passthrough["passthrough"] == [first_id, first_id]
+        criterion = result.metadata["diagnostics"]["criteria"][0]
+        assert criterion["resolved_from_step"] == 1
+        assert criterion["pass_count"] == 2
+        assert criterion["stats"] == {"min": 0.9, "max": 0.9, "mean": 0.9}
 
     def test_different_fields_no_collision(self):
         """Different field names from different steps -> no collision."""
@@ -1002,6 +1040,42 @@ class TestStepDisambiguation:
         assert result.success
         assert pt_id in result.passthrough["passthrough"]
         assert result.metadata["diagnostics"]["criteria"][0]["resolved_from_step"] == 1
+
+    @pytest.mark.parametrize("field", ["_score", "_step_names"])
+    def test_two_qualified_criteria_use_their_own_values(self, field: str) -> None:
+        pt_id, first_metric, second_metric = map(pad_id, ("pt", "m1", "m2"))
+        store = _build_forward_walk_store(
+            step_map={pt_id: 0, first_metric: 1, second_metric: 2},
+            edges=[(pt_id, first_metric), (pt_id, second_metric)],
+            metric_values={
+                first_metric: {field: 0.9},
+                second_metric: {field: 0.3},
+            },
+            step_name_map={1: "calc_a", 2: "calc_b"},
+        )
+        step_metrics = {(1,): {first_metric}, (2,): {second_metric}}
+        store.provenance.load_artifact_ids_by_type.side_effect = (
+            lambda artifact_type, step_numbers: step_metrics[tuple(step_numbers)]
+        )
+        operation = Filter(
+            params=Filter.Params(
+                criteria=[
+                    Criterion(metric=field, operator="gt", value=0.5, step="calc_a"),
+                    Criterion(metric=field, operator="lt", value=0.5, step_number=2),
+                ]
+            )
+        )
+
+        result = operation.execute_curator(
+            inputs={"passthrough": _df([pt_id])},
+            step_number=3,
+            artifact_store=store,
+        )
+
+        assert result.passthrough["passthrough"] == [pt_id]
+        criteria = result.metadata["diagnostics"]["criteria"]
+        assert [row["resolved_from_step"] for row in criteria] == [1, 2]
+        assert [row["stats"]["mean"] for row in criteria] == [0.9, 0.3]
 
     def test_step_name_not_found_returns_empty(self):
         """Non-existent step name -> no metrics found, fails criteria."""

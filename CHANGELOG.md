@@ -93,6 +93,9 @@ User-facing changes are recorded here using
 
 ### Fixed
 
+- Filter criteria detect ambiguous metric fields even when their names start
+  with an underscore. Specify a step name or number to select the metric source.
+
 - File reference materialization restores the recorded original filename,
   including its extension, inside the artifact's own directory.
 - Native Pixi preparation honors an explicitly supplied `PIXI_OFFLINE` setting.
