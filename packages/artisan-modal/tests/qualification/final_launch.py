@@ -436,8 +436,6 @@ def launch(inputs: LaunchInputs, phase: Phase) -> int:
             )
             report["apps_closed"] = apps_closed(registry, report["apps"])
             if not registry.exists() and command_closed(report.get("command", {})):
-                # The fixed child records before any SDK creation call. A closed
-                # child that never reached this gate cannot create a later App.
                 report["app_creation_never_started"] = True
                 report["apps_closed"] = True
         except BaseException as error:

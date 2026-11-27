@@ -36,7 +36,6 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-    # Worker contracts import orchestration submodules before controller startup.
     if name == "PipelineManager":
         from artisan.orchestration.pipeline_manager import PipelineManager
 

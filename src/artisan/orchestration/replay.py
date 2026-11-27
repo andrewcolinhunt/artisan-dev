@@ -49,7 +49,6 @@ from artisan.storage.io.retained_commit import RetainedCommitter
 from artisan.storage.io.retained_store import open_configured_store
 from artisan.utils.path import uri_join, uri_parent
 
-# A function-scoped manager must not release unresolved provider ownership on exit.
 _unresolved_replays: list[PipelineManager] = []
 
 

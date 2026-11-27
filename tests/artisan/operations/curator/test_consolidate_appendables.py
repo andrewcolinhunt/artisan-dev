@@ -87,7 +87,6 @@ class TestConsolidateBasicExecution:
 
     def test_concatenates_worker_files(self, backend_fs) -> None:
         fs, _storage, root = backend_fs
-        # Set up two worker JSONL files
         worker_a = f"{root}/workers/a/records.jsonl"
         worker_b = f"{root}/workers/b/records.jsonl"
         fs.makedirs(f"{root}/workers/a", exist_ok=True)
@@ -180,7 +179,6 @@ class TestConsolidateBasicExecution:
         op = ConsolidateAppendables()
         result = op.execute_curator(inputs, step_number=1, artifact_store=store)
 
-        # Finalize the draft to get an ID, then compare
         draft = result.artifacts["records"][0]
         draft.finalize()
         assert draft.artifact_id == art.artifact_id
@@ -229,9 +227,6 @@ class TestConsolidateAppendablesBackendParametrized:
         """Two worker JSONL files concatenate into one combined.jsonl."""
         fs, _, root = backend_fs
 
-        # Write two per-worker JSONL files via the parametrized fs in
-        # text mode — this is the S3-sensitive path the curator uses for
-        # the combined output write below.
         worker_a = f"{root}/workers/a/records.jsonl"
         worker_b = f"{root}/workers/b/records.jsonl"
         fs.makedirs(f"{root}/workers/a", exist_ok=True)
@@ -265,6 +260,5 @@ class TestConsolidateAppendablesBackendParametrized:
             lines = f.read().strip().split("\n")
         assert len(lines) == 2
 
-        # Output drafts point to the combined file on both backends.
         for draft in result.artifacts["records"]:
             assert draft.external_path == combined

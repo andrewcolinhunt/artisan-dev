@@ -69,7 +69,6 @@ class DiskTable:
                 is_global_artifact_table(table_path) and name == "origin_step_number"
             )
         ]
-        # Python datetime rows lose sub-microsecond precision.
         self._requires_typed_duplicates = any(
             isinstance(dtype, pl.Datetime) and dtype.time_unit == "ns"
             for dtype in self.schema.values()

@@ -111,7 +111,6 @@ def test_output_reference_shared_cardinality_fails_before_dispatch(
         staging_root=tmp_path / "staging",
         working_root=tmp_path / "work",
     ) as pipeline:
-        # A selected result reference may resolve to several ordinary occurrences.
         produced = pipeline.run(
             SharedOffset,
             inputs={"source": [metric(0), metric(1)], "offset": [metric(10)]},

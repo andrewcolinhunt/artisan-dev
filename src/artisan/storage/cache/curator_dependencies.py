@@ -192,7 +192,6 @@ def _canonical_scalar(name: str, dtype: pl.DataType) -> pl.Expr:
         return value.bin.encode("hex")
     if dtype.is_temporal():
         value = value.to_physical()
-    # Text keeps nonfinite floats distinct from null and preserves signed zero.
     return value.cast(pl.String)
 
 

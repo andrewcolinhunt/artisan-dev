@@ -1,4 +1,3 @@
-# --- Build stage: resolve all dependencies from pixi.lock ---
 FROM ghcr.io/prefix-dev/pixi:0.83.0 AS build
 WORKDIR /app
 COPY pyproject.toml pixi.lock README.md ./
@@ -6,12 +5,8 @@ COPY src/ src/
 COPY skills/pipeline-operate/ skills/pipeline-operate/
 RUN pixi install --locked
 
-# --- Runtime stage: slim image with resolved environment ---
 FROM ubuntu:24.04
-# Distro CA bundle: Modal injects SSL_CERT_DIR=/etc/ssl/certs into every
-# container, which preempts the pixi env's own cert.pem — without the
-# bundle there, all TLS verification (S3/R2 uploads, presigned PUTs)
-# fails with CERTIFICATE_VERIFY_FAILED.
+# Modal sets SSL_CERT_DIR=/etc/ssl/certs, overriding the Pixi CA bundle.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates \
     && rm -rf /var/lib/apt/lists/*

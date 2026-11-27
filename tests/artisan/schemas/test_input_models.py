@@ -124,7 +124,6 @@ class TestPreprocessInput:
     def test_not_frozen(self, tmp_path: Path):
         """PreprocessInput is mutable (not frozen)."""
         inp = PreprocessInput(preprocess_dir=str(tmp_path))
-        # Should not raise - dataclass is not frozen
         inp.input_artifacts = {"new": []}
         assert inp.input_artifacts == {"new": []}
 
@@ -215,7 +214,6 @@ class TestPostprocessInput:
 
     def test_create_with_memory_outputs_any_type(self, tmp_path: Path):
         """Create with various types as memory outputs."""
-        # Can be anything - string, int, list, complex object
         for mem in [0, "result", [1, 2, 3], {"nested": {"data": True}}]:
             inp = PostprocessInput(
                 step_number=0,
@@ -256,7 +254,7 @@ class TestPostprocessInput:
             input_artifacts={"metric": [artifact]},
         )
         assert len(inp.input_artifacts["metric"]) == 1
-        assert inp.input_artifacts["metric"][0].original_name == "input"  # Stem only
+        assert inp.input_artifacts["metric"][0].original_name == "input"
 
     def test_step_number_required(self, tmp_path: Path):
         """step_number is required."""
@@ -266,7 +264,6 @@ class TestPostprocessInput:
     def test_not_frozen(self, tmp_path: Path):
         """PostprocessInput is mutable (not frozen)."""
         inp = PostprocessInput(step_number=0, postprocess_dir=str(tmp_path))
-        # Should not raise - dataclass is not frozen
         inp.memory_outputs = "new_result"
         assert inp.memory_outputs == "new_result"
 

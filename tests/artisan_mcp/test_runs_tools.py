@@ -277,7 +277,6 @@ def test_get_step_logs_caps_files_in_source_recency_order(
     start = datetime(2026, 9, 19, tzinfo=UTC)
     rows = []
     for index in range(MAX_LOG_FILES + 3):
-        # The final two starts tie; execution ID gives a stable order.
         timestamp = start + timedelta(seconds=min(index, MAX_LOG_FILES + 1))
         run_id = f"id-{index:03d}"
         relative = failure_log_relative_path(run_id, timestamp)

@@ -66,8 +66,8 @@ class FileGenerator(OperationDefinition):
         )
 
     params: Params = Params()
-    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="file_generator")  # type: ignore[call-arg]  # pydantic defaults
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="file_generator")  # type: ignore[call-arg]
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Generate binary files in files_dir, reproducible with an explicit seed."""

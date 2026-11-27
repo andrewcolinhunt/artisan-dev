@@ -36,10 +36,8 @@ class Artifact(BaseModel):
         materialized_path: Runtime-only path where content was written for execution.
     """
 
-    model_config = ConfigDict(extra="forbid")  # NOT frozen - drafts are mutable
+    model_config = ConfigDict(extra="forbid")
 
-    # Column set for Delta/Parquet storage — the single source of truth that
-    # to_row/from_row iterate. Concrete subclasses assign it.
     POLARS_SCHEMA: ClassVar[dict[str, type[pl.DataType]]]
     EXTERNALLY_BACKED: ClassVar[bool] = False
     EXTERNAL_REFERENCE: ClassVar[bool] = False

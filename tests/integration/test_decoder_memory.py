@@ -52,8 +52,6 @@ def _prepare(root, encoding):
             columns = [
                 parquet.metadata.row_group(index).column(1) for index in range(groups)
             ]
-            # A whole uncompressed column chunk bounds its largest page/dictionary.
-            # No page-header parser or assumed equality with the batch budget is needed.
             region = max(column.total_uncompressed_size for column in columns)
             dictionaries = [
                 column.data_page_offset - column.dictionary_page_offset
@@ -156,7 +154,6 @@ print(json.dumps({'parent': peak_rss_bytes(), 'child': json.loads(child)}))
     child_result = result["child"]
     assert result["parent"] > 384 * _MIB
     assert child_result["before"] < 64 * _MIB
-    # Native RSS accounting is approximate; require the 96MiB peak to survive release.
     for phase in ("during", "after"):
         assert child_result[phase] < 192 * _MIB
         assert child_result[phase] - child_result["before"] > 80 * _MIB
@@ -193,8 +190,6 @@ def test_legacy_decoder_rss_scales_with_largest_region_not_total_payload(
             if projection == "content":
                 assert result["content_sha256"] == expected["content_sha256"]
             measured[projection].append(result)
-    # Allow native decode copies/allocator slack proportional to the fixed legacy G.
-    # A 16 MiB returned-batch budget cannot constrain a 32 MiB dictionary or page.
     for result in measured["content"]:
         assert result["peak_bytes"] - result["baseline_bytes"] < 6 * region + 32 * _MIB
     for result in measured["identity"]:

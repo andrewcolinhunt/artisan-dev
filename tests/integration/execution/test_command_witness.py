@@ -158,7 +158,6 @@ def test_prefix_check_preserves_existing_tools_and_literal_arguments(
     prefix = tmp_path / "tool prefix"
     (prefix / "bin").mkdir(parents=True)
     executable = prefix / "bin/tool"
-    # Multicall host utilities can reject the renamed executable's basename.
     executable.write_text("#!/bin/sh\nprintf '%s\\n' \"$@\"\n")
     executable.chmod(0o755)
     if symlink:
@@ -514,7 +513,6 @@ def test_external_preflight_rejects_malformed_evidence_before_tool(
     elif malformed == "extra":
         encoded += b"trailing"
     else:
-        # Replace the member after its occurrence in the receipt bytes.
         offset = encoded.rfind(b"nested/content.bin")
         encoded = (
             encoded[:offset]

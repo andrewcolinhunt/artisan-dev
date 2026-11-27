@@ -62,7 +62,6 @@ class TestGetCallerDirScript:
         with patch("artisan.utils.path.inspect.currentframe", return_value=frame):
             result = get_caller_dir()
 
-        # Falls through to cwd because the file doesn't exist
         assert result == Path.cwd().resolve()
 
     def test_non_py_extension_is_skipped(self, tmp_path):
@@ -129,7 +128,7 @@ class TestGetCallerDirJupyterHub:
         nb.touch()
 
         monkeypatch.setenv("JPY_SESSION_NAME", str(nb))
-        frame = _make_mock_frame({})  # No __file__ or __vsc_ipynb_file__
+        frame = _make_mock_frame({})
         with patch("artisan.utils.path.inspect.currentframe", return_value=frame):
             result = get_caller_dir()
 
@@ -309,7 +308,6 @@ class TestFindProjectRootEditableInstall:
         with patch("artisan.utils.path.get_caller_dir", return_value=tmp_path):
             result = find_project_root()
 
-        # The actual project root (editable install always works in dev)
         assert (result / "pyproject.toml").exists()
         assert (result / "src" / "artisan").is_dir()
 
@@ -332,8 +330,6 @@ class TestFindProjectRootEnvVar:
 
         monkeypatch.setenv("ARTISAN_ROOT", str(fake_root))
 
-        # Break Strategy 1: caller outside any project
-        # Break Strategy 2: fake __file__ so parents[3] has no pyproject.toml
         fake_file = tmp_path / "x" / "y" / "z" / "w" / "path.py"
         fake_file.parent.mkdir(parents=True)
         fake_file.touch()
@@ -350,7 +346,6 @@ class TestFindProjectRootEnvVar:
         no_toml.mkdir()
         monkeypatch.setenv("ARTISAN_ROOT", str(no_toml))
 
-        # Also break Strategy 2
         fake_file = tmp_path / "x" / "y" / "z" / "w" / "path.py"
         fake_file.parent.mkdir(parents=True)
         fake_file.touch()
@@ -418,11 +413,10 @@ class TestShardUri:
     def test_handles_short_hash(self):
         """shard_uri works with shorter hashes."""
         root = "/tmp"
-        run_id = "abc"  # Short hash
+        run_id = "abc"
 
         result = shard_uri(root, run_id)
 
-        # Uses first 4 chars: ab/c/abc
         assert result == f"{root}/ab/c/{run_id}"
 
 

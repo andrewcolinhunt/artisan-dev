@@ -13,18 +13,15 @@ import graphviz
 
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 
-# Shape and fill color for execution nodes (grey boxes)
 EXECUTION_STYLE = ("box", "lightgray")
 
-# Style for passthrough data nodes (null artifact type in output_types)
-PASSTHROUGH_STYLE = ("box", "#E0F0FF")  # Very light blue
+PASSTHROUGH_STYLE = ("box", "#E0F0FF")
 
-# Blue palette assigned by registration order
 _BLUE_PALETTE = [
-    "#87CEEB",  # Sky blue
-    "#B0E0E6",  # Powder blue
-    "#ADD8E6",  # Light blue
-    "#B0C4DE",  # Light steel blue
+    "#87CEEB",
+    "#B0E0E6",
+    "#ADD8E6",
+    "#B0C4DE",
     "#A8D0E6",
     "#90C8E8",
 ]

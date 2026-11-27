@@ -421,7 +421,6 @@ def test_real_pixi_preserves_pinned_run_activation_semantics_without_install(
     assert activated["WORKER_LITERAL"] == "spaces;colon"
     assert activated["WORKER_SCRIPT"] == "script literal"
     # Pixi 0.83 run retains incoming values removed by its activation script.
-    # Match the canonical launcher rather than inventing Modal-only shell rules.
     assert activated["WORKER_REMOVE"] == "remove me"
     assert not (tmp_path / ".pixi/envs/default").exists()
     assert manifest.read_text().startswith('[workspace]\nname="activation-only"')

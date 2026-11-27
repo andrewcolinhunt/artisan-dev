@@ -40,16 +40,13 @@ class CompositeDefinition(BaseModel):
 
     _registry: ClassVar[dict[str, type[CompositeDefinition]]] = {}
 
-    # ---------- Metadata ----------
     name: ClassVar[str] = ""
     version: ClassVar[str] = "1"
     cacheable: ClassVar[bool] = True
     description: ClassVar[str] = ""
 
-    # ---------- Inputs ----------
     inputs: ClassVar[dict[str, InputSpec]] = {}
 
-    # ---------- Outputs ----------
     outputs: ClassVar[dict[str, OutputSpec]] = {}
 
     runner_resources: RunnerResources = Field(
@@ -65,7 +62,6 @@ class CompositeDefinition(BaseModel):
     group_by: GroupByStrategy | None = None
     """Default root input pairing; nested composites expand without regrouping."""
 
-    # ---------- Compose ----------
     def compose(self, ctx: CompositeContext) -> None:
         """Wire internal operations together.
 
@@ -78,17 +74,14 @@ class CompositeDefinition(BaseModel):
         msg = f"{self.__class__.__name__} must implement compose()"
         raise NotImplementedError(msg)
 
-    # ---------- Validation ----------
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         """Validate subclass declarations, generate role docs, and register."""
         super().__pydantic_init_subclass__(**kwargs)
 
-        # Skip abstract classes (no name set)
         if not cls.name:
             return
 
-        # compose() must be overridden
         if cls.compose is CompositeDefinition.compose:
             msg = f"{cls.__name__} must implement compose() method"
             raise TypeError(msg)
@@ -96,10 +89,8 @@ class CompositeDefinition(BaseModel):
         validate_role_enums(cls)
         append_role_docs(cls)
 
-        # Register in composite registry
         CompositeDefinition._registry[cls.name] = cls
 
-    # ---------- Registry ----------
     @classmethod
     def get(cls, name: str) -> type[CompositeDefinition]:
         """Look up a composite class by name.

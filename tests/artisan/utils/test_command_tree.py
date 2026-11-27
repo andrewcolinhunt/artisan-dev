@@ -123,7 +123,7 @@ def test_killed_subreaper_cannot_claim_closed_group() -> None:
         command.launch(
             [sys.executable, "-c", "pass"], dict(os.environ), None, [null.fileno()] * 3
         )
-    os.kill(command.pid, signal.SIGKILL)  # Exact unreaped direct child, no PID reuse.
+    os.kill(command.pid, signal.SIGKILL)
     _settle(command)
     assert command.state == "unknown"
     assert command.reaped
@@ -168,8 +168,6 @@ def test_short_deadline_keeps_reaper_owned_and_unknown_sticky(tmp_path: Path) ->
     assert not command.reaped
     assert command.tree is not None
     assert command.tree.socket.fileno() >= 0
-    # The owner retains the actual helper; no kill at the caller's observation
-    # deadline may orphan the detached child. Late closure stays UNKNOWN.
     deadline = time.monotonic() + 5
     while not command.reaped and time.monotonic() < deadline:
         command.tick({command.pid: command.request_id})

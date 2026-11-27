@@ -58,13 +58,10 @@ class TestS3PipelineEndToEnd:
         )
         pipeline.finalize()
 
-        # Verify the Delta tables landed under the s3 bucket prefix.
         storage_options = env["storage"].delta_storage_options()
         index_uri = f"{env['delta_root']}/artifacts/index"
         index_df = pl.read_delta(index_uri, storage_options=storage_options)
 
-        # DataGenerator emits 2 csv artifacts; MetricCalculator emits
-        # 2 metric artifacts. Index is the union.
         assert index_df.height >= 4, (
             f"Expected ≥4 artifacts in index, got {index_df.height}"
         )
@@ -104,7 +101,6 @@ class TestS3PipelineEndToEnd:
         fs = env["fs"]
         uri_prefix = env["uri_prefix"]
 
-        # Seed two CSV files into the bucket as user "raw input".
         for i in range(2):
             stripped = f"{uri_prefix.split('://', 1)[1]}/raw/data_{i}.csv"
             with fs.open(stripped, "wb") as f:
@@ -124,7 +120,6 @@ class TestS3PipelineEndToEnd:
         result = pipeline.finalize()
         assert result["overall_success"]
 
-        # Verify two FileRefArtifacts landed with separate s3:// locations.
         storage_options = env["storage"].delta_storage_options()
         file_refs_uri = f"{env['delta_root']}/artifacts/file_refs"
         file_refs_df = pl.read_delta(file_refs_uri, storage_options=storage_options)
@@ -158,13 +153,11 @@ class TestS3PipelineEndToEnd:
         result = pipeline.finalize()
         assert result["overall_success"]
 
-        # Read the FileRefArtifact rows from Delta.
         storage_options = env["storage"].delta_storage_options()
         table_uri = f"{env['delta_root']}/artifacts/file_refs"
         df = pl.read_delta(table_uri, storage_options=storage_options)
         assert df.height == 2
 
-        # Locations must be cloud URIs and their bytes must live on MinIO.
         locations_uri = f"{env['delta_root']}/artifacts/locations"
         locations_df = pl.read_delta(locations_uri, storage_options=storage_options)
         file_locations = locations_df.join(
@@ -176,13 +169,11 @@ class TestS3PipelineEndToEnd:
             assert uri.startswith("s3://"), f"Expected cloud URI, got {uri!r}"
             assert fs.exists(uri), f"Artifact location {uri!r} is not readable"
 
-        # No new literal-colon leak from this run under the repo root.
-        # A pre-existing directory must not acquire new files during this run.
         repo_root = pathlib.Path(__file__).resolve().parents[2]
         leaked = repo_root / "s3:"
         if leaked.exists():
             import time
 
-            cutoff = time.time() - 600  # anything newer than 10 minutes ago
+            cutoff = time.time() - 600
             fresh = [p for p in leaked.rglob("*") if p.stat().st_mtime > cutoff]
             assert not fresh, f"Fresh literal-colon leak inside {leaked}: {fresh!r}"

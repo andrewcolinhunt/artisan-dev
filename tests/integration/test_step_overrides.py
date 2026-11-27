@@ -36,7 +36,6 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
         params={"count": 2, "seed": 42},
     )
 
-    # Step 1: scale_factor=2.0
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -48,7 +47,6 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
         },
     )
 
-    # Step 2: scale_factor=5.0
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -63,7 +61,6 @@ def test_param_override_produces_different_outputs(pipeline_env: dict[str, str])
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Different params → different artifact IDs
     step1_ids = set(get_execution_outputs(delta_root, 1, "dataset"))
     step2_ids = set(get_execution_outputs(delta_root, 2, "dataset"))
     assert step1_ids != step2_ids, (
@@ -89,7 +86,6 @@ def test_execution_override_batching(pipeline_env: dict[str, str]):
         params={"count": 6, "seed": 42},
     )
 
-    # Step 1: 3 artifacts per unit → ceil(6/3) = 2 executions
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -97,7 +93,6 @@ def test_execution_override_batching(pipeline_env: dict[str, str]):
         batch_strategy={"artifacts_per_unit": 3},
     )
 
-    # Step 2: 2 artifacts per unit → ceil(6/2) = 3 executions
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -111,7 +106,6 @@ def test_execution_override_batching(pipeline_env: dict[str, str]):
     assert count_executions_by_step(delta_root, 1) == 2
     assert count_executions_by_step(delta_root, 2) == 3
 
-    # Both produce 6 artifacts
     assert count_artifacts_by_step(delta_root, 1) == 6
     assert count_artifacts_by_step(delta_root, 2) == 6
 
@@ -132,7 +126,6 @@ def test_override_isolation(pipeline_env: dict[str, str]):
         params={"count": 4, "seed": 42},
     )
 
-    # Step 1: all 4 in a single batch
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -140,7 +133,6 @@ def test_override_isolation(pipeline_env: dict[str, str]):
         batch_strategy={"artifacts_per_unit": 4},
     )
 
-    # Step 2: default batching (artifacts_per_unit=1 for DataTransformer)
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},

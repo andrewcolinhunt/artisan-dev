@@ -203,8 +203,6 @@ def build_micro_graph(
     if max_step is not None:
         executions = executions.filter(pl.col("origin_step_number") <= max_step)
 
-        # A run-scoped graph uses current participation for the step boundary;
-        # cached artifacts retain their global origin, which may be any number.
         included_exec_ids = set(executions["execution_run_id"].to_list())
         exec_edges = exec_edges.filter(
             pl.col("execution_run_id").is_in(included_exec_ids)
@@ -264,8 +262,6 @@ def build_micro_graph(
             exec_by_step[step] = []
         exec_by_step[step].append(f"exec_{exec_id}")
 
-    # Add artifact nodes (grouped by ORIGIN step - where they were created)
-    # Artifacts stay in their original columns; passthrough edges point backward
     artifact_origin_step: dict[str, int] = {}
     for row in artifact_index.iter_rows(named=True):
         artifact_id = row["artifact_id"]
@@ -287,9 +283,6 @@ def build_micro_graph(
             artifacts_by_step[step] = []
         artifacts_by_step[step].append(f"art_{artifact_id}")
 
-    # Strict column ordering using anchor nodes and rank constraints
-    # Column order: exec_0 -> art_0 -> exec_1 -> art_1 -> exec_2 -> art_2 -> ...
-    # Always create art_N column for any step N that has outputs (even passthroughs)
     all_steps = sorted(
         set(exec_by_step.keys()) | set(artifacts_by_step.keys()) | steps_with_outputs
     )
@@ -298,18 +291,15 @@ def build_micro_graph(
     for step in all_steps:
         if step in exec_by_step:
             anchor_nodes.append(f"_anchor_exec_{step}")
-        # Create art column if step has artifacts OR has outputs (passthroughs)
         if step in artifacts_by_step or step in steps_with_outputs:
             anchor_nodes.append(f"_anchor_art_{step}")
 
     for anchor in anchor_nodes:
         graph.node(anchor, label="", width="0", height="0", style="invis")
 
-    # Link anchors with invisible edges to enforce column order
     for i in range(len(anchor_nodes) - 1):
         graph.edge(anchor_nodes[i], anchor_nodes[i + 1], style="invis")
 
-    # Group nodes into columns using rank=same with anchors
     # Anchors must be in the rank=same subgraph to enforce column ordering
     for step in all_steps:
         step_execs = exec_by_step.get(step, [])
@@ -328,7 +318,6 @@ def build_micro_graph(
                 for node_id in step_artifacts:
                     s.node(node_id)
 
-    # Use artifact origin step for column position (artifacts stay in origin columns)
     for row in exec_edges.iter_rows(named=True):
         exec_id = row["execution_run_id"]
         direction = row["direction"]
@@ -341,9 +330,6 @@ def build_micro_graph(
         art_step = artifact_origin_step.get(artifact_id, 0)
 
         if direction == "input":
-            # Artifact -> Execution (input edge)
-            # Column ordering: exec_N -> art_N, so if art_step >= exec_step,
-            # the artifact column comes AFTER the execution column (backward edge)
             if art_step >= exec_step:
                 graph.edge(
                     art_node,
@@ -374,7 +360,6 @@ def build_micro_graph(
         source_step = artifact_origin_step.get(source_id, 0)
         target_step = artifact_origin_step.get(target_id, 0)
 
-        # If source is in a later column than target, it's a backward edge
         if source_step > target_step:
             graph.edge(
                 f"art_{source_id}",
@@ -501,7 +486,6 @@ def render_micro_graph_steps(
 
     rendered_paths: list[str] = []
     for step in range(max_step + 1):
-        # Zero-pad step number for correct sorting
         filename = f"step_{step:02d}"
         output_path = os.path.join(output_dir, filename)
         rendered = render_micro_graph(

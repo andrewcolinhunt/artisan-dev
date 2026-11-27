@@ -157,7 +157,6 @@ class TestArtifactProvenanceEdge:
         assert hash(edge1) == hash(edge2)
         assert edge1 == edge2
 
-        # Can be used in sets
         edge_set = {edge1, edge2}
         assert len(edge_set) == 1
 
@@ -204,7 +203,7 @@ class TestArtifactProvenanceEdge:
             target_artifact_id="c" * 32,
             source_artifact_type="csv",
             target_artifact_type="metric",
-            source_role="different_role",  # Different role
+            source_role="different_role",
             target_role="score",
         )
 
@@ -311,15 +310,13 @@ class TestEdgeTypeDetection:
         """Test output->output edge (e.g., metric computed from output data)."""
         edge = ArtifactProvenanceEdge(
             execution_run_id="a" * 32,
-            source_artifact_id="b" * 32,  # Output data
-            target_artifact_id="c" * 32,  # Metric
+            source_artifact_id="b" * 32,
+            target_artifact_id="c" * 32,
             source_artifact_type="csv",
             target_artifact_type="metric",
             source_role="data",
             target_role="score",
         )
-        # This is an output->output edge, detected by checking if source
-        # is in execution outputs (via join), not from schema alone
         assert edge.source_artifact_type == "csv"
         assert edge.target_artifact_type == "metric"
 

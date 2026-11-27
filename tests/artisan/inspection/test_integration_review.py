@@ -146,7 +146,6 @@ def test_nested_request_errors_match_python_and_cli_before_bootstrap(
 def test_decode_json_object_handles_recursion_error(
     monkeypatch: pytest.MonkeyPatch, target: str
 ) -> None:
-    # Process-wide recursion limits can change when other tests import dependencies.
     failure = RecursionError(_PRIVATE)
     recurse = Mock(side_effect=failure)
     with monkeypatch.context() as patch:

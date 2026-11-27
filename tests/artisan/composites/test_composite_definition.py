@@ -12,10 +12,6 @@ from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def _make_valid_composite(
     name: str,
@@ -32,8 +28,6 @@ def _make_valid_composite(
             "result": OutputSpec(artifact_type="csv"),
         }
 
-    # Build class body as a string and exec it to get proper class syntax
-    # This avoids Pydantic issues with dynamically added attributes via type()
     input_roles = list(inputs.keys())
     output_roles = list(outputs.keys())
 
@@ -72,11 +66,6 @@ def _make_valid_composite(
     return ns[f"TestComposite_{name}"]
 
 
-# ---------------------------------------------------------------------------
-# Tests: Registration
-# ---------------------------------------------------------------------------
-
-
 class TestRegistry:
     def test_subclass_registered(self):
         cls = _make_valid_composite("test_reg_basic")
@@ -90,7 +79,6 @@ class TestRegistry:
         _make_valid_composite("test_reg_all")
         all_composites = CompositeDefinition.get_all()
         assert "test_reg_all" in all_composites
-        # Modifying returned dict doesn't affect registry
         all_composites.pop("test_reg_all")
         assert "test_reg_all" in CompositeDefinition.get_all()
 
@@ -100,11 +88,6 @@ class TestRegistry:
 
         _make_valid_composite("test_reg_separate")
         assert "test_reg_separate" not in OperationDefinition.get_all()
-
-
-# ---------------------------------------------------------------------------
-# Tests: Validation
-# ---------------------------------------------------------------------------
 
 
 class TestValidation:
@@ -221,11 +204,6 @@ class TestValidation:
         assert CompositeDefinition.get("test_generative") is GenerativeComposite
 
 
-# ---------------------------------------------------------------------------
-# Tests: Params pattern
-# ---------------------------------------------------------------------------
-
-
 class TestParams:
     def test_params_field(self):
         class ParamsComposite(CompositeDefinition):
@@ -280,21 +258,11 @@ class TestParams:
         assert instance.params.mode == "fast"
 
 
-# ---------------------------------------------------------------------------
-# Tests: Pydantic model behavior
-# ---------------------------------------------------------------------------
-
-
 class TestModelBehavior:
     def test_extra_fields_forbidden(self):
         cls = _make_valid_composite("test_extra_forbid")
         with pytest.raises(Exception):
             cls(unknown_field="value")
-
-
-# ---------------------------------------------------------------------------
-# Tests: Docstring generation
-# ---------------------------------------------------------------------------
 
 
 class TestDocs:

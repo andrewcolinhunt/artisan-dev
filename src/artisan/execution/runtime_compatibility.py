@@ -87,7 +87,6 @@ def _installed_metadata() -> tuple[DistributionMetadata, ...]:
         package = DistributionMetadata(
             name=distribution.metadata["Name"], version=distribution.version
         )
-        # Search paths have precedence; conflicting metadata within one root does not.
         root = Path(str(distribution.locate_file(""))).resolve()
         key = (package.name, root)
         previous = packages.get(key)

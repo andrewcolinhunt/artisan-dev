@@ -319,7 +319,6 @@ def load_evidence_export(destination: str | Path) -> EvidenceReport:
         value = decode_json_object(files["manifest.json"])
         _check_versions(value)
         manifest = EvidenceExportManifest.model_validate_json(files["manifest.json"])
-        # UTC timestamps may use either Z or +00:00 without changing their meaning.
         if encode_json(manifest) != encode_json(
             {**value, "exported_at": manifest.exported_at}
         ):

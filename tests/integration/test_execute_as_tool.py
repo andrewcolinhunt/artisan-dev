@@ -50,10 +50,8 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
     assert result["overall_success"], "Pipeline should complete successfully"
     assert count_artifacts_by_step(delta_root, 0) == 2
     assert count_artifacts_by_step(delta_root, 1) == 2, "one head per input"
-    # per-artifact dispatch: each input ran in its own subprocess
     assert count_executions_by_step(delta_root, 1) == 2
 
-    # the subprocess-run body truncated each CSV to header + 3 rows
     data = read_table(delta_root, "artifacts/csvs")
     heads = data.filter(pl.col("origin_step_number") == 1)
     assert heads.height == 2
@@ -64,7 +62,6 @@ def test_flag_op_runs_as_subprocess_in_pipeline(pipeline_env: dict[str, str]):
         lines = bytes(content).decode().strip().splitlines()
         assert len(lines) == 4, "header + 3 data rows"
 
-    # lineage: every head traces to a distinct step-0 source artifact
     head_ids = set(heads["artifact_id"].to_list())
     source_ids = set(
         data.filter(pl.col("origin_step_number") == 0)["artifact_id"].to_list()

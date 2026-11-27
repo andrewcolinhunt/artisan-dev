@@ -188,8 +188,6 @@ def _publish_receipt(root: Path, receipt: bytes) -> None:
 
 
 def _publish_receipt_exclusive(target: Path, receipt: bytes) -> None:
-    # Some externally owned filesystems support exclusive creation but no links.
-    # A partial receipt is left for explicit repair and never validates as complete.
     try:
         with target.open("xb") as stream:
             stream.write(receipt)

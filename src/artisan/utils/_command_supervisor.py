@@ -331,8 +331,6 @@ class Command:
         elif self.deadline is not None and now >= self.deadline:
             self.state = "unknown"
             self.observation_error = True
-            # Keep the exact reaper alive and owned after the observation deadline.
-            # Later cleanup cannot promote this outcome back to CLOSED.
 
     def register_watch(self) -> None:
         try:
@@ -386,8 +384,6 @@ class Command:
             if sig == signal.SIGKILL:
                 self.final_signal = True
             return
-        # A failed signal proves neither liveness nor closure. Exact reaping
-        # and subsequent positive group absence still determine the outcome.
         with suppress(ProcessLookupError, PermissionError):
             os.killpg(self.pid, sig)
         if sig == signal.SIGKILL:
@@ -436,7 +432,6 @@ class Command:
             self.reaped = True
             self._close_watch()
         if reserved.get(self.pid, self.request_id) != self.request_id:
-            # A different owned leader with this PID proves the old lifetime ended.
             self.state = "unknown" if self.observation_error else "closed"
             return
         if sys.platform == "linux":
@@ -957,7 +952,6 @@ class Supervisor:
         if not isinstance(identity, str) or not identity or len(identity) > 100:
             msg = "Invalid invocation identity"
             raise ValueError(msg)
-        # A worker bootstrap remains an ancestor after direct launch admission ends.
         allowed = (
             self.admission
             and not parent.closed

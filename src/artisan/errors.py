@@ -138,9 +138,6 @@ class ArtisanError(Exception):
         Returns:
             A dict shaped like the envelope, with an optional ``cause`` key.
         """
-        # Imported lazily: ``artisan.utils.traceback`` pulls the ``artisan.utils``
-        # package init, which re-exports ``external_tools`` (a module that imports
-        # this one) — a module-level import here would form a cycle.
         from artisan.utils.traceback import format_error
 
         data = self.envelope.model_dump(exclude_none=False)
@@ -166,7 +163,6 @@ class ErrorCode:
     OP_EXECUTE_FAILED = "op_execute_failed"
     PARAM_TYPE_MISMATCH = "param_type_mismatch"
 
-    # validation — bounded inspection and declared outcome criteria
     UNKNOWN_INSPECTION = "unknown_inspection"
     INVALID_EVIDENCE_CURSOR = "invalid_evidence_cursor"
     EVIDENCE_VIEW_CHANGED = "evidence_view_changed"
@@ -182,7 +178,6 @@ class ErrorCode:
     EVIDENCE_EXPORT_INTEGRITY_FAILED = "evidence_export_integrity_failed"
     EVIDENCE_EXPORT_FAILED = "evidence_export_failed"
 
-    # validation — single-execution replay preflight
     REPLAY_EXECUTION_NOT_FOUND = "replay_execution_not_found"
     REPLAY_EVIDENCE_UNAVAILABLE = "replay_evidence_unavailable"
     REPLAY_DEPENDENCY_UNAVAILABLE = "replay_dependency_unavailable"
@@ -190,7 +185,6 @@ class ErrorCode:
     REPLAY_REPLACEMENT_REQUIRED = "replay_replacement_required"
     REPLAY_CONFIGURATION_INVALID = "replay_configuration_invalid"
 
-    # config/io — machine-readable store APIs
     DELTA_ROOT_UNSET = "delta_root_unset"
     STORE_NOT_FOUND = "store_not_found"
     ARTIFACT_INTEGRITY_FAILED = "artifact_integrity_failed"
@@ -200,11 +194,9 @@ class ErrorCode:
     INCOMPATIBLE_STORE = "incompatible_store"
     APPLICATION_REGISTRATION_FAILED = "application_registration_failed"
 
-    # io — worker-side input resolution / output delivery (tool-endpoint wire)
     INPUT_RESOLUTION_FAILED = "input_resolution_failed"
     OUTPUT_DELIVERY_FAILED = "output_delivery_failed"
 
-    # validation — execution-time contract checks (domain-exception re-parenting)
     ARTIFACT_VALIDATION_FAILED = "artifact_validation_failed"
     LINEAGE_INCOMPLETE = "lineage_incomplete"
     LINEAGE_INTEGRITY_FAILED = "lineage_integrity_failed"

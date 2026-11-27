@@ -108,7 +108,6 @@ def publish_admission(
     assert_retained_store(delta_root, fs)
     attempt = AssignmentAttempt.model_validate(attempt)
     boundary = BoundaryProjection.model_validate(boundary)
-    # Validate the record's scientific shape before copying any payload.
     AdmissionRecord(
         attempt=attempt,
         step_number=step_number,
@@ -479,8 +478,6 @@ def _manage_source(
     fs: AbstractFileSystem,
     artifact_fs: AbstractFileSystem | None,
 ) -> tuple[ManagedCarrier, str]:
-    # A managed file already has an immutable content-addressed location. Reading
-    # its bytes is required; another full carrier copy is not.
     name = posixpath.basename(source)
     digest = name.removesuffix(".bin")
     if (

@@ -62,7 +62,7 @@ def test_hundred_csvs_publish_one_complete_curator_execution(
             result.step_run_id, plan.plan_digest
         )
         assert len(accepted.output("csv")) == 100
-        assert len(accepted.artifacts) == 200  # Input FileRefs remain retained support.
+        assert len(accepted.artifacts) == 200
         assert accepted.result.total_count == accepted.result.succeeded_count == 1
 
 

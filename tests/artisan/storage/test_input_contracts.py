@@ -70,7 +70,6 @@ def test_invalid_shared_partition_fails_publication_and_capture(
             files_root=files_root,
             fs=fs,
         )
-    # A self-consistent immutable record still cannot authorize invalid membership.
     record = AdmissionRecord(
         attempt=attempt, step_number=0, recipe=recipe, boundary=boundary, tables=()
     )

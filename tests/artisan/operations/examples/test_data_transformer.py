@@ -40,7 +40,6 @@ class TestDataTransformer:
         outputs = result.artifacts["dataset"]
         assert len(outputs) == 1
 
-        # Read the output file
         out_content = outputs[0].content
         out_path = str(tmp_path / "check.csv")
         with open(out_path, "wb") as fh:
@@ -70,7 +69,7 @@ class TestDataTransformer:
 
         for orig, trans in zip(originals, transformed, strict=True):
             diff = abs(float(trans["x"]) - float(orig["x"]))
-            assert diff <= 0.5001  # noise within amplitude
+            assert diff <= 0.5001
 
     def test_variants(self, tmp_path: Path):
         path = _write_input(tmp_path, rows=2, seed=1)
@@ -126,7 +125,6 @@ class TestDataTransformer:
         result = run_operation_lifecycle(
             op, inputs={"dataset": path}, output_dir=tmp_path / "output"
         )
-        # With scale=1 and noise=0, numeric values should be unchanged
         originals = _read_csv(path)
         out_path = str(tmp_path / "check.csv")
         with open(out_path, "wb") as fh:

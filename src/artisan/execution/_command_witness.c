@@ -207,7 +207,6 @@ static void execute(char **command, const char *prefix) {
     execv(executable, command);
 }
 
-/* The existing command owner controls the process group and cancellation. */
 int main(int argc, char **argv) {
     if (argc < 4 || strlen(argv[2]) != 32) return 125;
     for (const char *p = argv[2]; *p; ++p)

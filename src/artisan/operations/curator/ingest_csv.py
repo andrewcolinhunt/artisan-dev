@@ -23,12 +23,10 @@ if TYPE_CHECKING:
 class IngestCSV(IngestFiles):
     """Emit one CSV draft at a time within a single all-or-nothing execution."""
 
-    # ---------- Metadata ----------
     name = "ingest_csv"
     version = "2"
     description = "Import files into the provenance graph as CSV artifacts"
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         csv = auto()
 
@@ -40,17 +38,14 @@ class IngestCSV(IngestFiles):
         ),
     }
 
-    # ---------- Resources ----------
     runner_resources: RunnerResources = RunnerResources(
         cpus=1, memory_gb=4, gpus=0, time_limit="00:10:00"
     )
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(
         artifacts_per_unit=1, units_per_worker=1, job_name="ingest"
     )
 
-    # ---------- Lifecycle ----------
     def convert_file(
         self,
         file_ref: FileRefArtifact,

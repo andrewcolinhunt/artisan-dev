@@ -190,7 +190,6 @@ def test_cancel_event_reaches_lifecycle_router(pipeline_env: dict[str, str]):
     summary = pipeline.finalize()
     elapsed = time.monotonic() - start
 
-    # Should finish much faster than 30s — cancel interrupted the wait
     assert elapsed < 15.0
     assert "pipeline_name" in summary
 

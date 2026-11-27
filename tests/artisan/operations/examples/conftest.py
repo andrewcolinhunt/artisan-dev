@@ -24,7 +24,7 @@ from artisan.schemas import (
 )
 from artisan.schemas.artifact import Artifact
 from artisan.schemas.artifact.csv import (
-    CSVArtifact,  # noqa: F401 (registers CSVTypeDef)
+    CSVArtifact,  # noqa: F401
 )
 from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.execution.storage_config import StorageConfig

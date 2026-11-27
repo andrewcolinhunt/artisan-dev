@@ -451,8 +451,3 @@ def test_build_details_config_params() -> None:
 
 def test_build_details_unknown_type() -> None:
     assert _build_details("unknown", {}) == "-"
-
-
-# ======================================================================
-# storage_options forwarding tests
-# ======================================================================

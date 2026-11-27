@@ -114,7 +114,6 @@ class ArtifactResult(BaseModel):
             ValueError: If a role, source list, or reference is invalid.
             TypeError: If the artifact is not an Artifact.
         """
-        # Untyped callers still need the public boundary's runtime validation.
         if not isinstance(cast(object, role), str) or not role:
             msg = "Output role must be a nonempty string"
             raise ValueError(msg)
@@ -246,5 +245,4 @@ class ArtifactStreamResult(BaseModel):
     metadata: dict[str, Any] = Field(default_factory=dict)
 
 
-# Union of supported curator-operation result models.
 CuratorResult = ArtifactResult | ArtifactStreamResult | PassthroughResult

@@ -94,7 +94,6 @@ def execute(tmp_path, monkeypatch):
             "replay_of_execution_run_id": None,
         },
     )
-    # Exercise multiple completed chunks with small test data.
     original = StreamRecorder.__init__
     monkeypatch.setattr(
         StreamRecorder,

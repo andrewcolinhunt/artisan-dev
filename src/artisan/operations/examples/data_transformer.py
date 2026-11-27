@@ -94,9 +94,9 @@ class DataTransformer(OperationDefinition):
 
     params: Params = Params()
 
-    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]
 
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer")  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer")  # type: ignore[call-arg]
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Carry each dataset's path, identity, and human name together."""

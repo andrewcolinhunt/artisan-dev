@@ -18,7 +18,6 @@ class TestFormatError:
 
     def test_truncates_long_traceback(self) -> None:
         """Exception with >50-line traceback gets truncated with prefix."""
-        # Build a chain of distinct frames so Python can't collapse them
         funcs: dict[str, object] = {}
         for i in range(60):
             if i == 0:
@@ -33,7 +32,7 @@ class TestFormatError:
 
         lines = result.splitlines()
         assert lines[0] == "[truncated]"
-        assert len(lines) == 51  # [truncated] + 50 lines
+        assert len(lines) == 51
 
     def test_chained_exceptions(self) -> None:
         """Chained exception via 'from' includes cause."""

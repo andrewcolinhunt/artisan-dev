@@ -427,7 +427,6 @@ class _Associations:
                 break
             occurrence = self.occurrence(current)
             if isinstance(current, AcceptedCuratorOccurrence):
-                # Content-selection source sets are ancestry, never aliases.
                 self.canonical[current] = current
                 break
             projection = self.projections[current.delivery_id][1]

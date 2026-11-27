@@ -423,7 +423,6 @@ class ModalPackOwner:
         try:
             self._record_observation(phase, error=error, outcome=outcome)
         except Exception:
-            # Never invoke the failed formatter/sanitizer again on this path.
             with self._lock:
                 self._diagnostic_write_error = "Modal diagnostic observation failed"
 

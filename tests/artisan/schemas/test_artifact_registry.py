@@ -16,8 +16,6 @@ from artisan.schemas.artifact.registry import ArtifactTypeDef
 from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.utils.hashing import canonical_json_bytes
 
-# --- Mock model for testing ---
-
 
 def _model_for(key: str) -> type[Artifact]:
     """Build a minimal inline Artifact model for a registry key."""
@@ -40,9 +38,6 @@ class _BadModel:
     """Model missing required interface."""
 
 
-# --- Fixtures ---
-
-
 @pytest.fixture(autouse=True)
 def _clean_registry():
     """Remove test-registered types after each test."""
@@ -54,7 +49,6 @@ def _clean_registry():
     ArtifactTypeDef._registry.update(original_registry)
     ArtifactTypes._registry.clear()
     ArtifactTypes._registry.update(original_types_registry)
-    # Clean up dynamic attributes
     for attr in set(dir(ArtifactTypes)) - original_attrs:
         with contextlib.suppress(AttributeError):
             delattr(ArtifactTypes, attr)
@@ -121,9 +115,6 @@ def test_binary_integrity_snapshots_have_bounded_allocation(
     assert peak < 1024 * 1024
 
 
-# --- Tests ---
-
-
 class TestRegistration:
     """Auto-registration via __init_subclass__."""
 
@@ -139,7 +130,7 @@ class TestRegistration:
 
     def test_abstract_subclass_not_registered(self) -> None:
         class AbstractDef(ArtifactTypeDef):
-            pass  # No key set
+            pass
 
         assert "_abstract" not in ArtifactTypeDef._registry
 

@@ -54,8 +54,6 @@ class RedeliveryRunner(ControlledRunner):
             for handle in handles:
                 handle.result(timeout=max(0, deadline - time.monotonic()))
             wait_closed(handles, deadline)
-            # Qualification inspects the already-owned live request only. Never
-            # persist its payload, capabilities or reply context in a receipt.
             request = first._request
             assert isinstance(request, ModalPack)
             second = ModalPackOwner(

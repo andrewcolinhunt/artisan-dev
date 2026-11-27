@@ -70,13 +70,6 @@ def _assert_one_failure(
     return row
 
 
-# ===========================================================================
-# Creator, CONTINUE — one representative per phase / shape (already-working).
-# code_populated: ArtisanError and command-op failures carry an envelope;
-# a plain ValueError or a success=False return does not.
-# ===========================================================================
-
-
 @pytest.mark.parametrize(
     ("op", "code_populated"),
     [
@@ -106,11 +99,6 @@ def test_creator_continue_records_failure(
     _assert_one_failure(
         pipeline_env, operation=op.name, step=0, code_populated=code_populated
     )
-
-
-# ===========================================================================
-# FAIL_FAST commits the failure record before aborting.
-# ===========================================================================
 
 
 def test_creator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> None:
@@ -164,14 +152,12 @@ def test_creator_partial_keeps_sibling_success(
     assert step1.status is expected
     pipeline.finalize()
 
-    # Exactly one failure row for the transformer step, with a log.
     _assert_one_failure(
         pipeline_env,
         operation="failing_transformer",
         step=1,
         code_populated=False,
     )
-    # The sibling success is committed too (not stranded).
     assert get_successful_executions(delta_root, 1) == 1
     assert get_failed_executions(delta_root, 1) == 1
 
@@ -202,11 +188,6 @@ def test_unqualified_command_exit_does_not_claim_scientific_failure(
     assert decision is not None
     assert decision.cancelled
     assert decision.winner is None
-
-
-# ===========================================================================
-# Curator lifecycle — CONTINUE representatives + FAIL_FAST guard.
-# ===========================================================================
 
 
 @pytest.mark.parametrize(
@@ -250,11 +231,6 @@ def test_curator_fail_fast_commits_failure_row(pipeline_env: dict[str, str]) -> 
         step=1,
         code_populated=False,
     )
-
-
-# ===========================================================================
-# Composite lifecycle — the internal step's failure is readable.
-# ===========================================================================
 
 
 @pytest.mark.parametrize(

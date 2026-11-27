@@ -71,8 +71,8 @@ class AppendableGenerator(OperationDefinition):
         )
 
     params: Params = Params()
-    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]  # pydantic defaults
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="appendable_generator")  # type: ignore[call-arg]  # pydantic defaults
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:30:00")  # type: ignore[call-arg]
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="appendable_generator")  # type: ignore[call-arg]
 
     def execute_function(self, inputs: ExecuteInput) -> dict[str, Any]:
         """Write JSONL file(s) with random records to files_dir."""
@@ -83,7 +83,6 @@ class AppendableGenerator(OperationDefinition):
         rng = random.Random(self.params.seed)
         num_files = self.params.num_files
 
-        # Generate all records
         all_records: list[dict[str, Any]] = []
         for i in range(self.params.count):
             all_records.append(
@@ -96,7 +95,6 @@ class AppendableGenerator(OperationDefinition):
                 }
             )
 
-        # Split records across files (remainder goes to early files)
         base, remainder = divmod(self.params.count, num_files)
         records_meta: list[dict[str, Any]] = []
         offset = 0

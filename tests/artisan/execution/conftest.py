@@ -72,7 +72,6 @@ def metric_artifact_2():
 @pytest.fixture
 def file_ref_artifact(tmp_path):
     """Create a test FileRefArtifact with actual file."""
-    # Create the file ref
     file_path = tmp_path / "external" / "input.dat"
     file_path.parent.mkdir(parents=True, exist_ok=True)
     content = b"ATOM      1  CA  GLY A   1       1.000   2.000   3.000  1.00  0.00           C\n"

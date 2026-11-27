@@ -47,7 +47,7 @@ class TestRunnerResources:
         rc = RunnerResources()
         updated = rc.model_copy(update={"memory_gb": 64})
         assert updated.memory_gb == 64
-        assert rc.memory_gb == 4  # original unchanged
+        assert rc.memory_gb == 4
 
     def test_round_trip(self):
         rc = RunnerResources(cpus=4, gpus=1, memory_gb=16)

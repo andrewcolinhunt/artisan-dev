@@ -89,7 +89,6 @@ class TestOpRun:
 
         assert rc == 0
         assert (tmp_path / "marker.txt").read_text() == "from-params"
-        # the runner's log tempfile lives outside execute_dir
         assert [p.name for p in tmp_path.iterdir()] == ["marker.txt"]
 
     def test_removes_log_tempfile(self, tmp_path, monkeypatch):
@@ -241,8 +240,8 @@ class TestOpList:
         assert rc == 0
         payload = json.loads(capsys.readouterr().out)
         names = [item["name"] for item in payload["items"]]
-        assert "filter" in names  # builtin curator
-        assert "cli_runner_op_test" in names  # registered by this module
+        assert "filter" in names
+        assert "cli_runner_op_test" in names
 
     def test_kind_filter(self, capsys):
         rc = main(["op", "list", "--kind", "curator", "--json"])
@@ -317,7 +316,7 @@ class TestRuns:
         by_id = {item["pipeline_run_id"]: item for item in payload["items"]}
         assert set(by_id) == {"run-a", "run-b"}
         assert by_id["run-a"]["last_status"] == "skipped"
-        assert by_id["run-a"]["started_at"]  # datetime serialized via default=str
+        assert by_id["run-a"]["started_at"]
 
     def test_env_var_fallback(self, tmp_path, capsys, monkeypatch):
         _seed_steps(tmp_path, ["run-a"])

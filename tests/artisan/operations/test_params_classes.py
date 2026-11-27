@@ -17,10 +17,6 @@ from artisan.operations.examples.data_generator import DataGenerator
 from artisan.operations.examples.data_transformer import DataTransformer
 from artisan.operations.examples.data_transformer_config import DataTransformerConfig
 
-# ---------------------------------------------------------------------------
-# FilterParams
-# ---------------------------------------------------------------------------
-
 
 class TestFilterParams:
     """Tests for FilterParams."""
@@ -55,11 +51,6 @@ class TestFilterParams:
         assert restored == params
 
 
-# ---------------------------------------------------------------------------
-# DataGenerator.Params
-# ---------------------------------------------------------------------------
-
-
 class TestDataGeneratorParams:
     """Tests for DataGenerator.Params."""
 
@@ -78,11 +69,6 @@ class TestDataGeneratorParams:
     def test_count_ge_1(self) -> None:
         with pytest.raises(ValidationError):
             DataGenerator.Params(count=0)
-
-
-# ---------------------------------------------------------------------------
-# DataTransformer.Params
-# ---------------------------------------------------------------------------
 
 
 class TestDataTransformerParams:
@@ -112,11 +98,6 @@ class TestDataTransformerParams:
     def test_variants_ge_1(self) -> None:
         with pytest.raises(ValidationError):
             DataTransformer.Params(variants=0)
-
-
-# ---------------------------------------------------------------------------
-# DataTransformerConfig.Params
-# ---------------------------------------------------------------------------
 
 
 class TestDataTransformerConfigParams:

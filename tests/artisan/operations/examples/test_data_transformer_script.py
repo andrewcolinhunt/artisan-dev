@@ -34,7 +34,6 @@ def _setup_grouped_inputs(
     input_dir = tmp_path / "materialized"
     input_dir.mkdir(parents=True)
 
-    # Create and materialize a data artifact
     csv_content = make_csv(rows=3, seed=1)
     data_path = str(input_dir / "dataset_00000.csv")
     with open(data_path, "wb") as fh:
@@ -48,7 +47,6 @@ def _setup_grouped_inputs(
     data_artifact.finalize()
     data_artifact = data_artifact.model_copy(update={"materialized_path": data_path})
 
-    # Create config referencing the data artifact
     config_content = {
         "input": data_path,
         "scale_factor": scale_factor,
@@ -62,7 +60,6 @@ def _setup_grouped_inputs(
     )
     config_artifact.finalize()
 
-    # Materialize config
     config_path = str(input_dir / "dataset_00000_config_0.json")
     with open(config_path, "w") as fh:
         fh.write(json.dumps(config_content, indent=2))
@@ -205,7 +202,6 @@ class TestDataTransformerScript:
         ]
         assert len(output_files) == 1
 
-        # Verify scale was applied
         with open(data_art.materialized_path) as f:
             original = list(csv.DictReader(f))
         with open(output_files[0]) as f:
@@ -236,7 +232,6 @@ class TestDataTransformerScript:
             for f in glob.glob(os.path.join(execute_dir, "**", "*.csv"), recursive=True)
             if os.path.isfile(f)
         ]
-        # Distinct configs may share a human name; their files must not collide.
         assert (
             os.path.basename(output_files[0])
             == f"{config_art.artifact_id}_variant_0.csv"

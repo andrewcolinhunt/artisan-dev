@@ -24,78 +24,56 @@ from artisan.errors import ApplicationRegistrationError, StoreIntegrityError
 from artisan.schemas.enums import TablePath
 from artisan.storage.core.projection_schemas import PROJECTION_TABLES_BY_PATH
 
-# Lightweight execution log with success/error/timestamps. Stores
-# execution metadata only; input/output edges live in the
-# execution_edges table.
-
-# Note on nullability: Polars DataFrames allow null values by default for all
-# column types. Fields like timestamp_end, error, and metadata may contain nulls.
-
 EXECUTIONS_SCHEMA = {
-    "execution_run_id": pl.String,  # PK - unique per execution attempt
-    "execution_spec_id": pl.String,  # Deterministic cache key
-    "step_run_id": pl.String,  # Links execution to step attempt (nullable)
-    "origin_step_number": pl.Int32,  # Partition key
-    "operation_name": pl.String,  # From OperationDefinition.name
-    "params": pl.String,  # JSON - instantiated params with sensitive values redacted
-    "user_overrides": pl.String,  # JSON - user overrides with sensitive values redacted
-    "timestamp_start": pl.Datetime("us", "UTC"),  # Execution start (microseconds, UTC)
-    "timestamp_end": pl.Datetime(
-        "us", "UTC"
-    ),  # Execution end (microseconds, UTC); nullable
+    "execution_run_id": pl.String,
+    "execution_spec_id": pl.String,
+    "step_run_id": pl.String,
+    "origin_step_number": pl.Int32,
+    "operation_name": pl.String,
+    "params": pl.String,
+    "user_overrides": pl.String,
+    "timestamp_start": pl.Datetime("us", "UTC"),
+    "timestamp_end": pl.Datetime("us", "UTC"),
     "source_worker": pl.Int32,
-    "compute_backend": pl.String,  # Resolved step-runner name
+    "compute_backend": pl.String,
     "success": pl.Boolean,
-    "error": pl.String,  # Error message if failed (row-level)
-    "error_envelope": pl.String,  # JSON - structured ArtisanError envelope (nullable)
-    "tool_output": pl.String,  # Captured stdout+stderr from external command
-    "worker_log": pl.String,  # Provider-captured worker stdout+stderr
-    "command_recording": pl.String,  # JSON - typed command evidence and gaps
-    "replay_snapshot": pl.String,  # JSON - typed execution reconstruction evidence
-    "replay_of_execution_run_id": pl.String,  # Diagnostic source; null for normal work
-    "metadata": pl.String,  # JSON - additional data
+    "error": pl.String,
+    "error_envelope": pl.String,
+    "tool_output": pl.String,
+    "worker_log": pl.String,
+    "command_recording": pl.String,
+    "replay_snapshot": pl.String,
+    "replay_of_execution_run_id": pl.String,
+    "metadata": pl.String,
 }
 
-# Normalized input/output edges for execution provenance.
-# One row per edge (input or output artifact), which keeps queries
-# simple and avoids array columns in the executions table.
 
 EXECUTION_EDGES_SCHEMA = {
-    "execution_run_id": pl.String,  # FK to executions
-    "direction": pl.String,  # "input" or "output"
+    "execution_run_id": pl.String,
+    "direction": pl.String,
     "role": pl.String,
     "artifact_id": pl.String,
 }
 
-# Directed source->target derivation edges for artifact provenance.
-# This is the entity-centric provenance table (vs activity-centric executions).
-#
-# Terminology: Uses source/target (graph-centric) for artifact provenance,
-# distinct from inputs/outputs (operation-centric) in executions.
-#
-# Declared parent sets: Edges sharing group_id and target_artifact_id belong
-# to one explicit derivation. group_id hashes unique typed parents and roles;
-# it is null for a single unique parent. Dispatch groups do not supply ancestry.
 
 ARTIFACT_EDGES_SCHEMA = {
-    "execution_run_id": pl.String,  # Which execution established this edge
-    "source_artifact_id": pl.String,  # Source artifact (derivation origin)
-    "target_artifact_id": pl.String,  # Target artifact (derived)
-    "source_artifact_type": pl.String,  # Artifact type of source (denormalized)
-    "target_artifact_type": pl.String,  # Artifact type of target (denormalized)
-    "source_role": pl.String,  # Role name of source artifact
-    "target_role": pl.String,  # Role name of target artifact
-    "group_id": pl.String,  # Links jointly-necessary input edges (nullable)
-    "step_boundary": pl.Boolean,  # True = crosses step boundary, False = composite-internal
+    "execution_run_id": pl.String,
+    "source_artifact_id": pl.String,
+    "target_artifact_id": pl.String,
+    "source_artifact_type": pl.String,
+    "target_artifact_type": pl.String,
+    "source_role": pl.String,
+    "target_role": pl.String,
+    "group_id": pl.String,
+    "step_boundary": pl.Boolean,
 }
 
-# Global type and origin index; external URIs live in artifact_locations.
 
 ARTIFACT_INDEX_SCHEMA = {
-    "artifact_id": pl.String,  # PK
-    "artifact_type": pl.String,  # csv, metric, file_ref, config
-    "origin_step_number": pl.Int32,  # Step of the first committed artifact row
-    "metadata": pl.String,  # JSON - additional data
+    "artifact_id": pl.String,
+    "artifact_type": pl.String,
+    "origin_step_number": pl.Int32,
+    "metadata": pl.String,
 }
 
 ARTIFACT_LOCATIONS_SCHEMA = {
@@ -103,20 +81,12 @@ ARTIFACT_LOCATIONS_SCHEMA = {
     "uri": pl.String,
 }
 
-# Minimal relation between a current logical step and an execution accepted
-# from cache. Every other fact is derived from steps, executions, and edges.
 
 CACHE_REUSE_SCHEMA = {
     "current_step_run_id": pl.String,
     "cached_execution_run_id": pl.String,
 }
 
-# Append-only event log of step state transitions.
-# Snapshots are ordered by state_sequence. The unique latest authoritative
-# snapshot is the lifecycle source of truth for one step attempt.
-# Not partitioned (small table, few rows per step per run).
-# StepTracker writes lifecycle events directly; commit-owned result snapshots
-# pass through staging and become visible only at logical completion.
 
 STEPS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "step_run_id": pl.String,
@@ -157,12 +127,7 @@ LOGICAL_COMMITS_SCHEMA: dict[str, DataType | DataTypeClass] = {
     "abandon_reason": pl.String,
 }
 
-# Mapping from TablePath to schema for framework tables only.
-# Artifact content table schemas are managed by ArtifactTypeDef.
 
-# Schemas use Polars DataType classes (e.g. ``pl.String``) as well as
-# instances (e.g. ``pl.Datetime(...)``), so the value type is widened to
-# ``Any`` rather than ``pl.DataType``.
 FRAMEWORK_SCHEMAS: dict[TablePath, dict[str, Any]] = {
     TablePath.EXECUTIONS: EXECUTIONS_SCHEMA,
     TablePath.EXECUTION_EDGES: EXECUTION_EDGES_SCHEMA,
@@ -204,7 +169,6 @@ NATURAL_KEYS: dict[TablePath, tuple[str, ...]] = {
     TablePath.LOGICAL_COMMITS: ("logical_commit_id",),
 }
 
-# Framework tables without origin-step partitioning.
 NON_PARTITIONED_TABLES: frozenset[TablePath] = frozenset(
     {
         TablePath.ARTIFACT_INDEX,

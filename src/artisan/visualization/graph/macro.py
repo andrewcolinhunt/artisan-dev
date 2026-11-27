@@ -204,8 +204,6 @@ def _build_macro_graph(steps_df: pl.DataFrame) -> graphviz.Digraph:
                 )
             graph.edge(data_node_id, exec_node_id)
 
-    # Strict column ordering using anchor nodes (same pattern as micro)
-    # Column order: exec_0 → data_0 → exec_1 → data_1 → ...
     anchor_nodes: list[str] = []
     for step_num in all_steps:
         anchor_nodes.append(f"_anchor_exec_{step_num}")

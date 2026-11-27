@@ -205,7 +205,7 @@ class StepResultBuilder:
 
     step_name: str
     step_number: int
-    operation_outputs: dict[str, str | None]  # role -> artifact_type from outputs
+    operation_outputs: dict[str, str | None]
     step_run_id: str | None = None
 
     _total_count: int = 0

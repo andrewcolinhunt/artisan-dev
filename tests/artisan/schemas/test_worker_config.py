@@ -87,7 +87,7 @@ class TestWorkerConfigFilesRoot:
             env.files_root = str(tmp_path / "other")  # type: ignore[misc]
             pytest.fail("Should have raised")
         except Exception:
-            pass  # Expected: ValidationError on frozen model
+            pass
 
 
 class TestWorkerConfig:
@@ -110,5 +110,4 @@ class TestWorkerConfig:
             WorkerConfig(
                 delta_root=str(tmp_path / "delta"),
                 working_root=str(tmp_path / "working"),
-                # missing staging_root
             )

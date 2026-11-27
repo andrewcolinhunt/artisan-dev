@@ -419,7 +419,6 @@ def _hydrate_external(content: RegisteredContent, ids: set[str]) -> None:
 
 def _diagnostic_member(member: FrozenMember) -> object:
     if isinstance(member, OutputReference):
-        # Lifecycle rows belong to this store; omit locators for portable publication.
         return {
             "step_run_id": member.source.step_run_id,
             "role": member.role,

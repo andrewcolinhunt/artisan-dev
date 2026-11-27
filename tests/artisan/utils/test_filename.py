@@ -136,7 +136,6 @@ class TestStripExtensionsEdgeCases:
         assert strip_extensions("file..txt") == "file."
 
     def test_should_handle_trailing_dot(self):
-        # A trailing dot is not an extension when stripping all extensions.
         assert strip_extensions("file.") == "file."
 
     def test_should_handle_numeric_filename(self):
@@ -168,7 +167,6 @@ class TestStripExtensionsCombined:
             strip_all=False,
             suffixes_to_strip=["_refined"],
         )
-        # The remaining .dat extension prevents _refined from matching.
         assert result == "sample_refined.dat"
 
     def test_should_work_with_strip_all_true_and_suffixes(self):

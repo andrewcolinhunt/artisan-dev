@@ -62,10 +62,6 @@ def test_csv_generator_invalidates_cache_without_input_artifacts() -> None:
     )
 
 
-# ---------------------------------------------------------------------------
-# Step spec hashes
-# ---------------------------------------------------------------------------
-
 RECORDED_STEP_HASHES = [
     pytest.param(
         {

@@ -62,7 +62,6 @@ class TestListRuns:
         runs = list_runs(pipeline_env["delta"])
         assert len(runs) == 3
 
-        # Columns documented on list_runs / StepTracker.list_runs.
         expected_cols = {
             "pipeline_run_id",
             "step_count",
@@ -72,7 +71,6 @@ class TestListRuns:
         }
         assert expected_cols.issubset(set(runs.columns))
 
-        # Documented ordering — most-recent-first by started_at.
         started_at = runs["started_at"].to_list()
         assert started_at == sorted(started_at, reverse=True)
 

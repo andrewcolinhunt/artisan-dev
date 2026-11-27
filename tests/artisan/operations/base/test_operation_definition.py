@@ -236,7 +236,7 @@ class TestOperationDefinitionValidation:
     def test_should_require_positional_params(self):
         """Should require positional parameters."""
         with pytest.raises(ValidationError):
-            PositionalOperation()  # Missing required input_file and output_file
+            PositionalOperation()
 
     def test_should_accept_required_params(self):
         """Should accept required parameters."""
@@ -574,7 +574,6 @@ class TestOperationDefinitionExecute:
         op = SimpleOperation(params=SimpleOperation.Params(count=10, label="test"))
         result = op.execute_function(ExecuteInput(inputs={}, execute_dir=str(tmp_path)))
 
-        # The implementation accesses self.params.count.
         assert result["count"] == 10
 
 
@@ -591,7 +590,6 @@ class TestOperationDefinitionModelDump:
             "label": "default",
             "verbose": True,
         }
-        # Base class sub-model fields are also present
         assert "runner_resources" in kwargs
         assert "batch_strategy" in kwargs
 
@@ -627,18 +625,15 @@ class TestDataTransformerIntegration:
         """Should validate DataTransformer parameters."""
         from artisan.operations.examples.data_transformer import DataTransformer
 
-        # Valid
         op = DataTransformer(
             params=DataTransformer.Params(scale_factor=2.0, variants=3)
         )
         assert op.params.scale_factor == 2.0
         assert op.params.variants == 3
 
-        # Invalid scale_factor (negative)
         with pytest.raises(ValidationError):
             DataTransformer(params=DataTransformer.Params(scale_factor=-1.0))
 
-        # Invalid variants (zero)
         with pytest.raises(ValidationError):
             DataTransformer(params=DataTransformer.Params(variants=0))
 
@@ -675,7 +670,6 @@ class TestResourcesAndExecutionDefaults:
         """resources and execution are instance fields on the base class."""
         op = SimpleOperation()
         dump = op.model_dump()
-        # resources and execution are present in model_dump (they are instance fields)
         assert "runner_resources" in dump
         assert "batch_strategy" in dump
 
@@ -791,7 +785,6 @@ class TestRoleEnumValidation:
         """Subclass inheriting parent's enums passes validation."""
         from artisan.operations.examples.data_transformer import DataTransformer
 
-        # Create a subclass that inherits DataTransformer's InputRole/OutputRole
         class CustomTransformer(DataTransformer):
             name = "custom_transformer"
             description = "Subclass for testing role inheritance"
@@ -802,7 +795,6 @@ class TestRoleEnumValidation:
 
     def test_generative_op_no_input_role_ok(self):
         """Empty inputs + no InputRole is valid."""
-        # SimpleOperation has no inputs and no InputRole — should not raise
         assert SimpleOperation.inputs == {}
         assert not hasattr(SimpleOperation, "InputRole")
 
@@ -811,7 +803,6 @@ class TestRoleEnumValidation:
         from artisan.operations.curator.merge import Merge
 
         assert Merge.runtime_defined_inputs is True
-        # Merge only has OutputRole, no InputRole — should not raise
         assert hasattr(Merge, "OutputRole")
 
     def test_fixed_inputs_with_input_role_ok(self):
@@ -853,7 +844,6 @@ class TestRoleEnumValidation:
         from artisan.operations.examples.data_transformer import DataTransformer
 
         doc = DataTransformer.__doc__
-        # Should appear exactly once
         assert doc.count("Input Roles:") == 1
         assert doc.count("Output Roles:") == 1
 
@@ -897,7 +887,7 @@ class TestToolOps:
         """Base execute_function() still raises for abstract non-tool subclasses."""
 
         class AbstractOp(OperationDefinition):
-            pass  # no name — skips registration and validation
+            pass
 
         with pytest.raises(NotImplementedError, match="execute_function"):
             AbstractOp().execute_function(ExecuteInput(execute_dir="/tmp"))
@@ -1007,7 +997,7 @@ class TestVersionValidation:
         """A base with no name skips validation even with a bad version."""
 
         class AbstractBadVersion(OperationDefinition):
-            version: ClassVar[Any] = 2  # no name → validation skipped
+            version: ClassVar[Any] = 2
 
         assert AbstractBadVersion.version == 2
 

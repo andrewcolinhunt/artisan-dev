@@ -43,7 +43,7 @@ def resolve_fs(
         protocol prefix removed (matching ``url_to_fs`` semantics) so
         callers can pass it directly to ``fs.exists``, ``fs.open``, etc.
     """
-    proto = get_protocol(path)  # "file" for bare local paths
+    proto = get_protocol(path)
     if storage is not None and proto == storage.protocol:
         fs = storage.filesystem()
         stripped = path.split("://", 1)[1] if "://" in path else path

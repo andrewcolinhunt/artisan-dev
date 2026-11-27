@@ -16,7 +16,6 @@ from artisan.schemas.specs.input_models import ExecuteInput, PreprocessInput
 from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 
-# Test artifact IDs (32-char hex strings mimicking xxh3_128 hashes)
 ARTIFACT_ID_1 = "a" * 32
 ARTIFACT_ID_2 = "b" * 32
 ARTIFACT_ID_3 = "c" * 32

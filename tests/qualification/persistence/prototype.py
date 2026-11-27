@@ -253,7 +253,6 @@ class CandidateStore:
         ):
             msg = "Transport content identity disagrees with occurrence membership"
             raise StoreIntegrityError(msg)
-        # The production serializer recomputes hydrated identity, including metadata.
         artifact.to_row()
         if artifact.EXTERNALLY_BACKED:
             if directory is not None:

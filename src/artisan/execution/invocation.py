@@ -291,8 +291,6 @@ def execute_invocation(
                 _read_tool_output(prepared.paths.log) if commands_closed else None
             )
             raise ExecuteFailure(error, tool_output=tool_output) from exc
-        # Reject failed entries before postprocessing while retaining the
-        # original error and cancellation evidence from the execute router.
         for result in raw_results:
             if isinstance(result, CommandOwnershipError):
                 raise result
@@ -310,7 +308,6 @@ def execute_invocation(
                 f"{len(failures)}/{len(raw_results)} artifact executions "
                 f"failed; first: {format_error(failures[0])}"
             )
-            # Preserve the original structured failure for durable diagnostics.
             raise ExecuteFailure(
                 msg,
                 tool_output=(
@@ -368,8 +365,6 @@ def postprocess_invocation(
             validate_lineage_completeness(
                 result.artifacts, prepared.operation.outputs, result.lineage
             )
-            # The enclosing pipeline owns new drafts before finalization protects
-            # their origin. Existing finalized artifacts keep their original owner.
             if prepared.step_number is not None:
                 for values in result.artifacts.values():
                     for artifact in values:

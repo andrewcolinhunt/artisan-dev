@@ -58,8 +58,6 @@ def metadata_requests(
         def log_message(self, _format: str, *_args: object) -> None:
             pass
 
-    # Ambient credentials must not hide missing explicit MinIO credentials or
-    # redirect a positive control to a developer's STS/container credential URL.
     preserved = {
         "AWS_EC2_METADATA_DISABLED",
         "AWS_REQUEST_CHECKSUM_CALCULATION",
@@ -110,8 +108,6 @@ def test_metadata_sentinel_observes_missing_credentials(
         with pytest.raises(NoCredentialsError):
             fs.ls("metadata-oracle-bucket")
     else:
-        # Delta S3 clients can populate the native environment outside os.environ.
-        # An explicit child environment keeps this control free of those credentials.
         result = subprocess.run(
             [sys.executable, "-c", _DELTA_METADATA_CONTROL, endpoint],
             env=os.environ.copy(),

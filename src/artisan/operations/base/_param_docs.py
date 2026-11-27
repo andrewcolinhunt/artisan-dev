@@ -43,7 +43,6 @@ def _params_class(op_cls: type[BaseModel]) -> type[BaseModel] | None:
         if not issubclass(annotation, BaseModel):
             return None
     except TypeError:
-        # Non-class annotations (e.g. Optional[X], generic aliases).
         return None
     return annotation
 

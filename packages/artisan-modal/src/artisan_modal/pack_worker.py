@@ -102,7 +102,6 @@ class _PackExecution:
                 self._poll()
                 self.stop.wait(_POLL_SECONDS)
         except BaseException as error:
-            # A failed control channel must not silently disable cancellation.
             self.record_failure(error)
             with self.condition:
                 active = self.active
@@ -152,7 +151,6 @@ class _PackExecution:
             if outcome.ownership != OwnershipState.CLOSED:
                 return
             if outcome.reply is None and not outcome.cancelled:
-                # No later science after a confirmed infrastructure failure.
                 for remaining in range(index + 1, len(self.request.calls)):
                     self._publish_skip(remaining)
                 return

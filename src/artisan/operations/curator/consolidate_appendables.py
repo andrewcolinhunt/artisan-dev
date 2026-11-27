@@ -90,8 +90,6 @@ class ConsolidateAppendables(OperationDefinition):
 
         fs = artifact_store.filesystem
         record_ids = inputs["records"]["artifact_id"].to_list()
-        # get_artifacts_by_type returns dict[str, Artifact]; "appendable" is the
-        # requested type, so the values are AppendableArtifact instances.
         raw_artifacts = artifact_store.get_artifacts_by_type(record_ids, "appendable")
         artifacts: dict[str, AppendableArtifact] = {
             aid: art

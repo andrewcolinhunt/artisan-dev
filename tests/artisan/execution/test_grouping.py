@@ -404,7 +404,6 @@ class TestGroupInputsCrossProduct:
         assert len(aligned["config"]) == 4
         assert len(group_ids) == 4
 
-        # Verify all 4 combinations exist
         pairs = set(zip(aligned["data"], aligned["config"], strict=True))
         expected = {("s1", "c1"), ("s1", "c2"), ("s2", "c1"), ("s2", "c2")}
         assert pairs == expected
@@ -446,7 +445,6 @@ class TestGroupInputsCrossProduct:
         inputs = {"a": ["a1", "a2"], "b": ["b1", "b2"]}
         _, group_ids = group_inputs(inputs, GroupByStrategy.CROSS_PRODUCT)
 
-        # All 4 group_ids should be unique
         assert len(set(group_ids)) == 4
 
 
@@ -469,7 +467,6 @@ class TestGroupInputsLineage:
         assert len(aligned["results"]) == 2
         assert len(group_ids) == 2
 
-        # A1a should match M_A1, B1a should match M_B1
         pairs = dict(zip(aligned["results"], aligned["metrics"], strict=True))
         assert pairs[ids["A1a"]] == ids["M_A1"]
         assert pairs[ids["B1a"]] == ids["M_B1"]
@@ -480,7 +477,6 @@ class TestGroupInputsLineage:
         """Artifacts with no directed path are excluded; warning logged."""
         ids = mock_artifact_store._test_ids
 
-        # M_B1 has no directed path back to A1a (different lineage chain).
         inputs = {
             "results": [ids["A1a"]],
             "metrics": [ids["M_B1"]],
@@ -530,7 +526,6 @@ class TestGroupInputsLineage:
             inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # Only A1a<->M_A1 should match (M_B1 has no directed path to A1a)
         assert len(aligned["results"]) == 1
         assert aligned["metrics"][0] == ids["M_A1"]
 
@@ -562,9 +557,7 @@ class TestGroupInputsLineage:
         assert len(aligned["config"]) == 6
         assert len(group_ids) == 6
 
-        # All dataset entries should be the same (1:N expansion)
         assert all(d == ids["dataset"] for d in aligned["dataset"])
-        # All 6 configs should appear
         assert set(aligned["config"]) == set(ids["configs"])
 
     def test_group_ids_for_lineage_matches(self, mock_artifact_store):
@@ -580,7 +573,7 @@ class TestGroupInputsLineage:
         )
 
         assert len(group_ids) == 1
-        assert len(group_ids[0]) == 32  # xxh3_128 hex digest
+        assert len(group_ids[0]) == 32
 
 
 def _make_name_store(name_map: dict[str, str]) -> Mock:
@@ -715,7 +708,6 @@ class TestGroupInputsName:
         store = _make_name_store(
             {
                 "a1": "shared.txt",
-                # a2 has no entry — load_original_names omits it
                 "b1": "shared.cfg",
             }
         )
@@ -739,9 +731,7 @@ class TestGroupInputsName:
 
         aligned, group_ids = group_inputs(inputs, GroupByStrategy.NAME, store)
 
-        # Sorted by stem: alpha then zeta
         assert aligned == {"data": ["a2", "a1"], "config": ["b2", "b1"]}
-        # Same group_ids on second call
         _, group_ids_again = group_inputs(inputs, GroupByStrategy.NAME, store)
         assert group_ids == group_ids_again
 
@@ -787,7 +777,6 @@ class TestMatchInputsToPrimary:
         assert len(result["passthrough"]) == 2
         assert len(result["metrics"]) == 2
 
-        # A1a matched to M_A1, B1a matched to M_B1
         pairs = dict(zip(result["passthrough"], result["metrics"], strict=True))
         assert pairs[ids["A1a"]] == ids["M_A1"]
         assert pairs[ids["B1a"]] == ids["M_B1"]
@@ -811,7 +800,6 @@ class TestMatchInputsToPrimary:
             mock_artifact_store_three_lineages,
         )
 
-        # All 3 should match completely
         assert len(result["passthrough"]) == 3
         assert len(result["metrics_a"]) == 3
         assert len(result["metrics_b"]) == 3
@@ -820,8 +808,6 @@ class TestMatchInputsToPrimary:
         """Primary artifact matched in one role but not another is excluded."""
         ids = mock_artifact_store._test_ids
 
-        # A1a can match M_A1 in "metrics" (M_A1 is its direct descendant)
-        # but has no match for M_B1 in "other" (different lineage chain).
         inputs = {
             "passthrough": [ids["A1a"]],
             "metrics": [ids["M_A1"]],
@@ -832,8 +818,6 @@ class TestMatchInputsToPrimary:
             "passthrough", inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # A1a matches M_A1 in "metrics" but M_B1 in "other" has no directed
-        # path to A1a, so the match is incomplete -> excluded
         assert len(result["passthrough"]) == 0
         assert len(result["metrics"]) == 0
         assert len(result["other"]) == 0
@@ -842,7 +826,6 @@ class TestMatchInputsToPrimary:
         """No matches at all returns empty aligned lists."""
         ids = mock_artifact_store._test_ids
 
-        # A1a vs M_B1: no directed path between them
         inputs = {
             "passthrough": [ids["A1a"]],
             "metrics": [ids["M_B1"]],
@@ -868,7 +851,6 @@ class TestMatchInputsToPrimary:
             "passthrough", inputs, GroupByStrategy.LINEAGE, mock_artifact_store
         )
 
-        # result["passthrough"][i] is matched with result["metrics"][i]
         for i, pt_id in enumerate(result["passthrough"]):
             metric_id = result["metrics"][i]
             if pt_id == ids["A1a"]:
@@ -1000,7 +982,6 @@ class TestMatchInputsToPrimaryName:
                 "p1": "s1.x",
                 "p2": "s2.x",
                 "m1": "s1.y",
-                # m2 absent -- p2's stem s2 has no match in metrics
             }
         )
         inputs = {"primary": ["p1", "p2"], "metrics": ["m1"]}
@@ -1029,7 +1010,6 @@ class TestMatchInputsToPrimaryName:
             "primary", inputs, GroupByStrategy.NAME, store
         )
 
-        # Primary order preserved, not sorted by stem
         assert aligned["primary"] == ["p1", "p2", "p3"]
         assert aligned["metrics"] == ["m1", "m2", "m3"]
 
@@ -1038,7 +1018,6 @@ class TestMatchInputsToPrimaryName:
         store = _make_name_store(
             {
                 "p1": "shared.x",
-                # p2 absent
                 "m1": "shared.y",
             }
         )

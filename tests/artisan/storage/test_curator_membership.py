@@ -136,7 +136,6 @@ def test_membership_and_empty_reads_are_bound_cache_dependencies(
     _produce(committer, "c", "unrelated", 4)
     same = CuratorView(committer, capture_curator_view(committer))
     same._pipeline_run_id = "current"
-    # The newly admitted current curator adds a step name, so it is a changed read.
     assert not curator_views_match(reads.proof, same)
     other = CuratorView(committer, admission.view)
     other._pipeline_run_id = "unrelated"

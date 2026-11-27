@@ -131,7 +131,6 @@ def _handle_artifact_result(
         if source_ids
         else {}
     )
-    # Identity-neutral outputs must not conceal an absent input in the store.
     for source_id in source_ids:
         require_artifact_type(source_id, artifact_types)
     artifact_types.update(
@@ -313,7 +312,6 @@ def _run_curator_flow(
 
     try:
         check_command_scope()
-        # --- setup phase ---
         with phase_timer("setup", timings):
             execution_context = build_execution_context(
                 execution_run_id=execution_run_id,
@@ -328,7 +326,6 @@ def _run_curator_flow(
             artifact_store = execution_context.artifact_store
             verify_replay_worker(unit)
 
-            # Build DataFrames with artifact_id column per role
             input_dfs = {
                 role: pl.DataFrame({"artifact_id": ids}) for role, ids in inputs.items()
             }
@@ -349,7 +346,6 @@ def _run_curator_flow(
                 {key: tuple(artifacts) for key, artifacts in associated.items()},
             )
 
-        # --- execute phase ---
         with phase_timer("execute", timings):
             try:
                 execute_start = time.perf_counter()
@@ -395,7 +391,6 @@ def _run_curator_flow(
                     error_envelope=error_envelope_dict(exc),
                 )
 
-        # Reject collisions before adding framework execution timings.
         reserved = {
             "timings",
             "skip_reason",
@@ -409,7 +404,6 @@ def _run_curator_flow(
             msg = "Curator metadata uses reserved framework keys"
             raise ValueError(msg)
 
-        # --- record phase ---
         with phase_timer("record", timings):
             timestamp_end = datetime.now(UTC)
             if not result.success:
@@ -433,7 +427,6 @@ def _run_curator_flow(
                 if hasattr(result, "metadata") and result.metadata:
                     merged_metadata.update(result.metadata)
 
-                # Inject merged metadata into the result before handling
                 result_with_metadata = result.model_copy(
                     update={"metadata": merged_metadata}
                 )
@@ -463,7 +456,6 @@ def _run_curator_flow(
                             user_overrides=user_overrides,
                         )
                     case _:
-                        # Defensive branch: mypy narrows to known cases.
                         error = (  # type: ignore[unreachable]
                             f"Unexpected result type from curator operation: "
                             f"{type(result_with_metadata).__name__}. "

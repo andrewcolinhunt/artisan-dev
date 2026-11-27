@@ -17,7 +17,6 @@ __all__ = ["ApptainerRuntime", "DockerRuntime", "LocalRunner"]
 def __getattr__(
     name: str,
 ) -> type[LocalRunner] | type[ApptainerRuntime] | type[DockerRuntime]:
-    # Protocol submodules are used while the local worker entry is initializing.
     if name == "LocalRunner":
         from artisan.orchestration.runners.local import LocalRunner
 

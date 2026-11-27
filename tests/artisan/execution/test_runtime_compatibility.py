@@ -176,7 +176,6 @@ def test_all_metadata_rejects_malformed_visible_metadata(
     _distribution(fallback, "example", "example")
     (metadata_paths[root_index] / "example-1.0.dist-info/METADATA").write_text(metadata)
 
-    # Missing fields raise KeyError with the metadata backport, or fail validation.
     with pytest.raises(expected_errors):
         capture_runtime_compatibility()
 
@@ -429,5 +428,4 @@ def test_live_application_scope_covers_decode_and_call_then_resets(
             patch.setattr("cloudpickle.loads", lambda _: fail())
         with pytest.raises(RuntimeError):
             execute_worker_call(call)
-    # The next independently selected unit must not inherit failed-call authority.
     bootstrap_worker_applications((), qualified_modules=(), compatibility=None)

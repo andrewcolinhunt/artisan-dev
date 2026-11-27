@@ -104,8 +104,6 @@ class TestErrorTypeRequired:
             ArtisanErrorEnvelope(code="x", message="y")  # type: ignore[call-arg]
 
     def test_artisan_error_signature_requires_error_type(self) -> None:
-        # Missing the kw-only ``error_type`` triggers TypeError from Python
-        # before Pydantic sees the call.
         with pytest.raises(TypeError):
             ArtisanError(code="x", message="y")  # type: ignore[call-arg]
 
@@ -131,8 +129,6 @@ class TestCauseChain:
         assert "cause" in payload
         assert payload["cause"]["type"] == "ValueError"
         assert payload["cause"]["message"] == "multiplier must be positive"
-        # format_error returns either a full traceback or "Type: message"
-        # when no __traceback__ is attached.
         assert (
             "Traceback" in payload["cause"]["traceback"]
             or "ValueError" in payload["cause"]["traceback"]
@@ -168,7 +164,6 @@ class TestSuggest:
         assert suggest("multiplyer", ["multiplier", "scale", "seed"]) == ["multiplier"]
 
     def test_respects_n(self) -> None:
-        # Two candidates similar to "cat"; n=1 returns only the closest.
         result = suggest("cat", ["cats", "cut", "bar"], n=1, cutoff=0.4)
         assert len(result) == 1
 

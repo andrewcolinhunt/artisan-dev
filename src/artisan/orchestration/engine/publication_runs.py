@@ -173,8 +173,6 @@ def _capture_runs(
             if owner not in owners:
                 continue
             plan = read.completed_control_plan(owner)
-            # The completed terminal remains proven by _read_lifecycle; an
-            # infrastructure-only curator failure has no execution to export.
             if (
                 isinstance(plan, CuratorCommitPlan)
                 and plan.table(TablePath.EXECUTIONS.value) is None

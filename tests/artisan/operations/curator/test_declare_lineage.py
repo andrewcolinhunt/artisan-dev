@@ -22,7 +22,6 @@ from artisan.schemas.artifact.types import ArtifactTypes
 from artisan.schemas.enums import GroupByStrategy
 
 
-# A 32-char hex-like ID is what ArtifactProvenanceEdge expects.
 def _id(seed: str) -> str:
     """Build a deterministic 32-char ID for tests."""
     return (seed * 32)[:32]
@@ -64,11 +63,6 @@ def _make_store(
         )
     )
     return store
-
-
-# ---------------------------------------------------------------------------
-# ZIP pairing
-# ---------------------------------------------------------------------------
 
 
 class TestDeclareLineageZIP:
@@ -138,11 +132,6 @@ class TestDeclareLineageZIP:
             )
 
 
-# ---------------------------------------------------------------------------
-# NAME pairing
-# ---------------------------------------------------------------------------
-
-
 class TestDeclareLineageNAME:
     """Stem-matching pairing tests."""
 
@@ -170,7 +159,6 @@ class TestDeclareLineageNAME:
             artifact_store=store,
         )
 
-        # Result should have 3 edges, one per matching stem.
         assert result.lineage_edges is not None
         assert len(result.lineage_edges) == 3
         pairs = {
@@ -185,7 +173,7 @@ class TestDeclareLineageNAME:
         children = [_id("x")]
         names = {
             parents[0]: "shared.json",
-            parents[1]: "shared.tsv",  # same stem 'shared'
+            parents[1]: "shared.tsv",
             children[0]: "shared.csv",
         }
         store = _make_store(
@@ -200,11 +188,6 @@ class TestDeclareLineageNAME:
                 step_number=0,
                 artifact_store=store,
             )
-
-
-# ---------------------------------------------------------------------------
-# CROSS_PRODUCT pairing
-# ---------------------------------------------------------------------------
 
 
 class TestDeclareLineageCrossProduct:
@@ -251,11 +234,6 @@ class TestDeclareLineageCrossProduct:
         assert len(result.lineage_edges) == 3
 
 
-# ---------------------------------------------------------------------------
-# Validation
-# ---------------------------------------------------------------------------
-
-
 class TestDeclareLineageValidation:
     """Validation tests: pairing strategy, source existence, self-loops."""
 
@@ -279,13 +257,11 @@ class TestDeclareLineageValidation:
         """A parent ID absent from artifact_index raises with a clear message."""
         parents = [_id("a"), _id("b")]
         children = [_id("x"), _id("y")]
-        # Only one parent is in the index; the other is missing.
         store = _make_store(
             types={
                 parents[0]: "csv",
                 children[0]: "csv",
                 children[1]: "csv",
-                # parents[1] is intentionally missing
             },
         )
 
@@ -300,7 +276,6 @@ class TestDeclareLineageValidation:
     def test_should_raise_on_self_loop(self):
         """A pairing that emits source == target raises."""
         same = _id("a")
-        # Same ID used as both parent and child → self-loop under ZIP.
         store = _make_store(types={same: "csv"})
 
         op = _make_op(GroupByStrategy.ZIP)
@@ -321,11 +296,6 @@ class TestDeclareLineageValidation:
                 step_number=0,
                 artifact_store=store,
             )
-
-
-# ---------------------------------------------------------------------------
-# Passthrough semantics
-# ---------------------------------------------------------------------------
 
 
 class TestDeclareLineagePassthrough:
@@ -380,11 +350,6 @@ class TestDeclareLineagePassthrough:
         assert result.lineage_edges is None
 
 
-# ---------------------------------------------------------------------------
-# Idempotence / dedup
-# ---------------------------------------------------------------------------
-
-
 class TestDeclareLineageIdempotence:
     """Dedup against existing edges in artifact_edges."""
 
@@ -393,7 +358,6 @@ class TestDeclareLineageIdempotence:
         parents = [_id("a"), _id("b"), _id("c")]
         children = [_id("x"), _id("y"), _id("z")]
 
-        # Pre-populate existing edges matching the ZIP pairing.
         existing = pl.DataFrame(
             {
                 "source_artifact_id": parents,
@@ -432,7 +396,6 @@ class TestDeclareLineageIdempotence:
         parents = [_id("a"), _id("b"), _id("c")]
         children = [_id("x"), _id("y"), _id("z")]
 
-        # Only the first pair already exists.
         existing = pl.DataFrame(
             {
                 "source_artifact_id": [parents[0]],
@@ -474,13 +437,11 @@ class TestDeclareLineageIdempotence:
         parents = [_id("a")]
         children = [_id("x")]
 
-        # The "existing" edge looks identical except its source_role
-        # differs — it must NOT be considered a duplicate.
         existing = pl.DataFrame(
             {
                 "source_artifact_id": parents,
                 "target_artifact_id": children,
-                "source_role": ["inputs"],  # different role
+                "source_role": ["inputs"],
                 "target_role": ["children"],
                 "group_id": [None],
             },
@@ -505,15 +466,8 @@ class TestDeclareLineageIdempotence:
             artifact_store=store,
         )
 
-        # Existing edge had source_role='inputs'; our new edge has
-        # source_role='parents'. Should be emitted as a fresh edge.
         assert result.lineage_edges is not None
         assert len(result.lineage_edges) == 1
-
-
-# ---------------------------------------------------------------------------
-# Op shape / static metadata
-# ---------------------------------------------------------------------------
 
 
 class TestDeclareLineageShape:

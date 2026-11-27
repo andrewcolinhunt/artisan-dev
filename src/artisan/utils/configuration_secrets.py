@@ -40,7 +40,6 @@ _AUTHENTICATION = re.compile(
 
 def credential_name(name: str) -> bool:
     """Recognize the documented credential variable/key names."""
-    # Authentication terms are words, including camelCase/acronym boundaries.
     words = re.sub(r"([A-Z]+)([A-Z][a-z])", r"\1_\2", name)
     words = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", words)
     return (

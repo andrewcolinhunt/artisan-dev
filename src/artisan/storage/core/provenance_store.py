@@ -96,10 +96,6 @@ class ProvenanceStore:
             return view.artifact_edges(direct=True)
         return view.scan(table)
 
-    # -------------------------------------------------------------------------
-    # Backward / forward maps (dict-based, full scan)
-    # -------------------------------------------------------------------------
-
     def _build_adjacency(
         self, key_index: int, value_index: int
     ) -> dict[str, list[str]]:
@@ -145,10 +141,6 @@ class ProvenanceStore:
             IDs. Empty dict when no visible edges exist.
         """
         return self._build_adjacency(key_index=0, value_index=1)
-
-    # -------------------------------------------------------------------------
-    # Type and step maps
-    # -------------------------------------------------------------------------
 
     def _load_index_column(
         self,
@@ -207,10 +199,6 @@ class ProvenanceStore:
             Mapping of artifact ID to origin step number. Empty dict for no matches.
         """
         return self._load_index_column("origin_step_number", artifact_ids)
-
-    # -------------------------------------------------------------------------
-    # Direct queries (1-hop)
-    # -------------------------------------------------------------------------
 
     @with_read_scope
     def load_direct_edges_df(
@@ -318,10 +306,6 @@ class ProvenanceStore:
             source_id, target_id = row
             descendant_map.setdefault(source_id, []).append(target_id)
         return descendant_map
-
-    # -------------------------------------------------------------------------
-    # Step queries
-    # -------------------------------------------------------------------------
 
     @with_read_scope
     def get_artifact_step_number(self, artifact_id: str) -> int | None:
@@ -447,10 +431,6 @@ class ProvenanceStore:
             raise RuntimeError(msg)
         return view.step_names(pipeline_run_id)
 
-    # -------------------------------------------------------------------------
-    # Edge loading (DataFrame-native)
-    # -------------------------------------------------------------------------
-
     @with_read_scope
     def load_edges_df(
         self,
@@ -518,10 +498,6 @@ class ProvenanceStore:
         )
 
         return result if not result.is_empty() else empty
-
-    # -------------------------------------------------------------------------
-    # Transitive walks (multi-hop)
-    # -------------------------------------------------------------------------
 
     def _walk_transitive(
         self,
@@ -607,7 +583,6 @@ class ProvenanceStore:
             Ancestor artifact IDs (excludes the starting artifact itself).
             Empty list if no ancestors exist.
         """
-        # Resolve ancestor types from the authoritative index after traversal.
         ancestor_ids = self._walk_transitive(
             artifact_id,
             frontier_col="target_artifact_id",
@@ -644,8 +619,6 @@ class ProvenanceStore:
             Descendant artifact IDs (excludes the starting artifact itself).
             Empty list if no descendants exist.
         """
-        # Descendant type filtering uses the edge's target_artifact_type
-        # inline during the walk, so it is pushed into the helper.
         return self._walk_transitive(
             artifact_id,
             frontier_col="source_artifact_id",

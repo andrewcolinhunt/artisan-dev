@@ -42,8 +42,6 @@ def test_missing_key_returns_none(tmp_path: Path, monkeypatch):
 
 
 def test_no_file_returns_none(tmp_path: Path, monkeypatch):
-    # pytest tmp dirs live under the system temp tree, which has no .env
-    # on its ancestor path (and the key name is never set anywhere)
     nested = tmp_path / "isolated"
     nested.mkdir()
     monkeypatch.chdir(nested)

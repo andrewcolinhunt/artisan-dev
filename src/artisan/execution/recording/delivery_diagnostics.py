@@ -93,7 +93,7 @@ class DeliveryRecorder:
             candidate.add_sensitive_data(self.redactor.sensitive_values)
             commands = candidate
         except Exception:
-            pass  # Missing optional capture is counted after the authored work.
+            pass
         started = time.perf_counter()
         failure: BaseException | None = None
         try:
@@ -133,7 +133,6 @@ class DeliveryRecorder:
         closed = observed.cleanup == "closed"
         log = _read_tool_output(observed.log_path) if closed else None
         if log is not None and log.startswith(_LEFT_CUT):
-            # A cut URI may no longer contain its scheme; discard the partial line.
             log = _LEFT_CUT + log.removeprefix(_LEFT_CUT).partition("\n")[2]
         record = InvocationDiagnostic(
             invocation_id=invocation_id,
@@ -157,7 +156,6 @@ class DeliveryRecorder:
             else None,
         )
         size = len(canonical_json_bytes(record.model_dump(mode="json")))
-        # Reserve room for the delivery envelope and its bounded error message.
         if self._bytes + size > MAX_DIAGNOSTIC_BYTES - 8 * MAX_DIAGNOSTIC_MESSAGE:
             self.omitted += 1
             return

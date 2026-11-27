@@ -195,12 +195,10 @@ class TestNameCollision:
         first = _make_op()
         second = _make_op()
 
-        # First registration wins; second is dropped.
         assert OperationDefinition._registry[op_name] is first
         assert OperationDefinition._registry[op_name] is not second
-        assert second is not first  # sanity: distinct classes were built
+        assert second is not first
 
-        # A collision entry was recorded for the second attempt.
         new = OperationDefinition._name_collisions[collisions_before:]
         assert any(entry[0] == op_name for entry in new)
 

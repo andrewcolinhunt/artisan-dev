@@ -469,7 +469,6 @@ def test_redelivery_retains_both_real_owners_before_controller_acceptance(
         ),
     )
 
-    # Keep isinstance against the actual production type while replacing construction.
     class FactoryMeta(type):
         def __instancecheck__(cls, value):
             return isinstance(value, actual_owner_type)
@@ -714,7 +713,6 @@ def test_actual_handle_interception_requires_matching_closure_evidence(
     elif case == "unknown_entered_sibling":
         sibling = native.model_copy(update={"index": 1})
     elif case == "unknown_not_skipped":
-        # Malformed evidence must fail closed even if validation was bypassed.
         sibling = skipped.model_copy(update={"skipped": False})
     owner.outcome.side_effect = lambda index: native if index == 0 else sibling
     handles = tuple(Mock(worker_owner=owner) for _ in range(2))

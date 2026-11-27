@@ -36,7 +36,7 @@ def _read_metadata(artifact: Path) -> Message:
             message = f"{artifact}: expected one top-level PKG-INFO file"
             raise ValueError(message)
         stream = sdist.extractfile(members[0])
-        assert stream is not None  # The selected member is a regular file.
+        assert stream is not None
         with stream:
             return BytesParser().parse(stream)
 

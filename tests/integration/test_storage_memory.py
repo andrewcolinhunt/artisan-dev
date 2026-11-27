@@ -60,7 +60,6 @@ def _prepare_inputs(configuration):
     for index in range(count):
         path = root / f"source_{index:03}.csv"
         random_source = random.Random(index)
-        # Generate on disk, one 64KiB CSV field at a time; never retain the fixture set.
         with path.open("wb") as stream:
             stream.write(b"value\n")
             for _ in range(64):
@@ -162,8 +161,6 @@ def test_ingestion_records_worker_and_driver_rss(tmp_path, request, backend):
                 completed.stdout[-3000:] + completed.stderr[-3000:]
             )
         measurement = json.loads((root / "measurement.json").read_text())
-        # RSS growth varies across native allocators; retain it as diagnostic data.
-        # test_deposit_memory enforces the end-to-end storage memory ceiling.
         request.node.user_properties.append(
             (
                 f"{backend}_rss_{count}_files_json",

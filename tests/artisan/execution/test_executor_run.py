@@ -174,7 +174,6 @@ def test_association_context_accumulates_only_retained_exact_relations(
         ][0]
         empty = executor.run(Associated, inputs={"structure": [first]})
         assert empty.artifacts["metrics"][0].values == {"score": 0}
-        # The query's own exported metric is a genuine later direct relation too.
         executor.run(Measure, inputs={"structure": [first]})
         later = executor.run(Associated, inputs={"structure": [first]})
         assert later.artifacts["metrics"][0].values == {"score": 2}
@@ -290,7 +289,6 @@ class ReadConfig(Measure):
 def test_required_support_survives_later_call_and_mutation_rejects(
     tmp_path: Path, native_adapter: list[tuple[str, ...]]
 ) -> None:
-    # Config output has hidden required CSV support; the next call need not resupply it.
     class InspectConfig(ReadConfig):
         name = "session_inspect_config"
         outputs: ClassVar = {

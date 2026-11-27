@@ -45,8 +45,6 @@ def main() -> None:
         working_root=env.working_root,
     )
 
-    # Submit many steps so there's time to press Ctrl+C.
-    # Each Wait step sleeps for 30 seconds.
     print("\n--- Submitting 10 steps (press Ctrl+C to cancel) ---\n")
 
     for i in range(10):
@@ -56,11 +54,8 @@ def main() -> None:
             params={"duration": 30.0},
         )
 
-    # finalize() blocks until all steps complete (or cancel).
-    # SIGINT/SIGTERM triggers pipeline.cancel() via the signal handler.
     result = pipeline.finalize()
 
-    # Show what happened
     print(f"\n--- Pipeline finished: {result['total_steps']} steps ---\n")
 
     for step_result in pipeline:

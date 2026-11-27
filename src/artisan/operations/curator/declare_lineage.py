@@ -35,14 +35,8 @@ if TYPE_CHECKING:
     from artisan.storage.core.artifact_store import ArtifactStore
 
 
-# Sentinel run_id stamped onto every edge before the executor injects
-# the real execution_run_id from the ExecutionContext (see
-# ``_handle_passthrough_result`` in execution/executors/curator.py).
-# The value is never persisted; it only satisfies
-# ``ArtifactProvenanceEdge``'s 32-char constraint at construction time.
 _SENTINEL_RUN_ID = "0" * 32
 
-# Edges always use these fixed role names on the artifact_edges row.
 _SOURCE_ROLE = "parents"
 _TARGET_ROLE = "children"
 
@@ -80,14 +74,12 @@ class DeclareLineage(OperationDefinition):
         ... )
     """
 
-    # ---------- Metadata ----------
     name = "declare_lineage"
     description = (
         "Declare directed parent → child lineage edges between two "
         "artifact streams without producing new artifacts"
     )
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         parents = auto()
         children = auto()
@@ -105,7 +97,6 @@ class DeclareLineage(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         children = auto()
 
@@ -117,11 +108,9 @@ class DeclareLineage(OperationDefinition):
         ),
     }
 
-    # ---------- Behavior ----------
     hydrate_inputs: ClassVar[bool] = False
     independent_input_streams: ClassVar[bool] = True
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """DeclareLineage parameters.
 
@@ -134,7 +123,6 @@ class DeclareLineage(OperationDefinition):
 
     params: Params
 
-    # ---------- Lifecycle ----------
     def execute_curator(
         self,
         inputs: Mapping[str, pl.DataFrame],
@@ -175,7 +163,6 @@ class DeclareLineage(OperationDefinition):
             pairs, parent_ids, child_ids, artifact_store
         )
 
-        # Reuse strict type resolution for these explicitly declared pairs.
         source_target_pairs = [
             SourceTargetPair(
                 source=parent_id,
@@ -198,7 +185,6 @@ class DeclareLineage(OperationDefinition):
             lineage_edges=edges if edges else None,
         )
 
-    # ---------- Private helpers ----------
     def _validate_pairing_supported(self) -> None:
         """Reject LINEAGE-as-pairing; DeclareLineage creates lineage."""
         if self.params.pairing == GroupByStrategy.LINEAGE:
@@ -228,7 +214,7 @@ class DeclareLineage(OperationDefinition):
                 matched = _match_cross_product(matcher_inputs)
             case GroupByStrategy.NAME:
                 matched = _match_by_name(matcher_inputs, artifact_store)
-            case _:  # LINEAGE rejected by _validate_pairing_supported
+            case _:
                 msg = f"Unreachable: unsupported pairing {self.params.pairing!r}"
                 raise AssertionError(msg)
         return [(m[_SOURCE_ROLE], m[_TARGET_ROLE]) for m in matched]
@@ -294,7 +280,6 @@ def _dedup_against_existing(
     all_ids = list({*parent_ids, *child_ids})
     step_range = artifact_store.provenance.get_step_range(all_ids)
     if step_range is None:
-        # No artifacts known → no existing edges → nothing to dedup against.
         return pairs
     step_min, step_max = step_range
     existing = artifact_store.provenance.load_edges_df(

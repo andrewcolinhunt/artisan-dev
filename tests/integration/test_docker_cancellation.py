@@ -143,7 +143,6 @@ def test_docker_attach_client_loss_still_removes_container(
         initial = (tree / "stat").read_text().rsplit(")", 1)[1].split()
         assert int(initial[1]) == docker_work.owner.process.pid
         try:
-            # Stop the reaper so its direct client's PID stays reserved until signaled.
             os.kill(client_pid, signal.SIGSTOP)
             deadline = time.monotonic() + 1
             while True:

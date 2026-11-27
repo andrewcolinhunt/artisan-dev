@@ -28,18 +28,11 @@ import pytest
 
 _TUTORIALS_DIR = Path(__file__).parent
 
-# Notebooks that require external infrastructure, mapped to the marker
-# naming what they need. They are excluded from the default notebook run
-# and selected by the opt-in task on a Modal-credentialed machine. Paths are
-# relative to docs/tutorials/.
 INFRA_NOTEBOOKS = {
     "07-compute-backends/04-modal-execution.ipynb": "modal",
-    # additionally needs an explicit S3-compatible bucket and credentials
     "07-compute-backends/05-modal-r2-outputs.ipynb": "modal",
 }
 
-# Notebooks with pre-existing runtime bugs to fix as separate work.
-# Currently empty — entries should land here, not be silently broken.
 SKIP_NOTEBOOKS_BROKEN: set[str] = set()
 
 

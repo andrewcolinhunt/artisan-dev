@@ -32,7 +32,6 @@ def get_compound_extension(filename: str) -> str:
         Returns empty string if no extension.
     """
     name = posixpath.basename(filename)
-    # Find first dot that starts an extension (position > 0, not a dotfile)
     dot = name.find(".", 1)
     return name[dot:] if dot > 0 else ""
 

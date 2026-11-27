@@ -38,8 +38,6 @@ pytestmark = pytest.mark.skipif(
 )
 PROTOTYPE = Path(__file__).parents[2] / "fixtures" / "command_supervisor_proof.py"
 
-# Readiness is emitted only after the descendant installed its TERM disposition.
-# The alarm is an independent escape hatch if an assertion or the owner fails.
 TREE = """
 import json, os, signal, sys
 signal.alarm(30)
@@ -193,8 +191,6 @@ class Proof:
         return found
 
     def close(self) -> None:
-        # Closing the independent lifetime channel requests cleanup even if an
-        # assertion interrupted a worker connection or stopped reading its output.
         self.parent.close()
         for command in self.launched:
             command.close()
@@ -311,7 +307,6 @@ def test_owner_kills_term_resistant_descendant_after_leader_exits(proof: Proof) 
     identities = json.loads(read_until(launched.stdout, newline=True))
     started = time.monotonic()
     proof.control("cancel", deadline=started + 8)
-    # A real non-reaping check in the owner will retain the leader until KILL.
     assert_closed(record := proof.outcome())
     assert record["returncode"] == -signal.SIGTERM
     assert time.monotonic() - started < 8
@@ -478,8 +473,6 @@ signal.pause()
         worker.stdin.flush()
         assert read_until(worker.stdout.fileno(), newline=True) == b"ready\n"
         worker.kill()
-        # This worker has no descendants; retire its exact identity after the
-        # deliberate kill instead of issuing a second group signal at teardown.
         assert worker.wait(timeout=3) == -signal.SIGKILL
         if before_launch:
             assert proof.control()["commands"] == []
@@ -574,8 +567,6 @@ def test_owner_destruction_is_missing_evidence_not_empty_success(proof: Proof) -
                 proof.control("cancel", deadline=time.monotonic() + 1)
             assert not group_absent(launched.response["pid"])
         finally:
-            # The killed owner cannot reap its child. This test adopts only its
-            # own orphan and closes stdin; missing owner evidence stays missing.
             launched.close_stdin()
             assert read_until(launched.stdout) == b""
             await_condition(lambda: reaped_group_absent(launched.response["pid"]))
@@ -701,7 +692,6 @@ def test_owner_does_not_signal_unrelated_group(proof: Proof) -> None:
         read_until(launched.stdout, newline=True)
         proof.control("cancel", deadline=time.monotonic() + 6)
         assert_closed(proof.outcome())
-        # Observe without reaping: the negative control must still be running.
         watcher = ExitWatch(unrelated.pid)
         try:
             assert not watcher.exited()
@@ -745,8 +735,6 @@ def test_unknown_signal_failure_never_confirms_a_live_process(
         assert command.state == "unknown"
         assert not command.reaped
         assert not group_absent(process.pid)
-        # The independent direct-child finalizer, not the relinquished owner,
-        # closes this intentionally surviving negative-control process.
 
 
 @pytest.mark.parametrize("during_registration", [True, False])
@@ -815,8 +803,6 @@ def test_macos_exit_before_watch_registration_preserves_status() -> None:
             await_condition(first_watch.exited)
         finally:
             first_watch.close()
-        # The initial watcher has proved exit without reaping. Registering again
-        # deterministically covers an already exited, still reserved child.
         command = Command(
             "fast-exit",
             0,

@@ -206,7 +206,6 @@ def test_session_keeps_file_intermediate_without_store_or_recording(
         msg = "Invocation accessed durable storage or recording"
         raise AssertionError(msg)
 
-    # Artifact hydration is complete before any invocation enters this trap.
     for name in ("get_artifact", "get_artifacts_by_type"):
         monkeypatch.setattr(ArtifactStore, name, forbidden)
     monkeypatch.setattr(

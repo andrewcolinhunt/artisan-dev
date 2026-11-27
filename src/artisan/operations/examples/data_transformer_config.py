@@ -85,9 +85,9 @@ class DataTransformerConfig(OperationDefinition):
 
     params: Params = Params()
 
-    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")  # type: ignore[call-arg]  # pydantic defaults
+    runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")  # type: ignore[call-arg]
 
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_config")  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_config")  # type: ignore[call-arg]
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract per-dataset info as parallel lists (one entry per artifact)."""

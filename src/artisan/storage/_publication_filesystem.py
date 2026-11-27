@@ -10,7 +10,6 @@ from fsspec import AbstractFileSystem
 from fsspec.implementations.local import LocalFileSystem
 
 
-# Fsspec does not provide type stubs for its filesystem base classes.
 class _PublicationFileSystem(AbstractFileSystem):  # type: ignore[misc]
     """Map published locators into one bundle without host-path fallback."""
 

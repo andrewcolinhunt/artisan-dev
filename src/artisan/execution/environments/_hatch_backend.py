@@ -34,7 +34,7 @@ def main() -> None:
             parser.error("build requires --output")
         wheels = list(builder.build(directory=str(args.output), versions=["standard"]))
         result = {"wheels": wheels}
-    print(json.dumps(result))  # noqa: T201 — machine-readable subprocess protocol
+    print(json.dumps(result))  # noqa: T201
 
 
 if __name__ == "__main__":

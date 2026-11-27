@@ -112,8 +112,6 @@ class CsvHead(OperationDefinition):
             output_path = os.path.join(inputs.execute_dir, f"{index}_head.csv")
             with open(output_path, "w", newline="") as f:
                 csv.writer(f).writerows(kept)
-            # stdout is the execute_as_tool logging channel — run_command captures
-            # it to the unit log, surfaced in the executions table
             sys.stdout.write(
                 f"csv_head: wrote {index}_head.csv ({len(kept) - 1} rows)\n"
             )

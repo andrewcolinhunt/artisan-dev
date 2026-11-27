@@ -32,19 +32,15 @@ class IngestPipelineStep(OperationDefinition):
     roots. External content is copied into destination-owned storage.
     """
 
-    # ---------- Metadata ----------
     name = "ingest_pipeline_step"
     description = "Import accepted artifacts from another pipeline run"
     version = "2"
     cacheable = False
 
-    # ---------- Inputs ----------
     inputs: ClassVar[dict[str, InputSpec]] = {}
 
-    # ---------- Outputs ----------
     outputs: ClassVar[dict[str, OutputSpec]] = {}
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Cross-pipeline import parameters."""
 
@@ -88,15 +84,10 @@ class IngestPipelineStep(OperationDefinition):
 
     params: Params
 
-    # ---------- Resources ----------
-    # pydantic Field-based defaults aren't recognized by mypy without the plugin;
-    # ignore call-arg errors on these config constructors.
     runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")  # type: ignore[call-arg]
 
-    # ---------- Execution ----------
     batch_strategy: BatchStrategy = BatchStrategy(job_name="ingest_pipeline_step")  # type: ignore[call-arg]
 
-    # ---------- Lifecycle ----------
     def execute_curator(
         self,
         inputs: Mapping[str, pl.DataFrame],

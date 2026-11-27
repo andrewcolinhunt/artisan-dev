@@ -40,7 +40,6 @@ class PipelineSignalRegistration:
     def _owner_collected(
         self, reference: weakref.ReferenceType[_CancellationTarget]
     ) -> None:
-        # An unused helper can stop; this makes no statement about worker cleanup.
         self.released = True
         self._queue.put("stop")
         reconcile_pipeline_signals()
@@ -149,7 +148,6 @@ class _Handlers:
             self.restore()
             signal.raise_signal(signum)
         elif selected.requested:
-            # Relinquishment does not suppress the first queued cancellation.
             self.restore()
         else:
             selected.requested = True
@@ -176,7 +174,7 @@ def register_pipeline_signals(
     owner: _CancellationTarget,
 ) -> PipelineSignalRegistration | None:
     """Register main-thread submissions without replacing an opaque native handler."""
-    global _handlers  # noqa: PLW0603 -- One process signal owner, changed on the main thread.
+    global _handlers  # noqa: PLW0603
     if threading.current_thread() is not threading.main_thread():
         return None
     reconcile_pipeline_signals()

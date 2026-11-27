@@ -25,7 +25,6 @@ def _get_metrics(artifact) -> dict:
 
 class TestMetricCalculator:
     def test_correct_statistics(self, tmp_path: Path):
-        # Known data: id,x,y,z,score — scores are 0.5 and 1.0
         csv_content = b"id,x,y,z,score\n0,2.0,4.0,6.0,0.5\n1,4.0,6.0,8.0,1.0\n"
         path = _write_csv(tmp_path / "input", "data.csv", csv_content)
 
@@ -73,7 +72,7 @@ class TestMetricCalculator:
         assert metrics["distribution"]["max"] == 0.8
         assert metrics["distribution"]["median"] == 0.8
         assert metrics["distribution"]["range"] == 0.0
-        assert metrics["summary"]["cv"] == 0.0  # stdev undefined for 1 value
+        assert metrics["summary"]["cv"] == 0.0
         assert metrics["summary"]["row_count"] == 1
 
     def test_metadata(self, tmp_path: Path):

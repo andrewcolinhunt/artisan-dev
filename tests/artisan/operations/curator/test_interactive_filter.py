@@ -51,10 +51,6 @@ from artisan.storage.core.table_schemas import (
     STEPS_SCHEMA,
 )
 
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 
 def build_cache_isolation_store(
     tmp_path: Path, *, repeat_metric_membership: bool = False
@@ -129,7 +125,6 @@ def _write_delta(
             artifacts[row["source_artifact_id"]]
         )
     selected_run = max(rows, key=lambda row: row["timestamp"])["pipeline_run_id"]
-    # Preserve the fixture's timestamp ordering without rewriting immutable rows.
     for row in sorted(rows, key=lambda row: row["timestamp"]):
         output = (
             [
@@ -159,11 +154,6 @@ def _pad(short_id: str) -> str:
 
 def _metric_content(values: dict) -> bytes:
     return json.dumps(values, sort_keys=True).encode("utf-8")
-
-
-# ---------------------------------------------------------------------------
-# Fixture: minimal delta store with 4 csv artifacts and 2 metric steps
-# ---------------------------------------------------------------------------
 
 
 @dataclass(frozen=True)
@@ -255,11 +245,6 @@ def empty_delta_root(tmp_path_factory: pytest.TempPathFactory) -> Path:
     return root
 
 
-# ---------------------------------------------------------------------------
-# Tests: load
-# ---------------------------------------------------------------------------
-
-
 class TestLoad:
     def test_load_builds_tidy_and_wide_dataframes(
         self, read_only_delta_root: Path
@@ -274,7 +259,6 @@ class TestLoad:
 
         assert filt.wide_df.height == 4
         assert "artifact_id" in filt.wide_df.columns
-        # Wide DataFrame uses raw field names (not qualified)
         metric_cols = [c for c in filt.wide_df.columns if c != "artifact_id"]
         assert len(metric_cols) == 3
         assert "confidence" in metric_cols
@@ -328,11 +312,6 @@ class TestLoad:
             filt.load()
 
 
-# ---------------------------------------------------------------------------
-# Tests: set_criteria
-# ---------------------------------------------------------------------------
-
-
 class TestSetCriteria:
     def test_set_criteria_validates_metric_names(
         self, read_only_delta_root: Path
@@ -351,7 +330,7 @@ class TestSetCriteria:
         filt = InteractiveFilter(read_only_delta_root)
         filt.load()
 
-        with pytest.raises(Exception):  # Pydantic ValidationError
+        with pytest.raises(Exception):
             filt.set_criteria(
                 [
                     {
@@ -368,11 +347,6 @@ class TestSetCriteria:
             filt.set_criteria([{"metric": "confidence", "operator": "gt", "value": 50}])
 
 
-# ---------------------------------------------------------------------------
-# Tests: filtering
-# ---------------------------------------------------------------------------
-
-
 class TestFiltering:
     def test_filtered_ids_applies_all_criteria(
         self, read_only_delta_root: Path
@@ -386,9 +360,6 @@ class TestFiltering:
             ]
         )
 
-        # confidence > 60: s0(90), s1(70) pass; confidence 50 and 30 fail
-        # score > 0.5: s0(0.9), s1(0.7) pass; score 0.5 and 0.3 fail
-        # AND: s0, s1 pass
         assert len(filt.filtered_ids) == 2
 
     def test_filtered_wide_df_matches_filtered_ids(
@@ -401,7 +372,7 @@ class TestFiltering:
         ids_from_property = set(filt.filtered_ids)
         ids_from_df = set(filt.filtered_wide_df["artifact_id"].to_list())
         assert ids_from_property == ids_from_df
-        assert len(ids_from_property) == 2  # s0 (90) and s1 (70)
+        assert len(ids_from_property) == 2
 
     def test_filtered_raises_before_load(self, empty_delta_root: Path) -> None:
         filt = InteractiveFilter(empty_delta_root)
@@ -454,7 +425,6 @@ class TestFiltering:
             ARTIFACT_INDEX_SCHEMA,
         )
 
-        # m0 has score, m1 does NOT have score (different metric key)
         _write_delta(
             root,
             "artifacts/metrics",
@@ -576,13 +546,7 @@ class TestFiltering:
         filt.load()
         filt.set_criteria([{"metric": "score", "operator": "gt", "value": 0.5}])
 
-        # Only sn0 has score=0.9 (passes). sn1 has null for score -> fails.
         assert len(filt.filtered_ids) == 1
-
-
-# ---------------------------------------------------------------------------
-# Tests: summary
-# ---------------------------------------------------------------------------
 
 
 class TestSummary:
@@ -596,18 +560,15 @@ class TestSummary:
         assert isinstance(s.criteria, pl.DataFrame)
         assert isinstance(s.funnel, pl.DataFrame)
 
-        # criteria DF should have one row per criterion
         assert s.criteria.height == 1
-        assert s.criteria["pass"][0] == 2  # confidence > 50: 90 and 70
+        assert s.criteria["pass"][0] == 2
 
-        # criteria uses mean, not median
         assert "mean" in s.criteria.columns
         assert "median" not in s.criteria.columns
 
-        # funnel should have 2 rows: All evaluated + one criterion
         assert s.funnel.height == 2
-        assert s.funnel["count"][0] == 4  # "All evaluated" row
-        assert s.funnel["count"][1] == 2  # after confidence > 50
+        assert s.funnel["count"][0] == 4
+        assert s.funnel["count"][1] == 2
 
     def test_summary_full_golden(self, read_only_delta_root: Path) -> None:
         """Full summary criteria/funnel/header are stable (multi-criterion)."""
@@ -662,11 +623,6 @@ class TestSummary:
         assert "2 / 4 pass" in html
 
 
-# ---------------------------------------------------------------------------
-# Tests: plot
-# ---------------------------------------------------------------------------
-
-
 class TestPlot:
     def test_plot_returns_matplotlib_figure(self, read_only_delta_root: Path) -> None:
         import matplotlib.pyplot as plt
@@ -682,13 +638,7 @@ class TestPlot:
 
         fig = filt.plot()
         assert isinstance(fig, plt.Figure)
-        # One subplot per criterion
         assert len(fig.axes) == 2
-
-
-# ---------------------------------------------------------------------------
-# Tests: commit
-# ---------------------------------------------------------------------------
 
 
 class TestCommit:
@@ -705,7 +655,6 @@ class TestCommit:
         assert "passthrough" in result.output_roles
         assert not list((delta_root / "_staging").rglob("*.parquet"))
 
-        # Verify steps table was updated
         steps_df = pl.read_delta(str(delta_root / "orchestration/steps"))
         new_steps = steps_df.filter(pl.col("step_name") == "interactive_filter")
         assert new_steps.sort("state_sequence")["status"].to_list() == [
@@ -714,13 +663,11 @@ class TestCommit:
             "succeeded",
         ]
 
-        # Verify executions table was written
         exec_df = pl.read_delta(str(delta_root / "orchestration/executions"))
         assert exec_df.height >= 1
         last_exec = exec_df.filter(pl.col("operation_name") == "interactive_filter")
         assert last_exec.height >= 1
 
-        # Verify execution_edges table was written
         edges_df = pl.read_delta(str(delta_root / "provenance/execution_edges"))
         assert edges_df.height > 0
 
@@ -772,7 +719,6 @@ class TestCommit:
         assert diag["total_passed"] == 2
         assert isinstance(diag["metric_sources"], list)
 
-        # Per-criterion diagnostics
         assert len(diag["criteria"]) == 1
         crit = diag["criteria"][0]
         assert crit["metric"] == "confidence"
@@ -786,7 +732,6 @@ class TestCommit:
             assert "max" in crit["stats"]
             assert "mean" in crit["stats"]
 
-        # Funnel
         assert len(diag["funnel"]) == 2
         assert diag["funnel"][0]["label"] == "All evaluated"
         assert diag["funnel"][0]["count"] == 4
@@ -920,8 +865,6 @@ class TestCommit:
             == CommandRecording.empty()
         )
 
-        # Execution edges: one input edge per primary artifact, one output
-        # edge per filtered artifact, all role="passthrough".
         run_id = row["execution_run_id"]
         edges = pl.read_delta(str(delta_root / "provenance/execution_edges")).filter(
             pl.col("execution_run_id") == run_id
@@ -966,11 +909,6 @@ class TestCommit:
         assert len(outputs) == 1
         assert outputs[0].role == "passthrough"
         assert outputs[0].occurrences == ()
-
-
-# ---------------------------------------------------------------------------
-# Tests: wide column disambiguation (collision detection)
-# ---------------------------------------------------------------------------
 
 
 class TestWideColumnDisambiguation:
@@ -1071,7 +1009,6 @@ class TestWideColumnDisambiguation:
             ARTIFACT_EDGES_SCHEMA,
         )
 
-        # Both metric steps have the same step_name "repeat"
         from datetime import UTC, datetime
 
         now = datetime.now(UTC)
@@ -1164,10 +1101,8 @@ class TestWideColumnDisambiguation:
         filt = InteractiveFilter(root)
         filt.load()
 
-        # wide_df has raw field name "val"
         assert "val" in filt.wide_df.columns
 
-        # Setting criteria without disambiguation should raise
         with pytest.raises(ValueError, match="multiple steps"):
             filt.set_criteria([{"metric": "val", "operator": "gt", "value": 0.5}])
 
@@ -1367,11 +1302,6 @@ class TestWideColumnDisambiguation:
         assert filt.summary().criteria["mean"].to_list() == [1.0]
 
 
-# ---------------------------------------------------------------------------
-# Tests: metric type preservation
-# ---------------------------------------------------------------------------
-
-
 @pytest.fixture
 def mixed_type_delta_root(tmp_path: Path) -> Path:
     """Delta store with mixed-type metrics: int, float, bool, str, list."""
@@ -1540,7 +1470,6 @@ class TestTypePreservation:
         filt.load()
 
         wide = filt.wide_df
-        # Raw field names (not qualified with step_name)
         assert wide["count"].dtype == pl.Int64
         assert wide["score"].dtype == pl.Float64
         assert wide["passed"].dtype == pl.Boolean
@@ -1553,13 +1482,9 @@ class TestTypePreservation:
         filt.load()
 
         wide_cols = filt.wide_df.columns
-        # bins is a list type — _build_metric_namespace flattens structs but
-        # list columns remain as-is; they may or may not appear depending on
-        # Polars JSON decode behavior. Just verify core scalars are present.
         assert "count" in wide_cols
         assert "score" in wide_cols
 
-        # Compound values are in the tidy DataFrame
         tidy = filt.tidy_df
         bins_rows = tidy.filter(pl.col("metric_name") == "bins")
         assert bins_rows.height == 2
@@ -1662,10 +1587,6 @@ class TestRunScopedStepNames:
             ARTIFACT_EDGES_SCHEMA,
         )
 
-        # Timestamp ordering (oldest -> newest):
-        #   detected step 0 < detected step 1 < other step 1 < detected step 2
-        # => detection picks "run-detected" (owns newest step overall),
-        #    but cross-run latest for step_number 1 is "run-other".
         base = datetime(2026, 1, 1, tzinfo=UTC)
 
         def _step_row(
@@ -1729,19 +1650,16 @@ class TestRunScopedStepNames:
         )
 
         filt = InteractiveFilter(root)
-        filt.load()  # no pipeline_run_id -> auto-detects "run-detected"
+        filt.load()
 
         assert filt._pipeline_run_id == "run-detected"
 
-        # Tidy path: step 1 labels use the detected run's name.
         tidy_step1 = filt.tidy_df.filter(pl.col("step_number") == 1)
         assert tidy_step1.height == 2
         assert set(tidy_step1["step_name"].to_list()) == {"eval_detected"}
 
-        # Criterion selectors use the detected run's step names.
         assert filt._step_names[1] == "eval_detected"
 
-        # Derived metric_sources reflect the detected run's name too.
         assert {
             "step_number": 1,
             "step_name": "eval_detected",
@@ -1767,7 +1685,6 @@ class TestExistingFloatMetricsStillWork:
         filt.load()
 
         assert filt.wide_df.height == 4
-        # Raw field names
         assert filt.wide_df["confidence"].dtype == pl.Int64
         assert filt.wide_df["accuracy"].dtype == pl.Float64
         assert filt.wide_df["score"].dtype == pl.Float64
@@ -1857,7 +1774,6 @@ def test_selected_values_reach_plot_and_new_criteria(delta_root: Path) -> None:
         {"metric": "confidence", "operator": "gt", "value": 0.8, "step_number": 2}
     ]
     filt.set_criteria(criteria)
-    # Import pyplot before replacing a method whose metadata it copies at import.
     with patch("matplotlib.pyplot.Axes.hist") as hist:
         figure = filt.plot()
     assert sorted(hist.call_args.args[0]) == [0.3, 0.5, 0.7, 0.9]

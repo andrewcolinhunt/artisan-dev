@@ -16,7 +16,6 @@ __all__ = [
 
 
 def __getattr__(name: str) -> object:
-    # Storage contracts are imported before lifecycle and publication readers.
     if name == "ArtifactStore":
         from artisan.storage.core.artifact_store import ArtifactStore
 

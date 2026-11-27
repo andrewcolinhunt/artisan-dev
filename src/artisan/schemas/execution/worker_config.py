@@ -77,7 +77,6 @@ class WorkerConfig(BaseModel):
         ),
     )
 
-    # Debug flags
     preserve_staging: bool = Field(
         False,
         description="Retain staging after verified commitment; uncommitted staging is always retained",
@@ -87,7 +86,6 @@ class WorkerConfig(BaseModel):
         description="Don't cleanup sandbox directory after execution",
     )
 
-    # Resolved worker identity and placement metadata.
     worker_id_env_var: str | None = Field(
         None,
         description="Provider environment variable resolved at the worker entry point.",
@@ -108,10 +106,9 @@ class WorkerConfig(BaseModel):
         description="Resolved step-runner name for provenance records.",
     )
 
-    # Storage
     storage: StorageConfig = Field(
         default_factory=StorageConfig,
         description="Storage configuration for fsspec and delta-rs.",
     )
 
-    model_config = {"frozen": True}  # Config should be immutable
+    model_config = {"frozen": True}

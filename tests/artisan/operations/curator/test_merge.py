@@ -76,7 +76,6 @@ class TestMergeDictInputFormat:
             artifact_store=_mock_store(),
         )
 
-        # Should have 3 total results (2 from a, 1 from b)
         assert result.success
         assert len(result.passthrough["merged"]) == 3
 

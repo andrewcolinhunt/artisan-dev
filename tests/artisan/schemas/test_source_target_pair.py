@@ -44,7 +44,7 @@ class TestSourceTargetPair:
             source_role="input",
             target_role="output",
         )
-        with pytest.raises(Exception):  # FrozenInstanceError
+        with pytest.raises(Exception):
             pair.source = "new_value"
 
     def test_hashable(self):
@@ -65,7 +65,6 @@ class TestSourceTargetPair:
         assert hash(pair1) == hash(pair2)
         assert pair1 == pair2
 
-        # Can be used in sets
         pair_set = {pair1, pair2}
         assert len(pair_set) == 1
 
@@ -141,7 +140,7 @@ class TestSourceTargetPair:
         )
         pair3 = SourceTargetPair(
             source="abc",
-            target="ghi",  # Different target
+            target="ghi",
             source_role="input",
             target_role="output",
         )
@@ -214,7 +213,6 @@ class TestTwoDataclassPattern:
 
         field_names = [f.name for f in fields(SourceTargetPair)]
 
-        # SourceTargetPair should NOT have these (they're added in ArtifactProvenanceEdge)
         assert "execution_run_id" not in field_names
         assert "source_artifact_type" not in field_names
         assert "target_artifact_type" not in field_names

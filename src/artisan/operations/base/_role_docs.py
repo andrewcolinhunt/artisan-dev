@@ -19,8 +19,6 @@ def build_role_docs(cls: type) -> str:
     """Generate Input/Output Roles docstring sections from class specs."""
     sections: list[str] = []
 
-    # Accessed on OperationDefinition/CompositeDefinition subclasses which
-    # declare `inputs`/`outputs` as ClassVars; `type` alone is too narrow.
     inputs = cls.inputs  # type: ignore[attr-defined]
     outputs = cls.outputs  # type: ignore[attr-defined]
 
@@ -57,8 +55,6 @@ def append_role_docs(cls: type) -> None:
 
 def validate_role_enums(cls: type) -> None:
     """Validate that OutputRole/InputRole enums match outputs/inputs dicts."""
-    # Accessed on OperationDefinition/CompositeDefinition subclasses which
-    # declare `inputs`/`outputs` as ClassVars; `type` alone is too narrow.
     inputs = cls.inputs  # type: ignore[attr-defined]
     outputs = cls.outputs  # type: ignore[attr-defined]
 

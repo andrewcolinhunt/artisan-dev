@@ -26,7 +26,7 @@ class TestBuiltinTypes:
 
     def test_string_equality_both_directions(self) -> None:
         assert ArtifactTypes.CSV == "csv"
-        assert "csv" == ArtifactTypes.CSV  # noqa: SIM300 -- Test the reverse comparison.
+        assert "csv" == ArtifactTypes.CSV  # noqa: SIM300
 
 
 class TestMembership:

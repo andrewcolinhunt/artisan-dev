@@ -67,8 +67,7 @@ class TestStorageConfigDeltaOptions:
         config = StorageConfig(protocol="s3", delta_options={"AWS_REGION": "us-east-1"})
         result = config.delta_storage_options()
         assert result is not None
-        result["AWS_REGION"] = "us-west-2"  # mutate the copy
-        # Underlying field unchanged — frozen-model contract preserved.
+        result["AWS_REGION"] = "us-west-2"
         assert config.delta_options == {"AWS_REGION": "us-east-1"}
 
     def test_empty_returns_none(self):

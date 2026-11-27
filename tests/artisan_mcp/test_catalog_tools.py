@@ -27,10 +27,6 @@ class TestListOperations:
         assert name in [item["name"] for item in page["items"]]
 
     def test_load_modules_attributed_in_discovery(self, make_app, invoke) -> None:
-        # The op registry is a process-global side effect, so a bare
-        # list_operations can be polluted by earlier tests. The discovery
-        # report, attributed per-lifespan, is the honest signal that the
-        # examples module was (or was not) loaded by this server.
         loaded = invoke(make_app(), "artisan_capabilities", {"view": "sources"})
         modules = {s["module"] for s in loaded["items"]}
         assert "artisan.operations.examples" in modules

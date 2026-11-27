@@ -118,7 +118,6 @@ class OutputSpec(BaseModel):
         if v is None:
             return v
 
-        # Reject empty dict - ambiguous intent
         if not v:
             msg = (
                 "Empty dict {} is not valid. "
@@ -126,7 +125,6 @@ class OutputSpec(BaseModel):
             )
             raise ValueError(msg)
 
-        # Validate keys - only "inputs" and "outputs" allowed
         valid_keys = {"inputs", "outputs"}
         invalid_keys = set(v.keys()) - valid_keys
         if invalid_keys:

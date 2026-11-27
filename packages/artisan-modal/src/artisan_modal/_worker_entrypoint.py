@@ -21,8 +21,6 @@ PIXI = Path("/usr/local/bin/artisan-pixi")
 ENTRYPOINT = Path("/opt/artisan/image-inputs/worker-entrypoint.py")
 CONFIG = Path("/opt/artisan/image-inputs/worker-activation.json")
 ACTIVATION_MARKER = "_ARTISAN_MODAL_ACTIVATION"
-# SDK configuration uses MODAL_*; command attachment names are a closed core
-# contract. Visibility controls belong to placement, never authored activation.
 CONTROL_NAMES = frozenset(
     {
         "_ARTISAN_COMMAND_SOCKET",
@@ -115,8 +113,6 @@ def _anonymous_descriptor() -> int:
 
 
 def _activated_bytes(config: Mapping[str, Any], original: Mapping[str, str]) -> bytes:
-    # A memory-only descriptor avoids both named credential files and pipe
-    # backpressure. It is closed before replacing this process with the SDK.
     descriptor = _anonymous_descriptor()
     with os.fdopen(descriptor, "w+b") as capture:
         result = subprocess.run(

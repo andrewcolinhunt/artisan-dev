@@ -77,7 +77,6 @@ def test_replay_cli_json_retains_committed_outcome(
             "--debug-root",
             str(tmp_path / "debug"),
             # Polars prepends allocator settings again in the fresh CLI process.
-            # This diagnostic test permits that observed runtime change explicitly.
             "--allow-code-change",
             "--json",
         ],

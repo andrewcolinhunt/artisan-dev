@@ -12,7 +12,6 @@ __all__ = ["Executor", "run_operation"]
 
 
 def __getattr__(name: str) -> object:
-    # Storage imports execution kernels while its own query modules initialize.
     if name == "Executor":
         from artisan.execution.executor import Executor
 

@@ -93,8 +93,6 @@ class WaitTool(OperationDefinition):
             *self.tool.parts(),
             "-c",
             (
-                # MODAL_TASK_ID identifies the container (hostname is the
-                # generic "modal" inside the sandbox); hostname locally
                 f'src="{source}"; '
                 f'host="${{MODAL_TASK_ID:-$(hostname)}}"; '
                 f"for i in $(seq 1 {n}); do "

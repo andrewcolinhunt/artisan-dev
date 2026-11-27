@@ -69,13 +69,13 @@ class DataTransformerScript(OperationDefinition):
 
     tool: ToolSpec = ToolSpec(executable="python", subcommand="-m")
 
-    runner_resources: RunnerResources = RunnerResources(  # type: ignore[call-arg]  # pydantic defaults
+    runner_resources: RunnerResources = RunnerResources(  # type: ignore[call-arg]
         cpus=1,
         memory_gb=4,
         time_limit="00:30:00",
     )
 
-    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_script")  # type: ignore[call-arg]  # pydantic defaults
+    batch_strategy: BatchStrategy = BatchStrategy(job_name="data_transformer_script")  # type: ignore[call-arg]
 
     def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
         """Extract materialized config paths from paired inputs."""

@@ -254,7 +254,6 @@ def run_group(
                     failed = True
                     raise
                 finally:
-                    # Request unit closure before stopping the SDK interpreter.
                     _close_pipeline(pipeline, report, progress, failed=failed)
         except BaseException:
             failed = True

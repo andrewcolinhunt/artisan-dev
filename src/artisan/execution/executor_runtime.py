@@ -116,7 +116,6 @@ class ExecutorRuntime:
             for role, values in inputs.items()
             for index, artifact in enumerate(values)
         }
-        # Validate policy captures before software lookup and any authored phase.
         graph = OccurrenceGraph(boundary_invocation=identity)
         for role, values in inputs.items():
             graph.declare_input_role(role)

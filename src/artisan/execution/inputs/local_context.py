@@ -99,8 +99,6 @@ def capture_local_context(
         ):
             msg = "Configuration references must be supplied explicitly for this input"
             raise ValueError(msg)
-        # Empty captures let existing policies validate whether they need
-        # context the direct-call API cannot supply, including historical parents.
         references.append(FrozenReferences(source=source, members=()))
     return FrozenBoundaryContext(
         schema_version=2 if constants else 1,

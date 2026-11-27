@@ -227,7 +227,6 @@ class TestRecordExecutionFailureEnvelope:
         df = pl.read_parquet(f"{result.staging_path}/executions.parquet")
         raw = df["error_envelope"][0]
         assert raw is not None
-        # The extra `cause` key to_dict emits is tolerated by the model.
         reparsed = ArtisanErrorEnvelope.model_validate_json(raw)
         assert reparsed.code == "op_execute_failed"
         assert reparsed.recovery_hint == "REPORT_TO_USER"
@@ -277,7 +276,7 @@ class TestPassthroughStagedRowsGolden:
         ctx.curator_cache_proof = None
 
         edge = ArtifactProvenanceEdge(
-            execution_run_id="0" * 32,  # sentinel; recorder stamps the real one
+            execution_run_id="0" * 32,
             source_artifact_id="a" * 32,
             target_artifact_id="b" * 32,
             source_artifact_type="csv",
@@ -373,7 +372,6 @@ class TestPassthroughStagedRowsGolden:
     def test_artifact_edges_row_golden_stamped(self, tmp_path):
         staging_root = self._run(tmp_path)
         rows = self._read_only(staging_root, "artifact_edges.parquet").to_dicts()
-        # Sentinel run id ("0"*32) is replaced with the execution's run id.
         assert rows == [
             {
                 "execution_run_id": "r" * 32,

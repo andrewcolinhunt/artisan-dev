@@ -35,7 +35,6 @@ from modal_qualification_app.command_program import signal_ready
 from modal_qualification_app.gpu_kernel import run_kernel
 
 _PACKAGE = Path(__file__).parent
-# Execute the exact installed source in explicitly prepared Python tool prefixes.
 _PROGRAM = (
     (_PACKAGE / "gpu_kernel.py").read_text().split('if __name__ == "__main__":')[0]
     + "\n"

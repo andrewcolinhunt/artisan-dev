@@ -615,8 +615,6 @@ def test_late_redaction_covers_secrets_across_log_and_error_cuts(
 ) -> None:
     secret = "private-prefix\nprivate-middle\nprivate-suffix"
     log = tmp_path / "command.log"
-    # The first incomplete line is discarded; a multiline secret still crosses
-    # the remaining left edge and becomes known only in the following child.
     monkeypatch.setattr(
         recording,
         "_read_tool_output",

@@ -37,7 +37,6 @@ def test_both_retained_caches_preserve_current_order_without_claiming_reuse(
     committer = open_committer(f"{root}/candidate", fs, storage, initialize=True)
     reader = RetainedReader(committer)
     _, first = admit_read_case(committer, _case(1), step_run_id="a" * 32)
-    # A pending sibling does not revoke the first unit's accepted output.
     admit_read_case(committer, _case(9), step_run_id="a" * 32, unit_index=1)
     _, second = admit_read_case(committer, _case(2), step_run_id="b" * 32)
     committer.accept(first)
