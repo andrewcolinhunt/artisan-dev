@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Any
+
 import polars as pl
 import pytest
 
@@ -321,3 +323,103 @@ class TestWalkForwardToTargets:
         result = walk_forward(_df(["S"]), _edges(pairs))
 
         assert set(result.rows()) == ({("S", "A"), ("S", "B")} if pairs else set())
+
+
+@pytest.mark.parametrize("direction", ["forward", "backward"])
+def test_chained_diamonds_bound_frontier_size(
+    direction: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pairs = []
+    for index in range(10):
+        source, target = f"joint-{index}", f"joint-{index + 1}"
+        for side in ("left", "right"):
+            branch = f"{side}-{index}"
+            pairs.extend([(source, branch), (branch, target)])
+    edges = _edges(pairs)
+    join = pl.DataFrame.join
+    edge_join_sizes = []
+
+    def count_edge_join(
+        frame: pl.DataFrame, other: pl.DataFrame, *args: Any, **kwargs: Any
+    ) -> pl.DataFrame:
+        result = join(frame, other, *args, **kwargs)
+        if other is edges:
+            edge_join_sizes.append((frame.height, result.height))
+        return result
+
+    monkeypatch.setattr(pl.DataFrame, "join", count_edge_join)
+    if direction == "forward":
+        result = walk_forward(_df(["joint-0"]), edges)
+        assert set(result.rows()) == {("joint-0", target) for _, target in pairs}
+    else:
+        result = walk_backward(_df(["joint-10"]), _df(["joint-0"]), edges)
+        assert result.rows() == [("joint-10", "joint-0")]
+
+    assert edge_join_sizes
+    assert max(frontier for frontier, _ in edge_join_sizes) <= 2
+    assert sum(joined for _, joined in edge_join_sizes) == 40
+
+
+def test_forward_reconvergence_keeps_matches_of_each_incoming_type() -> None:
+    edges = pl.DataFrame(
+        {
+            "source_artifact_id": ["S", "S", "A", "B", "M", "T"],
+            "target_artifact_id": ["A", "B", "M", "M", "T", "S"],
+            "target_artifact_type": [
+                "csv",
+                "csv",
+                "metric",
+                "table",
+                "metric",
+                "metric",
+            ],
+        }
+    )
+
+    assert set(walk_forward(_df(["S"]), edges, "metric").rows()) == {
+        ("S", "M"),
+        ("S", "T"),
+    }
+    assert walk_forward(_df(["S"]), edges, "table").rows() == [("S", "M")]
+
+
+def test_backward_reconvergence_selects_one_nearest_target_per_candidate() -> None:
+    edges = _edges(
+        [
+            ("far", "near-1"),
+            ("far", "near-2"),
+            ("near-1", "join"),
+            ("near-2", "join"),
+            ("join", "left"),
+            ("join", "right"),
+            ("left", "tip"),
+            ("right", "tip"),
+        ]
+    )
+
+    matches = walk_backward(
+        _df(["tip", "left", "near-2"]),
+        _df(["far", "near-1", "near-2"]),
+        edges,
+    )
+
+    assert matches.height == 3
+    result = dict(matches.rows())
+    assert set(result) == {"tip", "left", "near-2"}
+    assert result["tip"] in {"near-1", "near-2"}
+    assert result["left"] in {"near-1", "near-2"}
+    assert result["near-2"] == "near-2"
+
+
+def test_forward_null_target_remains_unique_across_depths() -> None:
+    edges = pl.DataFrame(
+        {
+            "source_artifact_id": ["S", "S", "M"],
+            "target_artifact_id": ["M", None, None],
+        }
+    )
+
+    result = walk_forward(_df(["S"]), edges)
+
+    assert result.height == 2
+    assert set(result.rows()) == {("S", "M"), ("S", None)}

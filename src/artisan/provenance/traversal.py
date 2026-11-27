@@ -43,8 +43,6 @@ def walk_backward(
         }
     )
 
-    visited = frontier.select("candidate_id", pl.col("current_node").alias("node"))
-
     initial_matches = frontier.join(
         target_ids, left_on="current_node", right_on="_target_id", how="semi"
     ).select(
@@ -58,6 +56,8 @@ def walk_backward(
     if not initial_matches.is_empty():
         all_matched.append(initial_matches)
 
+    frontier = frontier.unique(maintain_order=True)
+    visited = frontier.select("candidate_id", pl.col("current_node").alias("node"))
     frontier = frontier.join(
         initial_matches.select("candidate_id"),
         on="candidate_id",
@@ -83,7 +83,7 @@ def walk_backward(
             left_on=["candidate_id", "current_node"],
             right_on=["candidate_id", "node"],
             how="anti",
-        )
+        ).unique(maintain_order=True)
 
         if stepped.is_empty():
             break
@@ -166,7 +166,7 @@ def walk_forward(
             "source_id": sources["artifact_id"],
             "current_node": sources["artifact_id"],
         }
-    )
+    ).unique()
 
     visited = frontier.select("source_id", pl.col("current_node").alias("node"))
 
@@ -181,11 +181,7 @@ def walk_forward(
         ).select(
             pl.col("source_id"),
             pl.col("target_artifact_id").alias("current_node"),
-            *(
-                [pl.col("target_artifact_type")]
-                if "target_artifact_type" in edges.columns
-                else []
-            ),
+            *([pl.col("target_artifact_type")] if target_type is not None else []),
         )
 
         if stepped.is_empty():
@@ -201,30 +197,18 @@ def walk_forward(
         if stepped.is_empty():
             break
 
-        visited = pl.concat(
-            [
-                visited,
-                stepped.select("source_id", pl.col("current_node").alias("node")),
-            ]
-        )
+        frontier = stepped.select("source_id", "current_node").unique()
+        visited = pl.concat([visited, frontier.rename({"current_node": "node"})])
 
+        matches = frontier
         if target_type is not None:
-            new_matches = stepped.filter(
-                pl.col("target_artifact_type") == target_type
-            ).select(
-                pl.col("source_id"),
-                pl.col("current_node").alias("target_id"),
+            matches = (
+                stepped.filter(pl.col("target_artifact_type") == target_type)
+                .select("source_id", "current_node")
+                .unique()
             )
-        else:
-            new_matches = stepped.select(
-                pl.col("source_id"),
-                pl.col("current_node").alias("target_id"),
-            )
-
-        if not new_matches.is_empty():
-            all_matched.append(new_matches)
-
-        frontier = stepped.select("source_id", "current_node")
+        if not matches.is_empty():
+            all_matched.append(matches.rename({"current_node": "target_id"}))
 
     if not all_matched:
         return empty
