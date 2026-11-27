@@ -132,36 +132,20 @@ def _build_metric_namespace(
     passthrough_df: pl.DataFrame,
     metric_pairs: pl.DataFrame,
     artifact_store: ArtifactStore,
-    pipeline_run_id: str | None = None,
-    metric_steps: pl.DataFrame | None = None,
-) -> tuple[pl.DataFrame, dict[str, Any] | None]:
-    """Hydrate metrics and build wide DataFrame for evaluation.
-
-    Args:
-        passthrough_df: DataFrame with passthrough artifact_id column.
-        metric_pairs: DataFrame with [passthrough_id, metric_id].
-        artifact_store: Store for metric loading.
-        pipeline_run_id: If given, restrict step-name resolution to this
-            pipeline run. None uses names from the most recent run.
-        metric_steps: Optional current membership with ``metric_id`` and
-            ``step_number`` columns. None uses artifact origin steps.
-
-    Returns:
-        Tuple of (wide DataFrame with passthrough_id + metric columns,
-        step_info mapping field names to their source step numbers,
-        or None if no metrics were found). The dict also contains
-        a special ``_step_names`` key mapping step numbers to step names.
-    """
+    *,
+    track_membership: bool,
+) -> tuple[pl.DataFrame, dict[str, set[int]]]:
+    """Hydrate the selected values and optionally track their origin steps."""
     base_df = passthrough_df.select(pl.col("artifact_id").alias("passthrough_id"))
 
     if metric_pairs.is_empty():
-        return base_df, None
+        return base_df, {}
 
     unique_metric_ids = metric_pairs["metric_id"].unique().to_list()
     metrics_df = artifact_store.load_metrics_df(unique_metric_ids)
 
     if metrics_df.is_empty():
-        return base_df, None
+        return base_df, {}
 
     parsed_series = metrics_df["content"].cast(pl.Utf8).str.json_decode()
     decoded = (
@@ -173,85 +157,72 @@ def _build_metric_namespace(
 
     value_columns = [c for c in decoded.columns if c != "artifact_id"]
 
-    if metric_steps is None:
+    field_steps: dict[str, set[int]] = {}
+    if track_membership and value_columns:
         origins = artifact_store.provenance.load_step_map(set(unique_metric_ids))
-        steps_by_metric = {mid: {number} for mid, number in origins.items()}
-    else:
-        steps_by_metric = {}
-        for mid, number in metric_steps.select("metric_id", "step_number").iter_rows():
-            steps_by_metric.setdefault(mid, set()).add(number)
-    step_name_map = artifact_store.provenance.load_step_name_map(pipeline_run_id)
-
-    step_info: dict[str, Any] = {"_step_names": step_name_map}
-
-    for col in value_columns:
-        step_info[col] = set()
-        for mid in unique_metric_ids:
-            if mid in steps_by_metric:
-                row = decoded.filter(pl.col("artifact_id") == mid)
-                if not row.is_empty() and col in row.columns:
-                    val = row[col][0]
-                    if val is not None:
-                        step_info[col].update(steps_by_metric[mid])
+        step_numbers = decoded["artifact_id"].replace_strict(
+            origins, default=None, return_dtype=pl.Int64
+        )
+        memberships = decoded.select(
+            pl.lit(step_numbers)
+            .filter(pl.col(field).is_not_null())
+            .drop_nulls()
+            .unique()
+            .implode()
+            .alias(field)
+            for field in value_columns
+        )
+        field_steps = {
+            field: set(numbers)
+            for field, numbers in memberships.row(0, named=True).items()
+        }
 
     mapping = metric_pairs.select(
         pl.col("passthrough_id"),
         pl.col("metric_id").alias("artifact_id"),
     )
-    values = mapping.join(decoded, on="artifact_id", how="left").drop("artifact_id")
+    if value_columns:
+        values = mapping.join(
+            decoded, on="artifact_id", how="left", maintain_order="left"
+        )
+        agg = values.group_by("passthrough_id").agg(
+            pl.col(field).drop_nulls().first() for field in value_columns
+        )
+        base_df = base_df.join(
+            agg, on="passthrough_id", how="left", maintain_order="left"
+        )
 
-    agg_exprs = [
-        pl.col(c).drop_nulls().first().alias(c)
-        for c in value_columns
-        if c in values.columns
-    ]
-    if agg_exprs:
-        agg = values.group_by("passthrough_id").agg(agg_exprs)
-        base_df = base_df.join(agg, on="passthrough_id", how="left")
-
-    return base_df, step_info
+    return base_df, field_steps
 
 
 def _build_metric_sources(
     metric_ids: set[str],
     artifact_store: ArtifactStore,
-    pipeline_run_id: str | None = None,
+    step_names: dict[int, str],
 ) -> list[dict[str, Any]]:
     """Summarize distinct metric artifacts by producing step."""
     if not metric_ids:
         return []
 
     step_number_map = artifact_store.provenance.load_step_map(metric_ids)
-    step_name_map = artifact_store.provenance.load_step_name_map(pipeline_run_id)
     counts = Counter(step_number_map.values())
     return [
         {
             "step_number": step_number,
-            "step_name": step_name_map.get(step_number, ""),
+            "step_name": step_names.get(step_number, ""),
             "metric_count": counts[step_number],
         }
         for step_number in sorted(counts)
     ]
 
 
-def _check_collision(field: str, step_info: dict[str, Any]) -> None:
-    """Raise ValueError if a field comes from multiple steps.
-
-    Args:
-        field: Metric field name to check.
-        step_info: Mapping from field names to sets of step numbers.
-
-    Raises:
-        ValueError: When the field appears in metrics from multiple steps.
-    """
-    if field not in step_info or field.startswith("_"):
-        return
-
-    step_nums = step_info[field]
+def _check_collision(
+    field: str, step_nums: set[int], step_names: dict[int, str]
+) -> None:
+    """Raise ValueError if a field comes from multiple steps."""
     if len(step_nums) <= 1:
         return
 
-    step_names = step_info.get("_step_names", {})
     lines = [f"Field '{field}' found in metrics from multiple steps:"]
     for sn in sorted(step_nums):
         name = step_names.get(sn, "unknown")
@@ -266,42 +237,38 @@ def _build_criterion_frame(
     criteria: list[Criterion],
     selections: dict[tuple[str | None, int | None], _MetricSelection],
     artifact_store: ArtifactStore,
-    pipeline_run_id: str | None = None,
-    observed_steps: dict[str, set[int]] | None = None,
-    metric_steps: pl.DataFrame | None = None,
+    *,
+    step_names: dict[int, str],
+    observed_steps: dict[str, set[int]],
 ) -> tuple[pl.DataFrame, list[Criterion], list[int | None]]:
     """Bind each criterion to its selected values without exposing private columns.
 
     Selector namespaces stay separate until each comparison has its own column.
     ``observed_steps`` carries unqualified ambiguity evidence across chunks.
-    ``metric_steps`` supplies current membership when artifact origins differ.
     """
-    observed = observed_steps if observed_steps is not None else {}
     unique_primary = primary.select("artifact_id").unique(maintain_order=True)
     primary_ids = unique_primary["artifact_id"].to_list()
     frame = primary.select(pl.col("artifact_id").alias("passthrough_id"))
     namespaces: dict[
-        tuple[str | None, int | None], tuple[pl.DataFrame, dict[str, Any] | None]
+        tuple[str | None, int | None], tuple[pl.DataFrame, dict[str, set[int]]]
     ] = {}
     bound: list[Criterion] = []
     resolved: list[int | None] = []
     for index, criterion in enumerate(criteria):
         selector = (criterion.step, criterion.step_number)
         selection = selections[selector]
+        unqualified = selector == (None, None)
         if selector not in namespaces:
             pairs = selection.pairs.filter(pl.col("passthrough_id").is_in(primary_ids))
             namespaces[selector] = _build_metric_namespace(
-                unique_primary, pairs, artifact_store, pipeline_run_id, metric_steps
+                unique_primary, pairs, artifact_store, track_membership=unqualified
             )
-        wide, step_info = namespaces[selector]
+        wide, field_steps = namespaces[selector]
         step_number = selection.step_number
-        if selector == (None, None) and step_info is not None:
-            steps = observed.setdefault(criterion.metric, set())
-            steps.update(step_info.get(criterion.metric, set()))
-            _check_collision(
-                criterion.metric,
-                {criterion.metric: steps, "_step_names": step_info["_step_names"]},
-            )
+        if unqualified:
+            steps = observed_steps.setdefault(criterion.metric, set())
+            steps.update(field_steps.get(criterion.metric, ()))
+            _check_collision(criterion.metric, steps, step_names)
             step_number = next(iter(steps)) if len(steps) == 1 else None
         column = f"__criterion_{index}"
         value = (
@@ -508,6 +475,7 @@ class Filter(OperationDefinition):
     """
 
     name = "filter"
+    version: ClassVar[str] = "2"
     description = (
         "Filter artifacts by evaluating structured criteria against matched metrics"
     )
@@ -603,13 +571,16 @@ class Filter(OperationDefinition):
                 metadata={"diagnostics": diag},
             )
 
-        selections = self._select_metrics(passthrough_df, artifact_store, step_number)
+        step_names = artifact_store.provenance.load_step_name_map()
+        selections = self._select_metrics(
+            passthrough_df, artifact_store, step_number, step_names
+        )
         metric_ids = {
             metric_id
             for selection in selections.values()
             for metric_id in selection.pairs["metric_id"].to_list()
         }
-        metric_sources = _build_metric_sources(metric_ids, artifact_store)
+        metric_sources = _build_metric_sources(metric_ids, artifact_store, step_names)
         accumulator = _DiagnosticsAccumulator(self.params.criteria)
         all_passed_ids: list[str] = []
         resolved_steps: list[int | None] = [None] * len(self.params.criteria)
@@ -622,6 +593,7 @@ class Filter(OperationDefinition):
                 self.params.criteria,
                 selections,
                 artifact_store,
+                step_names=step_names,
                 observed_steps=observed_steps,
             )
             resolved_steps = [
@@ -675,10 +647,10 @@ class Filter(OperationDefinition):
         passthrough: pl.DataFrame,
         artifact_store: ArtifactStore,
         step_number: int,
+        step_names: dict[int, str],
     ) -> dict[tuple[str | None, int | None], _MetricSelection]:
         """Discover each distinct selector without merging its metric sources."""
         selections = {}
-        step_names = artifact_store.provenance.load_step_name_map()
         for criterion in self.params.criteria:
             selector = (criterion.step, criterion.step_number)
             if selector in selections:
