@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 import pytest
 
+from artisan.execution.environments import container_source, native
 from artisan.execution.environments.local_packages import (
     LocalPackageSelection,
     select_local_package,
@@ -29,6 +30,7 @@ from artisan.execution.environments.source import (
 )
 from artisan.execution.environments.source_membership import source_membership
 from artisan.schemas.execution.prepared_environment import (
+    NATIVE_PENDING_FILENAME,
     DerivedWheel,
     PreparedNativeEnvironment,
 )
@@ -328,6 +330,89 @@ def test_explicit_prepare_reuses_local_source_then_prepares_changed_builder(
         )
     verify_native_environment(target)
     verify_native_environment(changed)
+
+
+@pytest.mark.parametrize("with_package", [False, True])
+def test_native_and_container_preparation_bind_same_source_and_wheels(
+    local_source: Path,
+    selected: LocalPackageSelection,
+    prepared_local_target: PreparedNativeEnvironment,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    with_package: bool,
+) -> None:
+    if not with_package:
+        lock_path = local_source / "pixi.lock"
+        lock = json.loads(lock_path.read_text())
+        lock["environments"]["default"]["packages"]["linux-64"] = []
+        lock["packages"] = []
+        lock_path.write_text(json.dumps(lock))
+
+    def install(manifest: Path, name: str, *, skip: tuple[str, ...] = ()) -> None:
+        assert skip == (("probe",) if with_package else ())
+        (manifest.parent / ".pixi/envs" / name).mkdir(parents=True)
+
+    def build_wheel(
+        _python: Path, command: str, root: Path, *, output: Path
+    ) -> dict[str, list[str]]:
+        assert command == "build"
+        assert (root / "src/probe/__init__.py").read_text() == "value = 1\n"
+        wheel = output / "probe-0.1.0-py3-none-any.whl"
+        wheel.write_bytes(b"wheel from captured source")
+        return {"wheels": [str(wheel)]}
+
+    builder = Mock(return_value=prepared_local_target)
+    select = Mock(return_value=selected)
+    pixi = tmp_path / "pixi-executable"
+    pixi.write_bytes(b"fixture pixi")
+    monkeypatch.setattr(native, "pixi_version", Mock())
+    monkeypatch.setattr(native, "_prepare_builder", builder)
+    monkeypatch.setattr(native, "select_local_package", select)
+    monkeypatch.setattr(native, "native_executable", Mock(return_value=Path("/python")))
+    monkeypatch.setattr(native, "backend_command", build_wheel)
+    monkeypatch.setattr(native, "verify_wheel_metadata", Mock())
+    monkeypatch.setattr(native, "_validate_manifest", Mock())
+    monkeypatch.setattr(native, "_install_locked", install)
+    monkeypatch.setattr(native, "_install_wheels", Mock())
+    monkeypatch.setattr(native, "verify_wheel_installation", Mock())
+    monkeypatch.setattr(container_source, "native_platform", native.native_platform)
+    monkeypatch.setattr(container_source, "pixi_version", Mock())
+    monkeypatch.setattr(
+        container_source, "pixi_executable", Mock(return_value=str(pixi))
+    )
+
+    declaration = Environment.from_pixi(local_source / "pyproject.toml")
+    cache_root = tmp_path / "new-cache"
+    native_target = prepare_native_environment(declaration, cache_root=cache_root)
+    context = tmp_path / "container"
+    container = container_source.capture_container_inputs(
+        declaration, context, cache_root=cache_root
+    )
+    container_source.write_container_payload(
+        container, context, workspace=container_source.CONTAINER_WORKSPACE
+    )
+    container_target = PreparedNativeEnvironment.model_validate_json(
+        (context / "workspace" / NATIVE_PENDING_FILENAME).read_text()
+    )
+
+    assert container.captured.source == native_target.source == container_target.source
+    assert container.wheels == native_target.wheels == container_target.wheels
+    assert container.pixi_sha256 == hashlib.sha256(pixi.read_bytes()).hexdigest()
+    if with_package:
+        assert container.captured.source == prepared_local_target.source
+        assert container.builder == prepared_local_target
+        (wheel,) = container.wheels
+        (path,) = container.wheel_paths
+        assert wheel.name == "probe"
+        assert wheel.filename == path.name
+        assert wheel.builder_digest == wheel_builder_digest("linux-64")
+        assert wheel.sha256 == hashlib.sha256(path.read_bytes()).hexdigest()
+        assert builder.call_count == select.call_count == 2
+    else:
+        assert container.captured.source.packages == container.wheels == ()
+        assert container.builder is None
+        builder.assert_not_called()
+        select.assert_not_called()
 
 
 def test_membership_detects_new_root_license_without_reading_unrelated_bytes(
