@@ -72,7 +72,6 @@ project:
           children:
             - file: tutorials/08-analysis/01-provenance-graphs.ipynb
             - file: tutorials/08-analysis/02-lineage-tracing.ipynb
-            - file: tutorials/08-analysis/03-interactive-filter.ipynb
             - file: tutorials/08-analysis/04-timing-analysis.ipynb
         - title: Writing Operations
           children:

@@ -175,7 +175,7 @@ src/artisan/                # Framework (domain-agnostic)
 │   └── utils.py            # Execution helpers (run-id generation, artifact finalization)
 ├── operations/             # Base class + framework ops
 │   ├── base/               # OperationDefinition base class
-│   ├── curator/            # Curator ops (Filter, Merge, Ingest*, DeclareLineage, InteractiveFilter)
+│   ├── curator/            # Curator ops (Filter, Merge, Ingest*, DeclareLineage)
 │   └── examples/           # Example/demo operations (DataGenerator, DataTransformer, MetricCalculator)
 ├── orchestration/          # Pipeline engine, dispatch, step execution
 │   ├── engine/             # Submission, source selection, result acceptance and recovery
@@ -230,7 +230,7 @@ docs/
 │   ├── 05-errors-and-control/   # Step overrides, error visibility, pipeline cancellation
 │   ├── 06-storage/              # Layout, logging, external files
 │   ├── 07-compute-backends/     # Compute routing, external runners, Modal
-│   ├── 08-analysis/             # Provenance graphs, interactive filter, timing
+│   ├── 08-analysis/             # Provenance graphs, lineage tracing, timing
 │   └── 09-writing-operations/   # Writing operations and composites
 ├── concepts/                    # Architecture, design principles, provenance, execution flow
 ├── how-to-guides/               # Writing operations, configuring execution, provenance

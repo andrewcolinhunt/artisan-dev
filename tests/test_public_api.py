@@ -55,7 +55,6 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "IngestCSV",
         "IngestFiles",
         "IngestPipelineStep",
-        "InteractiveFilter",
         "Merge",
     ),
     "artisan.operations.examples": (

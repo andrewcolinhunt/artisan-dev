@@ -1,4 +1,4 @@
-"""Artisan curator operations: Filter, Merge, Ingest, InteractiveFilter, DeclareLineage."""
+"""Artisan curator operations: Filter, Merge, Ingest, DeclareLineage."""
 
 from __future__ import annotations
 
@@ -10,7 +10,6 @@ from artisan.operations.curator.filter import Filter
 from artisan.operations.curator.ingest_csv import IngestCSV
 from artisan.operations.curator.ingest_files import IngestFiles
 from artisan.operations.curator.ingest_pipeline_step import IngestPipelineStep
-from artisan.operations.curator.interactive_filter import InteractiveFilter
 from artisan.operations.curator.merge import Merge
 
 __all__ = [
@@ -20,6 +19,5 @@ __all__ = [
     "IngestCSV",
     "IngestFiles",
     "IngestPipelineStep",
-    "InteractiveFilter",
     "Merge",
 ]
