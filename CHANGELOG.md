@@ -99,6 +99,14 @@ User-facing changes are recorded here using
 - Prepared worker runtime checks respect Python metadata search order and
   verify wheel-installed scripts against their canonical interpreter paths.
 
+### Removed
+
+- Removed the notebook `InteractiveFilter` and its selection operation. For new
+  selections, see the [Metrics and Filtering tutorial](docs/tutorials/02-pipeline-design/03-metrics-and-filtering.ipynb).
+  Existing selections in retained stores remain readable through ordinary
+  inspection. Replay of an old selection requires a matching Artisan revision
+  that includes its operation definition.
+
 ## Earlier 0.2.0 development changes
 
 These entries describe intermediate operation, runner, and storage contracts.
@@ -352,14 +360,6 @@ For the current upgrade path, see the unreleased changes above and the
   staged artifact effects deduplicate by their natural identities.
 - Optional dependencies load lazily, MCP surfaces are bounded, and packaged
   examples and documentation reflect the current release contracts.
-
-### Removed
-
-- Removed the notebook `InteractiveFilter` and its selection operation. For new
-  selections, see the [Metrics and Filtering tutorial](docs/tutorials/02-pipeline-design/03-metrics-and-filtering.ipynb).
-  Existing selections in retained stores remain readable through ordinary
-  inspection. Replay of an old selection requires a matching Artisan revision
-  that includes its operation definition.
 
 ## [0.1.2a5] - 2026-04-06
 
