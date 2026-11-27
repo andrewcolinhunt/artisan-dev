@@ -15,16 +15,19 @@ from __future__ import annotations
 
 import polars as pl
 import pytest
+from fixtures.composition_operations import PredictMeasure, coordinate, structure
 
 pytestmark = pytest.mark.integration
 
 from artisan.operations.examples import DataGenerator, DataTransformer
 from artisan.orchestration import PipelineManager, list_runs
+from artisan.orchestration.engine.current_outputs import read_current_step_outputs
 from artisan.orchestration.engine.retained_execution_query import (
     read_retained_execution_membership,
 )
 from artisan.schemas.orchestration.step_lifecycle import StepDisposition, StepStatus
 from artisan.storage.core.execution_source import ScientificExecutionSource
+from artisan.storage.core.retained_reader import RetainedReader
 
 from .conftest import create_native_pipeline, read_table
 
@@ -94,6 +97,52 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     assert reused[0].state.step_run_id == result2.step_run_id
     assert p2.executions[0].handles == ()
     assert len(source_execution_ids) == 1
+
+
+def test_cached_step_output_preserves_downstream_producer(
+    pipeline_env: dict[str, str],
+) -> None:
+    with create_native_pipeline(name="cache_attribution", **pipeline_env) as pipeline:
+        inputs = {"structure": [structure(0)]}
+        first = pipeline.run(PredictMeasure, inputs=inputs, name="first")
+        cached = pipeline.run(PredictMeasure, inputs=inputs, name="cached")
+        assert cached.disposition is StepDisposition.CACHE_HIT
+        downstream = pipeline.run(
+            PredictMeasure,
+            inputs={"structure": cached.output("structure")},
+            name="downstream",
+        )
+        assert downstream.status is StepStatus.SUCCEEDED, downstream.error
+
+    assert first.step_run_id is not None
+    assert downstream.step_run_id is not None
+    original, reused, consumed = read_retained_execution_membership(
+        pipeline.committer, pipeline_run_id=pipeline.config.pipeline_run_id
+    )
+    assert reused.cache_hit
+    assert reused.source == original.source
+    assert consumed.state.step_run_id == downstream.step_run_id
+
+    source = next(
+        group.occurrences[0]
+        for group in read_current_step_outputs(pipeline.committer, first.step_run_id)
+        if group.role == "structure"
+    )
+    output = next(
+        group.occurrences[0]
+        for group in read_current_step_outputs(
+            pipeline.committer, downstream.step_run_id
+        )
+        if group.role == "structure"
+    )
+    assert coordinate(output.artifact) == 2
+
+    assert isinstance(consumed.source, ScientificExecutionSource)
+    reader = RetainedReader(pipeline.committer)
+    with reader.capture_inputs(consumed.source.plan.receipt) as captured:
+        assert (
+            captured.record.boundary.input_attribution[0].producer == source.reference
+        )
 
 
 def test_cache_only_run_can_resume_and_extend(

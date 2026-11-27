@@ -35,10 +35,7 @@ from artisan.execution.composition import ExecuteAdapter
 from artisan.execution.exceptions import AssignmentExecutionError
 from artisan.operations.base import OperationDefinition
 from artisan.orchestration.engine import retained_executor
-from artisan.orchestration.engine.retained_executor import (
-    RetainedStepExecution,
-    resolve_retained_output,
-)
+from artisan.orchestration.engine.retained_executor import RetainedStepExecution
 from artisan.orchestration.engine.retained_inputs import (
     PreparedAssignmentInputs,
     prepare_step_inputs,
@@ -179,50 +176,6 @@ def test_sync_and_async_scientific_compositions(
     assert len(accepted.projection.occurrences) == 3
     if definition is Iterate:
         assert metric.artifact.values == {"selected": 14, "history": [2, 6, 14]}
-
-
-def test_cache_current_membership_and_downstream_exact_selection(
-    tmp_path: Path,
-) -> None:
-    first = _execution(tmp_path, PredictMeasure, {"structure": [structure(0)]})
-    runner = first.runner
-    assert isinstance(runner, NativeRunner)
-    with ThreadPoolExecutor() as pool:
-        first.run(pool)
-        cached = _execution(
-            tmp_path,
-            PredictMeasure,
-            {"structure": [structure(0)]},
-            step_number=1,
-            runner=runner,
-        )
-        final = cached.run(pool)
-        assert final.disposition == StepDisposition.CACHE_HIT
-        assert not cached.handles
-        selected = resolve_retained_output(
-            final.output("structure"),
-            results=cached.results,
-        )
-        downstream = _execution(
-            tmp_path,
-            PredictMeasure,
-            {"structure": selected},
-            step_number=2,
-            runner=runner,
-        )
-        assert downstream.run(pool).status == StepStatus.SUCCEEDED
-    assert len(runner.packs) == 2
-    output = next(
-        role.occurrences
-        for role in downstream.results.outputs(downstream.record.step_run_id)
-        if role.role == "structure"
-    )
-    assert coordinate(output[0].artifact) == 2
-    with downstream.reader.capture_inputs(downstream.handles[0].result()) as captured:
-        assert (
-            captured.record.boundary.input_attribution[0].producer
-            == selected[0].reference
-        )
 
 
 def test_unqualified_software_can_execute_but_cannot_supply_or_consume_cache(

@@ -1,8 +1,7 @@
-"""Step result schema and builder for pipeline orchestration."""
+"""Step result schema for pipeline orchestration."""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from typing import Any
 
 from pydantic import BaseModel, Field, PrivateAttr, field_serializer, model_validator
@@ -197,68 +196,3 @@ class StepResult(BaseModel):
             raise ValueError(msg)
 
     model_config = {"frozen": True}
-
-
-@dataclass
-class StepResultBuilder:
-    """Builder for constructing StepResult during step execution."""
-
-    step_name: str
-    step_number: int
-    operation_outputs: dict[str, str | None]
-    step_run_id: str | None = None
-
-    _total_count: int = 0
-    _succeeded_count: int = 0
-    _failed_count: int = 0
-
-    def add_success(self, count: int = 1) -> None:
-        """Record successful item(s)."""
-        self._total_count += count
-        self._succeeded_count += count
-
-    def add_failure(self, count: int = 1) -> None:
-        """Record failed item(s)."""
-        self._total_count += count
-        self._failed_count += count
-
-    def build(
-        self,
-        status: StepStatus,
-        disposition: StepDisposition | None = None,
-        cancellation_status: CancellationStatus | None = None,
-        error: str | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> StepResult:
-        """Build the final StepResult from accumulated counts.
-
-        Args:
-            status: Authoritative terminal lifecycle state.
-            disposition: Execution disposition for usable output states.
-            cancellation_status: Final cancellation acknowledgement.
-            error: Outcome diagnostic.
-            metadata: Optional metadata dict (timings, diagnostics, etc.).
-
-        Returns:
-            Frozen StepResult with final counts and output role info.
-        """
-        exposes_outputs = status in {StepStatus.SUCCEEDED, StepStatus.PARTIAL}
-        return StepResult(
-            step_name=self.step_name,
-            step_number=self.step_number,
-            status=status,
-            disposition=disposition,
-            cancellation_status=cancellation_status,
-            error=error,
-            total_count=self._total_count,
-            succeeded_count=self._succeeded_count,
-            failed_count=self._failed_count,
-            output_roles=(
-                frozenset(self.operation_outputs.keys())
-                if exposes_outputs
-                else frozenset()
-            ),
-            output_types=dict(self.operation_outputs) if exposes_outputs else {},
-            metadata=metadata or {},
-            step_run_id=self.step_run_id,
-        )

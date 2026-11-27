@@ -72,7 +72,6 @@ _current: _Invocation | None = None
 _bootstrap: _Invocation | None = None
 _attached_unit: _Invocation | None = None
 _invocation_lock = threading.RLock()
-_request_lock = threading.Lock()
 _diagnostic_invocation: ContextVar[int | None] = ContextVar(
     "command_invocation", default=None
 )
@@ -749,19 +748,6 @@ def check_command_scope(*, expected: _Invocation | None = None) -> None:
 def close_command_scope(error: BaseException | None = None) -> bool:
     """Close before any output collection, publication or workspace deletion."""
     return True if _current is None else _current.close(error)
-
-
-@contextlib.contextmanager
-def request_lease() -> Iterator[None]:
-    """Reject overlapping/nested endpoint requests before touching active state."""
-    if not _request_lock.acquire(blocking=False):
-        msg = "Overlapping managed endpoint requests are unsupported"
-        raise CommandOwnershipError(msg)
-    try:
-        with managed_invocation():
-            yield
-    finally:
-        _request_lock.release()
 
 
 @contextlib.contextmanager

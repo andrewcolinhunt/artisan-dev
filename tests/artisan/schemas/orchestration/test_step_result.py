@@ -12,7 +12,7 @@ from artisan.schemas.orchestration.step_lifecycle import (
     StepDisposition,
     StepStatus,
 )
-from artisan.schemas.orchestration.step_result import StepResult, StepResultBuilder
+from artisan.schemas.orchestration.step_result import StepResult
 
 
 def _result(**updates: object) -> StepResult:
@@ -89,14 +89,30 @@ def test_skipped_rejects_execution_facts() -> None:
     with pytest.raises(ValidationError, match="zero counts"):
         _result(status=StepStatus.SKIPPED, disposition=None)
 
+
+@pytest.mark.parametrize(
+    ("status", "error", "cancellation_status"),
+    [
+        (StepStatus.FAILED, "worker failed", None),
+        (StepStatus.CANCELLED, None, CancellationStatus.CONFIRMED),
+        (StepStatus.SKIPPED, None, None),
+    ],
+)
+def test_unusable_terminal_result_rejects_outputs(
+    status: StepStatus,
+    error: str | None,
+    cancellation_status: CancellationStatus | None,
+) -> None:
     with pytest.raises(ValidationError, match="must not expose outputs"):
         _result(
-            status=StepStatus.SKIPPED,
+            status=status,
             disposition=None,
+            error=error,
+            cancellation_status=cancellation_status,
             total_count=0,
             succeeded_count=0,
-            failed_count=0,
             output_roles=frozenset({"data"}),
+            output_types={"data": "csv"},
         )
 
 
@@ -129,28 +145,6 @@ def test_counts_must_balance() -> None:
 def test_metadata_cannot_reintroduce_lifecycle_flags() -> None:
     with pytest.raises(ValidationError, match="Lifecycle facts"):
         _result(metadata={"cancelled": True})
-
-
-def test_builder_requires_explicit_classification() -> None:
-    builder = StepResultBuilder("op", 0, {}, "a" * 32)
-    builder.add_success(2)
-    builder.add_failure(1)
-    result = builder.build(
-        StepStatus.PARTIAL,
-        disposition=StepDisposition.EXECUTED,
-    )
-    assert result.status is StepStatus.PARTIAL
-    assert result.total_count == 3
-
-
-def test_builder_hides_outputs_for_unusable_terminal_state() -> None:
-    builder = StepResultBuilder("op", 0, {"data": "csv"}, "a" * 32)
-    builder.add_failure()
-
-    result = builder.build(StepStatus.FAILED, error="worker failed")
-
-    assert result.output_roles == frozenset()
-    assert result.output_types == {}
 
 
 class TestStepResult:
@@ -265,83 +259,6 @@ class TestStepResult:
         )
         with pytest.raises(ValidationError):
             result.step_name = "changed"
-
-
-class TestStepResultBuilder:
-    """Tests for StepResultBuilder."""
-
-    def test_build_empty(self):
-        """Test building with no items."""
-        builder = StepResultBuilder(
-            step_name="test",
-            step_number=0,
-            operation_outputs={"out": "csv"},
-        )
-        result = builder.build(StepStatus.SUCCEEDED, StepDisposition.EXECUTED)
-        assert result.step_name == "test"
-        assert result.step_number == 0
-        assert result.status == StepStatus.SUCCEEDED
-        assert result.total_count == 0
-        assert result.succeeded_count == 0
-        assert result.failed_count == 0
-        assert result.output_roles == frozenset(["out"])
-
-    def test_add_success(self):
-        """Test adding successes."""
-        builder = StepResultBuilder(
-            step_name="test",
-            step_number=0,
-            operation_outputs={},
-        )
-        builder.add_success()
-        builder.add_success(count=5)
-        result = builder.build(StepStatus.SUCCEEDED, StepDisposition.EXECUTED)
-        assert result.total_count == 6
-        assert result.succeeded_count == 6
-        assert result.failed_count == 0
-        assert result.status == StepStatus.SUCCEEDED
-
-    def test_add_failure(self):
-        """Test adding failures."""
-        builder = StepResultBuilder(
-            step_name="test",
-            step_number=0,
-            operation_outputs={},
-        )
-        builder.add_failure()
-        builder.add_failure(count=3)
-        result = builder.build(StepStatus.FAILED, error="four items failed")
-        assert result.total_count == 4
-        assert result.succeeded_count == 0
-        assert result.failed_count == 4
-        assert result.status == StepStatus.FAILED
-
-    def test_mixed_results(self):
-        """Test mixed success and failure."""
-        builder = StepResultBuilder(
-            step_name="test",
-            step_number=0,
-            operation_outputs={},
-        )
-        builder.add_success(count=8)
-        builder.add_failure(count=2)
-        result = builder.build(StepStatus.PARTIAL, StepDisposition.EXECUTED)
-        assert result.total_count == 10
-        assert result.succeeded_count == 8
-        assert result.failed_count == 2
-        assert result.status == StepStatus.PARTIAL
-
-    def test_build_requires_explicit_terminal_status(self):
-        """The builder does not infer lifecycle state from item counts."""
-        builder = StepResultBuilder(
-            step_name="test",
-            step_number=0,
-            operation_outputs={},
-        )
-        builder.add_failure()
-
-        with pytest.raises(TypeError, match="status"):
-            builder.build()  # type: ignore[call-arg]
 
 
 def test_binding_copies_result_without_changing_durable_payload() -> None:
