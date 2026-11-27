@@ -13,13 +13,21 @@ from unittest.mock import Mock
 
 import pytest
 from fixtures.outcome_store import append_metric_attempt
+from fixtures.retained_inspection import commit_inspection_attempt
 
 from artisan.cli import main
 from artisan.errors import ArtisanError, ErrorCode
-from artisan.inspection import inspect_evidence, list_inspections, read_operating_guide
+from artisan.inspection import (
+    inspect_evidence,
+    list_inspections,
+    load_evidence_export,
+    read_operating_guide,
+)
 from artisan.inspection._evidence import MAX_PAYLOAD_BYTES, json_ready
 from artisan.registry import discovery
 from artisan.schemas import MetricArtifact
+from artisan.schemas.execution.storage_config import StorageConfig
+from artisan.storage.io import retained_store
 
 
 @pytest.fixture
@@ -74,6 +82,114 @@ def test_cli_and_python_continue_same_cursor(
     payload = json.loads(capfd.readouterr().out)
     assert payload == json_ready(expected)
     assert payload["has_more"] is False
+
+
+@pytest.mark.parametrize("capability", ["list_runs", "assess_outcomes", "compare_runs"])
+def test_cli_reads_store_with_explicit_storage(
+    capability: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capfd: pytest.CaptureFixture[str],
+) -> None:
+    root = str(tmp_path / "store")
+    files_root = str(tmp_path / "custom-files")
+    storage = StorageConfig(options={"auto_mkdir": True})
+    config = tmp_path / "storage.json"
+    config.write_text(storage.model_dump_json())
+    committer = retained_store.create_retained_store(
+        root, files_root, fs=storage.filesystem()
+    )
+    for run_id, score in (("baseline", 1), ("candidate", 2)):
+        metric = MetricArtifact.draft(
+            {"score": score}, "score.json", 0, metadata={"case": "example"}
+        ).finalize()
+        commit_inspection_attempt(
+            root,
+            run_id=run_id,
+            name="score",
+            outputs={"metrics": [metric]},
+            output_types={"metrics": "metric"},
+            committer=committer,
+        )
+
+    open_store = Mock(wraps=retained_store.open_retained_store)
+    monkeypatch.setattr(retained_store, "open_retained_store", open_store)
+    flags = [
+        "--delta-root",
+        root,
+        "--files-root",
+        files_root,
+        "--storage-config",
+        str(config),
+        "--json",
+    ]
+    if capability == "list_runs":
+        assert main(["inspect", "run", capability, *flags]) == 0
+        assert json.loads(capfd.readouterr().out)["total_items"] == 2
+    else:
+        request = tmp_path / "request.json"
+        request.write_text(json.dumps(_export_request(capability)))
+        output = tmp_path / "export"
+        assert (
+            main(
+                [
+                    "evidence",
+                    "export",
+                    capability,
+                    *flags,
+                    "--request",
+                    str(request),
+                    "--output",
+                    str(output),
+                ]
+            )
+            == 0
+        )
+        receipt = json.loads(capfd.readouterr().out)
+        assert (
+            load_evidence_export(output).evidence_id
+            == receipt["report_metadata"]["evidence_id"]
+        )
+    open_store.assert_called_once()
+    assert open_store.call_args.args == (root, files_root)
+    assert open_store.call_args.kwargs["fs"].auto_mkdir is True
+
+
+def _export_request(capability: str) -> dict[str, Any]:
+    baseline = {"pipeline_run_id": "baseline", "step_name": "score", "role": "metrics"}
+    if capability == "assess_outcomes":
+        return {
+            **baseline,
+            "spec": {
+                "label": "Score threshold",
+                "checks": [
+                    {
+                        "check_id": "score",
+                        "metric_path": ["score"],
+                        "operator": "ge",
+                        "threshold": 1,
+                    }
+                ],
+            },
+        }
+    return {
+        "baseline": baseline,
+        "candidate": {**baseline, "pipeline_run_id": "candidate"},
+        "spec": {
+            "label": "Compare scores",
+            "matching": {"kind": "metadata_key", "key": "case"},
+            "metrics": [
+                {
+                    "metric_id": "score",
+                    "metric_path": ["score"],
+                    "direction": "higher",
+                    "measurement_id": "score",
+                    "measurement_version": "1",
+                    "unit": "unitless",
+                }
+            ],
+        },
+    }
 
 
 @pytest.mark.parametrize(

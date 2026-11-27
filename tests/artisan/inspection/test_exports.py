@@ -833,7 +833,6 @@ def test_cli_export_reads_complete_report_once(
     def no_dispatcher(*args: Any, **kwargs: Any) -> None:
         pytest.fail("Export called the bounded live dispatcher")
 
-    monkeypatch.setattr("artisan._inspection_cli._store_context", lambda args: "source")
     monkeypatch.setattr(f"artisan.visualization.{capability}", reader)
     monkeypatch.setattr("artisan.inspection.inspect_evidence", no_dispatcher)
     assert (
@@ -846,6 +845,8 @@ def test_cli_export_reads_complete_report_once(
                 str(request),
                 "--output",
                 str(tmp_path / "export"),
+                "--delta-root",
+                "source",
                 "--json",
             ]
         )

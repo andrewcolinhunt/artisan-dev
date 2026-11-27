@@ -91,6 +91,7 @@ def _store_context(args: argparse.Namespace) -> str:
 
 
 def _inspect(args: argparse.Namespace) -> BaseModel:
+    from artisan.cli import _storage_config
     from artisan.inspection import inspect_evidence
     from artisan.inspection.api import validate_request
     from artisan.inspection.catalog import definition
@@ -99,7 +100,11 @@ def _inspect(args: argparse.Namespace) -> BaseModel:
     validate_request(args.capability, arguments)
     if definition(args.capability).requires_store:
         return inspect_evidence(
-            args.capability, arguments, delta_root=_store_context(args)
+            args.capability,
+            arguments,
+            delta_root=_store_context(args),
+            files_root=args.files_root,
+            storage=_storage_config(args),
         )
     from artisan.registry.discovery import discover
     from artisan.utils.application_modules import resolve_application_modules
@@ -112,6 +117,7 @@ def _inspect(args: argparse.Namespace) -> BaseModel:
 
 
 def _export(args: argparse.Namespace) -> BaseModel:
+    from artisan.cli import _storage_config
     from artisan.inspection import export_evidence
     from artisan.inspection._boundary import invalid_input, store_not_found
     from artisan.inspection.api import validate_request
@@ -133,6 +139,7 @@ def _export(args: argparse.Namespace) -> BaseModel:
     request = validate_request(args.capability, arguments)
     destination = preflight_destination(args.output)
     root = _store_context(args)
+    storage = _storage_config(args)
     report: OutcomeAssessment | RunComparison
     try:
         if args.capability == "assess_outcomes":
@@ -143,7 +150,13 @@ def _export(args: argparse.Namespace) -> BaseModel:
                     for name in OutcomeSelection.model_fields
                 }
             )
-            report = assess_outcomes(root, selection=selection, spec=assessment.spec)
+            report = assess_outcomes(
+                root,
+                selection=selection,
+                spec=assessment.spec,
+                files_root=args.files_root,
+                storage=storage,
+            )
         else:
             comparison = cast("ComparisonRequest", request)
             report = compare_runs(
@@ -151,6 +164,8 @@ def _export(args: argparse.Namespace) -> BaseModel:
                 baseline=comparison.baseline,
                 candidate=comparison.candidate,
                 spec=comparison.spec,
+                files_root=args.files_root,
+                storage=storage,
             )
     except FileNotFoundError as exc:
         raise store_not_found() from exc
