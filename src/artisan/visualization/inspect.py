@@ -36,10 +36,6 @@ if TYPE_CHECKING:
 from artisan.storage.io.retained_store import open_configured_store
 from artisan.visualization._read import artifact_membership, read_view, registered_rows
 
-# ======================================================================
-# Public API
-# ======================================================================
-
 
 def inspect_worker_log(
     delta_root: str,
@@ -604,7 +600,6 @@ def inspect_metrics(
         display_step = (
             current_step if current_step is not None else row["origin_step_number"]
         )
-        # Strip _metrics suffix for readability
         if name.endswith("_metrics"):
             name = name[: -len("_metrics")]
 
@@ -628,7 +623,6 @@ def inspect_metrics(
 
     result = pl.DataFrame(parsed_rows)
 
-    # Round any float columns that weren't already rounded
     float_cols = [
         c for c in result.columns if result[c].dtype in (pl.Float64, pl.Float32)
     ]
@@ -698,14 +692,12 @@ def inspect_csv(
         raise ValueError(msg)
 
     if name is not None:
-        # Single artifact by name
         content = df["content"][0]
         if content is None:
             msg = f"Artifact '{name}' has no content (not hydrated)"
             raise ValueError(msg)
         return pl.read_csv(io.BytesIO(content))
 
-    # Multiple artifacts (step filter) — concatenate with _source column
     frames: list[pl.DataFrame] = []
     for row in df.iter_rows(named=True):
         content = row["content"]
@@ -722,11 +714,6 @@ def inspect_csv(
         raise ValueError(msg)
 
     return pl.concat(frames)
-
-
-# ======================================================================
-# Private helpers
-# ======================================================================
 
 
 def _format_size(size: int) -> str:

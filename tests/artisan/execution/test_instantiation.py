@@ -164,9 +164,8 @@ class TestInstantiateInputs:
         s_id = "a" * 32
         store = MagicMock()
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
-        # Hydrated bulk load returns empty — s_id missed the batch
         store.get_artifacts_by_type.return_value = {}
-        store.get_artifact.return_value = None  # fallback also fails
+        store.get_artifact.return_value = None
 
         with pytest.raises(ValueError, match="could not be loaded"):
             instantiate_inputs(
@@ -192,7 +191,6 @@ class TestInstantiateInputs:
         store.provenance.load_type_map.return_value = {s_id: ArtifactTypes.METRIC}
         store.get_artifacts_by_type.return_value = {s_id: _make_metric_alt(s_id)}
 
-        # No spec for "data" role, default_hydrate=True
         result, _ = instantiate_inputs(
             {"data": [s_id]}, store, {}, default_hydrate=True
         )
@@ -234,7 +232,6 @@ class TestInstantiateInputs:
             {"s": InputSpec(hydrate=False), "m": InputSpec(hydrate=False)},
         )
 
-        # Single call with all IDs
         store.provenance.load_type_map.assert_called_once()
         call_args = store.provenance.load_type_map.call_args[0][0]
         assert set(call_args) == {s_id, m_id}

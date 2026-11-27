@@ -53,7 +53,7 @@ class TestComputeArtifactId:
     def test_returns_32_char_hex(self) -> None:
         result = compute_artifact_id("csv", b"anything", {})
         assert len(result) == 32
-        int(result, 16)  # validates hex
+        int(result, 16)
 
     def test_type_domain_separates_identical_content(self) -> None:
         assert compute_artifact_id("csv", b"same", {}) != compute_artifact_id(
@@ -237,17 +237,17 @@ class TestComputeExecutionSpecId:
             params={"tolerance": 0.1},
         )
         assert spec1 == spec2
-        assert len(spec1) == 32  # xxh3_128 hex length
+        assert len(spec1) == 32
 
     def test_artifact_order_is_preserved(self):
         """Occurrence order within a role remains part of the cache identity."""
         spec1 = _execution_spec_from_ids(
             operation_name="relax",
-            inputs={"data": ["bbb" + "0" * 29, "aaa" + "0" * 29]},  # Unsorted
+            inputs={"data": ["bbb" + "0" * 29, "aaa" + "0" * 29]},
         )
         spec2 = _execution_spec_from_ids(
             operation_name="relax",
-            inputs={"data": ["aaa" + "0" * 29, "bbb" + "0" * 29]},  # Sorted
+            inputs={"data": ["aaa" + "0" * 29, "bbb" + "0" * 29]},
         )
         assert spec1 != spec2
 
@@ -301,7 +301,7 @@ class TestComputeExecutionSpecId:
         spec2 = _execution_spec_from_ids(
             operation_name="relax",
             inputs={},
-            params={"b": 2, "a": 1},  # Different order
+            params={"b": 2, "a": 1},
         )
         assert spec1 == spec2
 

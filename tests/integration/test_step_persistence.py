@@ -28,10 +28,6 @@ from artisan.storage.core.execution_source import ScientificExecutionSource
 
 from .conftest import create_native_pipeline, read_table
 
-# =============================================================================
-# Test 1: Cache Hit
-# =============================================================================
-
 
 def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     """Second identical run skips execution via cache."""
@@ -39,7 +35,6 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     staging = pipeline_env["staging_root"]
     working = pipeline_env["working_root"]
 
-    # First run
     p1 = create_native_pipeline(
         name="test_cache",
         delta_root=delta,
@@ -52,12 +47,10 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     )
     p1.finalize()
 
-    # Count steps rows after first run
     steps_df1 = read_table(delta, "orchestration/steps")
     first_run_rows = len(steps_df1)
-    assert first_run_rows >= 3  # pending + running + terminal
+    assert first_run_rows >= 3
 
-    # Second run — same operation, same params, same step position
     p2 = create_native_pipeline(
         name="test_cache",
         delta_root=delta,
@@ -70,12 +63,10 @@ def test_cache_hit(pipeline_env: dict[str, str]) -> None:
     )
     p2.finalize()
 
-    # Cache hit: same step name, same success
     assert result2.step_name == result1.step_name
     assert result2.status is StepStatus.SUCCEEDED
     assert result2.disposition is StepDisposition.CACHE_HIT
 
-    # A cache hit adds current-attempt lifecycle rows, but no new execution.
     steps_df2 = read_table(delta, "orchestration/steps")
     assert len(steps_df2) == first_run_rows + 3
     cached_rows = steps_df2.filter(
@@ -195,18 +186,12 @@ def test_cache_only_run_can_resume_and_extend(
     mixed.close()
 
 
-# =============================================================================
-# Test 2: Cache Miss (different params)
-# =============================================================================
-
-
 def test_cache_miss_different_params(pipeline_env: dict[str, str]) -> None:
     """Different params cause re-execution."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
     working = pipeline_env["working_root"]
 
-    # First run
     p1 = create_native_pipeline(
         name="test_miss",
         delta_root=delta,
@@ -219,7 +204,6 @@ def test_cache_miss_different_params(pipeline_env: dict[str, str]) -> None:
     )
     p1.finalize()
 
-    # Second run with different params
     p2 = create_native_pipeline(
         name="test_miss",
         delta_root=delta,
@@ -236,18 +220,12 @@ def test_cache_miss_different_params(pipeline_env: dict[str, str]) -> None:
     assert result.total_count >= 1
 
 
-# =============================================================================
-# Test 3: Upstream Invalidation
-# =============================================================================
-
-
 def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     """Changed upstream params invalidate downstream cache."""
     delta = pipeline_env["delta_root"]
     staging = pipeline_env["staging_root"]
     working = pipeline_env["working_root"]
 
-    # First run: Generate -> Transform
     p1 = create_native_pipeline(
         name="test_invalidate",
         delta_root=delta,
@@ -274,7 +252,6 @@ def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     terminal_1 = steps_df1.filter(pl.col("status") == "succeeded")
     count_1 = len(terminal_1)
 
-    # Second run: different seed on step 0 → step 1 should also re-execute
     p2 = create_native_pipeline(
         name="test_invalidate",
         delta_root=delta,
@@ -283,7 +260,7 @@ def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     )
     step0b = p2.run(
         DataGenerator,
-        params={"count": 2, "seed": 99},  # different seed
+        params={"count": 2, "seed": 99},
     )
     result = p2.run(
         DataTransformer,
@@ -297,16 +274,10 @@ def test_upstream_invalidation(pipeline_env: dict[str, str]) -> None:
     )
     p2.finalize()
 
-    # Both steps re-executed, producing new succeeded snapshots.
     steps_df2 = read_table(delta, "orchestration/steps")
     terminal_2 = steps_df2.filter(pl.col("status") == "succeeded")
     assert len(terminal_2) > count_1
     assert result.status is StepStatus.SUCCEEDED
-
-
-# =============================================================================
-# Test 4: Resume
-# =============================================================================
 
 
 def test_resume(pipeline_env: dict[str, str]) -> None:
@@ -315,7 +286,6 @@ def test_resume(pipeline_env: dict[str, str]) -> None:
     staging = pipeline_env["staging_root"]
     working = pipeline_env["working_root"]
 
-    # Run a 2-step pipeline
     p1 = create_native_pipeline(
         name="test_resume",
         delta_root=delta,
@@ -339,7 +309,6 @@ def test_resume(pipeline_env: dict[str, str]) -> None:
     )
     p1.finalize()
 
-    # Resume
     p2 = PipelineManager.resume(
         delta_root=delta,
         staging_root=staging,
@@ -349,17 +318,11 @@ def test_resume(pipeline_env: dict[str, str]) -> None:
     assert p2.current_step == 2
     assert len(p2) == 2
 
-    # Can chain from resumed state
     ref = p2[1].output("dataset")
     assert ref.source.step_run_id == p2[1].step_run_id
     assert ref.source.store == p2.committer.store_identity
     assert ref.role == "dataset"
     p2.close()
-
-
-# =============================================================================
-# Test 5: Async Submit
-# =============================================================================
 
 
 def test_async_submit(pipeline_env: dict[str, str]) -> None:
@@ -380,23 +343,16 @@ def test_async_submit(pipeline_env: dict[str, str]) -> None:
         params={"count": 2, "seed": 42},
     )
 
-    # output() returns immediately (never blocks)
     ref = future.output("datasets")
     assert ref.source.step_run_id == pipeline.executions[0].record.step_run_id
     assert ref.source.store == pipeline.committer.store_identity
     assert ref.role == "datasets"
 
-    # result() blocks until done
     result = future.result()
     assert result.status is StepStatus.SUCCEEDED
     assert result.step_name == "data_generator"
 
     pipeline.finalize()
-
-
-# =============================================================================
-# Test 6: List Runs
-# =============================================================================
 
 
 def test_list_runs(pipeline_env: dict[str, str]) -> None:
@@ -405,7 +361,6 @@ def test_list_runs(pipeline_env: dict[str, str]) -> None:
     staging = pipeline_env["staging_root"]
     working = pipeline_env["working_root"]
 
-    # Create a pipeline run first
     p = create_native_pipeline(
         name="test_list",
         delta_root=delta,

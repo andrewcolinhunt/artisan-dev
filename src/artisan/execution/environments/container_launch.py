@@ -236,7 +236,6 @@ class PreparedContainerCommandEnvironment:
         """Keep external roots separate from writable and executable control paths."""
         roots = {item.root for item in self.external_files}
         protected = {
-            # Image launchers, loaders and configuration must remain image-owned.
             *(
                 Path(root)
                 for root in (

@@ -46,7 +46,6 @@ def record_replay_configuration(
             fs=fs,
         )
     except Exception as error:
-        # A failing diagnostic handler cannot revoke an otherwise sealed result.
         with suppress(Exception):
             _LOGGER.warning(
                 "Replay configuration unavailable for delivery %s (%s)",

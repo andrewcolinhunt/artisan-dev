@@ -233,9 +233,6 @@ def execute_inert_call(
                     error is None or isinstance(error, Exception)
                 ):
                     error = cleanup_error
-        # Filesystem cleanup cannot block control requests or observations. A
-        # deadline crossed during deletion still loses closure; retain anything
-        # left, without claiming that already removed files can be recovered.
         with control._lock:
             control._refresh()
             unknown |= control._state == OwnershipState.UNKNOWN

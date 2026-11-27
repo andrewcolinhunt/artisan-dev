@@ -102,10 +102,6 @@ class PipelineTimings:
             pipeline_run_id=pipeline_run_id,
         )
 
-    # ------------------------------------------------------------------
-    # DataFrames
-    # ------------------------------------------------------------------
-
     def step_timings(self) -> pl.DataFrame:
         """Step-level timings as a DataFrame.
 
@@ -242,10 +238,6 @@ class PipelineTimings:
             )
         return pl.DataFrame(rows, schema=_EXECUTION_STATS_SCHEMA)
 
-    # ------------------------------------------------------------------
-    # Plots
-    # ------------------------------------------------------------------
-
     def plot_steps(
         self,
         step_numbers: list[int] | None = None,
@@ -266,7 +258,6 @@ class PipelineTimings:
         if step_numbers is not None:
             steps = [s for s in steps if s["step_number"] in step_numbers]
 
-        # Collect all phase names (excluding "total") in order
         all_phases = _collect_phase_names(step["timings"] for step in steps)
 
         labels = [f"{s['step_number']}: {s['step_name']}" for s in steps]
@@ -296,10 +287,8 @@ class PipelineTimings:
         Returns:
             matplotlib Figure.
         """
-        # Only include steps that have executions
         steps_with_execs = [s for s in self._data["steps"] if s["executions"]]
 
-        # Collect mean timings per step
         all_phases = _collect_phase_names(
             ex["timings"] for s in steps_with_execs for ex in s["executions"]
         )
@@ -394,10 +383,6 @@ class PipelineTimings:
         plt.close(fig)
         return fig
 
-    # ------------------------------------------------------------------
-    # Internal helpers
-    # ------------------------------------------------------------------
-
     def _find_step(self, step_number: int) -> dict[str, Any]:
         """Return the step dict matching step_number, or raise."""
         for step in self._data["steps"]:
@@ -406,11 +391,6 @@ class PipelineTimings:
                 return result
         msg = f"Step {step_number} not found in timing data"
         raise ValueError(msg)
-
-
-# ======================================================================
-# Module-level helpers
-# ======================================================================
 
 
 _COMMAND_TIMINGS_SCHEMA: dict[str, DataType | DataTypeClass] = {
@@ -580,15 +560,15 @@ def _collect_phase_names(timings_iter: Any) -> list[str]:
 def _get_phase_colors(phases: list[str]) -> dict[str, str]:
     """Assign colors to phases from a predefined palette."""
     palette = [
-        "#4e79a7",  # blue
-        "#f28e2b",  # orange
-        "#e15759",  # red
-        "#76b7b2",  # teal
-        "#59a14f",  # green
-        "#edc948",  # yellow
-        "#b07aa1",  # purple
-        "#ff9da7",  # pink
-        "#9c755f",  # brown
-        "#bab0ac",  # gray
+        "#4e79a7",
+        "#f28e2b",
+        "#e15759",
+        "#76b7b2",
+        "#59a14f",
+        "#edc948",
+        "#b07aa1",
+        "#ff9da7",
+        "#9c755f",
+        "#bab0ac",
     ]
     return {phase: palette[i % len(palette)] for i, phase in enumerate(phases)}

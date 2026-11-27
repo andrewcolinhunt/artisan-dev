@@ -155,8 +155,6 @@ def qualified_controller_sources(
         try:
             distribution = importlib.metadata.distribution(package.name)
         except importlib.metadata.PackageNotFoundError:
-            # Worker-only dependencies need not exist in the controller.
-            # Required transport packages are checked by the code collector.
             continue
         metadata = json.loads(distribution.read_text("direct_url.json") or "{}")
         if not metadata.get("dir_info", {}).get("editable", False):

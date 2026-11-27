@@ -101,7 +101,6 @@ def _walk_edges(
         next_frontier: list[str] = []
         for node in frontier:
             for neighbor in adjacency.get(node, []):
-                # Backward maps target -> sources; forward maps source -> targets.
                 pair = (neighbor, node) if direction == "backward" else (node, neighbor)
                 if pair not in seen_edges:
                     seen_edges.add(pair)

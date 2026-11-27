@@ -138,7 +138,6 @@ def execute_admitted_assignment(
             )
         raise
     except CommandOwnershipError:
-        # An unresolved child may still be reading these localized carriers.
         preserve_inputs = True
         raise
     finally:

@@ -183,7 +183,6 @@ def build_execution_edges(
             )
     if not parts:
         return pl.DataFrame(schema=_schema)
-    # Edges are relations; occurrence order and repetition live in replay inputs.
     return pl.concat(parts).unique(maintain_order=True)
 
 

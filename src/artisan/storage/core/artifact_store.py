@@ -147,10 +147,6 @@ class ArtifactStore:
             self._view.exclude_cache("untracked_filesystem_access")
         return self._fs
 
-    # -------------------------------------------------------------------------
-    # Read operations
-    # -------------------------------------------------------------------------
-
     @with_read_scope
     def get_artifact(
         self,
@@ -261,8 +257,6 @@ class ArtifactStore:
         artifacts: dict[str, Artifact] = {}
         for row in rows.iter_rows(named=True):
             artifact = cast("Artifact", model_cls.from_row(row))  # type: ignore[attr-defined]
-            # Artifacts loaded from storage are always finalized (artifact_id
-            # is non-None).
             assert artifact.artifact_id is not None
             self._attach_verified_location(artifact, locations)
             artifacts[artifact.artifact_id] = artifact
@@ -751,10 +745,6 @@ class ArtifactStore:
                     names[row["artifact_id"]] = name
 
         return names
-
-    # -------------------------------------------------------------------------
-    # Write preparation (returns DataFrames for staging)
-    # -------------------------------------------------------------------------
 
     def prepare_artifact_index_entry(
         self, artifact_id: str, artifact_type: str, step_number: int

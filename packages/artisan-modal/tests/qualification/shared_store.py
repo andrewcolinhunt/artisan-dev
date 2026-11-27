@@ -339,7 +339,6 @@ def main() -> int:
         qualify(args.consumer_image, report)
         report["passed"] = True
     except Exception as error:
-        # Store SDK/HTTP exceptions may contain signed locators or credentials.
         report["error_type"] = type(error).__name__
         if isinstance(error, ModuleNotFoundError):
             report["missing_module"] = error.name

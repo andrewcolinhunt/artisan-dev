@@ -24,6 +24,6 @@ class ExecutionEdge:
     """
 
     execution_run_id: str
-    direction: str  # "input" or "output"
+    direction: str
     role: str
     artifact_id: str

@@ -68,10 +68,8 @@ class TestComputeExpectedStagingPaths:
         paths = compute_expected_staging_paths(str(tmp_path), execution_run_ids)
 
         assert len(paths) == 2
-        # Verify sharding matches shard_uri()
         assert paths[0] == shard_uri(str(tmp_path), execution_run_ids[0])
         assert paths[1] == shard_uri(str(tmp_path), execution_run_ids[1])
-        # Verify structure: root/ab/cd/full_id
         assert paths[0] == str(tmp_path / "ab" / "cd" / execution_run_ids[0])
         assert paths[1] == str(tmp_path / "12" / "34" / execution_run_ids[1])
 
@@ -100,7 +98,6 @@ class TestVerifyStagingDirectory:
         """Returns (False, [file]) when required file is missing."""
         staging_dir = tmp_path / "staging" / "ab" / "cd" / "run_id"
         staging_dir.mkdir(parents=True)
-        # Directory exists but no executions.parquet
 
         success, missing = verify_staging_directory(str(staging_dir))
 
@@ -201,7 +198,6 @@ class TestAwaitStagingFiles:
             "12345678901234567890123456789012",
         ]
 
-        # Create only the first file
         staging_dir = Path(shard_uri(str(tmp_path), execution_run_ids[0]))
         staging_dir.mkdir(parents=True)
         (staging_dir / REQUIRED_STAGING_FILE).write_bytes(b"data")
@@ -215,7 +211,6 @@ class TestAwaitStagingFiles:
             )
 
         error_msg = str(exc_info.value)
-        # Only the second one should be missing
         assert "Missing 1/2" in error_msg
         assert "12345678" in error_msg
 

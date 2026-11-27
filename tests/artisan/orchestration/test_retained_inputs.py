@@ -810,7 +810,6 @@ def test_curator_associations_union_frozen_seed_and_exact_later_edges(
     )
     assert frozen.boundary.model_dump_json() == snapshot
     assert len(frozen.boundary.frozen_context.associations[0].members) == 1
-    # CuratorReader deliberately exposes only the curator's original query seed.
     assert isinstance(first.reference, AcceptedCuratorOccurrence)
     assert (
         len(CuratorReader(reader.committer).associated(first.reference, "metric")) == 1

@@ -94,7 +94,6 @@ def group_inputs(
     elif strategy == GroupByStrategy.NAME:
         matched_sets = _match_by_name(inputs, artifact_store)
     else:
-        # Defensive branch for non-enum values; mypy sees enum as exhausted.
         msg = f"Unknown group_by strategy: {strategy}"  # type: ignore[unreachable]
         raise ValueError(msg)
 
@@ -189,11 +188,6 @@ def validate_stem_match_uniqueness(
         raise ValueError(msg)
 
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
 def _match_zip(inputs: dict[str, list[str]]) -> list[dict[str, str]]:
     """Positional matching: 1st with 1st, 2nd with 2nd, etc.
 
@@ -260,7 +254,6 @@ def _match_by_ancestry(
     if not inputs[role_a] or not inputs[role_b]:
         return []
 
-    # Determine target role via step numbers
     sample_ids = {inputs[role_a][0], inputs[role_b][0]}
     step_map = artifact_store.provenance.load_step_map(sample_ids)
     step_a = step_map.get(inputs[role_a][0])
@@ -272,7 +265,6 @@ def _match_by_ancestry(
         else:
             target_role, candidate_role = role_b, role_a
     else:
-        # Fallback: smaller set as targets for efficiency
         logger.warning(
             "LINEAGE matching: step numbers unavailable, using smaller role as targets"
         )
@@ -284,7 +276,6 @@ def _match_by_ancestry(
     target_ids = set(inputs[target_role])
     candidate_ids_by_role = {candidate_role: inputs[candidate_role]}
 
-    # Load edges scoped to the step range of the involved artifacts
     all_ids = list(inputs[role_a]) + list(inputs[role_b])
     step_range = artifact_store.provenance.get_step_range(all_ids)
     if step_range is None:
@@ -357,7 +348,6 @@ def _match_primary_by_ancestry(
     target_ids = set(inputs[primary_role])
     candidate_ids_by_role = {role: inputs[role] for role in other_roles}
 
-    # Load edges scoped to the step range of all involved artifacts
     all_id_list = list(inputs[primary_role])
     for role in other_roles:
         all_id_list.extend(inputs[role])
@@ -368,9 +358,6 @@ def _match_primary_by_ancestry(
 
     result = match_by_ancestry(target_ids, candidate_ids_by_role, edges)
 
-    # Reshape to aligned dict, preserving primary artifact order.
-    # Each primary may have multiple candidates per role; expand with
-    # cross-product so every combination gets its own execution unit.
     aligned: dict[str, list[str]] = {role: [] for role in inputs}
 
     for primary_id in inputs[primary_role]:
@@ -409,7 +396,6 @@ def _match_primary_by_name(
 
     stems_by_role = _build_stems_by_role(inputs, artifact_store)
 
-    # Forward lookup: primary_id -> stem. Reverse the role's stem dict.
     primary_id_to_stem = {
         aid: stem for stem, aid in stems_by_role[primary_role].items()
     }

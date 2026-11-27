@@ -122,7 +122,6 @@ def _read_populations(
             )
             for item in selections
         ]
-        # Freeze both content versions before acquiring either comparison side.
         if any(
             _population_state(state, item.role)[0] == "available"
             for state, item in resolved

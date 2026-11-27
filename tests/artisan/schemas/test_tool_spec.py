@@ -62,7 +62,7 @@ class TestToolSpec:
     @patch("shutil.which", return_value="/usr/bin/samtools")
     def test_validate_tool_on_path(self, mock_which):
         ts = ToolSpec(executable="samtools")
-        ts.validate_tool()  # should not raise
+        ts.validate_tool()
 
     @patch("shutil.which", return_value=None)
     def test_validate_tool_not_found(self, mock_which):
@@ -74,7 +74,7 @@ class TestToolSpec:
         script = tmp_path / "run.py"
         script.touch()
         ts = ToolSpec(executable=str(script))
-        ts.validate_tool()  # should not raise
+        ts.validate_tool()
 
     @pytest.mark.parametrize("executable", [None, "", "   "])
     def test_executable_must_be_present(self, executable):

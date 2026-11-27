@@ -41,7 +41,7 @@ class TestInputSpec:
     def test_frozen(self):
         """InputSpec is immutable."""
         spec = InputSpec(artifact_type=ArtifactTypes.CSV)
-        with pytest.raises(Exception):  # Pydantic raises ValidationError for frozen
+        with pytest.raises(Exception):
             spec.artifact_type = ArtifactTypes.METRIC
 
     def test_with_associated_default_empty(self):

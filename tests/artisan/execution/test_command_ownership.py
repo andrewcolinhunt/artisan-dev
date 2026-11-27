@@ -323,7 +323,6 @@ def test_curator_closed_scope_does_not_prove_shared_owner_closure(
         )
         assert result.success
     assert outer.uncertain
-    # A successful science seal cannot prove shared-owner closure.
     records = list(Path(runtime.staging_root).rglob("executions.parquet"))
     assert len(records) == 1
     assert pl.read_parquet(records[0])["success"].to_list() == [True]

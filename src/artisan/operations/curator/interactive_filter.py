@@ -124,10 +124,6 @@ class InteractiveFilter:
         self._total_metrics_discovered: int = 0
         self._metric_sources: list[dict[str, Any]] = []
 
-    # ------------------------------------------------------------------
-    # Load
-    # ------------------------------------------------------------------
-
     def load(
         self,
         step_numbers: list[int] | None = None,
@@ -249,9 +245,6 @@ class InteractiveFilter:
         primary_ids = set(primary_df["artifact_id"].to_list())
         self._primary_artifact_ids = primary_ids
 
-        # ── Metric discovery via forward provenance walk ──
-        # Use ALL artifact IDs for step range (not just primaries) so metrics
-        # at higher steps are included in the edge scan.
         step_range = store.provenance.get_step_range(all_index["artifact_id"].to_list())
         if step_range is None:
             msg = "No metrics found derived from the primary artifacts"
@@ -285,7 +278,6 @@ class InteractiveFilter:
 
         self._total_metrics_discovered = metric_pairs["metric_id"].n_unique()
         self._metric_pairs = metric_pairs
-        # Accepted current-step membership can differ from a cached metric's origin.
         self._metric_steps = (
             all_index.filter(pl.col("artifact_type") == "metric")
             .select(
@@ -296,13 +288,11 @@ class InteractiveFilter:
         )
         self._step_names = store.provenance.load_step_name_map(self._pipeline_run_id)
 
-        # ── Build wide DataFrame via _build_metric_namespace ──
         wide_df, _ = _build_metric_namespace(
             primary_df, metric_pairs, store, self._pipeline_run_id
         )
         self._wide_df = wide_df.rename({"passthrough_id": "artifact_id"})
 
-        # ── Build tidy DataFrame for exploration ──
         all_found_metric_ids = set(metric_pairs["metric_id"].unique().to_list())
         self._metric_sources = _build_metric_sources(
             all_found_metric_ids, store, self._pipeline_run_id
@@ -314,7 +304,6 @@ class InteractiveFilter:
         metric_step_map = store.provenance.load_step_map(all_found_metric_ids)
         step_name_map = store.provenance.load_step_name_map(self._pipeline_run_id)
 
-        # Build primary->metrics mapping from metric_pairs
         primary_to_metrics: dict[str, list[str]] = {}
         for row in metric_pairs.iter_rows(named=True):
             primary_to_metrics.setdefault(row["passthrough_id"], []).append(
@@ -388,10 +377,6 @@ class InteractiveFilter:
                 CuratorView(self._committer, self._snapshot, _read=read)
             )
 
-    # ------------------------------------------------------------------
-    # Properties
-    # ------------------------------------------------------------------
-
     @property
     def wide_df(self) -> pl.DataFrame:
         """Wide-format DataFrame with one row per artifact, metrics as columns.
@@ -420,10 +405,6 @@ class InteractiveFilter:
     def criteria(self) -> list[Criterion]:
         """Current filter criteria (may be empty)."""
         return list(self._criteria)
-
-    # ------------------------------------------------------------------
-    # Set criteria
-    # ------------------------------------------------------------------
 
     def set_criteria(self, criteria: list[dict[str, Any]]) -> None:
         """Set filter criteria, validating metric names against loaded data.
@@ -501,10 +482,6 @@ class InteractiveFilter:
         assert self._evaluation_df is not None
         return self._evaluation_df
 
-    # ------------------------------------------------------------------
-    # Filtered results
-    # ------------------------------------------------------------------
-
     @property
     def filtered_ids(self) -> list[str]:
         """Artifact IDs that pass all criteria.
@@ -527,10 +504,6 @@ class InteractiveFilter:
         """
         return self.wide_df.filter(pl.col("artifact_id").is_in(self.filtered_ids))
 
-    # ------------------------------------------------------------------
-    # Summary
-    # ------------------------------------------------------------------
-
     def summary(self) -> FilterSummary:
         """Compute per-criterion statistics and cumulative funnel.
 
@@ -543,7 +516,6 @@ class InteractiveFilter:
         wide = self._evaluation_frame()
         total = wide.height
 
-        # Per-criterion stats
         crit_rows: list[dict[str, Any]] = []
         for crit, bound in zip(self._criteria, self._bound_criteria, strict=True):
             pass_count, stats = _criterion_stats(wide, bound)
@@ -573,10 +545,6 @@ class InteractiveFilter:
         header = f"{passed} / {total} pass ({rate}%)"
 
         return FilterSummary(criteria=criteria_df, funnel=funnel_df, _header=header)
-
-    # ------------------------------------------------------------------
-    # Plot
-    # ------------------------------------------------------------------
 
     def plot(self, **kwargs: Any) -> Any:
         """Plot per-criterion histograms with threshold lines.
@@ -620,10 +588,6 @@ class InteractiveFilter:
         fig.tight_layout()
         plt.close(fig)
         return fig
-
-    # ------------------------------------------------------------------
-    # Commit
-    # ------------------------------------------------------------------
 
     def commit(self, step_name: str = "interactive_filter") -> StepResult:
         """Commit the filtered result as a pipeline step.

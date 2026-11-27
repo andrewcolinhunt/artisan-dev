@@ -60,7 +60,6 @@ def provenance_graph():
     M_A1 = "ma1" + "0" * 29
     M_B1 = "mb1" + "0" * 29
 
-    # provenance_map: {target_id: [source_ids]}
     provenance_map = {
         A1: [A],
         B1: [B],
@@ -92,7 +91,6 @@ class TestMatchByAncestry:
     def test_direct_ancestry_matching(self, provenance_graph):
         """Candidates are descendants of targets (different step numbers)."""
         edges, ids = provenance_graph
-        # Targets at step 1 (A1, B1), candidates at step 2 (A1a, B1a)
         result = match_by_ancestry(
             target_ids={ids["A1"], ids["B1"]},
             candidate_ids_by_role={"results": [ids["A1a"], ids["B1a"]]},
@@ -107,7 +105,6 @@ class TestMatchByAncestry:
     def test_descendant_matching(self, provenance_graph):
         """Candidates are direct descendants of targets via the directed graph."""
         edges, ids = provenance_graph
-        # M_A1 walks back through A1a (target); M_B1 through B1a.
         result = match_by_ancestry(
             target_ids={ids["A1a"], ids["B1a"]},
             candidate_ids_by_role={"metrics": [ids["M_A1"], ids["M_B1"]]},
@@ -138,12 +135,11 @@ class TestMatchByAncestry:
     def test_multi_role_incomplete_excluded(self, provenance_graph):
         """Target matched in role A but not role B is excluded."""
         edges, ids = provenance_graph
-        # A1 has child A1a in results, but M_B1 in metrics has no link to A1
         result = match_by_ancestry(
             target_ids={ids["A1"]},
             candidate_ids_by_role={
                 "results": [ids["A1a"]],
-                "metrics": [ids["M_B1"]],  # wrong lineage
+                "metrics": [ids["M_B1"]],
             },
             edges=edges,
         )
@@ -152,7 +148,6 @@ class TestMatchByAncestry:
 
     def test_unmatched_candidate_warns(self, provenance_graph, caplog, monkeypatch):
         """Warning logged with 'no directed path' for unmatched candidate."""
-        # Pipeline logging can disable propagation before this test runs.
         monkeypatch.setattr(logging.getLogger("artisan"), "propagate", True)
         edges, ids = provenance_graph
         match_by_ancestry(
@@ -165,7 +160,6 @@ class TestMatchByAncestry:
 
     def test_multiple_candidates_same_target_accumulates(self):
         """Two candidates resolving to same target are both accumulated."""
-        # Both C1 and C2 descend from T
         t = "t" * 32
         c1 = "c1" + "0" * 30
         c2 = "c2" + "0" * 30
@@ -242,7 +236,6 @@ class TestMatchByAncestry:
         """
         root = "root" + "0" * 28
         targets = [f"t{i}" + "0" * 30 for i in range(1, 4)]
-        # 3 candidates per target = 9 total
         candidates = {
             t: [f"c{i}_{j}" + "0" * (32 - 4) for j in range(3)]
             for i, t in enumerate(targets, 1)
@@ -255,7 +248,6 @@ class TestMatchByAncestry:
 
         all_candidates = [c for cs in candidates.values() for c in cs]
 
-        # Run the matcher 5 times; results must be identical every time.
         prior_result: dict[str, dict[str, list[str]]] | None = None
         for _ in range(5):
             result = match_by_ancestry(
@@ -267,7 +259,6 @@ class TestMatchByAncestry:
                 assert result == prior_result
             prior_result = result
 
-        # Each target paired only with its own direct-descendant candidates.
         assert set(result.keys()) == set(targets)
         for target, expected_cs in candidates.items():
             assert set(result[target]["items"]) == set(expected_cs)
@@ -277,7 +268,6 @@ class TestMatchByAncestry:
         t1 = "t1" + "0" * 30
         t2 = "t2" + "0" * 30
         c = "c1" + "0" * 30
-        # c has both t1 and t2 as parents at hop 1.
         edges = _provenance_map_to_edges({c: [t1, t2]})
 
         with pytest.raises(RuntimeError, match="multiple targets at hop depth 1"):
@@ -289,7 +279,6 @@ class TestMatchByAncestry:
 
     def test_closer_target_wins(self):
         """Two targets in candidate's directed lineage at different depths."""
-        # Chain: C ← A ← B. Both A and B are targets; A is closer to C.
         c = "c1" + "0" * 30
         a = "a1" + "0" * 30
         b = "b1" + "0" * 30
@@ -301,7 +290,6 @@ class TestMatchByAncestry:
             edges=edges,
         )
 
-        # Closer target (A at hop 1) wins; B (hop 2) is never visited.
         assert a in result
         assert b not in result
         assert result[a]["items"] == [c]
@@ -309,7 +297,6 @@ class TestMatchByAncestry:
     def test_self_match_at_depth_zero(self):
         """Candidate that IS a target self-matches at depth 0."""
         t = "t1" + "0" * 30
-        # No edges needed; self-match should resolve before any walk.
         edges = _provenance_map_to_edges({})
 
         result = match_by_ancestry(

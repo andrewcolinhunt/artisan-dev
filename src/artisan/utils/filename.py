@@ -41,7 +41,6 @@ def strip_extensions(
 
     name = posixpath.basename(filename)
     if strip_all:
-        # Preserve leading, consecutive, and trailing dots in the stem.
         for i in range(1, len(name)):
             if name[i] == "." and i + 1 < len(name) and name[i + 1] != ".":
                 name = name[:i]

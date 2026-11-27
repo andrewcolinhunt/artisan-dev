@@ -59,8 +59,6 @@ def invoke() -> Callable[..., Any]:
         async def _run() -> Any:
             async with Client(app) as client:
                 result = await client.call_tool(name, args or {})
-                # structured_content is the dict every tool returns; .data is
-                # None for an empty dict, so prefer the structured form.
                 return result.structured_content
 
         return asyncio.run(_run())

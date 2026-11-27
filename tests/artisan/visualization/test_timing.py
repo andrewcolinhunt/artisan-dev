@@ -192,10 +192,8 @@ class TestExecutionStats:
     def test_mean_values(self, sample_timing_data):
         timings = PipelineTimings(sample_timing_data)
         result = timings.execution_stats(step_number=0)
-        # execute: mean of 0.5 and 0.4 = 0.45
         execute_row = result.filter(result["phase"] == "execute")
         assert execute_row["mean"][0] == pytest.approx(0.45)
-        # setup: mean of 0.03 and 0.02 = 0.025
         setup_row = result.filter(result["phase"] == "setup")
         assert setup_row["mean"][0] == pytest.approx(0.025)
 
@@ -209,7 +207,6 @@ class TestExecutionStats:
     def test_single_execution_std_zero(self, sample_timing_data):
         timings = PipelineTimings(sample_timing_data)
         result = timings.execution_stats(step_number=1)
-        # Step 1 has one execution, std should be 0
         for row in result.iter_rows(named=True):
             assert row["std"] == pytest.approx(0.0)
 

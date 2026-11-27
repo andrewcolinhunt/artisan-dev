@@ -35,10 +35,6 @@ from .conftest import (
     read_table,
 )
 
-# =============================================================================
-# Linear Chain
-# =============================================================================
-
 
 def linear_chain_pipeline(
     delta_root: Path,
@@ -56,13 +52,11 @@ def linear_chain_pipeline(
         working_root=working_root,
     )
 
-    # Step 0: Generate 2 datasets
     step0 = pipeline.run(
         definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
-    # Step 1: Transform datasets (1 variant each)
     step1 = pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -74,7 +68,6 @@ def linear_chain_pipeline(
         },
     )
 
-    # Step 2: Calculate metrics
     pipeline.run(
         definition=MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
@@ -101,24 +94,16 @@ def test_linear_chain(pipeline_env: dict[str, str]):
 
     assert result["overall_success"], "Pipeline should complete successfully"
 
-    # Artifact counts at each step
     assert count_artifacts_by_step(delta_root, 0) == 2, "Generator should produce 2"
     assert count_artifacts_by_step(delta_root, 1) == 2, "Transformer should produce 2"
     assert count_artifacts_by_step(delta_root, 2) == 2, "MetricCalc should produce 2"
 
-    # Type totals
     assert count_artifacts_by_type(delta_root, "csv") == 4, "2 gen + 2 transform"
     assert count_artifacts_by_type(delta_root, "metric") == 2
 
-    # Execution records
     assert count_executions_by_step(delta_root, 0) == 1, "1 generative execution"
     assert count_executions_by_step(delta_root, 1) == 2, "2 creator executions"
     assert count_executions_by_step(delta_root, 2) == 1, "1 batched execution"
-
-
-# =============================================================================
-# Fan-Out (Execution)
-# =============================================================================
 
 
 def fan_out_execution_pipeline(
@@ -138,16 +123,13 @@ def fan_out_execution_pipeline(
         working_root=working_root,
     )
 
-    # Step 0: Generate 2 datasets
     step0 = pipeline.run(
         definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
-    # Shared reference for both branches
     shared_ref = step0.output("datasets")
 
-    # Step 1: Transform with seed 100 (Branch A)
     pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": shared_ref},
@@ -159,7 +141,6 @@ def fan_out_execution_pipeline(
         },
     )
 
-    # Step 2: Transform with seed 200 (Branch B)
     pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": shared_ref},
@@ -192,20 +173,13 @@ def test_fan_out_execution(pipeline_env: dict[str, str]):
 
     assert result["overall_success"], "Pipeline should complete successfully"
 
-    # Both branches receive same input IDs
     step1_input_ids = get_execution_inputs(delta_root, 1, "dataset")
     step2_input_ids = get_execution_inputs(delta_root, 2, "dataset")
     assert set(step1_input_ids) == set(step2_input_ids), (
         "Both branches should receive identical input artifact IDs"
     )
 
-    # Total: 2 (gen) + 2 (A) + 2 (B) = 6
     assert count_artifacts_by_type(delta_root, "csv") == 6
-
-
-# =============================================================================
-# Fan-Out (Data)
-# =============================================================================
 
 
 def fan_out_data_pipeline(
@@ -225,13 +199,11 @@ def fan_out_data_pipeline(
         working_root=working_root,
     )
 
-    # Step 0: Generate 1 dataset
     step0 = pipeline.run(
         definition=DataGenerator,
         params={"count": 1, "seed": 42},
     )
 
-    # Step 1: Create 3 variants
     pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -263,22 +235,15 @@ def test_fan_out_data(pipeline_env: dict[str, str]):
 
     assert result["overall_success"], "Pipeline should complete successfully"
 
-    # Single input produces multiple outputs
     assert count_artifacts_by_step(delta_root, 0) == 1
     assert count_artifacts_by_step(delta_root, 1) == 3
 
-    # Verify lineage: all 3 outputs derive from single input
     input_ids = get_execution_outputs(delta_root, 0, "datasets")
     assert len(input_ids) == 1
 
     df_prov = load_artifact_edges(delta_root, None)
     edges = df_prov.filter(pl.col("source_artifact_id") == input_ids[0])
     assert edges.height == 3, "3 edges from 1 source"
-
-
-# =============================================================================
-# Fan-In (Merge)
-# =============================================================================
 
 
 def fan_in_merge_pipeline(
@@ -298,19 +263,16 @@ def fan_in_merge_pipeline(
         working_root=working_root,
     )
 
-    # Step 0: Generate 2 datasets (Branch A)
     step0 = pipeline.run(
         definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
-    # Step 1: Generate 2 datasets (Branch B)
     step1 = pipeline.run(
         definition=DataGenerator,
         params={"count": 2, "seed": 100},
     )
 
-    # Step 2: Merge both branches
     pipeline.run(
         definition=Merge,
         inputs={
@@ -340,24 +302,16 @@ def test_fan_in_merge(pipeline_env: dict[str, str]):
 
     assert result["overall_success"], "Pipeline should complete successfully"
 
-    # Merge doesn't create new artifacts in artifact_index
     assert count_artifacts_by_step(delta_root, 2) == 0, (
         "Merge is passthrough, no new artifacts"
     )
 
-    # But merged output references 4 artifacts
     merged_outputs = get_execution_outputs(delta_root, 2, "merged")
     assert len(merged_outputs) == 4
 
-    # Verify passthrough: merged IDs match original IDs
     step0_ids = set(get_execution_outputs(delta_root, 0, "datasets"))
     step1_ids = set(get_execution_outputs(delta_root, 1, "datasets"))
     assert set(merged_outputs) == step0_ids | step1_ids
-
-
-# =============================================================================
-# Passthrough
-# =============================================================================
 
 
 def passthrough_pipeline(
@@ -377,19 +331,16 @@ def passthrough_pipeline(
         working_root=working_root,
     )
 
-    # Step 0: Generate 2 datasets
     step0 = pipeline.run(
         definition=DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
-    # Step 1: Calculate metrics
     pipeline.run(
         definition=MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
     )
 
-    # Step 2: Filter (forward-walk metric discovery, always pass with min >= 0)
     step2 = pipeline.run(
         definition=Filter,
         inputs={
@@ -402,7 +353,6 @@ def passthrough_pipeline(
         },
     )
 
-    # Step 3: Transform the passthrough datasets
     pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": step2.output("passthrough")},
@@ -435,7 +385,6 @@ def test_passthrough(pipeline_env: dict[str, str]):
 
     assert result["overall_success"], "Pipeline should complete successfully"
 
-    # Filter output IDs must match original step 0 IDs
     passthrough_ids = get_execution_outputs(delta_root, 2, "passthrough")
     step0_ids = get_execution_outputs(delta_root, 0, "datasets")
 
@@ -444,13 +393,7 @@ def test_passthrough(pipeline_env: dict[str, str]):
             "Passthrough IDs must reference original artifacts, not copies"
         )
 
-    # Downstream receives correct count
     assert count_artifacts_by_step(delta_root, 3) == len(passthrough_ids)
-
-
-# =============================================================================
-# Batch Processing
-# =============================================================================
 
 
 def batch_processing_pipeline(
@@ -470,13 +413,11 @@ def batch_processing_pipeline(
         working_root=working_root,
     )
 
-    # Step 0: Generate 5 datasets
     step0 = pipeline.run(
         definition=DataGenerator,
         params={"count": 5, "seed": 42},
     )
 
-    # Step 1: Batch transform with artifacts_per_unit=2 via execution override
     pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -510,16 +451,12 @@ def test_batch_processing(pipeline_env: dict[str, str]):
 
     assert result["overall_success"], "Pipeline should complete successfully"
 
-    # Generator: 1 ExecutionUnit (generative)
     assert count_executions_by_step(delta_root, 0) == 1
 
-    # DataTransformer (artifacts_per_unit=2): ceil(5/2) = 3 ExecutionUnits
     assert count_executions_by_step(delta_root, 1) == math.ceil(5 / 2)
 
-    # No data loss: still 5 outputs
     assert count_artifacts_by_step(delta_root, 1) == 5
 
-    # Each exact selected admission preserves its complete ordered unit inputs.
     from artisan.orchestration.engine.retained_execution_query import (
         _execution_membership,
     )
@@ -537,11 +474,6 @@ def test_batch_processing(pipeline_env: dict[str, str]):
         len(member.source.admission.boundary.input_roles()["dataset"])
         for member in members
     ) == [1, 2, 2]
-
-
-# =============================================================================
-# Comprehensive
-# =============================================================================
 
 
 def comprehensive_pipeline(
@@ -567,20 +499,16 @@ def comprehensive_pipeline(
         working_root=working_root,
     )
 
-    # Stage 1: Sources
-    # Step 0: Ingest one external CSV file
     step0 = pipeline.run(
         definition=IngestCSV,
         inputs=[str(f) for f in source_files],
     )
 
-    # Step 1: Generate one distinct dataset
     step1 = pipeline.run(
         definition=DataGenerator,
         params={"count": 1, "rows_per_file": 1, "seed": 1},
     )
 
-    # Step 2: Merge ingest + generated
     step2 = pipeline.run(
         definition=Merge,
         inputs={
@@ -589,8 +517,6 @@ def comprehensive_pipeline(
         },
     )
 
-    # Stage 2: Parallel Branches
-    # Step 3: DataTransformer A
     step3 = pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": step2.output("merged")},
@@ -603,7 +529,6 @@ def comprehensive_pipeline(
         },
     )
 
-    # Step 4: DataTransformer B
     step4 = pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": step2.output("merged")},
@@ -616,7 +541,6 @@ def comprehensive_pipeline(
         },
     )
 
-    # Step 5: Merge both branches
     step5 = pipeline.run(
         definition=Merge,
         inputs={
@@ -625,14 +549,11 @@ def comprehensive_pipeline(
         },
     )
 
-    # Stage 3: Metrics & Filter
-    # Step 6: Calculate metrics
     pipeline.run(
         definition=MetricCalculator,
         inputs={"dataset": step5.output("merged")},
     )
 
-    # Step 7: Filter based on median_score (forward-walk metric discovery)
     step7 = pipeline.run(
         definition=Filter,
         inputs={
@@ -649,8 +570,6 @@ def comprehensive_pipeline(
         },
     )
 
-    # Stage 4: Final Fan-Out
-    # Step 8: Create variants of filtered datasets
     pipeline.run(
         definition=DataTransformer,
         inputs={"dataset": step7.output("passthrough")},
@@ -693,7 +612,6 @@ def test_comprehensive(pipeline_env: dict[str, str], tmp_path: Path) -> None:
     assert set(merged_branches) == set(branch_a) | set(branch_b)
     assert len(merged_branches) == 4
 
-    # Zero noise keeps every A score below the threshold and every B score above it.
     passthrough = get_execution_outputs(delta_root, 7, "passthrough")
     assert set(passthrough) == set(branch_b)
     assert len(passthrough) == 2

@@ -327,8 +327,6 @@ class CommandRecorder:
         if not isinstance(model, BaseModel):
             return
         try:
-            # Owners validate copied models; classification must not emit their
-            # raw inputs through serialization warnings before that boundary.
             serialized = model.model_dump(mode="json", exclude=excluded, warnings=False)
         except (PydanticSerializationError, TypeError, ValueError):
             msg = "Concrete configuration cannot be classified safely"
@@ -365,8 +363,6 @@ class CommandRecorder:
             try:
                 serialized = json.loads(to_json(item))
             except PydanticSerializationError:
-                # The owning-model pass covers custom field serializers; this
-                # concrete pass additionally observes typed, unmasked secrets.
                 return
             self.add_sensitive_data(serialized)
 

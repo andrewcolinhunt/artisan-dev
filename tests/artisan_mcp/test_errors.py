@@ -33,7 +33,6 @@ class TestEnvelopeBoundary:
     def test_incompatible_store_from_missing_manifest(
         self, make_app, invoke_error, tmp_path
     ) -> None:
-        # A root without a supported store manifest fails before table reads.
         env = invoke_error(
             make_app(delta_root=tmp_path),
             "artisan_get_run_status",

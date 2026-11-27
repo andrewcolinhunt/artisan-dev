@@ -35,7 +35,7 @@ def enable_subreaper() -> None:
     if sys.platform != "linux":
         return
     libc = ctypes.CDLL(None, use_errno=True)
-    if libc.prctl(36, 1, 0, 0, 0) != 0:  # PR_SET_CHILD_SUBREAPER
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
         error = ctypes.get_errno()
         raise OSError(error, os.strerror(error))
 
@@ -101,7 +101,6 @@ class ExitWatch:
             try:
                 self.queue.control([event], 0, 0)
             except ProcessLookupError:
-                # ESRCH initiates cleanup; only later waitpid proves exit/status.
                 self.fast_exit = True
             except OSError:
                 self.close()
@@ -242,12 +241,10 @@ class Command:
             self.events.append("reaped")
             self._close_watch()
         if reserved.get(self.pid, self.request_id) != self.request_id:
-            # A different owned leader with this PID proves the old lifetime ended.
             self.state = "unknown" if self.observation_error else "closed"
             self.events.append(self.state)
             return
         if sys.platform == "linux":
-            # Only this closed group's adopted children; never a blanket -1 wait.
             while True:
                 try:
                     exited = os.waitid(
@@ -408,7 +405,6 @@ class Supervisor:
                 self.close_scope(float(message["deadline"]))
                 self.shutting_down |= kind == "shutdown"
             elif kind == "worker_lost":
-                # Deliberately closes the whole test scope when mapping is uncertain.
                 self.close_scope(float(message["deadline"]))
             elif kind != "status":
                 message = "Invalid proof control request"
@@ -452,8 +448,7 @@ class Supervisor:
             raise ValueError(message)
         command = Command(request_id, channel.connection.fileno())
         self.commands[request_id] = command
-        self.write_trace()  # Evidence that acceptance precedes process creation.
-        # Test-only deterministic stand-in for Popen blocked inside an OS call.
+        self.write_trace()
         while (self.root / "hold-launch").exists():
             time.sleep(POLL_SECONDS)
         try:
@@ -541,7 +536,6 @@ class Supervisor:
 if __name__ == "__main__":
     signal.signal(signal.SIGCHLD, signal.SIG_DFL)
     enable_subreaper()
-    # The capability travels over inherited stdin, never supervisor argv.
     supervisor = Supervisor(
         int(sys.argv[1]), Path(sys.argv[2]), sys.stdin.readline().strip()
     )

@@ -61,7 +61,7 @@ class TestProbeDockerSocket:
         stale = sock_dir / "dead-docker.sock"
         listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         listener.bind(str(stale))
-        listener.close()  # the file survives; connect() now raises
+        listener.close()
 
         created: list[socket.socket] = []
         real_socket_cls = socket.socket

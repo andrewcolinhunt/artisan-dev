@@ -393,7 +393,6 @@ def test_whole_multibyte_prefix_is_identical_for_shuffled_completions():
 
 
 def test_missing_markers_and_counter_growth_respect_entire_payload(monkeypatch):
-    # A smaller byte budget exercises delimiter/status/counter growth cheaply.
     monkeypatch.setattr(
         "artisan.execution.recording.commands.MAX_COMMAND_RECORDING_BYTES", 350
     )

@@ -9,7 +9,6 @@ from fixtures.retained_inspection import commit_inspection_attempt, inspection_s
 
 from artisan.schemas import CSVArtifact
 
-# Import conditionally to handle environments without ipywidgets
 try:
     import ipywidgets
 
@@ -72,7 +71,7 @@ class TestDisplayProvenanceStepper:
 
         assert output_dir.exists()
         svg_files = list(output_dir.glob("step_*.svg"))
-        assert len(svg_files) == 3  # Steps 0, 1, 2
+        assert len(svg_files) == 3
 
     def test_default_output_dir_is_sibling_of_delta(
         self, delta_root_with_steps: Path
@@ -114,7 +113,7 @@ class TestDisplayProvenanceStepper:
 
         assert slider is not None
         assert slider.min == 0
-        assert slider.max == 2  # Steps 0, 1, 2
+        assert slider.max == 2
 
 
 class TestStepperModule:

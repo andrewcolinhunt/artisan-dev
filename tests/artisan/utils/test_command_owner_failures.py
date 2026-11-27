@@ -66,8 +66,6 @@ def test_partial_response_obeys_one_absolute_deadline(
             receive(peer)
             frame = encode({"state": "closed"})
             peer.sendall(frame[:prefix_size])
-            # Each byte arrives within the ordinary socket timeout. The whole
-            # frame must still use the original caller's shorter deadline.
             for byte in frame[prefix_size:]:
                 if stop.wait(0.04):
                     break
@@ -326,7 +324,6 @@ def test_late_cancel_uses_buffered_owner_evidence_after_peer_exit(
         peer.sendall(frame)
         peer.close()
 
-        # The failed late write must not discard closure already in the socket.
         owner.request_close(deadline)
         assert owner.finish(deadline).state == expected
     finally:
@@ -637,8 +634,6 @@ def test_retained_pipe_reports_uncertainty_without_new_drain_deadline() -> None:
             merged=False,
             external=False,
         )
-        # Model a writer retained outside the proven group. Its lifetime is owned
-        # by this test, so no escaped descendant or orphan survives the assertion.
         command.readers.append(retained_read)
         started = time.monotonic()
         with pytest.raises(client.CommandOwnershipError):

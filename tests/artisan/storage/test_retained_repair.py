@@ -218,7 +218,6 @@ def test_partial_and_whole_step_fences_are_resolved_by_exact_terminal_plans(
     assert all(
         item.classification in {"complete", "unplanned"} for item in report.items
     )
-    # The fixture staged results for units whose deliveries were never claimed.
     assert (
         len([item for item in report.items if item.classification == "complete"]) == 3
     )

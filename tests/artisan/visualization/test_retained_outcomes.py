@@ -353,7 +353,6 @@ def test_comparison_uses_one_proof_and_one_lifecycle_snapshot(
         result = original(snapshot, state, selection, projection)
         if not inserted:
             inserted = True
-            # A later lifecycle version cannot replace either selected attempt.
             path = uri_join(committer.delta_root, TablePath.STEPS.value)
             rows = pl.read_delta(path)
             pending = rows.filter(

@@ -23,7 +23,6 @@ from fixtures.docker_runtime import (
 if TYPE_CHECKING:
     from xdist.workermanage import WorkerController
 
-# Setup project root once for all tests
 rootutils.setup_root(
     search_from=__file__,
     indicator=[".project-root", "pyproject.toml"],
@@ -33,23 +32,7 @@ rootutils.setup_root(
 )
 
 
-# =============================================================================
-# Suppress ResourceWarning noise from s3fs/asyncio socket teardown
-# =============================================================================
-#
-# s3fs / aiobotocore spawn asyncio self-pipe socketpair wakeup sockets
-# internally and don't always close them cleanly when the filesystem
-# instances are garbage-collected during interpreter shutdown. Python's
-# gc then prints ``Exception ignored in: <socket.socket ...>`` +
-# ``ResourceWarning: unclosed <socket.socket ...>`` via
-# ``sys.unraisablehook`` — pairs of adjacent loopback TCP ports the OS
-# already closes at process exit, so the warning is cosmetic.
-#
-# pyproject.toml's ``filterwarnings = ["error"]`` doesn't catch these
-# because they fire after pytest has finished, via the unraisable hook
-# rather than ``warnings.warn``. Narrow the hook to swallow ONLY
-# ``ResourceWarning`` on ``socket.socket`` objects — anything else still
-# surfaces.
+# s3fs can leave wakeup sockets for collection after pytest restores its warning hooks.
 _original_unraisablehook = sys.unraisablehook
 
 
@@ -62,41 +45,23 @@ def _quiet_socket_resourcewarning_hook(args):
 sys.unraisablehook = _quiet_socket_resourcewarning_hook
 
 
-# =============================================================================
-# S3 / MinIO fixtures (single canonical pin location)
-# =============================================================================
-#
-# The previous official MinIO image pin is no longer publicly pullable. This
-# third-party build uses the same RELEASE.2025-04-22T22-12-26Z source, verified from
-# the binary's Go VCS metadata: 0d7408fc9969caf07de6a8c3a84f9fbb10a6739e,
-# vcs.modified=false. Its immutable index supports linux/amd64 and linux/arm64.
+# MinIO RELEASE.2025-04-22T22-12-26Z, built from unmodified commit
+# 0d7408fc9969caf07de6a8c3a84f9fbb10a6739e for linux/amd64 and linux/arm64.
 # Build recipe: https://github.com/coollabsio/minio
-# When updating this pin, run `pixi run -e dev test-s3` for the smoke
-# metadata-request sentinel (catches unintended credential-provider I/O) and the
-# parametrized [local, s3] tests (catches checksum-handling regressions
-# in DeleteObjects — older MinIO releases require Content-MD5 while
-# modern boto3 sends only CRC32, breaking recursive bucket cleanup).
 _MINIO_IMAGE = (
     "ghcr.io/coollabsio/minio@"
     "sha256:a4938f37f1be1841b8e7b627ad0207b265345fd0d063e42d7410c78af0e63e68"
 )
 
-# Common Docker UNIX socket locations, in probe order. Used by
-# ``_detect_minio_unavailable`` to tell the user which runtime is missing.
 _DOCKER_SOCKET_CANDIDATES: tuple[str, ...] = (
-    os.path.expanduser("~/.docker/run/docker.sock"),  # Docker Desktop (macOS)
-    "/var/run/docker.sock",  # Linux default / Docker Desktop classic
-    os.path.expanduser("~/.colima/default/docker.sock"),  # Colima
-    os.path.expanduser("~/.orbstack/run/docker.sock"),  # OrbStack
+    os.path.expanduser("~/.docker/run/docker.sock"),
+    "/var/run/docker.sock",
+    os.path.expanduser("~/.colima/default/docker.sock"),
+    os.path.expanduser("~/.orbstack/run/docker.sock"),
 )
 
-# Set by ``minio_endpoint`` when it yields None, read by ``s3_fs`` to
-# produce a specific skip reason. Module-level so it survives across the
-# session-scoped fixture's yield without re-running setup.
 _MINIO_SKIP_REASON: dict[str, str] = {}
 
-# Boilerplate appended to every skip reason so the message is actionable
-# at a glance.
 _MINIO_HOWTO = (
     "Start Docker (or Docker Desktop / OrbStack / Colima), or set "
     "ARTISAN_S3_ENDPOINT to an available test S3 service with "
@@ -115,10 +80,6 @@ def _probe_docker_socket() -> str | None:
     for path in candidates:
         if not os.path.exists(path):
             continue
-        # Close on every exit path: a stale socket file (daemon stopped)
-        # makes connect() raise, and a leaked socket later surfaces as a
-        # ResourceWarning that pytest's unraisable hook pins on whatever
-        # unrelated test is running at GC time.
         sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         try:
             sock.settimeout(1.0)
@@ -149,8 +110,6 @@ def _detect_minio_unavailable() -> str | None:
 
     docker_host = os.environ.get("DOCKER_HOST", "")
     if docker_host and not docker_host.startswith("unix://"):
-        # TCP-based Docker context — can't easily probe without docker-py;
-        # let MinioContainer try and bubble up its error if it fails.
         return None
 
     if _probe_docker_socket() is None:
@@ -251,18 +210,9 @@ def minio_endpoint(pytestconfig: pytest.Config) -> Iterator[dict[str, str] | Non
     a specific skip reason for optional local tests. Teardown failures
     always surface as errors.
     """
-    # Disable EC2 IMDS probing in this test process so s3fs/boto3 don't
-    # spend ~3 s timing out against 169.254.169.254 on every fixture
-    # init when running off-EC2. Set on os.environ here (not via env=)
-    # because s3fs runs inside this same process — there is no subprocess
-    # to inherit a separate env.
     os.environ.setdefault("AWS_EC2_METADATA_DISABLED", "true")
 
-    # Recent boto3 (used by s3fs) defaults to CRC32 integrity checksums on
-    # write/delete, but the pinned MinIO image only accepts the legacy
-    # MD5/optional path. Force the request checksum to MD5-on-required
-    # so DeleteObjects against MinIO doesn't 400 with `MissingContentMD5`.
-    # Real S3 ignores this header so production behavior is unaffected.
+    # This MinIO release requires Content-MD5 for DeleteObjects. The boto3 default sends CRC32.
     os.environ.setdefault("AWS_REQUEST_CHECKSUM_CALCULATION", "when_required")
     os.environ.setdefault("AWS_RESPONSE_CHECKSUM_VALIDATION", "when_required")
 
@@ -351,19 +301,12 @@ def s3_fs(minio_endpoint):
 
     yield fs, storage, f"s3://{bucket}"
 
-    # Best-effort cleanup; a dead bucket on a containerized MinIO is
-    # acceptable since the container itself is torn down at session end.
     with contextlib.suppress(Exception):
         fs.rm(bucket, recursive=True)
 
 
-# =============================================================================
-# Resource markers — auto-applied by fixture usage
-# =============================================================================
-
-
 def pytest_collection_modifyitems(
-    config: pytest.Config,  # pytest hook signature
+    config: pytest.Config,
     items: list[pytest.Item],
 ) -> None:
     """Auto-apply resource markers to Docker- and MinIO-backed tests.

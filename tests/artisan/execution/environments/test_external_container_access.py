@@ -166,7 +166,6 @@ def test_docker_rejects_external_mount_overlap(
         nested.mkdir()
         roots = (prepared, prepared.model_copy(update={"root": nested}))
     else:
-        # The actual software path is a container path; place a synthetic target there through metadata.
         native = oci.native.model_copy(
             update={"workspace": prepared.root, "prefix": prepared.root / "prefix"}
         )

@@ -475,7 +475,6 @@ def test_accepted_unit_retains_pack_capacity_until_transport_closes(
         assert len(execution.handles) == 1
         assert execution.cancel().status == CancellationStatus.UNKNOWN
         assert not execution.results.outputs(execution.record.step_run_id)
-        # Completed scientific acceptance is preserved, but is not a current result.
         assert len(execution.reader.completed_plans()) == 1
         runner.owner.state = OwnershipState.CLOSED
         assert execution.ownership_state() == OwnershipState.UNKNOWN

@@ -1,9 +1,4 @@
 #!/usr/bin/env bash
-# Build and run the DataGenerator standalone execution demo.
-#
-# Usage:
-#   docker/examples/data_generator/run.sh
-#
 set -euo pipefail
 
 REPO_ROOT="$(git rev-parse --show-toplevel)"

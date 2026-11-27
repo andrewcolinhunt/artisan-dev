@@ -141,11 +141,6 @@ def sample_csv_files(tmp_path: Path) -> list[Path]:
     return files
 
 
-# =============================================================================
-# Assertion Helper Functions
-# =============================================================================
-
-
 def read_table(
     delta_root: str,
     table_name: str,
@@ -493,11 +488,6 @@ def dual_pipeline_env(tmp_path: Path) -> dict[str, dict[str, str]]:
     return envs
 
 
-# =============================================================================
-# Shared Test Operations
-# =============================================================================
-
-
 def prepare_paired_files(inputs: PreprocessInput) -> dict[str, Any]:
     """Carry the operation's input IDs alongside its grouped file paths."""
     prepared = {
@@ -582,7 +572,6 @@ class FailingTransformer(OperationDefinition):
         prepared: dict[str, Any] = {}
         for role, artifacts in inputs.input_artifacts.items():
             prepared[role] = PerArtifact([a.materialized_path for a in artifacts])
-            # Pass original names for index extraction (filenames are artifact_ids)
             prepared[f"{role}_names"] = PerArtifact(
                 [a.original_name for a in artifacts]
             )
@@ -604,14 +593,12 @@ class FailingTransformer(OperationDefinition):
         else:
             input_files = [Path(f) for f in dataset_input]
 
-        # Use original names to extract dataset index for failure injection
         original_names = inputs.inputs.get("dataset_names", [])
         records = []
         for file_idx, input_path in enumerate(input_files):
             input_path = Path(input_path)
             stem = input_path.stem
 
-            # Extract index from original_name (e.g. "dataset_1" -> 1)
             orig_name = (
                 original_names[file_idx] if file_idx < len(original_names) else ""
             )
@@ -625,7 +612,6 @@ class FailingTransformer(OperationDefinition):
                 msg = f"Intentional failure on index {index}"
                 raise ValueError(msg)
 
-            # Scale numeric columns by 1.1 to produce different content
             with open(input_path) as f:
                 reader = csv.DictReader(f)
                 headers = list(reader.fieldnames or [])

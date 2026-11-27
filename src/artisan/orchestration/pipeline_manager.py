@@ -114,7 +114,6 @@ class _PipelineSummary(TypedDict):
 
 
 def _close_run_log(session: _RunLogSession) -> None:
-    # Logging cannot replace an execution or ownership failure.
     with suppress(Exception):
         session.close()
 

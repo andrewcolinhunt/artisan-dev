@@ -78,7 +78,6 @@ def finish(owner: ModalPackOwner, function: Function) -> None:
         function.thread.join(2)
         assert not function.thread.is_alive()
     if owner._collector is not None:
-        # UNKNOWN may return at its deadline with collection still retained.
         owner._collector.join(2)
         assert not owner._collector.is_alive()
     if owner._cancel_thread is not None:

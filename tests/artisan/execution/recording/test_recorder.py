@@ -286,7 +286,6 @@ class TestRecordExecutionFailure:
             timestamp_end=datetime(2024, 1, 1, 12, 0, 1, tzinfo=UTC),
         )
 
-        # StagingResult.success reflects execution success (False for failures)
         assert result.success is False
         assert result.error == "Test error message"
         assert result.artifact_ids == []

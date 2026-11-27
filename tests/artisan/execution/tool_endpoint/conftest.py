@@ -43,7 +43,6 @@ def configure_ambient_s3(
         monkeypatch.setenv(
             "AWS_ENDPOINT_URL", storage.options["client_kwargs"]["endpoint_url"]
         )
-        # Discard filesystems created before these environment values changed.
         s3fs.S3FileSystem.clear_instance_cache()
 
     yield configure

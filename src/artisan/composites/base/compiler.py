@@ -97,7 +97,6 @@ def _compile(
         msg = f"Recursive composite definition {definition.name!r}"
         raise ValueError(msg)
     instance = instantiate_parameters(definition, params)
-    # Nesting expands wiring without creating another scientific partition boundary.
     selection = RootSelection(
         policy=InvocationPolicy() if isinstance(instance, CompositeDefinition) else None
     )

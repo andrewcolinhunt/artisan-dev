@@ -41,7 +41,6 @@ class IngestFiles(OperationDefinition):
     ``convert_file()`` to produce the target artifact type.
     """
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         file = auto()
 
@@ -53,7 +52,6 @@ class IngestFiles(OperationDefinition):
         ),
     }
 
-    # ---------- Lifecycle ----------
     @abstractmethod
     def convert_file(
         self,

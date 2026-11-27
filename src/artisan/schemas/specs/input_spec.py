@@ -67,7 +67,6 @@ class InputSpec(BaseModel):
     reference markers; operations explicitly prepare any portable tool files.
     """
 
-    # Hydration control
     hydrate: bool = True
     """Control artifact hydration.
 

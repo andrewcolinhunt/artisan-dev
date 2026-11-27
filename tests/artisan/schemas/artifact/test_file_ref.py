@@ -61,8 +61,6 @@ class TestReadContentAutoInfer:
         with mem_fs.open("/test_file_ref/explicit/data.bin", "wb") as f:
             f.write(b"explicit")
 
-        # Path stored as a stripped key (no protocol prefix); explicit
-        # fs uses the path as-is.
         artifact = _draft_at("test_file_ref/explicit/data.bin", b"explicit")
         assert artifact.read_content(fs=mem_fs) == b"explicit"
 
@@ -77,7 +75,6 @@ class TestReadContentAutoInfer:
         artifact = _draft_at("memory:///test_file_ref/cached/data.bin", b"first-read")
         assert artifact.read_content() == b"first-read"
 
-        # Mutate the underlying file — cached bytes should still be returned.
         with mem_fs.open("/test_file_ref/cached/data.bin", "wb") as f:
             f.write(b"changed-on-disk")
         assert artifact.read_content() == b"first-read"
@@ -134,7 +131,7 @@ def test_verify_and_materialize_use_bounded_reads(
     artifact.verify_external_content()
     destination = artifact.materialize_to(str(tmp_path))
     assert Path(destination).read_bytes() == content
-    assert len(reads) == 8  # Three chunks plus EOF, for each of two passes.
+    assert len(reads) == 8
     assert artifact._cached_content is None
 
 

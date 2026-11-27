@@ -73,7 +73,7 @@ class TestDataTransformerConfig:
         )
         result = _run_config_op(op, _mock_data_artifact(), tmp_path / "out")
         assert result.success
-        assert len(result.artifacts["config"]) == 6  # 3 x 2
+        assert len(result.artifacts["config"]) == 6
 
     def test_artifact_reference(self, tmp_path: Path):
         artifact = _mock_data_artifact()
@@ -130,7 +130,6 @@ class TestDataTransformerConfig:
         result = _run_config_op(op, [a, b], tmp_path / "out")
 
         assert result.success
-        # 2 datasets x 2 scale_factors x 1 noise_amplitude = 4 configs
         assert len(result.artifacts["config"]) == 4
 
         names = [c.original_name for c in result.artifacts["config"]]

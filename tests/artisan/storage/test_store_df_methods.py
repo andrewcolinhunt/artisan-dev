@@ -140,7 +140,6 @@ def test_direct_edges_include_null_origins_and_preserve_exact_roles(
     assert set(result["source_artifact_id"]) == set(
         provenance.get_direct_ancestors(target.artifact_id)
     )
-    # Numeric origin ranges retain their existing exclusion of null origins.
     ranged = provenance.load_edges_df(0, 2)
     assert parent.artifact_id not in ranged["source_artifact_id"]
 

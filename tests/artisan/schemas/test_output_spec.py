@@ -48,7 +48,7 @@ class TestOutputSpec:
     def test_frozen(self):
         """OutputSpec is immutable."""
         spec = OutputSpec(artifact_type=ArtifactTypes.CSV)
-        with pytest.raises(Exception):  # Pydantic raises ValidationError for frozen
+        with pytest.raises(Exception):
             spec.artifact_type = ArtifactTypes.METRIC
 
 
@@ -100,7 +100,7 @@ class TestDerivesFrom:
         """Test OutputSpec with generative operation (no parents)."""
         spec = OutputSpec(
             artifact_type=ArtifactTypes.CSV,
-            derives_from={"inputs": []},  # Explicit: no parents
+            derives_from={"inputs": []},
         )
         assert spec.derives_from == {"inputs": []}
 
@@ -162,20 +162,16 @@ class TestDerivesFrom:
         )
         spec3 = OutputSpec(
             artifact_type=ArtifactTypes.METRIC,
-            derives_from={"inputs": ["b", "a"]},  # Different order
+            derives_from={"inputs": ["b", "a"]},
         )
 
-        # Same config should have same hash
         assert hash(spec1) == hash(spec2)
 
-        # Different order in list should have different hash
-        # (lists are order-sensitive)
         assert hash(spec1) != hash(spec3)
 
     def test_hash_none_lineage(self):
         """Test hash with None derives_from."""
         spec = OutputSpec(artifact_type=ArtifactTypes.METRIC)
-        # Should not raise
         assert isinstance(hash(spec), int)
 
     def test_hash_with_outputs_lineage(self):

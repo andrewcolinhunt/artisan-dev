@@ -150,7 +150,6 @@ def test_absent_table_reads_are_captured_and_later_appearance_misses(
     path = f"{committer.delta_root}/{table}"
     admission = _admission(committer)
     committer.fs.rm(path, recursive=True)
-    # Admission records the deliberate absence; no live table check may skip it.
     admission = admission.model_copy(update={"view": capture_curator_view(committer)})
     view = CuratorView(committer, admission.view)
     store = _store(view)
@@ -460,7 +459,6 @@ def test_recorder_scopes_iterator_calls_without_framework_staging_reads(
     assert not recorder.views
     with recorder.authored():
         assert next(items) == 1
-    # The serializer performs this read between authored iterator calls.
     store.load_type_map(["a" * 32])
     with pytest.raises(StopIteration), recorder.authored():
         next(items)

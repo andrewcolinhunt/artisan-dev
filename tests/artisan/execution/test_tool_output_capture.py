@@ -36,7 +36,6 @@ class TestReadToolOutput:
         result = _read_tool_output(log)
         assert result.startswith("[truncated]\n")
         assert len(result) < 600_000
-        # Should keep last 500K chars
         assert result.endswith("x" * 100)
 
 

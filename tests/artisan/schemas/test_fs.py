@@ -21,17 +21,16 @@ class TestResolveFsProtocolMatch:
         not `url_to_fs`.
         """
         storage = StorageConfig(protocol="memory")
-        # Pre-populate the cache so we can identity-compare.
         cached_fs = storage.filesystem()
 
         fs, stripped = resolve_fs("memory://bucket/key", storage)
 
-        assert fs is cached_fs  # fsspec caches by (protocol, kwargs)
+        assert fs is cached_fs
         assert stripped == "bucket/key"
 
     def test_local_path_with_local_storage_uses_storage(self):
         """Bare local path + protocol='file' storage → storage path."""
-        storage = StorageConfig()  # protocol="file"
+        storage = StorageConfig()
         fs, stripped = resolve_fs("/tmp/file.txt", storage)
         assert isinstance(fs, LocalFileSystem)
         assert stripped == "/tmp/file.txt"
@@ -46,9 +45,8 @@ class TestResolveFsFallthrough:
         Routing through `url_to_fs` for cross-protocol inputs is what
         lets a local pipeline ingest from S3.
         """
-        storage = StorageConfig()  # protocol="file"
+        storage = StorageConfig()
         fs, stripped = resolve_fs("memory://other-bucket/key", storage)
-        # url_to_fs returned a memory fs (bypassed local storage)
         assert isinstance(fs, MemoryFileSystem)
         assert stripped == "/other-bucket/key"
 
@@ -66,7 +64,6 @@ class TestResolveFsFallthrough:
         """Bare local path with no storage → LocalFileSystem via url_to_fs."""
         fs, stripped = resolve_fs("/tmp/x.txt", None)
         assert isinstance(fs, LocalFileSystem)
-        # url_to_fs leaves local paths unchanged
         assert stripped == "/tmp/x.txt"
 
 
@@ -81,5 +78,4 @@ class TestResolveFsRoundTrip:
             f.write(b"payload")
         with fs.open(stripped, "rb") as f:
             assert f.read() == b"payload"
-        # Cleanup so other tests don't see leftovers in the in-memory fs.
         fs.rm(stripped)

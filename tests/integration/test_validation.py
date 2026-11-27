@@ -126,9 +126,6 @@ def test_input_type_mismatch_raises(pipeline_env: dict[str, str]):
         inputs={"dataset": step0.output("datasets")},
     )
 
-    # MetricCalculator outputs "metrics" (type=metric), but DataTransformer
-    # expects "dataset" (type=data). Wiring metric output to data input
-    # should fail type validation.
     with pytest.raises(ValueError, match="incompatible artifact type"):
         pipeline.run(
             DataTransformer,

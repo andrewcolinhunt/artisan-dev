@@ -71,7 +71,7 @@ class TestMetricArtifact:
             MetricArtifact(
                 artifact_id="e" * 32,
                 origin_step_number=1,
-                content={"score": 0.95},  # Wrong type
+                content={"score": 0.95},
             )
 
 
@@ -107,11 +107,6 @@ class TestFileRefArtifact:
         assert artifact.origin_step_number == 0
 
 
-# =============================================================================
-# Draft/Finalize Pattern Tests
-# =============================================================================
-
-
 class TestMetricArtifactDraftFinalize:
     """Tests for MetricArtifact draft/finalize pattern."""
 
@@ -124,9 +119,8 @@ class TestMetricArtifactDraftFinalize:
         )
         assert artifact.artifact_id is None
         assert artifact.is_draft is True
-        # Content should be JSON-encoded bytes
         decoded = json.loads(artifact.content.decode("utf-8"))
-        assert decoded == {"confidence": 85.2, "score": 0.95}  # Sorted keys
+        assert decoded == {"confidence": 85.2, "score": 0.95}
 
     def test_draft_with_metadata(self):
         """draft() accepts optional metadata."""
@@ -153,7 +147,6 @@ class TestMetricArtifactDraftFinalize:
 
     def test_sorted_keys_ensures_deterministic_hashing(self):
         """Dict key order doesn't affect artifact_id (keys are sorted)."""
-        # Create with different key orders
         artifact1 = MetricArtifact.draft(
             content={"b": 2, "a": 1},
             original_name="test.json",
@@ -184,7 +177,7 @@ class TestFileRefArtifactFinalize:
         finalized = artifact.finalize()
         assert finalized is artifact
         assert finalized.artifact_id is not None
-        assert len(finalized.artifact_id) == 32  # 32-char hex
+        assert len(finalized.artifact_id) == 32
 
     def test_finalize_succeeds_when_valid_artifact_id_present(self):
         """FileRefArtifact.finalize() validates a matching stored ID."""
@@ -238,7 +231,7 @@ class TestFileRefArtifactFinalize:
             path="/data/input.dat",
             content_hash="k" * 32,
             size_bytes=1024,
-            step_number=5,  # Different step_number
+            step_number=5,
         ).finalize()
 
         assert draft1.artifact_id == draft2.artifact_id
@@ -252,7 +245,7 @@ class TestFileRefArtifactFinalize:
             step_number=0,
         ).finalize()
         draft2 = FileRefArtifact.draft(
-            path="/data/other.dat",  # Different path
+            path="/data/other.dat",
             content_hash="k" * 32,
             size_bytes=1024,
             step_number=0,
@@ -324,16 +317,9 @@ class TestMaterializedPath:
         )
         artifact.materialized_path = Path("/tmp/workdir/test.json")
 
-        # Serialize to dict
         data = artifact.model_dump()
 
-        # materialized_path should not be in the serialized data
         assert "materialized_path" not in data
-
-
-# =============================================================================
-# ExecutionConfigArtifact Tests
-# =============================================================================
 
 
 class TestExecutionConfigArtifact:
@@ -358,7 +344,7 @@ class TestExecutionConfigArtifact:
             ExecutionConfigArtifact(
                 artifact_id="a" * 32,
                 origin_step_number=1,
-                content={"contig": "40-150"},  # Should be bytes
+                content={"contig": "40-150"},
             )
 
 
@@ -376,7 +362,6 @@ class TestExecutionConfigArtifactDraftFinalize:
         assert artifact.artifact_id is None
         assert artifact.content is not None
 
-        # Verify content is valid JSON
         decoded = json.loads(artifact.content.decode("utf-8"))
         assert decoded["contig"] == "40-150,A8-10"
         assert decoded["length"] == "175-275"
@@ -488,7 +473,6 @@ class TestExecutionConfigArtifactMaterialize:
         assert os.path.exists(path)
         assert artifact.materialized_path == path
 
-        # Verify content
         with open(path) as f:
             content = json.loads(f.read())
         assert content["contig"] == "40-150"
@@ -530,11 +514,6 @@ class TestExecutionConfigArtifactMaterialize:
         expected = os.path.join(directory, f"{'a' * 32}.json")
         assert path == expected
         assert os.path.exists(path)
-
-
-# =============================================================================
-# Artifact Reference Tests
-# =============================================================================
 
 
 class TestFindArtifactReferences:
@@ -586,7 +565,6 @@ class TestFindArtifactReferences:
         """Dict with $artifact key but other keys is NOT a reference."""
         from artisan.schemas.artifact.execution_config import find_artifact_references
 
-        # This dict has $artifact but also another key, so it's not a reference
         obj = {"$artifact": "abc123", "extra_key": "value"}
         refs = find_artifact_references(obj)
         assert refs == []
@@ -796,12 +774,12 @@ class TestExecutionConfigArtifactMaterializeWithRefs:
             step_number=1,
         ).finalize()
 
-        path = artifact.materialize_to(str(tmp_path))  # No resolved_paths
+        path = artifact.materialize_to(str(tmp_path))
 
         assert os.path.exists(path)
         with open(path) as f:
             content = json.loads(f.read())
-        assert content["input_pdb"] == {"$artifact": "abc123"}  # Unchanged
+        assert content["input_pdb"] == {"$artifact": "abc123"}
 
     def test_materialize_missing_ref_raises(self, tmp_path):
         """Missing ref in mapping raises ValueError."""

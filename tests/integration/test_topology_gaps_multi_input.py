@@ -48,10 +48,6 @@ from .conftest import (
     prepare_paired_files,
 )
 
-# =============================================================================
-# Custom Test Operation for 1:N LINEAGE
-# =============================================================================
-
 
 class DualInputConfigConsumer(OperationDefinition):
     """Consumes data + config inputs with LINEAGE grouping.
@@ -123,11 +119,6 @@ class DualInputConfigConsumer(OperationDefinition):
         return declared_file_result(inputs)
 
 
-# =============================================================================
-# Tests
-# =============================================================================
-
-
 def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
     """Filter auto-discovers co-produced metrics from same step."""
     delta_root = pipeline_env["delta_root"]
@@ -139,14 +130,11 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 3 datasets with co-produced metrics
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
     )
 
-    # Step 1: Filter using co-produced metrics (mean_score >= 0)
-    # The filter should auto-discover metrics from step 0's output-to-output lineage
     pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
@@ -160,11 +148,9 @@ def test_co_produced_metrics_filter(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Scores are uniform(0, 1), so mean_score >= 0 should pass all
     passthrough_ids = get_execution_outputs(delta_root, 1, "passthrough")
     assert len(passthrough_ids) == 3
 
-    # Verify correct artifacts passed (same IDs as step 0 datasets)
     gen_dataset_ids = set(get_execution_outputs(delta_root, 0, "datasets"))
     assert set(passthrough_ids) == gen_dataset_ids
 
@@ -180,13 +166,11 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 2 datasets
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
-    # Step 1: Generate configs (2 scale_factors per dataset = 4 configs total)
     step1 = pipeline.run(
         DataTransformerConfig,
         inputs={"dataset": step0.output("datasets")},
@@ -197,9 +181,6 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 2: Consume with LINEAGE grouping
-    # Each dataset has 2 configs descended from it -> 2 groups
-    # Each group: 1 dataset + 2 configs -> product gives 2 execution units per group
     pipeline.run(
         DualInputConfigConsumer,
         inputs={
@@ -211,12 +192,8 @@ def test_lineage_grouping_one_to_many(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # 2 datasets, each with 2 configs = 4 execution units (product expansion)
     assert count_executions_by_step(delta_root, 2) == 4
 
-    # Each execution records its output occurrence, but this operation does not
-    # use the config value. The two config variants for one dataset therefore
-    # produce the same typed semantic artifact and deduplicate globally.
     output_ids = get_execution_outputs(delta_root, 2, "result")
     assert len(output_ids) == 4
     assert len(set(output_ids)) == 2
@@ -229,7 +206,6 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     staging_root = pipeline_env["staging_root"]
     working_root = pipeline_env["working_root"]
 
-    # Run 1: Generate -> Transform -> Metrics
     p1 = create_native_pipeline(
         name="test_resume_extend",
         delta_root=delta_root,
@@ -258,12 +234,10 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     )
     p1.finalize()
 
-    # Verify initial run
     assert count_artifacts_by_step(delta_root, 0) == 2
     assert count_artifacts_by_step(delta_root, 1) == 2
     assert count_artifacts_by_step(delta_root, 2) == 2
 
-    # Run 2: Resume and extend with filter + transform
     p2 = PipelineManager.resume(
         delta_root=delta_root,
         staging_root=staging_root,
@@ -271,10 +245,8 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
         default_step_runner=p1.runner,
     )
 
-    # Resumed steps are restored
     assert len(p2) == 3
 
-    # Extend: Filter on step 2 metrics, passthrough step 1 csv
     step3 = p2.run(
         Filter,
         inputs={"passthrough": p2[1].output("dataset")},
@@ -285,7 +257,6 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 4: Transform the filtered output
     p2.run(
         DataTransformer,
         inputs={"dataset": step3.output("passthrough")},
@@ -300,11 +271,9 @@ def test_resume_and_extend(pipeline_env: dict[str, str]) -> None:
     result = p2.finalize()
     assert result["overall_success"]
 
-    # New steps executed
     assert get_step_status(delta_root, 3) == StepStatus.SUCCEEDED
     assert get_step_status(delta_root, 4) == StepStatus.SUCCEEDED
 
-    # New steps produced artifacts
     passthrough_ids = get_execution_outputs(delta_root, 3, "passthrough")
     assert len(passthrough_ids) > 0
     assert count_artifacts_by_step(delta_root, 4) == len(passthrough_ids)

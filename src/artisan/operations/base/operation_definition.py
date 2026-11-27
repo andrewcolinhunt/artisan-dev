@@ -89,7 +89,6 @@ class OperationDefinition(BaseModel):
     ``DiscoveryReport.name_collisions``.
     """
 
-    # ---------- Metadata ----------
     name: ClassVar[str] = ""
     version: ClassVar[str] = "1"
     """Behavior version included in execution cache keys.
@@ -104,7 +103,6 @@ class OperationDefinition(BaseModel):
     tags: ClassVar[list[str]] = []
     """Free-form tags for agent-side filtering (e.g. ``"source"``, ``"transform"``)."""
 
-    # ---------- Inputs ----------
     inputs: ClassVar[dict[str, InputSpec]] = {}
     """Input specification for this operation.
 
@@ -117,7 +115,6 @@ class OperationDefinition(BaseModel):
         }
     """
 
-    # ---------- Outputs ----------
     outputs: ClassVar[dict[str, OutputSpec]] = {}
     """Output specification for this operation.
 
@@ -136,7 +133,6 @@ class OperationDefinition(BaseModel):
         }
     """
 
-    # ---------- Behavior ----------
     cacheable: ClassVar[bool] = True
     """Whether declared inputs and configuration fully identify reusable work.
 
@@ -254,28 +250,18 @@ class OperationDefinition(BaseModel):
       software so the command can import the operation.
     """
 
-    # ---------- Tool ----------
     tool: ToolSpec | None = None
     """External binary/script this operation invokes. None for pure-Python ops."""
 
     environment: Environment | None = None
     """Canonical command software; absent declarations inherit worker software."""
 
-    # ---------- Environments ----------
-
-    # ---------- Compute provider ----------
-
-    # ---------- Compute resources ----------
-
-    # ---------- Runner resources ----------
     runner_resources: RunnerResources = RunnerResources()  # type: ignore[call-arg]
     """Hardware resources for the active step runner."""
 
-    # ---------- Batch strategy ----------
     batch_strategy: BatchStrategy = BatchStrategy()  # type: ignore[call-arg]
     """Batching and scheduling — how artifacts are sliced into units/workers."""
 
-    # ---------- Lifecycle ----------
     def preprocess(self, _inputs: PreprocessInput) -> dict[str, Any]:
         """Transform framework artifacts into the format expected by execute.
 
@@ -449,7 +435,6 @@ class OperationDefinition(BaseModel):
         """
         return ArtifactResult(success=True)
 
-    # ---------- Validation ----------
     @classmethod
     def __pydantic_init_subclass__(cls, **kwargs: Any) -> None:
         """Validate subclass declarations, generate role docs, and register.
@@ -459,15 +444,12 @@ class OperationDefinition(BaseModel):
         """
         super().__pydantic_init_subclass__(**kwargs)
 
-        # The empty string is the explicit marker for abstract operation bases.
-        # Other falsey values are malformed concrete declarations and must fail.
         if cls.name == "":
             return
 
         cls._validate_registry_metadata()
         cls._validate_parameter_shape()
 
-        # Exactly one execute slot must be implemented
         has_execute_function = (
             cls.execute_function is not OperationDefinition.execute_function
         )
@@ -506,7 +488,6 @@ class OperationDefinition(BaseModel):
             if has_slot
         ]
         if len(filled) > 1:
-            # A second slot would be silently dead code — fail at definition.
             msg = (
                 f"{cls.__name__} fills {len(filled)} execute slots "
                 f"({', '.join(filled)}). Implement exactly one of "
@@ -516,8 +497,6 @@ class OperationDefinition(BaseModel):
 
         cls._validate_lineage_roles()
 
-        # Creator ops (custom execute or tool command) must declare explicit
-        # lineage for all outputs
         is_creator = has_execute_function or has_execute_command
         if is_creator:
             for role_name, spec in cls.outputs.items():
@@ -528,7 +507,6 @@ class OperationDefinition(BaseModel):
                     )
                     raise TypeError(msg)
 
-        # Creator ops with inputs must implement preprocess
         if is_creator and cls.inputs:
             has_preprocess = cls.preprocess is not OperationDefinition.preprocess
             if not has_preprocess:
@@ -542,8 +520,6 @@ class OperationDefinition(BaseModel):
         append_role_docs(cls)
         cls._validate_params_documented()
 
-        # Register in operation registry (concrete ops only). First
-        # registration wins; collisions are recorded for discovery.
         if cls.name:
             existing = OperationDefinition._registry.get(cls.name)
             if existing is None:
@@ -808,7 +784,6 @@ class OperationDefinition(BaseModel):
             recovery_hint="CHECK_INPUT",
         )
 
-    # ---------- Introspection (agent-facing) ----------
     @classmethod
     def _copy_examples(cls) -> list[OperationExample]:
         """Return examples without exposing mutable class-level model data."""
@@ -869,7 +844,6 @@ class OperationDefinition(BaseModel):
             source_module=cls.__module__,
         )
 
-    # ---------- Registry ----------
     @classmethod
     def get(cls, name: str) -> type[OperationDefinition]:
         """Look up an operation class by name.

@@ -103,7 +103,6 @@ def _build_forward_walk_store(
     """
     store = Mock()
 
-    # Auto-build type_map from metric_values if not provided
     if type_map is None:
         type_map = {}
         for mid in metric_values:
@@ -112,7 +111,6 @@ def _build_forward_walk_store(
     edges_df = _build_edges_df(edges, include_target_type=True, type_map=type_map)
     plain_edges_df = _build_edges_df(edges)
 
-    # get_step_range returns (min, max) of step numbers for given IDs
     steps = list(step_map.values())
     if steps:
         store.provenance.get_step_range.return_value = (min(steps), max(steps))
@@ -133,12 +131,10 @@ def _build_forward_walk_store(
         else pl.DataFrame(schema={"artifact_id": pl.String, "content": pl.Binary})
     )
 
-    # Build step_number_map: {artifact_id: step_number}
     store.provenance.load_step_map.side_effect = lambda ids=None: (
         {aid: sn for aid, sn in step_map.items() if ids is None or aid in ids}
     )
 
-    # Step name map
     store.provenance.load_step_name_map.return_value = step_name_map or {}
 
     return store
@@ -181,7 +177,6 @@ def lineage_store():
         ids["m_lb"]: 2,
     }
 
-    # Edges: source produced target (forward direction)
     edges = [
         (ids["root_a"], ids["pt_a"]),
         (ids["root_b"], ids["pt_b"]),
@@ -297,7 +292,6 @@ class TestFilterMultipleArtifacts:
 
         assert result.success
         passed = result.passthrough["passthrough"]
-        # pt_a has score=0.9 (pass), pt_b has score=0.3 (fail)
         assert ids["pt_a"] in passed
         assert ids["pt_b"] not in passed
 
@@ -311,7 +305,6 @@ class TestFilterAllOperators:
         pt_id = pad_id("pt")
         m_id = pad_id("met")
 
-        # pt produced met (edge: pt -> met)
         step_map = {pt_id: 0, m_id: 1}
         edges = [(pt_id, m_id)]
         metric_values = {m_id: {"val": 10}}
@@ -583,10 +576,8 @@ class TestFilterDiagnosticsMetadata:
         assert len(funnel) == 3
         assert funnel[0]["label"] == "All evaluated"
         assert funnel[0]["count"] == 2
-        # Both pass score >= 0.3
         assert funnel[1]["count"] == 2
         assert funnel[1]["eliminated"] == 0
-        # Only pt_a has n_chainbreaks == 0
         assert funnel[2]["count"] == 1
         assert funnel[2]["eliminated"] == 1
 
@@ -940,7 +931,6 @@ class TestStepDisambiguation:
             },
             step_name_map={0: "generator", 1: "calc_a", 2: "calc_b"},
         )
-        # Add load_artifact_ids_by_type mock
         store.provenance.load_artifact_ids_by_type.side_effect = (
             lambda atype, step_numbers=None: (
                 {m1_id}
@@ -966,7 +956,6 @@ class TestStepDisambiguation:
         )
 
         assert result.success
-        # m1 from step 1 has score=0.9 > 0.5
         assert pt_id in result.passthrough["passthrough"]
 
     def test_step_name_disambiguation(self):
@@ -1070,9 +1059,8 @@ class TestFilterPassthroughFailures:
         passed = result.passthrough["passthrough"]
         assert ids["pt_a"] in passed
         assert ids["pt_b"] in passed
-        # Diagnostics still reflect true evaluation
         diag = result.metadata["diagnostics"]
-        assert diag["total_passed"] == 1  # Only pt_a truly passed
+        assert diag["total_passed"] == 1
         assert diag["passthrough_failures"] is True
 
     def test_non_evaluable_included(self):
@@ -1184,11 +1172,9 @@ class TestFilterNestedMetricValues:
         """Full execute_curator with nested MetricArtifacts."""
         ids = lineage_store._ids
 
-        # Replace metric m_qa with nested values
         nested_values = {"scores": {"confidence": 0.85, "similarity": 0.7}}
         nested_df = _make_metrics_df({ids["m_qa"]: nested_values})
 
-        # Update load_metrics_df to return nested metric for m_qa
         original_side_effect = lineage_store.load_metrics_df.side_effect
 
         def patched_load(art_ids):
@@ -1215,11 +1201,6 @@ class TestFilterNestedMetricValues:
         )
         assert result.success
         assert ids["pt_a"] in result.passthrough["passthrough"]
-
-
-# ---------------------------------------------------------------------------
-# Chunked evaluation tests
-# ---------------------------------------------------------------------------
 
 
 def _build_multi_artifact_store(
@@ -1270,13 +1251,11 @@ class TestFilterChunkedEvaluation:
 
     def test_chunk_boundary_correct_results(self):
         """5 artifacts with chunk_size=2 gives same results as unchunked."""
-        # Scores: 0.1, 0.6, 0.2, 0.8, 0.4 -> threshold 0.5 -> indices 1, 3 pass
         scores = [0.1, 0.6, 0.2, 0.8, 0.4]
         store, pt_ids, _m_ids = _build_multi_artifact_store(5, lambda i: scores[i])
 
         criteria = [Criterion(metric="score", operator="gt", value=0.5)]
 
-        # Run with chunk_size=2
         op_chunked = Filter(params=Filter.Params(criteria=criteria, chunk_size=2))
         result_chunked = op_chunked.execute_curator(
             inputs={"passthrough": _df(pt_ids)},
@@ -1284,7 +1263,6 @@ class TestFilterChunkedEvaluation:
             artifact_store=store,
         )
 
-        # Run with chunk_size > total (single chunk)
         op_full = Filter(params=Filter.Params(criteria=criteria, chunk_size=100))
         result_full = op_full.execute_curator(
             inputs={"passthrough": _df(pt_ids)},
@@ -1323,7 +1301,6 @@ class TestFilterChunkedEvaluation:
 
         criteria = [Criterion(metric="score", operator="gt", value=0.3)]
 
-        # Run chunked (chunk_size=2) and full
         op_chunked = Filter(params=Filter.Params(criteria=criteria, chunk_size=2))
         result_chunked = op_chunked.execute_curator(
             inputs={"passthrough": _df(pt_ids)},
@@ -1345,7 +1322,6 @@ class TestFilterChunkedEvaluation:
         assert diag_c["total_evaluated"] == diag_f["total_evaluated"]
         assert diag_c["total_passed"] == diag_f["total_passed"]
 
-        # Per-criterion stats
         crit_c = diag_c["criteria"][0]
         crit_f = diag_f["criteria"][0]
         assert crit_c["pass_count"] == crit_f["pass_count"]
@@ -1353,7 +1329,6 @@ class TestFilterChunkedEvaluation:
         assert crit_c["stats"]["max"] == pytest.approx(crit_f["stats"]["max"])
         assert crit_c["stats"]["mean"] == pytest.approx(crit_f["stats"]["mean"])
 
-        # Funnel
         assert len(diag_c["funnel"]) == len(diag_f["funnel"])
         for fc, ff in zip(diag_c["funnel"], diag_f["funnel"], strict=True):
             assert fc["count"] == ff["count"]
@@ -1395,11 +1370,9 @@ class TestFilterChunkedEvaluation:
         )
 
         assert result.success
-        # All 3 pass through
         assert set(result.passthrough["passthrough"]) == set(pt_ids)
-        # But diagnostics reflect true pass count
         diag = result.metadata["diagnostics"]
-        assert diag["total_passed"] == 2  # Only indices 0, 2 truly passed
+        assert diag["total_passed"] == 2
         assert diag["passthrough_failures"] is True
 
     def test_chunk_preserves_input_order(self):
@@ -1421,7 +1394,6 @@ class TestFilterChunkedEvaluation:
         )
 
         passed = result.passthrough["passthrough"]
-        # Expected order: pt_0 (chunk 0), pt_2 (chunk 1), pt_3 (chunk 1)
         assert passed == [pt_ids[0], pt_ids[2], pt_ids[3]]
 
 

@@ -128,7 +128,6 @@ class LocalRunner:
         return (type(self),)
 
     def _trusted_code_roots(self) -> tuple[type, ...]:
-        # An SDK extension cannot remove the actual selected provider's code.
         return tuple(dict.fromkeys((type(self), *self.worker_code_roots())))
 
     def prepare(

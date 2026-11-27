@@ -35,19 +35,16 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 5 datasets
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 42},
     )
 
-    # Step 1: Compute metrics
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
     )
 
-    # Step 2: Filter with 3 AND criteria
     pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
@@ -64,8 +61,6 @@ def test_multi_criterion_filter(pipeline_env: dict[str, str]):
     assert result["overall_success"]
 
     passthrough_ids = get_execution_outputs(delta_root, 2, "passthrough")
-    # All datasets have min >= 0 (generated 0-10), row_count == 10,
-    # median likely > 0.3 for most datasets
     assert 0 <= len(passthrough_ids) <= 5
 
 
@@ -85,13 +80,11 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
         params={"count": 3, "seed": 42},
     )
 
-    # Compute metrics (needed for filter evaluation)
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
     )
 
-    # Impossible criterion (median > 999) with passthrough_failures=True
     pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
@@ -106,7 +99,6 @@ def test_filter_passthrough_failures(pipeline_env: dict[str, str]):
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # All 3 artifacts pass through despite failing criteria
     passthrough_ids = get_execution_outputs(delta_root, 2, "passthrough")
     assert len(passthrough_ids) == 3
 
@@ -122,13 +114,11 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 3 datasets
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
     )
 
-    # Step 1: Transform datasets
     step1 = pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -140,19 +130,16 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
         },
     )
 
-    # Step 2: Metrics on originals
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
     )
 
-    # Step 3: Metrics on transformed
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
     )
 
-    # Step 4: Filter passthrough step 1 artifacts using step 3 metrics
     pipeline.run(
         Filter,
         inputs={"passthrough": step1.output("dataset")},
@@ -171,7 +158,6 @@ def test_step_targeted_criterion(pipeline_env: dict[str, str]):
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Filter uses step 3 metrics (on transformed data)
     passthrough_ids = get_execution_outputs(delta_root, 4, "passthrough")
     assert len(passthrough_ids) > 0
 
@@ -196,19 +182,16 @@ def test_multi_source_filter_with_colliding_field_names(
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate datasets + co-produced flat metrics (mean_score, row_count)
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 5, "seed": 42},
     )
 
-    # Step 1: Compute nested metrics (distribution.range, summary.row_count)
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
     )
 
-    # Step 2: Filter on criteria from BOTH metric sources
     pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},

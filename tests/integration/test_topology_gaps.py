@@ -76,13 +76,11 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 2 datasets
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
     )
 
-    # Step 1: Transform (no noise to ensure distribution.min stays >= 0)
     step1 = pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -94,13 +92,11 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 2: Metrics on transformed data
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step1.output("dataset")},
     )
 
-    # Step 3: Filter (distribution.min >= 0 should pass all; data is 0-10)
     step3 = pipeline.run(
         Filter,
         inputs={"passthrough": step1.output("dataset")},
@@ -111,7 +107,6 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 4: Downstream creator on filter output
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step3.output("passthrough")},
@@ -126,19 +121,14 @@ def test_filter_then_creator(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Filter passed all 2 artifacts
     passthrough_ids = get_execution_outputs(delta_root, 3, "passthrough")
     assert len(passthrough_ids) == 2
 
-    # Downstream received exactly the passed artifacts
     assert count_artifacts_by_step(delta_root, 4) == 2
 
-    # Provenance: downstream artifacts trace back through filter to generator
-    # Step 1 outputs -> step 3 passthrough (same IDs) -> step 4 inputs
     step1_outputs = set(get_execution_outputs(delta_root, 1, "dataset"))
     assert set(passthrough_ids) == step1_outputs
 
-    # Artifact edges: each step 4 output traces to a step 1 output
     step4_outputs = get_execution_outputs(delta_root, 4, "dataset")
     df_edges = load_artifact_edges(delta_root, None)
     for out_id in step4_outputs:
@@ -159,13 +149,11 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 3 datasets with co-produced metrics
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
     )
 
-    # Step 1: Filter with impossible criterion on co-produced metrics
     step1 = pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
@@ -176,7 +164,6 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 2: DataTransformer (should be skipped — empty inputs)
     step2_result = pipeline.run(
         DataTransformer,
         inputs={"dataset": step1.output("passthrough")},
@@ -188,7 +175,6 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Empty upstream outputs propagate the skip to MetricCalculator.
     step3_result = pipeline.run(
         MetricCalculator,
         inputs={"dataset": pipeline.output("data_transformer", "dataset")},
@@ -197,14 +183,12 @@ def test_empty_filter_cascade(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Filter passed 0 artifacts
     passthrough_ids = get_execution_outputs(delta_root, 1, "passthrough")
     assert len(passthrough_ids) == 0
 
     assert step2_result.status is StepStatus.SKIPPED
     assert step3_result.status is StepStatus.SKIPPED
 
-    # Skipped steps produce 0 artifacts
     assert count_artifacts_by_step(delta_root, 2) == 0
     assert count_artifacts_by_step(delta_root, 3) == 0
 
@@ -220,7 +204,6 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 5 datasets
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 5, "seed": 42},
@@ -230,13 +213,11 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
     round_counts = []
 
     for round_idx in range(2):
-        # Score
         pipeline.run(
             MetricCalculator,
             inputs={"dataset": current_data},
         )
 
-        # Filter: lenient threshold so we keep some but not all
         filter_step = pipeline.run(
             Filter,
             inputs={"passthrough": current_data},
@@ -247,7 +228,6 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
             },
         )
 
-        # Transform survivors
         transform_step = pipeline.run(
             DataTransformer,
             inputs={"dataset": filter_step.output("passthrough")},
@@ -259,7 +239,6 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
             },
         )
 
-        # Reassign for next round
         current_data = transform_step.output("dataset")
         passed = get_execution_outputs(
             delta_root, filter_step.step_number, "passthrough"
@@ -269,17 +248,14 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Artifact count is non-increasing across rounds
     assert round_counts[1] <= round_counts[0]
 
-    # Final outputs trace back to the original generator
     final_step_number = transform_step.step_number
     final_outputs = get_execution_outputs(delta_root, final_step_number, "dataset")
     gen_outputs = set(get_execution_outputs(delta_root, 0, "datasets"))
 
     df_edges = load_artifact_edges(delta_root, None)
     for out_id in final_outputs:
-        # Walk backward through artifact edges
         visited = set()
         frontier = {out_id}
         while frontier:
@@ -291,7 +267,6 @@ def test_iterative_refinement(pipeline_env: dict[str, str]) -> None:
                 "source_artifact_id"
             ].to_list()
             frontier.update(sources)
-        # Should reach at least one generator output
         assert visited & gen_outputs
 
 
@@ -306,7 +281,6 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 3 datasets
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 3, "seed": 42},
@@ -314,7 +288,6 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
 
     shared_ref = step0.output("datasets")
 
-    # Step 1: Branch A (scale=1.5)
     step1 = pipeline.run(
         DataTransformer,
         inputs={"dataset": shared_ref},
@@ -327,7 +300,6 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 2: Branch B (scale=2.0)
     step2 = pipeline.run(
         DataTransformer,
         inputs={"dataset": shared_ref},
@@ -340,7 +312,6 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 3: Merge
     step3 = pipeline.run(
         Merge,
         inputs={
@@ -349,7 +320,6 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 4: Metrics on merged set
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step3.output("merged")},
@@ -358,7 +328,6 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # Merge output contains artifacts from both branches (3 + 3 = 6)
     merged_ids = get_execution_outputs(delta_root, 3, "merged")
     assert len(merged_ids) == 6
 
@@ -366,10 +335,8 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
     branch_b_ids = set(get_execution_outputs(delta_root, 2, "dataset"))
     assert set(merged_ids) == branch_a_ids | branch_b_ids
 
-    # Downstream metrics step processes all 6
     assert count_artifacts_by_step(delta_root, 4) == 6
 
-    # Provenance: metric artifacts have paths through both branches
     df_edges = load_artifact_edges(delta_root, None)
     metric_outputs = get_execution_outputs(delta_root, 4, "metrics")
     source_data_ids = set()
@@ -378,7 +345,6 @@ def test_diamond_dag(pipeline_env: dict[str, str]) -> None:
             "source_artifact_id"
         ].to_list()
         source_data_ids.update(sources)
-    # Sources should span both branches
     assert source_data_ids & branch_a_ids
     assert source_data_ids & branch_b_ids
 
@@ -394,14 +360,12 @@ def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Internal calls share one outer scientific boundary.
     composite_step = pipeline.run(
         _GenerateAndTransform,
     )
 
     assert composite_step.status is StepStatus.SUCCEEDED, composite_step.error
 
-    # Step 1 consumes the composite's retained export.
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": composite_step.output("dataset")},
@@ -414,7 +378,6 @@ def test_composite_then_downstream(pipeline_env: dict[str, str]) -> None:
     assert count_artifacts_by_step(delta_root, 0) == 2
     assert count_artifacts_by_step(delta_root, 1) == 2
 
-    # Hidden internal products do not create additional pipeline steps.
     metric_ids = get_execution_outputs(delta_root, 1, "metrics")
     composite_ids = set(get_execution_outputs(delta_root, 0, "dataset"))
     assert len(metric_ids) == 2
@@ -438,13 +401,11 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
         working_root=pipeline_env["working_root"],
     )
 
-    # Step 0: Generate 3 datasets with co-produced metrics
     step0 = pipeline.run(
         DataGeneratorWithMetrics,
         params={"count": 3, "seed": 42},
     )
 
-    # Step 1: Filter with impossible criterion + passthrough_failures
     step1 = pipeline.run(
         Filter,
         inputs={"passthrough": step0.output("datasets")},
@@ -456,7 +417,6 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
         },
     )
 
-    # Step 2: Downstream transformer (scale != 1.0 to ensure distinct content)
     pipeline.run(
         DataTransformer,
         inputs={"dataset": step1.output("passthrough")},
@@ -471,9 +431,7 @@ def test_passthrough_failures_downstream(pipeline_env: dict[str, str]) -> None:
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # All 3 artifacts pass through
     passthrough_ids = get_execution_outputs(delta_root, 1, "passthrough")
     assert len(passthrough_ids) == 3
 
-    # Downstream processes all 3
     assert count_artifacts_by_step(delta_root, 2) == 3

@@ -175,8 +175,6 @@ def _freeze_partition(
             address = graph.add_input(role, item.artifact)
             key = sources.canonical_key(item.key)
             positions[address] = key
-            # Context aliases share a representative; selected positions and their
-            # exact producer attribution remain distinct admission evidence.
             representatives.setdefault(key, address)
             attribution.append(
                 BoundaryInputAttribution(boundary=address, producer=item.producer)

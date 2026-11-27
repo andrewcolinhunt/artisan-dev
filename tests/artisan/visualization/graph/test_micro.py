@@ -151,7 +151,6 @@ class TestRenderMicroGraph:
 
         assert os.path.exists(result)
         assert result.endswith(".png")
-        # PNG files start with specific magic bytes
         with open(result, "rb") as f:
             content = f.read()
         assert content[:8] == b"\x89PNG\r\n\x1a\n"
@@ -202,7 +201,6 @@ class TestNodeLabeling:
         """File ref artifacts labeled with basename (no extension)."""
         graph = build_micro_graph(delta_root_with_data)
         source = graph.source
-        # Should have basename without extension, not full path
         assert "sample" in source
         assert "sample.csv" not in source
         assert "/data/input/" not in source
@@ -223,14 +221,11 @@ class TestEdgeStyling:
         """Execution provenance edges use default color (no color attr)."""
         graph = build_micro_graph(delta_root_with_data)
         source = graph.source
-        # Count orange edges vs total edges
-        # Lineage edges should be orange, execution edges should not have color
         lines = source.split("\n")
         edge_lines = [line for line in lines if "->" in line]
 
-        # We have 2 lineage edges (orange) and 4 execution edges (no color)
         orange_edges = [line for line in edge_lines if "color=orange" in line]
-        assert len(orange_edges) == 2  # Two lineage edges in test data
+        assert len(orange_edges) == 2
 
 
 class TestMaxStepFiltering:
@@ -257,9 +252,8 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=1)
         source = graph.source
 
-        # Step 0 and 1 artifacts should be included
-        assert "sample" in source  # External file from step 0
-        assert "parsed_result" in source  # Intermediate metric from step 1
+        assert "sample" in source
+        assert "parsed_result" in source
 
         assert "metric_calc" not in source
         assert "energy" not in source
@@ -269,7 +263,6 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=1)
         source = graph.source
 
-        # Edges for exec_2 (step 2) should not be present
         assert "metric_calc" not in source
 
     def test_max_step_filters_artifact_edges(self, delta_root_with_data: Path) -> None:
@@ -277,12 +270,10 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=1)
         source = graph.source
 
-        # Lineage edge to art_metric_1 (step 2) should not exist
-        # Only 1 lineage edge should remain (ext_1 -> inter_1)
         lines = source.split("\n")
         edge_lines = [line for line in lines if "->" in line]
         orange_edges = [line for line in edge_lines if "color=orange" in line]
-        assert len(orange_edges) == 1  # Only ext_1 -> inter_1
+        assert len(orange_edges) == 1
 
     def test_max_step_zero_shows_only_step_zero(
         self, delta_root_with_data: Path
@@ -291,7 +282,6 @@ class TestMaxStepFiltering:
         graph = build_micro_graph(delta_root_with_data, max_step=0)
         source = graph.source
 
-        # Step 0 artifact (external file) should be included
         assert "sample" in source
 
         assert "data_parser" not in source
@@ -331,7 +321,7 @@ class TestGetMaxStepNumber:
     def test_returns_max_step_from_executions(self, delta_root_with_data: Path) -> None:
         """Returns the maximum step number from execution records."""
         result = get_max_step_number(delta_root_with_data)
-        assert result == 2  # Test data has steps 1 and 2
+        assert result == 2
 
     def test_returns_none_for_empty_executions(self, empty_delta_root: Path) -> None:
         """Returns None when no execution records exist."""
@@ -350,8 +340,7 @@ class TestRenderMicroGraphSteps:
 
         result = render_micro_graph_steps(str(delta_root_with_data), output_dir)
 
-        # Test data has steps 1 and 2, so max_step is 2, meaning steps 0, 1, 2
-        assert len(result) == 3  # Steps 0, 1, 2
+        assert len(result) == 3
         for p in result:
             assert os.path.exists(p)
             assert p.endswith(".svg")
@@ -396,13 +385,11 @@ class TestRenderMicroGraphSteps:
 
         result = render_micro_graph_steps(str(delta_root_with_data), output_dir)
 
-        # Step 0: only external file
         with open(result[0]) as f:
             step0_content = f.read()
         assert "sample" in step0_content
         assert "data_parser" not in step0_content
 
-        # Step 1: external file + step 1 execution + intermediate metric
         with open(result[1]) as f:
             step1_content = f.read()
         assert "sample" in step1_content
@@ -410,7 +397,6 @@ class TestRenderMicroGraphSteps:
         assert "parsed_result" in step1_content
         assert "metric_calc" not in step1_content
 
-        # Step 2: everything
         with open(result[2]) as f:
             step2_content = f.read()
         assert "sample" in step2_content

@@ -245,8 +245,6 @@ def test_owner_uses_one_shortened_deadline_for_concurrent_groups(tmp_path):
         result = owner.finish(started + 10)
         assert time.monotonic() - started < 1.5
         assert owner.deadline == started + 0.5
-        # An exactly exhausted deadline can be unknown, but both groups received
-        # the same final signal before any leader identity was released.
         assert result.state in {"closed", "unknown"}
         for index in range(2):
             _wait_absent(int((tmp_path / str(index)).read_text()))

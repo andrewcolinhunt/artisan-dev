@@ -168,7 +168,7 @@ def test_long_lived_store_rejects_coherent_manifest_replacement(
     (publication.directory / "inspection.json").write_bytes(
         canonical_json_bytes(payload)
     )
-    publication.metadata()  # The replacement is internally well-formed.
+    publication.metadata()
     with pytest.raises(StoreIntegrityError, match="identity changed"):
         store.get_artifact_type(_id(next(iter(case.boundary.values()))))
 

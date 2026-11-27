@@ -175,8 +175,6 @@ class RetainedCommitter:
         ):
             winner = self.journal.claim(receipt, captured)
             self._checkpoint("claimed", receipt, None)
-            # Rebuild derived rows from the sealed result and admitted inputs.
-            # A self-consistent replacement plan must not redefine those effects.
             plan = prepare_retained_plan(
                 captured,
                 admission,
@@ -254,7 +252,6 @@ class RetainedCommitter:
                 msg = "Curator producer disagrees with admitted content"
                 raise StoreIntegrityError(msg)
             return
-        # Look up the selected delivery through its occurrence owner, never by content.
         plan = _read.plan_for_delivery(producer.delivery_id)
         if plan.receipt.seal_digest != producer.seal_digest:
             msg = "Selected producer has another complete seal"
@@ -550,7 +547,6 @@ class RetainedCommitter:
         return snapshot
 
     def _cleanup(self, plan: RetainedCommitPlan) -> None:
-        # The published plan remains the permanent evidence after table staging retires.
         directory = retained_plan_directory(
             self.delta_root, plan.receipt.delivery.attempt.assignment
         )

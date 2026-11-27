@@ -103,11 +103,11 @@ def display_provenance_stepper(
         step = change["new"]
         step_label.value = f"{step} / {max_step}"
         output.outputs = ()
-        output.append_display_data(SVG(filename=str(rendered_paths[step])))  # type: ignore[no-untyped-call,unused-ignore]  # IPython.display.SVG; env-dependent typing
+        output.append_display_data(SVG(filename=str(rendered_paths[step])))  # type: ignore[no-untyped-call,unused-ignore]
 
     slider.observe(update_display, names="value")
 
-    output.append_display_data(SVG(filename=str(rendered_paths[max_step])))  # type: ignore[no-untyped-call,unused-ignore]  # IPython.display.SVG; env-dependent typing
+    output.append_display_data(SVG(filename=str(rendered_paths[max_step])))  # type: ignore[no-untyped-call,unused-ignore]
 
     header = widgets.HBox([slider, step_label])
     return widgets.VBox([header, output])

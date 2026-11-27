@@ -173,8 +173,6 @@ def _image(
             payloads / "command-witness", "/opt/artisan/command-witness", copy=True
         )
     )
-    # A stdlib entry executes the hashed script. No automatic provider/source
-    # overlay or transitive function-source inference determines build inputs.
     image = image.run_function(
         subprocess.run,
         args=(["/usr/local/bin/python", str(INPUT_ROOT / "install.py")],),

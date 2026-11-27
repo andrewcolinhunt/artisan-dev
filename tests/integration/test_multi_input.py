@@ -40,10 +40,6 @@ from .conftest import (
     prepare_paired_files,
 )
 
-# =============================================================================
-# Custom Test Operations
-# =============================================================================
-
 
 class DualInputLineage(OperationDefinition):
     """Dual-input operation using LINEAGE grouping."""
@@ -184,11 +180,6 @@ class AssociatedMetricConsumer(OperationDefinition):
         return declared_file_result(inputs)
 
 
-# =============================================================================
-# Tests
-# =============================================================================
-
-
 def test_lineage_grouping(pipeline_env: dict[str, str]):
     """LINEAGE grouping: match by shared ancestry."""
     delta_root = pipeline_env["delta_root"]
@@ -200,7 +191,6 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
         working_root=pipeline_env["working_root"],
     )
 
-    # Gen(2) → Transform(2) → MetricCalc(2)
     step0 = pipeline.run(
         DataGenerator,
         params={"count": 2, "seed": 42},
@@ -220,7 +210,6 @@ def test_lineage_grouping(pipeline_env: dict[str, str]):
         inputs={"dataset": step1.output("dataset")},
     )
 
-    # LINEAGE matches: B1↔M1 (share ancestor A1), B2↔M2 (share ancestor A2)
     pipeline.run(
         DualInputLineage,
         inputs={
@@ -251,7 +240,6 @@ def test_with_associated(pipeline_env: dict[str, str]):
         DataGenerator,
         params={"count": 2, "seed": 42},
     )
-    # MetricCalc creates artifact_edges: D1→M1, D2→M2
     pipeline.run(
         MetricCalculator,
         inputs={"dataset": step0.output("datasets")},
@@ -372,8 +360,6 @@ def test_lineage_grouping_sibling_collision_deterministic(
         DataGenerator,
         params={"count": 1, "seed": 42},
     )
-    # noise_amplitude > 0 so each variant produces distinct content
-    # (and therefore a distinct content-addressed artifact_id).
     step1 = pipeline.run(
         DataTransformer,
         inputs={"dataset": step0.output("datasets")},
@@ -406,12 +392,9 @@ def test_lineage_grouping_sibling_collision_deterministic(
     result = pipeline.finalize()
     assert result["overall_success"]
 
-    # 3 siblings, 9 grandchildren, 9 pairings = 9 step-3 executions/outputs.
     assert count_executions_by_step(delta_root, 3) == 9
     assert count_artifacts_by_step(delta_root, 3) == 9
 
-    # Build the actual parent map from artifact_edges: each grandchild
-    # (step 2) has exactly one direct sibling parent (step 1).
     siblings = set(get_execution_outputs(delta_root, 1, "dataset"))
     grandchildren = set(get_execution_outputs(delta_root, 2, "dataset"))
     assert len(siblings) == 3
@@ -426,9 +409,6 @@ def test_lineage_grouping_sibling_collision_deterministic(
         "Each grandchild must have exactly one sibling parent edge"
     )
 
-    # Each step-3 output's incoming edges identify which (primary, secondary)
-    # pair the matcher chose. Assert primary IS grandchild's actual parent
-    # sibling — not a different sibling that only shares the root.
     pair_outputs = get_execution_outputs(delta_root, 3, "result")
     pair_edges = load_artifact_edges(delta_root, pair_outputs)
     by_output: dict[str, dict[str, str]] = {}
@@ -451,11 +431,6 @@ def test_lineage_grouping_sibling_collision_deterministic(
             f"parent sibling is {expected_parent}. The matcher chose a "
             "different sibling — the sibling-collision bug is back."
         )
-
-
-# =============================================================================
-# CROSS_PRODUCT grouping via per-step override
-# =============================================================================
 
 
 class DualInputCrossProduct(OperationDefinition):
@@ -488,7 +463,6 @@ class DualInputCrossProduct(OperationDefinition):
             derives_from={"inputs": ["primary", "secondary"]},
         ),
     }
-    # No class-level group_by — the per-step override drives pairing.
 
     runner_resources: RunnerResources = RunnerResources(time_limit="00:10:00")
     batch_strategy: BatchStrategy = BatchStrategy(job_name="dual_input_cross_product")
@@ -507,9 +481,6 @@ class DualInputCrossProduct(OperationDefinition):
         if isinstance(secondary_paths, (str, Path)):
             secondary_paths = [secondary_paths]
 
-        # Default ``artifacts_per_unit=1`` → one (primary, secondary) pair
-        # per execute call. Concatenate both inputs into the output bytes
-        # so distinct pairs produce distinct artifact_ids.
         primary = Path(primary_paths[0])
         secondary = Path(secondary_paths[0])
         out_path = Path(out_dir) / f"{primary.stem}__{secondary.stem}.bin"
@@ -618,7 +589,6 @@ def _assert_cross_product_provenance(delta_root: str, op_step_number: int) -> No
         secondary_edge = next(
             e for e in in_edges if e["source_artifact_id"] in secondary_ids
         )
-        # Both declared parents belong to the same selected scientific unit.
         assert primary_edge["execution_run_id"] is not None
         assert primary_edge["execution_run_id"] == secondary_edge["execution_run_id"]
         pair_execution_ids.add(primary_edge["execution_run_id"])
@@ -678,15 +648,6 @@ def test_cross_product_default_preserves_classvar_behavior(
     _assert_cross_product_provenance(delta_root, op_step_number=3)
 
 
-# Monolithic operations must provide output-pair mappings themselves;
-# per-artifact dispatch retains pair identity through its individual calls.
-
-
-# =============================================================================
-# NAME grouping
-# =============================================================================
-
-
 class DualInputName(OperationDefinition):
     """Dual-input op pairing two data streams by ``original_name`` stem.
 
@@ -735,7 +696,6 @@ class DualInputName(OperationDefinition):
 
         a_path = Path(from_a[0])
         b_path = Path(from_b[0])
-        # Bytes depend on both inputs so paired artifact_ids are distinct.
         out_path = Path(out_dir) / f"{a_path.stem}.csv"
         out_path.write_bytes(a_path.read_bytes() + b"\n---\n" + b_path.read_bytes())
         return {

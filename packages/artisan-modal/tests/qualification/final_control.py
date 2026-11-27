@@ -138,7 +138,6 @@ class ControlledRunner:
             )
             if self.mode == "sibling":
                 assert acknowledgement.status == CancellationStatus.CONFIRMED
-                # Startup must not consume the later sibling observation window.
                 deadline = time.monotonic() + 120
                 receipt = handles[1].result(
                     timeout=max(0.0, deadline - time.monotonic())
@@ -152,8 +151,6 @@ class ControlledRunner:
                 assert handles[0].ownership_state() == OwnershipState.UNKNOWN
                 owner = handles[0].worker_owner
                 assert isinstance(owner, ModalPackOwner)
-                # Wait for the actual native body to return, not merely the local
-                # cancellation timeout, before checking that the sibling stayed out.
                 finished = time.monotonic() + 60
                 while owner.outcome(0) is None:
                     if time.monotonic() >= finished:
@@ -173,7 +170,6 @@ class ControlledRunner:
                 self.evidence["native_returned_unknown"] = True
                 self.evidence["queued_sibling_not_entered"] = True
         except BaseException as error:
-            # The owning controller must retain even a partially observed pack.
             message = "Qualification interception failed after launch"
             raise AssignmentLaunchError(
                 message,
@@ -187,6 +183,4 @@ class ControlledRunner:
                 ),
                 cancellation=CancellationAcknowledgement(CancellationStatus.UNKNOWN),
             ) from error
-        # The controller receives the unchanged original handles. Its conservative
-        # classification of unsolicited cancellation is deliberately not altered.
         return handles

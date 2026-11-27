@@ -28,11 +28,6 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-# ---------------------------------------------------------------------------
-# Module-level helpers
-# ---------------------------------------------------------------------------
-
-
 def _criterion_to_expr(c: Criterion) -> pl.Expr:
     """Convert a Criterion to a Polars boolean expression.
 
@@ -168,7 +163,6 @@ def _build_metric_namespace(
     if metrics_df.is_empty():
         return base_df, None
 
-    # Decode JSON content: Binary -> Utf8 -> struct -> unnest -> flatten
     parsed_series = metrics_df["content"].cast(pl.Utf8).str.json_decode()
     decoded = (
         metrics_df.select("artifact_id")
@@ -188,7 +182,6 @@ def _build_metric_namespace(
             steps_by_metric.setdefault(mid, set()).add(number)
     step_name_map = artifact_store.provenance.load_step_name_map(pipeline_run_id)
 
-    # Keep names available for ambiguity evidence accumulated across chunks.
     step_info: dict[str, Any] = {"_step_names": step_name_map}
 
     for col in value_columns:
@@ -201,14 +194,12 @@ def _build_metric_namespace(
                     if val is not None:
                         step_info[col].update(steps_by_metric[mid])
 
-    # Join metrics to passthrough via metric_pairs
     mapping = metric_pairs.select(
         pl.col("passthrough_id"),
         pl.col("metric_id").alias("artifact_id"),
     )
     values = mapping.join(decoded, on="artifact_id", how="left").drop("artifact_id")
 
-    # Aggregate: take first non-null per passthrough_id
     agg_exprs = [
         pl.col(c).drop_nulls().first().alias(c)
         for c in value_columns
@@ -319,7 +310,6 @@ def _build_criterion_frame(
             else pl.lit(None)
         )
         values = wide.select("passthrough_id", value.alias(column))
-        # The right side is unique; repeated primary occurrences keep their order.
         frame = frame.join(
             values, on="passthrough_id", how="left", maintain_order="left"
         )
@@ -468,7 +458,6 @@ class _DiagnosticsAccumulator:
         self._sums: list[float] = [0.0] * len(criteria)
         self._non_null_counts: list[int] = [0] * len(criteria)
 
-        # Funnel: progressive AND counts (one slot per criterion + 1 for "all")
         self._funnel_counts: list[int] = [0] * (len(criteria) + 1)
 
     def update(
@@ -552,13 +541,11 @@ class Filter(OperationDefinition):
     Criterion disambiguates when field names collide across metric sources.
     """
 
-    # ---------- Metadata ----------
     name = "filter"
     description = (
         "Filter artifacts by evaluating structured criteria against matched metrics"
     )
 
-    # ---------- Inputs ----------
     class InputRole(StrEnum):
         passthrough = auto()
 
@@ -570,7 +557,6 @@ class Filter(OperationDefinition):
         ),
     }
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         passthrough = auto()
 
@@ -582,10 +568,8 @@ class Filter(OperationDefinition):
         )
     }
 
-    # ---------- Behavior ----------
     hydrate_inputs: ClassVar[bool] = False
 
-    # ---------- Parameters ----------
     class Params(BaseModel):
         """Filter operation parameters.
 
@@ -603,7 +587,6 @@ class Filter(OperationDefinition):
 
     params: Params = Params()
 
-    # ---------- Lifecycle ----------
     def execute_curator(
         self,
         inputs: Mapping[str, pl.DataFrame],
@@ -635,7 +618,6 @@ class Filter(OperationDefinition):
         if passthrough_df.is_empty():
             return PassthroughResult(success=True, passthrough={"passthrough": []})
 
-        # No criteria -> all passthrough artifacts pass
         if not self.params.criteria:
             passthrough_ids = passthrough_df["artifact_id"].to_list()
             diag = _assemble_diagnostics(
@@ -812,7 +794,6 @@ class Filter(OperationDefinition):
         from artisan.provenance.traversal import walk_backward
 
         empty = _empty_metric_pairs()
-        # Load metric IDs from the target step
         metric_ids = artifact_store.provenance.load_artifact_ids_by_type(
             "metric", step_numbers=[step_number]
         )
@@ -822,7 +803,6 @@ class Filter(OperationDefinition):
 
         metrics_df = pl.DataFrame({"artifact_id": sorted(metric_ids)})
 
-        # Get step range covering both passthrough and metrics
         all_ids = (
             passthrough_df["artifact_id"].to_list()
             + metrics_df["artifact_id"].to_list()

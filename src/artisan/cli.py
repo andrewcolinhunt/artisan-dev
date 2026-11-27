@@ -270,7 +270,7 @@ def _emit(args: argparse.Namespace, payload_fn: Callable[[], Any]) -> int:
 def _emit_error(args: argparse.Namespace, exc: ArtisanError) -> int:
     """Write the failure: envelope JSON on stdout under ``--json``, else stderr."""
     if args.json:
-        sys.stdout.write(json.dumps(exc.to_dict()) + "\n")  # machine boundary
+        sys.stdout.write(json.dumps(exc.to_dict()) + "\n")
     else:
         sys.stderr.write(f"{exc}\n")
     return 1

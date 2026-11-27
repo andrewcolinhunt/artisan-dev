@@ -284,7 +284,7 @@ class TestMetricOriginalNameStaging:
 
         df = pl.read_parquet(tmp_path / "metrics.parquet")
         assert len(df) == 1
-        assert df["original_name"][0] == "sample_001_metrics"  # Stem only
+        assert df["original_name"][0] == "sample_001_metrics"
 
 
 class TestStageExecutionConfigArtifacts:
@@ -308,7 +308,7 @@ class TestStageExecutionConfigArtifacts:
         df = pl.read_parquet(parquet_path)
         assert df.shape[0] == 1
         assert df["artifact_id"][0] == artifact.artifact_id
-        assert df["original_name"][0] == "5w3x_motif_0_config"  # Stem only
+        assert df["original_name"][0] == "5w3x_motif_0_config"
 
     def test_stage_artifacts_by_type_routes_metrics(self, tmp_path):
         """_stage_artifacts_by_type writes metrics to metrics.parquet."""
@@ -364,7 +364,7 @@ class TestStageExecutionConfigArtifacts:
         assert set(df["original_name"].to_list()) == {
             "config_0",
             "config_1",
-        }  # Stem only
+        }
 
 
 class TestStageExecutionRecord:

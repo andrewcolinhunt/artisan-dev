@@ -242,8 +242,6 @@ def _prepare(
         for key, artifact in sorted(captured.artifacts.items())
     )
     sources = _table_sources(content, bindings, captured, committer.files_root, scratch)
-    # Unselected preparation attempts may leave files. Their unique namespace
-    # prevents a later attempt from adopting or overwriting those orphan spools.
     relative = f"tables/{uuid4().hex}"
     tables = tuple(
         publish_table_effect(

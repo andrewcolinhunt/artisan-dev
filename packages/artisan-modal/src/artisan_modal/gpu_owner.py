@@ -134,6 +134,5 @@ class GPUProbeOwner:
 
     @staticmethod
     def _cancel(call: ModalFunctionCall) -> None:
-        # The owner is already UNKNOWN; a failed SDK request cannot close it.
         with contextlib.suppress(BaseException):
             call.cancel(terminate_containers=False)

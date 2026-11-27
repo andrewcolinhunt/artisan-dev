@@ -10,8 +10,6 @@ import asyncio
 
 from fastmcp import Client
 
-# Imperative openers used across the tool surface. A new tool adds its verb
-# here deliberately, keeping the copy uniform.
 _VERBS = {
     "Assess",
     "Compare",

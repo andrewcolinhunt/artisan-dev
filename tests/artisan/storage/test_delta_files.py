@@ -110,9 +110,7 @@ def test_append_multiple_files_has_exactly_one_version(backend_fs, partitioned):
     assert len(current.files) == 5
     assert pl.concat(current.iter_frames()).sort("id").equals(pl.concat(_frames()))
     assert current.delta.to_pyarrow_table().num_rows == 5
-    assert (
-        list(snapshot.iter_frames()) == []
-    )  # A snapshot stays at its original version.
+    assert list(snapshot.iter_frames()) == []
     for item in current.files:
         with (
             fs.open(f"{current.path}/{item.path}", "rb") as stream,
@@ -272,7 +270,7 @@ def test_completed_file_scratch_is_released_before_next_file(backend_fs, monkeyp
         local = Path(source)
         assert list(local.parent.glob("*.parquet")) == [local]
         publish(destination_fs, path, source, **kwargs)
-        assert local.exists()  # Publication itself preserves its caller's source.
+        assert local.exists()
         published.append(local)
 
     commit = snapshot.delta.create_write_transaction
@@ -622,7 +620,7 @@ def test_small_file_read_coalesces_ranges_in_one_bounded_handle(tmp_path: Path) 
     assert cached.ranges == [(0, len(cached.content))]
     assert cached.peak_blocks == 1
     assert 0 < cached.peak_cached_bytes <= STREAM_CHUNK_BYTES
-    assert cached.cache is None  # Closing the handle releases its cached blocks.
+    assert cached.cache is None
     assert plain.closed
     assert cached.closed
 

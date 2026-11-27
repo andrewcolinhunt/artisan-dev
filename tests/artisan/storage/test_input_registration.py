@@ -448,8 +448,6 @@ def test_registered_inputs_support_curator_admission_execution_and_reading(
     assert plan is not None
     result = CuratorReader(committer).read_result(record.step_run_id, plan.plan_digest)
     outputs = result.output("csv" if ingest else "merged")
-    # Curators select content sets; only registration and admission retain the
-    # caller's duplicate input sequence. Scientific occurrence outputs differ.
     assert len(outputs) == 1
     assert [
         item.artifact.read_content(fs=committer.fs)

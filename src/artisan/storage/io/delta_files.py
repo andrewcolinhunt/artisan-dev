@@ -215,7 +215,6 @@ class DeltaSnapshot:
         )
         options: dict[str, Any] = {"cache_type": "none"}
         if 0 < item.size_bytes <= STREAM_CHUNK_BYTES:
-            # Coalesce tiny remote column reads without prefetching large payloads.
             options.update(
                 cache_type="blockcache",
                 block_size=STREAM_CHUNK_BYTES,
@@ -491,7 +490,6 @@ def _publish_file(
         local,
         source_fs=LocalFileSystem(),
     )
-    # The destination is confirmed immutable; this writer owns the scratch copy.
     os.unlink(local)
     return AddAction(
         path=relative,

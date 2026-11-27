@@ -73,7 +73,6 @@ def validate_passthrough_result(
         >>> validate_passthrough_result(result, specs)  # No error
     """
     for role, spec in output_specs.items():
-        # Only validate required outputs
         if not spec.required:
             continue
 

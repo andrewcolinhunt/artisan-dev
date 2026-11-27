@@ -53,7 +53,6 @@ class ArtifactTypeDef:
     def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
-        # Only register concrete types (those that set 'key' directly)
         if "key" not in cls.__dict__:
             return
 
@@ -70,7 +69,6 @@ class ArtifactTypeDef:
             msg = f"{cls.__name__} must set 'model' class variable"
             raise TypeError(msg)
 
-        # Validate the model contract before mutating either registry.
         from artisan.schemas.artifact.base import Artifact
 
         model: object = cls.model
@@ -263,10 +261,6 @@ class ArtifactTypeDef:
         """
         return cast("dict[str, Any]", ArtifactTypeDef.get(key).model.POLARS_SCHEMA)  # type: ignore[attr-defined]
 
-
-# Imports are deferred to module level to avoid circular imports at
-# class-definition time. The models are fully defined before this
-# module's bottom-of-file code executes.
 
 from artisan.schemas.artifact.base import Artifact  # noqa: E402
 from artisan.schemas.artifact.execution_config import (  # noqa: E402

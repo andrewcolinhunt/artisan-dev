@@ -229,8 +229,6 @@ def _selected_sections(
             raise ValueError(msg)
         sections.append(_table(declared[feature], "feature"))
     sections.append(config)
-    # Capture direct files from every target block rather than reimplementing
-    # Pixi's platform, family and variant selector precedence.
     return tuple(
         entry
         for section in sections
@@ -309,15 +307,12 @@ def _locked_platform_key(
 ) -> str:
     """Select one locked platform without ranking host virtual-package variants."""
     if "platforms" not in document:
-        # Keep exact-key capture for plain locks without a descriptor table.
         candidates = [requested] if requested in packages else []
     else:
         subdirs = _locked_platform_subdirs(document["platforms"])
         if packages.keys() - subdirs.keys():
             msg = "Locked environment references unknown platform descriptor names"
             raise ValueError(msg)
-        # Preparation requests an OS/architecture subdir, not a variant name.
-        # A bare-name entry has no priority over another matching rich entry.
         candidates = [name for name in packages if subdirs[name] == requested]
     if len(candidates) != 1:
         msg = f"Lock requires exactly one platform for {requested!r} in the selected environment; found {candidates}"

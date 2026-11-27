@@ -256,7 +256,6 @@ def test_success_with_code_field_remains_successful(invoke_result):
 def test_domain_and_wire_limits_replace_oversized_results(invoke_result, value):
     original = {"code": "evidence", "text": value}
     if value.startswith("\\"):
-        # Escaping the text fallback can exceed the wire cap below the domain cap.
         assert len(encode_json(original)) < MAX_PAYLOAD_BYTES
         unbounded = CallToolResult(
             content=[{"type": "text", "text": encode_json(original).decode()}],

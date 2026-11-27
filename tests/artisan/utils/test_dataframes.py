@@ -8,10 +8,6 @@ import pytest
 
 from artisan.utils.dataframes import encode_metric_value
 
-# ---------------------------------------------------------------------------
-# encode_metric_value
-# ---------------------------------------------------------------------------
-
 
 class TestEncodeMetricValue:
     def test_int(self):

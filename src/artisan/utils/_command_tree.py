@@ -108,8 +108,6 @@ class CommandTree:
         except BlockingIOError:
             return
         except (BrokenPipeError, ConnectionResetError):
-            # A final closure frame may already be buffered when a late stop
-            # races helper exit. Read that proof before classifying disconnect.
             self.write_failed = True
             return
         del self.channel.outgoing[:count]
@@ -196,7 +194,6 @@ class _Tree:
             return False
         self.process.args = ()
         self.report("launched", launch_seconds=time.perf_counter() - started)
-        # Only the tool owns the transferred output streams after successful exec.
         for descriptor in (0, 1, 2):
             with suppress(OSError):
                 os.close(descriptor)
@@ -311,8 +308,6 @@ class _Tree:
                 if not self.reported_unknown:
                     self.reported_unknown = True
                     self.report("unknown")
-                # The caller's deadline has expired. Retain the sole reaper until
-                # cleanup completes; its later evidence cannot authorize success.
             time.sleep(POLL_SECONDS)
 
 

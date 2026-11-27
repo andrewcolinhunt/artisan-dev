@@ -364,7 +364,6 @@ class CommandSupervisor:
         try:
             send(self.connection, {"type": kind, **values})
         except (OSError, ValueError):
-            # The owner may have sent its final report before this late request.
             self._read_available()
             self._failed |= self._snapshot.get("state") not in {"closed", "unknown"}
             self.connection.close()
@@ -559,7 +558,6 @@ class _Invocation:
                 self.uncertain = True
             self.closed = True
         if not self.uncertain:
-            # Finish owned cleanup before later persistence consumes its deadline.
             self._finish_owner()
         if self.uncertain:
             self.reported = True
@@ -583,7 +581,7 @@ class _Invocation:
 
 def initialize_native_worker(attachment: Attachment) -> None:
     """Install process-wide bootstrap ownership before deserialization/imports."""
-    global _bootstrap  # noqa: PLW0603 — worker attachment must cover joined threads
+    global _bootstrap  # noqa: PLW0603
     if _bootstrap is not None or _current is not None:
         msg = "Native worker already has managed ownership"
         raise CommandOwnershipError(msg)
@@ -598,7 +596,7 @@ def attached_worker_unit(attachment: Attachment) -> Iterator[None]:
     The process-wide attachment covers joined operation threads. Closing a unit
     never closes the transport owner, and does not prove Python execution stopped.
     """
-    global _bootstrap, _attached_unit  # noqa: PLW0603 — ownership covers joined threads
+    global _bootstrap, _attached_unit  # noqa: PLW0603
     with _invocation_lock:
         if _current is not None or _attached_unit is not None:
             msg = "A packed worker unit is already active"
@@ -644,7 +642,7 @@ def validate_worker_attachment() -> None:
 @contextlib.contextmanager
 def managed_invocation() -> Iterator[_Invocation]:
     """Attach one unit before bootstrap; share it with joined operation threads."""
-    global _current  # noqa: PLW0603 — invocation ownership is process-wide
+    global _current  # noqa: PLW0603
     with _invocation_lock:
         previous = _current
         attachment = _ambient_attachment()
@@ -851,7 +849,6 @@ class ManagedCommand:
                 stderr_read, stderr_write = os.pipe()
                 self.readers.append(stderr_read)
                 writers.append(stderr_write)
-            # Inherit the requesting process's real stdin, including a redirected fd 0.
             response = self.connection.request(
                 "launch",
                 id=self.identity,

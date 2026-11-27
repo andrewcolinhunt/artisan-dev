@@ -1,7 +1,4 @@
 #!/usr/bin/env bash
-# Copy MODAL_PROXY_TOKEN_* from the current shell into the repo's .env
-# (gitignored). Run from the shell where the tokens are exported:
-#   bash scripts/write-env.sh
 set -euo pipefail
 
 cd "$(dirname "$0")/.."

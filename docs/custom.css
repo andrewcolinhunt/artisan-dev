@@ -1,7 +1,3 @@
-/* Custom styles for Pipelines docs
-   Loaded via site.options.style in myst.yml — overrides theme defaults. */
-
-/* Leave space for navigation links beside the search bar. */
 @media (min-width: 640px) {
   .myst-search-bar {
     width: 10rem;

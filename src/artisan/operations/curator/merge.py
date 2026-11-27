@@ -30,17 +30,13 @@ class Merge(OperationDefinition):
     No new artifacts are created (passthrough semantics).
     """
 
-    # ---------- Metadata ----------
     name = "merge"
     description = (
         "Union multiple datastreams of the same artifact type into a single stream"
     )
 
-    # ---------- Inputs ----------
-    # InputRole not defined: input roles are user-defined at pipeline construction time.
     inputs: ClassVar[dict[str, InputSpec]] = {}
 
-    # ---------- Outputs ----------
     class OutputRole(StrEnum):
         merged = auto()
 
@@ -51,12 +47,10 @@ class Merge(OperationDefinition):
         )
     }
 
-    # ---------- Behavior ----------
     runtime_defined_inputs: ClassVar[bool] = True
     hydrate_inputs: ClassVar[bool] = False
     independent_input_streams: ClassVar[bool] = True
 
-    # ---------- Lifecycle ----------
     def execute_curator(
         self,
         inputs: Mapping[str, pl.DataFrame],

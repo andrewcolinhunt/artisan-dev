@@ -30,9 +30,6 @@ from artisan.utils.application_modules import (
     validate_application_modules,
 )
 
-# Example/demo ops are deliberately excluded: they would otherwise surface
-# in every discover() call as first-class recommendable operations. Load
-# them explicitly via extra_modules or ARTISAN_LOAD_MODULES when needed.
 _BUILTIN_MODULES = ("artisan.operations.curator",)
 _ENV_VAR = "ARTISAN_LOAD_MODULES"
 _failed_imports: dict[str, str] = {}
@@ -137,8 +134,6 @@ def _import_and_attribute(
         )
         return None
 
-    # Transitive registrations belong to the trusted import that triggered them,
-    # even when their defining module is outside that application's namespace.
     new_collisions = OperationDefinition._name_collisions[len(collisions_before) :]
     if new_collisions:
         _import_collisions.setdefault(module_path, []).extend(new_collisions)

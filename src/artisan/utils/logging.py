@@ -60,7 +60,7 @@ _LOG_STYLES = {
 }
 
 
-class _ConsoleHandler(logging.StreamHandler):  # type: ignore[type-arg]  # StreamHandler generic only in typeshed; supports any stream-like object
+class _ConsoleHandler(logging.StreamHandler):  # type: ignore[type-arg]
     """StreamHandler that renders formatted log lines through Rich Console.
 
     A standard ``logging.Formatter`` produces the log line as plain text, then
@@ -190,7 +190,7 @@ class _SessionFileHandler(logging.handlers.RotatingFileHandler):
                 super().close()
             except Exception:
                 self._warn_once()
-                self.stream = None  # type: ignore[assignment]  # FileHandler clears its stream on close.
+                self.stream = None  # type: ignore[assignment]
                 logging.Handler.close(self)
         finally:
             self.release()

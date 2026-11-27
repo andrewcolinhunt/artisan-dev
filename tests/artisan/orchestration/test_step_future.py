@@ -99,7 +99,7 @@ class TestOutput:
 
     def test_output_never_blocks(self):
         """Returns immediately even when future is not done."""
-        cf = Future()  # Not resolved
+        cf = Future()
         future = _make_future(cf_future=cf)
         start = time.monotonic()
         ref = future.output("data")
@@ -174,7 +174,7 @@ class TestResult:
 
     def test_result_timeout(self):
         """TimeoutError with descriptive message."""
-        cf = Future()  # Never resolved
+        cf = Future()
         future = _make_future(cf_future=cf)
         with pytest.raises(TimeoutError, match="did not complete within"):
             future.result(timeout=0.01)

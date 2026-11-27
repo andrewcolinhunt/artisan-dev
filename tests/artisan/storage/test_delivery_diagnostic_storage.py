@@ -55,7 +55,6 @@ def test_delivery_sidecar_requires_exact_owner_and_seal(
         )
         == diagnostic
     )
-    # Publishing observations creates neither acceptance nor persistent child nodes.
     files = fs.find(root)
     assert len(files) == 2
     assert any(path.endswith("execution.json") for path in files)

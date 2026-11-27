@@ -180,7 +180,6 @@ def decode_projection(tables: dict[str, pl.DataFrame]) -> BoundaryProjection:
         raise StoreIntegrityError(msg)
     data["frozen_context"] = json.loads(context["json"].item())
     projection = BoundaryProjection.model_validate(data)
-    # Reject orphan roles, duplicate indices, gaps and silently discarded rows.
     canonical = encode_projection(projection, dict(tables["artifacts"].iter_rows()))
     for name, expected in canonical.items():
         keys = list(NATURAL_KEYS[name])

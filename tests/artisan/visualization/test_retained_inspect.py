@@ -396,7 +396,6 @@ def test_accepted_seal_may_have_later_infrastructure_diagnostics(
     payload = _diagnostic(
         receipt.delivery, seal=receipt.seal_digest, invocations=(_observed("child"),)
     ).model_dump(mode="json")
-    # Session file cleanup can fail after the result seal was already emitted.
     payload.update(outcome="infrastructure", error="post-seal file cleanup failed")
     publish_delivery_diagnostics(
         DeliveryDiagnostics.model_validate(payload),

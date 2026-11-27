@@ -253,7 +253,6 @@ def test_portable_cursor_rejects_changed_context(
     first = inspect_evidence("compare_runs", request, delta_root=str(root))
     arguments = dict(first.follow_up.arguments)
     if change == "root":
-        # The same filesystem with a different spelling intentionally has a new scope.
         root = str(root) + "/"
     elif change == "spec":
         arguments["spec"]["label"] = "changed"

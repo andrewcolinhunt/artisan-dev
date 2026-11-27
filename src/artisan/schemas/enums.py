@@ -41,10 +41,10 @@ class GroupByStrategy(Enum):
     from different input roles are matched before dispatch.
     """
 
-    LINEAGE = "lineage"  # Match candidates to their closest directed ancestor in the target role
-    CROSS_PRODUCT = "cross_product"  # All combinations of inputs
-    ZIP = "zip"  # Positional matching (1st with 1st, etc.)
-    NAME = "name"  # Match artifacts whose ``original_name`` shares a stem
+    LINEAGE = "lineage"
+    CROSS_PRODUCT = "cross_product"
+    ZIP = "zip"
+    NAME = "name"
 
 
 class TablePath(str, Enum):
@@ -60,11 +60,9 @@ class TablePath(str, Enum):
     ARTIFACT_INDEX = "artifacts/index"
     ARTIFACT_LOCATIONS = "artifacts/locations"
 
-    # Provenance tables
     ARTIFACT_EDGES = "provenance/artifact_edges"
     EXECUTION_EDGES = "provenance/execution_edges"
 
-    # Orchestration tables
     EXECUTIONS = "orchestration/executions"
     CACHE_REUSE = "orchestration/cache_reuse"
     LOGICAL_COMMITS = "orchestration/logical_commits"

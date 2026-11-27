@@ -71,7 +71,6 @@ def _resolve_engine() -> tuple[str, str, dict[str, str]]:
         msg = "Docker CLI is not installed or not on PATH"
         raise DockerUnavailable(msg)
     environment = dict(os.environ)
-    # Keep image builds on the same engine as the probes and test commands.
     environment.pop("BUILDX_BUILDER", None)
     context_name = environment.get("DOCKER_CONTEXT")
     endpoint = environment.get("DOCKER_HOST") if not context_name else None

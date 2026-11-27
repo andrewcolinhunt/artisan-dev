@@ -36,7 +36,6 @@ def walk_backward(
 
     target_ids = targets.select(pl.col("artifact_id").alias("_target_id"))
 
-    # frontier: (candidate_id, current_node) — tracks the walk state
     frontier = pl.DataFrame(
         {
             "candidate_id": candidates["artifact_id"],
@@ -44,10 +43,8 @@ def walk_backward(
         }
     )
 
-    # visited: (candidate_id, node) — all nodes visited per candidate
     visited = frontier.select("candidate_id", pl.col("current_node").alias("node"))
 
-    # Depth-zero matches do not require any provenance edges.
     initial_matches = frontier.join(
         target_ids, left_on="current_node", right_on="_target_id", how="semi"
     ).select(
@@ -68,7 +65,6 @@ def walk_backward(
     )
 
     while not frontier.is_empty():
-        # Walk backward one hop: current_node is a target_artifact_id in edges
         stepped = frontier.join(
             edges,
             left_on="current_node",
@@ -82,7 +78,6 @@ def walk_backward(
         if stepped.is_empty():
             break
 
-        # Anti-join with visited to skip already-seen nodes
         stepped = stepped.join(
             visited,
             left_on=["candidate_id", "current_node"],
@@ -105,7 +100,6 @@ def walk_backward(
         )
 
         if not new_matches.is_empty():
-            # First-match per candidate: keep first match only
             new_matches = new_matches.unique(
                 subset=["candidate_id"], keep="first"
             ).select(
@@ -167,7 +161,6 @@ def walk_forward(
     if sources.is_empty() or edges.is_empty():
         return empty
 
-    # frontier: (source_id, current_node) — tracks the walk state
     frontier = pl.DataFrame(
         {
             "source_id": sources["artifact_id"],
@@ -175,13 +168,11 @@ def walk_forward(
         }
     )
 
-    # visited: (source_id, node) — all nodes visited per source
     visited = frontier.select("source_id", pl.col("current_node").alias("node"))
 
     all_matched: list[pl.DataFrame] = []
 
     while not frontier.is_empty():
-        # Walk forward one hop: current_node is a source_artifact_id in edges
         stepped = frontier.join(
             edges,
             left_on="current_node",
@@ -200,7 +191,6 @@ def walk_forward(
         if stepped.is_empty():
             break
 
-        # Anti-join with visited to skip already-seen nodes
         stepped = stepped.join(
             visited,
             left_on=["source_id", "current_node"],
@@ -234,7 +224,6 @@ def walk_forward(
         if not new_matches.is_empty():
             all_matched.append(new_matches)
 
-        # All-match semantics: keep all sources in frontier (not just unmatched)
         frontier = stepped.select("source_id", "current_node")
 
     if not all_matched:

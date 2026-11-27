@@ -38,7 +38,6 @@ def test_nested_example_retains_final_data_and_direct_metrics(
 
         return adapter
 
-    # Exercise the native scientific kernel; worker software is qualified separately.
     monkeypatch.setattr(ExecutorRuntime, "_software", software)
     with Executor(working_root=tmp_path) as executor:
         result = executor.run(GenerateAndScore, params={"count": 2, "seed": 42})

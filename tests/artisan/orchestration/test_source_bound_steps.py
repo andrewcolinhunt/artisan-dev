@@ -65,7 +65,6 @@ def test_cross_run_reference_selects_its_source_and_preserves_duplicates(
         assert reference == first.output("structure")
         assert reference.source.step_run_id != other.step_run_id
         restored = OutputReference.model_validate_json(reference.model_dump_json())
-        # The in-process runner fixture must execute its units sequentially.
         selected = consumer.run(
             Transform,
             inputs={"structure": [restored, restored]},

@@ -36,10 +36,6 @@ from artisan.schemas.specs.input_spec import InputSpec
 from artisan.schemas.specs.output_spec import OutputSpec
 from artisan.storage.core.artifact_store import ArtifactStore
 
-# ---------------------------------------------------------------------------
-# Generative creators: no inputs -> one unit -> full-step failure.
-# ---------------------------------------------------------------------------
-
 
 class _GenBase(OperationDefinition):
     """Generative creator base: writes one CSV artifact when it succeeds."""
@@ -160,11 +156,6 @@ class FailCommand(_GenBase):
         return ["false"]
 
 
-# ---------------------------------------------------------------------------
-# Curator operations exercise the admitted curator path.
-# ---------------------------------------------------------------------------
-
-
 class _CuratorBase(OperationDefinition):
     """Curator base with a single passthrough input role and no outputs."""
 
@@ -227,11 +218,6 @@ class FailCuratorReturn(_CuratorBase):
         return CuratorArtifactResult(
             success=False, error="curator returned success=False", artifacts={}
         )
-
-
-# ---------------------------------------------------------------------------
-# Composite whose only internal step is a failing creator.
-# ---------------------------------------------------------------------------
 
 
 class FailingComposite(CompositeDefinition):

@@ -91,7 +91,6 @@ def test_completed_unit_retains_shared_transport_ownership(
     assert handle.ownership_state() == OwnershipState.PENDING
     state = transport
     assert handle.ownership_state() == transport
-    # A finished unit cannot cancel siblings using the shared transport.
     assert handle.cancel().status == CancellationStatus.REJECTED
     owner.request_close.assert_not_called()
     transport_owner.request_close.assert_not_called()

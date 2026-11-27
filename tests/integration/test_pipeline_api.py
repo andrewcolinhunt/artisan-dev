@@ -16,10 +16,6 @@ from artisan.orchestration.runners import LocalRunner
 from artisan.schemas.orchestration.output_reference import OutputReference
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
-# =============================================================================
-# Dunder methods
-# =============================================================================
-
 
 class TestPipelineDunderMethods:
     """Integration tests for __len__, __iter__, __getitem__, __bool__,
@@ -188,11 +184,6 @@ class TestPipelineDunderMethods:
         pipeline.finalize()
 
 
-# =============================================================================
-# output() name-based lookup
-# =============================================================================
-
-
 class TestOutputNameLookup:
     """Integration tests for pipeline.output(name, role)."""
 
@@ -293,11 +284,9 @@ class TestOutputNameLookup:
             name="gen",
         )
 
-        # Default: last wins
         ref_last = pipeline.output("gen", "datasets")
         assert ref_last.source.step_run_id == pipeline[1].step_run_id
 
-        # Explicit step_number=0
         ref_first = pipeline.output("gen", "datasets", step_number=0)
         assert ref_first.source.step_run_id == pipeline[0].step_run_id
 
@@ -338,11 +327,6 @@ class TestOutputNameLookup:
         assert len(outputs.occurrences) == 2
 
         pipeline.finalize()
-
-
-# =============================================================================
-# StepFuture properties
-# =============================================================================
 
 
 class TestStepFutureProperties:
@@ -422,11 +406,6 @@ class TestStepFutureProperties:
         pipeline.finalize()
 
 
-# =============================================================================
-# Finalize ordering
-# =============================================================================
-
-
 class TestFinalizeOrdering:
     """Tests that finalize() returns steps sorted by step_number."""
 
@@ -455,11 +434,6 @@ class TestFinalizeOrdering:
         step_numbers = [s["step_number"] for s in summary["steps"]]
         assert step_numbers == sorted(step_numbers)
         assert step_numbers == [0, 1]
-
-
-# =============================================================================
-# Config and current_step properties
-# =============================================================================
 
 
 class TestPipelineProperties:
@@ -503,11 +477,6 @@ class TestPipelineProperties:
         assert pipeline.current_step == 2
 
         pipeline.finalize()
-
-
-# =============================================================================
-# Custom step name
-# =============================================================================
 
 
 class TestCustomStepName:

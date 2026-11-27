@@ -102,7 +102,6 @@ class TestWalkProvenanceBranching:
 
         result = walk_backward(candidates, targets, edges)
 
-        # Both candidates should find a target through B
         assert len(result) == 2
         matched = dict(
             zip(
@@ -111,7 +110,6 @@ class TestWalkProvenanceBranching:
                 strict=True,
             )
         )
-        # Both should match (first-claim for B means both get T1 or T2)
         assert "C1" in matched
         assert "C2" in matched
 
@@ -165,7 +163,6 @@ class TestWalkProvenanceEdgeCases:
         edges = _edges([("A", "B"), ("B", "A")])
 
         result = walk_backward(candidates, targets, edges)
-        # No path to T, should terminate without infinite loop
         assert result.is_empty()
 
     def test_first_match_semantics(self):
@@ -182,7 +179,6 @@ class TestWalkProvenanceEdgeCases:
 
         assert len(result) == 1
         assert result["candidate_id"][0] == "C"
-        # Should match one of the targets
         assert result["target_id"][0] in ("T1", "T2")
 
 
