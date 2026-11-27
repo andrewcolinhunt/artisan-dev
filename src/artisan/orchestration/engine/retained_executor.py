@@ -45,7 +45,7 @@ from artisan.schemas.execution.retained_replay import RetainedReplayDiagnostic
 from artisan.schemas.execution.step_admission import StepAdmission
 from artisan.schemas.execution.worker_ownership import OwnershipState, WorkerOwner
 from artisan.schemas.operation_config.runner_resources import RunnerResources
-from artisan.schemas.orchestration.output_reference import OutputReference, StepSource
+from artisan.schemas.orchestration.output_reference import StepSource
 from artisan.schemas.orchestration.step_lifecycle import (
     TERMINAL_STEP_STATUSES,
     CancellationAcknowledgement,
@@ -61,7 +61,7 @@ from artisan.storage.cache.retained_lookup import (
     lookup_step,
 )
 from artisan.storage.cache.retained_reuse import verify_cache_source
-from artisan.storage.core.retained_reader import AcceptedArtifact, RetainedReader
+from artisan.storage.core.retained_reader import RetainedReader
 from artisan.storage.io.admission import publish_admission
 from artisan.storage.io.retained_commit import RetainedCommitter
 from artisan.storage.io.step_result_plan import StepUnitFailure
@@ -777,30 +777,6 @@ def _publish_assignment(
     )
     committer.journal.admit(attempt, admission_digest=reference.record_digest)
     return reference
-
-
-def resolve_retained_output(
-    reference: OutputReference,
-    *,
-    results: RetainedStepResults,
-) -> tuple[AcceptedArtifact, ...]:
-    """Resolve an existing lazy reference through exact completed step membership."""
-    if reference.source.store != results.tracker.committer.store_identity:
-        msg = "Output reference belongs to a different store"
-        raise ValueError(msg)
-    step_run_id = reference.source.step_run_id
-    state = results.tracker.current_state(step_run_id)
-    if reference.role not in state.output_roles:
-        msg = "Output reference does not match the selected step's available roles"
-        raise ValueError(msg)
-    return next(
-        (
-            role.occurrences
-            for role in results.outputs(step_run_id)
-            if role.role == reference.role
-        ),
-        (),
-    )
 
 
 def _validate_partition_owners(

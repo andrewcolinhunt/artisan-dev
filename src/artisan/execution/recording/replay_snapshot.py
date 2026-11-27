@@ -210,16 +210,6 @@ class ReplayBuilder:
                 update={"associated": records, "associated_complete": True}
             )
 
-    def record_sandbox(self, sandbox_path: str) -> None:
-        """Remember the original sandbox boundary for safe diagnostic roots."""
-        with self._lock:
-            source = self._snapshot.source
-            if source is not None:
-                source = source.model_copy(
-                    update={"roots": {**source.roots, "sandbox_path": sandbox_path}}
-                )
-                self._snapshot = self._snapshot.model_copy(update={"source": source})
-
 
 def current_replay_builder() -> ReplayBuilder | None:
     """Return the builder propagated through the current lifecycle context."""

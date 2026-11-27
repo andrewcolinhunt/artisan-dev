@@ -316,8 +316,8 @@ incomplete writes. See [Commit ordering](../concepts/storage-and-delta-lake.md#c
 
 Network File System, a distributed filesystem protocol common on HPC clusters.
 Artisan flushes local staging payloads before publishing an execution seal.
-On shared filesystems, the orchestrator also refreshes directory listings and
-waits for readable seals before verification. See
+Before accepting a result, the controller checks the seal and its complete
+inventory. See
 [NFS consistency](../concepts/storage-and-delta-lake.md#nfs-consistency).
 
 ---
@@ -450,8 +450,8 @@ The intermediate write area where workers write Parquet files instead of
 committing directly to Delta Lake. This avoids transaction conflicts on shared
 filesystems. After all workers in a step complete, the orchestrator commits
 staged files and the terminal step snapshot through a
-[logical commit](#glossary-logical-commit). On [NFS](#glossary-nfs), staging
-verification polls for readable worker evidence before commit.
+[logical commit](#glossary-logical-commit). The controller verifies the
+worker's sealed staging inventory before accepting the result.
 
 ---
 
