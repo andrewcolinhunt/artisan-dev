@@ -8,6 +8,7 @@ import platform
 import shutil
 import subprocess
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 
 from artisan.execution.environments.local_packages import (
@@ -75,23 +76,11 @@ def prepare_native_environment(
     selected_platform = native_platform()
     pixi_version()
     inputs = read_environment_inputs(declaration, platform=selected_platform)
-    for package in inputs.packages:
-        validate_source_profile(_package_root(inputs, package.root), package)
-    builder = (
-        _prepare_builder(cache_root, selected_platform) if inputs.packages else None
+    build_source = _capture_build_source(
+        inputs, cache_root=cache_root, selected_platform=selected_platform
     )
-    selections = tuple(
-        select_local_package(
-            _package_root(inputs, package.root),
-            package,
-            builder_python=native_executable(builder, "python"),
-        )
-        for package in inputs.packages
-        if builder is not None
-    )
-    captured = capture_environment_source(
-        inputs, tuple(item.source for item in selections)
-    )
+    captured = build_source.captured
+    builder = build_source.builder
     workspace = _workspace(cache_root, captured.source, selected_platform)
     with preparation_lock(workspace):
         if (workspace / BINDING_FILENAME).exists():
@@ -99,7 +88,9 @@ def prepare_native_environment(
         captured.write(workspace)
         try:
             _validate_manifest(workspace / captured.source.manifest_name)
-            wheels, paths = _build_wheels(captured, workspace, selections, builder)
+            wheels, paths = _build_wheels(
+                captured, workspace, build_source.selections, builder
+            )
             _install_locked(
                 workspace / captured.source.manifest_name,
                 declaration.name,
@@ -211,6 +202,35 @@ def _verify_binding(
         raise ValueError(msg)
     verify_native_environment(target)
     return target
+
+
+@dataclass(frozen=True)
+class _BuildSource:
+    captured: CapturedEnvironment
+    selections: tuple[LocalPackageSelection, ...]
+    builder: PreparedNativeEnvironment | None
+
+
+def _capture_build_source(
+    inputs: EnvironmentInputs, *, cache_root: Path, selected_platform: str
+) -> _BuildSource:
+    if not inputs.packages:
+        return _BuildSource(capture_environment_source(inputs), (), None)
+    for package in inputs.packages:
+        validate_source_profile(_package_root(inputs, package.root), package)
+    builder = _prepare_builder(cache_root, selected_platform)
+    selections = tuple(
+        select_local_package(
+            _package_root(inputs, package.root),
+            package,
+            builder_python=native_executable(builder, "python"),
+        )
+        for package in inputs.packages
+    )
+    captured = capture_environment_source(
+        inputs, tuple(item.source for item in selections)
+    )
+    return _BuildSource(captured, selections, builder)
 
 
 def _package_root(inputs: EnvironmentInputs, name: str) -> Path:

@@ -9,24 +9,15 @@ import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 
-from artisan.execution.environments.local_packages import (
-    select_local_package,
-    validate_source_profile,
-)
 from artisan.execution.environments.native import (
     _build_wheels,
-    _package_root,
-    _prepare_builder,
+    _capture_build_source,
     _verify_current_source,
     native_platform,
-)
-from artisan.execution.environments.native_target import (
-    native_executable,
 )
 from artisan.execution.environments.pixi import pixi_executable, pixi_version
 from artisan.execution.environments.source import (
     CapturedEnvironment,
-    capture_environment_source,
     read_environment_inputs,
 )
 from artisan.schemas.execution.prepared_environment import (
@@ -58,34 +49,26 @@ def capture_container_inputs(
 ) -> ContainerBuildInputs:
     """Select static sources once and build ordinary wheels in the owned context."""
     pixi_version()
-    inputs = read_environment_inputs(declaration, platform=native_platform())
-    for package in inputs.packages:
-        validate_source_profile(_package_root(inputs, package.root), package)
-    builder = (
-        _prepare_builder(cache_root, native_platform()) if inputs.packages else None
+    selected_platform = native_platform()
+    inputs = read_environment_inputs(declaration, platform=selected_platform)
+    build_source = _capture_build_source(
+        inputs, cache_root=cache_root, selected_platform=selected_platform
     )
-    selections = tuple(
-        select_local_package(
-            _package_root(inputs, package.root),
-            package,
-            builder_python=native_executable(builder, "python"),
-        )
-        for package in inputs.packages
-        if builder is not None
-    )
-    captured = capture_environment_source(
-        inputs, tuple(item.source for item in selections)
-    )
+    captured = build_source.captured
     workspace = context / "workspace"
     captured.write(workspace)
-    wheels, paths = _build_wheels(captured, workspace, selections, builder)
+    wheels, paths = _build_wheels(
+        captured, workspace, build_source.selections, build_source.builder
+    )
     pixi = Path(pixi_executable())
     shutil.copyfile(pixi, context / "pixi")
     (context / "pixi").chmod(0o755)
     with pixi.open("rb") as stream:
         pixi_digest = hashlib.file_digest(stream, "sha256").hexdigest()
-    _verify_current_source(declaration, captured.source, native_platform())
-    return ContainerBuildInputs(captured, wheels, paths, builder, pixi_digest)
+    _verify_current_source(declaration, captured.source, selected_platform)
+    return ContainerBuildInputs(
+        captured, wheels, paths, build_source.builder, pixi_digest
+    )
 
 
 def verify_container_source(
