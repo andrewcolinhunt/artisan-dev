@@ -11,21 +11,22 @@ from uuid import uuid4
 
 from fsspec import AbstractFileSystem
 
-from artisan.composites.base.compiler import Definition, Parameters
+from artisan.composites.base.compiler import Definition, Parameters, compile_definition
+from artisan.execution.composition import ExecuteAdapter
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.configured_calls import (
     compile_configured_call,
     configured_router,
     current_call_scope,
 )
-from artisan.execution.executor_runtime import ExecutorRuntime
 from artisan.execution.external_access import freeze_external_files
+from artisan.execution.inputs.local_context import capture_local_context
 from artisan.execution.invocation import InvocationPaths, invoke_operation
+from artisan.execution.local_execution import execute_local_call, local_inputs
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
 from artisan.schemas.execution.curator_result import ArtifactResult
-from artisan.schemas.specs.input_defaults import capture_input_defaults
 from artisan.schemas.specs.input_models import FrozenInputContext
 from artisan.utils.command_supervisor import has_command_scope, managed_invocation
 
@@ -76,27 +77,23 @@ def run_operation(
     try:
         scope = current_call_scope()
         plan = None
-        adapter = None
+        adapter_factory = None
         if scope is not None:
             if selection_key is None:
                 msg = "A configured callback requires its selection_key"
                 raise ValueError(msg)
             plan = compile_configured_call(scope, definition, selection_key, params)
-            router = configured_router(scope, selection_key)
 
-            def adapter(
-                _operation: OperationDefinition, _path: tuple[str, ...]
-            ) -> ExecuteRouter:
-                return router
+            def adapter_factory() -> ExecuteAdapter:
+                router = configured_router(scope, selection_key)
+                return lambda _operation, _path: router
         elif selection_key is not None:
             msg = "selection_key requires a configured callback context"
             raise ValueError(msg)
         external_files = freeze_external_files(external_files)
         identity = uuid4().hex
-        selected = dict(inputs or {})
-        selected.update(
-            capture_input_defaults(getattr(definition, "inputs", {}), selected.keys())
-        )
+        plan = plan or compile_definition(definition, params=params)
+        selected = local_inputs(plan, inputs or {})
         context = FrozenInputContext(
             identity,
             selected,
@@ -108,16 +105,17 @@ def run_operation(
             if work_dir is not None
             else None
         )
-        return ExecutorRuntime("pixi").run(
-            definition,
+        frozen_context, captured = capture_local_context(plan, context)
+        return execute_local_call(
+            plan,
             context.artifacts,
-            params,
             partial(_invoke, root=root),
             root,
-            explicit_context=context,
+            identity=identity,
+            context=frozen_context,
+            captured=captured,
             external_files=external_files,
-            prepared_plan=plan,
-            execute_adapter=adapter,
+            adapter_factory=adapter_factory,
         )
     finally:
         _call_lock.release()

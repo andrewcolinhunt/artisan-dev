@@ -23,6 +23,7 @@ from fixtures.composition_operations import (
 from artisan.composites import CompositeContext
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.composite_definition import CompositeDefinition
+from artisan.execution import local_execution
 from artisan.execution.composition import ExecuteAdapter
 from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.executor import Executor
@@ -48,10 +49,10 @@ def native_adapter(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
     calls: list[tuple[str, ...]] = []
 
     def software(
-        self: ExecutorRuntime,
         plan: CompiledPlan,
         inventory: Sequence[Artifact],
         root: Path,
+        **options: object,
     ) -> ExecuteAdapter:
         def adapter(
             operation: OperationDefinition, path: tuple[str, ...]
@@ -61,7 +62,7 @@ def native_adapter(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, ...]]:
 
         return adapter
 
-    monkeypatch.setattr(ExecutorRuntime, "_software", software)
+    monkeypatch.setattr(local_execution, "select_local_software", software)
     return calls
 
 
@@ -138,12 +139,15 @@ def test_empty_and_invalid_inputs_never_resolve_software(
     def forbidden(*args: object, **kwargs: object) -> None:
         pytest.fail("zero or invalid work resolved software")
 
-    monkeypatch.setattr(ExecutorRuntime, "_software", forbidden)
+    monkeypatch.setattr(local_execution, "select_local_software", forbidden)
     with Executor(working_root=tmp_path) as executor:
         if inputs == {"structure": []}:
             result = executor.run(PredictMeasure, inputs=inputs)
             assert result.artifacts == {"structure": [], "metrics": []}
             assert result.lineage == {"structure": [], "metrics": []}
+            assert result.support is None
+            assert executor._runtime is not None
+            assert not executor._runtime.artifacts
         else:
             with pytest.raises(ValueError, match="missing required or undeclared"):
                 executor.run(PredictMeasure, inputs=inputs)

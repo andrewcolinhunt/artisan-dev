@@ -4,22 +4,26 @@ from __future__ import annotations
 
 import os
 import sys
+from enum import StrEnum
 from pathlib import Path
+from typing import Any, ClassVar
 
 import pytest
 from fixtures.configured_operations import CommandScale, ControllerScale, Scale
 
 from artisan.composites.base.called_operations import capture_called_operations
-from artisan.execution import CalledOperation, run_operation
+from artisan.execution import CalledOperation, local_execution, run_operation
 from artisan.execution.configured_calls import configured_calls
-from artisan.execution.executor_runtime import ExecutorRuntime
+from artisan.execution.invocation import ExecuteFailure
 from artisan.execution.runtime_compatibility import capture_runtime_compatibility
 from artisan.operations.base import OperationDefinition
+from artisan.schemas import InputSpec, MetricArtifact
 from artisan.schemas.execution.called_operations import (
     ConfiguredCallScope,
     PreparedCalledOperation,
 )
 from artisan.schemas.execution.worker_transport import TRANSPORT_PACKAGES
+from artisan.schemas.specs.input_models import PreprocessInput
 
 
 def scope_for(selections: dict[str, CalledOperation]) -> ConfiguredCallScope:
@@ -46,7 +50,9 @@ def test_fileless_calls_use_fixed_settings_and_current_process(
         }
     )
     monkeypatch.setattr(
-        ExecutorRuntime, "_software", lambda *args: pytest.fail("software lookup")
+        local_execution,
+        "select_local_software",
+        lambda *args, **kwargs: pytest.fail("software lookup"),
     )
     with configured_calls(scope):
         for key, expected in [("small", 6), ("large", 12), ("small", 6)]:
@@ -82,7 +88,9 @@ def test_command_call_runs_subprocess_and_leaves_files(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.setattr(
-        ExecutorRuntime, "_software", lambda *args: pytest.fail("software lookup")
+        local_execution,
+        "select_local_software",
+        lambda *args, **kwargs: pytest.fail("software lookup"),
     )
     with configured_calls(
         scope_for({"score": CalledOperation(CommandScale, {"factor": 3})})
@@ -132,11 +140,11 @@ from pathlib import Path
 sys.path.insert(0, sys.argv[1])
 from fixtures.configured_operations import Scale, CommandScale, ControllerScale
 from artisan.execution import run_operation
-from artisan.execution.executor_runtime import ExecutorRuntime
+from artisan.execution import local_execution
 
-def reject_lookup(*args: object) -> None:
+def reject_lookup(*args: object, **kwargs: object) -> None:
     raise AssertionError("Configured call performed software lookup")
-ExecutorRuntime._software = reject_lookup
+local_execution.select_local_software = reject_lookup
 values = []
 for value in (2, 4):
     native = run_operation(Scale, selection_key="native", params={"value": value})
@@ -207,7 +215,9 @@ def test_configured_command_uses_separate_prepared_software(
         }
     )
     monkeypatch.setattr(
-        ExecutorRuntime, "_software", lambda *args: pytest.fail("software lookup")
+        local_execution,
+        "select_local_software",
+        lambda *args, **kwargs: pytest.fail("software lookup"),
     )
     with configured_calls(scope):
         for _ in range(2):
@@ -243,3 +253,145 @@ def test_configured_failure_propagates_and_releases_call_guard(cancelled: bool) 
         ):
             run_operation(Failure, selection_key="failure", params={"value": 1})
         assert run_operation(Scale, selection_key="good", params={"value": 1}).success
+
+
+class CommandInputs(CommandScale):
+    name = "configured_command_inputs"
+
+    class InputRole(StrEnum):
+        source = "source"
+
+    inputs: ClassVar = {"source": InputSpec(artifact_type="metric", materialize=False)}
+
+    def preprocess(self, inputs: PreprocessInput) -> dict[str, Any]:
+        return {}
+
+
+@pytest.mark.parametrize("case", ["empty", "missing", "unknown", "no_directory"])
+def test_configured_input_checks_precede_interpreter_observation(
+    monkeypatch: pytest.MonkeyPatch,
+    case: str,
+) -> None:
+    scope = scope_for({"score": CalledOperation(CommandInputs, {"value": 3})})
+    monkeypatch.setattr(
+        "artisan.execution.configured_calls.observe_current_worker",
+        lambda *args: pytest.fail("Invalid or empty call observed software"),
+    )
+    source = MetricArtifact.draft({"value": 1}, "source.json").finalize()
+    inputs = {
+        "empty": {"source": []},
+        "missing": {},
+        "unknown": {"unknown": []},
+        "no_directory": {"source": [source]},
+    }[case]
+    with configured_calls(scope):
+        if case == "empty":
+            result = run_operation(CommandInputs, selection_key="score", inputs=inputs)
+            assert result.artifacts == {"metrics": []}
+            assert result.lineage == {"metrics": []}
+            assert result.support is None
+        else:
+            with pytest.raises(ValueError):
+                run_operation(CommandInputs, selection_key="score", inputs=inputs)
+
+
+def test_configured_command_observes_once_across_partitions(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from artisan.execution.environments.observed_worker import (
+        ObservedWorker,
+        observe_current_worker,
+    )
+
+    observations = []
+
+    def observe(names: tuple[str, ...]) -> ObservedWorker:
+        worker = observe_current_worker(names)
+        observations.append(worker)
+        return worker
+
+    monkeypatch.setattr(
+        "artisan.execution.configured_calls.observe_current_worker", observe
+    )
+    sources = [
+        MetricArtifact.draft({"value": value}, f"{value}.json").finalize()
+        for value in (1, 2)
+    ]
+    with configured_calls(
+        scope_for({"score": CalledOperation(CommandInputs, {"value": 3})})
+    ):
+        result = run_operation(
+            CommandInputs,
+            selection_key="score",
+            inputs={"source": sources},
+            work_dir=tmp_path,
+        )
+    assert len(result.artifacts["metrics"]) == 2
+    assert len(observations) == 1
+
+
+class FailedCredentialCommand(CommandScale):
+    name = "configured_failed_credential"
+
+    def execute_command(self, inputs: dict[str, Any]) -> list[str]:
+        return [
+            "python",
+            "-I",
+            "-c",
+            "import os,sys;print(os.environ['EXAMPLE_API_TOKEN'],file=sys.stderr);sys.exit(2)",
+        ]
+
+
+def test_configured_observed_credentials_are_redacted_from_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    secret = "synthetic-observed-credential"
+    monkeypatch.setenv("EXAMPLE_API_TOKEN", secret)
+    with (
+        configured_calls(
+            scope_for({"score": CalledOperation(FailedCredentialCommand, {"value": 1})})
+        ),
+        pytest.raises(ExecuteFailure) as caught,
+    ):
+        run_operation(FailedCredentialCommand, selection_key="score", work_dir=tmp_path)
+    assert secret not in str(caught.value)
+    assert "<redacted>" in str(caught.value)
+
+
+def test_prepared_native_routing_records_each_helper_once(tmp_path: Path) -> None:
+    from artisan.execution.compute.native_routing import native_router
+    from artisan.execution.environments.observed_worker import (
+        ObservedCommandEnvironment,
+        observe_current_worker,
+    )
+    from artisan.execution.recording.commands import capture_commands
+    from artisan.schemas.specs.input_models import ExecuteInput
+    from artisan.utils.command_supervisor import managed_invocation
+    from artisan.utils.external_tools import run_command
+
+    environment = ObservedCommandEnvironment(
+        observe_current_worker(TRANSPORT_PACKAGES), tmp_path / "helper", {}
+    )
+
+    class NativeHelper(Scale):
+        name = "configured_native_helper"
+
+        def execute_function(self, inputs: ExecuteInput) -> dict[str, list[int]]:
+            run_command(environment, ["python", "-I", "-c", "pass"], cwd=str(tmp_path))
+            return super().execute_function(inputs)
+
+    router = native_router(
+        None,
+        pixi=Path.home() / ".pixi/bin/pixi",
+        system_env=Path("/usr/bin/env"),
+        runtime_env={},
+    )
+    inputs = [
+        ExecuteInput(inputs={}, execute_dir=None, log_path=None, files_dir=None)
+    ] * 2
+    with managed_invocation(), capture_commands() as recorder, router.context():
+        result = router.route_execute(NativeHelper(params={"value": 3}), inputs, None)
+    assert result == [{"values": [6]}, {"values": [6]}]
+    assert [command.invocation for command in recorder.snapshot().commands] == [0, 1]

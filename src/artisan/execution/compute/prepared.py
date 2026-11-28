@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Literal, Protocol
 
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.compute.invoke import tool_command_inputs
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.environments.command_witness import WitnessInvocation
 from artisan.execution.environments.native_gpu import (
     native_gpu_command,
@@ -208,14 +209,14 @@ class PreparedExecuteRouter(ExecuteRouter):
         execute_inputs: list[ExecuteInput],
         sandbox_root: str | None,
     ) -> list[Any]:
+        if not operation.is_command_op():
+            return LocalExecuteRouter().route_execute(
+                operation, execute_inputs, sandbox_root
+            )
         slots = reserve_invocations(len(execute_inputs))
-        results = []
+        results: list[Any] = []
         for slot, inputs in zip(slots, execute_inputs, strict=True):
             with invocation_scope(operation, slot):
-                if not operation.is_command_op():
-                    with scientific_phase("execute"):
-                        results.append(operation.execute_function(inputs))
-                    continue
                 if sandbox_root is None:
                     msg = "Command execution requires a working directory"
                     raise ValueError(msg)

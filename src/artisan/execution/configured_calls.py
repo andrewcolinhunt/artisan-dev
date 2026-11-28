@@ -25,9 +25,9 @@ from artisan.composites.base.called_operations import (
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.compiler import Definition, compile_definition
 from artisan.composites.base.snapshots import execution_contract, invocation_policy
+from artisan.execution.compute.native_routing import native_router
 from artisan.execution.compute.prepared import CommandEnvironment, PreparedExecuteRouter
 from artisan.execution.environments.observed_worker import (
-    ObservedCommandEnvironment,
     observe_current_worker,
 )
 from artisan.execution.runtime_compatibility import verify_runtime_compatibility
@@ -170,23 +170,12 @@ def configured_router(scope: ConfiguredCallScope, key: str) -> PreparedExecuteRo
         observed = observe_current_worker(
             tuple(item.name for item in scope.caller_compatibility.packages)
         )
-    return PreparedExecuteRouter(
-        target,
+    return native_router(
+        observed or target,
         pixi=scope.pixi,
         system_env=scope.system_env,
         runtime_env=scope.runtime_env,
         witness=scope.witness,
         gpu=scope.gpu,
         call_context=child.model_dump(mode="json"),
-        command_environment=(
-            lambda root, witness: ObservedCommandEnvironment(
-                observed,
-                root / "command-runtime",
-                scope.runtime_env,
-                witness,
-                scope.gpu,
-            )
-        )
-        if observed is not None
-        else None,
     )

@@ -12,6 +12,7 @@ from artisan.composites.base.called_operations import environment_key
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.execution.assignment import Assignment
 from artisan.execution.composition import ExecuteAdapter
+from artisan.execution.compute.native_routing import native_router
 from artisan.execution.compute.prepared import (
     CommandEnvironment,
     PreparedCommandEnvironment,
@@ -38,7 +39,6 @@ from artisan.execution.environments.native_gpu import (
 )
 from artisan.execution.environments.native_target import verify_native_environment
 from artisan.execution.environments.observed_worker import (
-    ObservedCommandEnvironment,
     ObservedWorker,
 )
 from artisan.execution.environments.prepared_oci import (
@@ -467,26 +467,7 @@ class PreparedLocalBindings:
             if self.cache_root is not None
             else None
         )
-        if isinstance(target, ObservedWorker):
-            return PreparedExecuteRouter(
-                None,
-                pixi=self.pixi,
-                system_env=self.system_env,
-                runtime_env=runtime_env,
-                witness=self.command_witness,
-                sensitive_values=self.diagnostic_sensitive_values,
-                gpu=self.native_gpu,
-                local_software=local,
-                command_environment=lambda sandbox, witness: ObservedCommandEnvironment(
-                    target,
-                    sandbox / "command-runtime",
-                    runtime_env,
-                    witness,
-                    self.native_gpu,
-                    local,
-                ),
-            )
-        if not isinstance(target, PreparedNativeEnvironment):
+        if not isinstance(target, (PreparedNativeEnvironment, ObservedWorker)):
             runtime = self.container_runtime
             assert runtime is not None
             return PreparedExecuteRouter(
@@ -508,7 +489,7 @@ class PreparedLocalBindings:
                 ),
                 witness=self.command_witness,
             )
-        return PreparedExecuteRouter(
+        return native_router(
             target,
             pixi=self.pixi,
             system_env=self.system_env,

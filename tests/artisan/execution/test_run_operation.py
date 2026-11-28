@@ -25,7 +25,7 @@ from fixtures.composition_operations import (
 
 from artisan.composites import CompositeContext
 from artisan.composites.base.compiler import Definition
-from artisan.execution import executor_runtime, invocation, run_operation
+from artisan.execution import invocation, local_execution, run_operation
 from artisan.execution.invocation import ExecuteFailure
 from artisan.operations.base import OperationDefinition, PerArtifact
 from artisan.schemas import ArtifactResult, Environment, InputSpec, OutputSpec
@@ -316,8 +316,8 @@ def test_run_operation_does_not_enter_storage_or_software_preparation(
         "artisan.storage.cache.retained_lookup.lookup_assignment",
         "artisan.storage.cache.retained_lookup.lookup_step",
         "artisan.orchestration.runners.local.LocalRunner.prepare",
-        "artisan.execution.executor_runtime.ExecutorRuntime._remember",
-        "artisan.execution.executor_runtime.observe_current_worker",
+        "artisan.execution.executor_runtime.ExecutorRuntime.__init__",
+        "artisan.execution.local_execution.observe_current_worker",
     ):
         monkeypatch.setattr(target, forbidden)
     for _ in range(2):
@@ -554,7 +554,7 @@ def test_run_operation_empty_command_needs_no_software_or_directory(
         def postprocess(self, inputs: PostprocessInput) -> ArtifactResult:
             pytest.fail("Empty command reached postprocessing")
 
-    monkeypatch.setattr(executor_runtime, "observe_current_worker", _forbid_setup)
+    monkeypatch.setattr(local_execution, "observe_current_worker", _forbid_setup)
     monkeypatch.setattr(tempfile, "mkdtemp", _forbid_setup)
     monkeypatch.setattr(command_supervisor.CommandSupervisor, "start", _forbid_setup)
     result = run_operation(EmptyCommand, inputs={"structure": []})

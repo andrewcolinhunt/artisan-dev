@@ -57,12 +57,12 @@ program = """
 import json,sys
 from pathlib import Path
 from artisan.execution import run_operation
-from artisan.execution.executor_runtime import ExecutorRuntime
+from artisan.execution import local_execution
 from artisan.operations.examples import DataGenerator
 
 def reject(*args, **kwargs):
     raise AssertionError('Callback looked up software')
-ExecutorRuntime._software = reject
+local_execution.select_local_software = reject
 counts = []
 for seed in (1,2):
     result = run_operation(DataGenerator, selection_key='generator', params={'seed': seed}, work_dir=Path.cwd())

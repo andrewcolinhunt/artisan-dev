@@ -116,3 +116,11 @@ transformations and chooses outputs. Both can be submitted through
 to call either directly with caller-owned files and no store. `Executor.run` adds
 an owned scratch lifetime and remembers context across sequential calls. Neither
 entry point publishes results.
+
+Direct calls, executor sessions and pipeline workers share plan interpretation,
+operation phases, artifact validation and in-memory lineage construction. Direct
+calls partition their supplied input streams; pipeline workers consume partitions
+already admitted by the controller. The pipeline records admission before
+computation, seals results while their files remain available, and accepts the
+completed delivery afterward. These storage and ownership steps surround the
+shared computation.
