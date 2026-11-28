@@ -13,6 +13,11 @@ from fsspec import AbstractFileSystem
 
 from artisan.composites.base.compiler import Definition, Parameters
 from artisan.execution.compute.base import ExecuteRouter
+from artisan.execution.configured_calls import (
+    compile_configured_call,
+    configured_router,
+    current_call_scope,
+)
 from artisan.execution.executor_runtime import ExecutorRuntime
 from artisan.execution.external_access import freeze_external_files
 from artisan.execution.invocation import InvocationPaths, invoke_operation
@@ -32,6 +37,7 @@ def run_operation(
     *,
     inputs: Mapping[str, Sequence[Artifact]] | None = None,
     params: Parameters = None,
+    selection_key: str | None = None,
     work_dir: Path | None = None,
     associations: Mapping[tuple[str, int, str], Sequence[Artifact]] | None = None,
     config_references: Mapping[tuple[str, int], Mapping[str, Artifact]] | None = None,
@@ -48,6 +54,7 @@ def run_operation(
         inputs: Finalized artifacts in ordered role streams. Omitted roles use
             their declared fixed artifact defaults.
         params: Definition parameters, validated against its Params model.
+        selection_key: Configuration entry selected inside a managed callback.
         work_dir: Parent directory for files. Required by materialization and
             command adapters. Created files remain until the caller removes them.
         associations: Explicit association membership by original input position
@@ -67,6 +74,23 @@ def run_operation(
         msg = "Operation calls must be sequential and nonrecursive"
         raise RuntimeError(msg)
     try:
+        scope = current_call_scope()
+        plan = None
+        adapter = None
+        if scope is not None:
+            if selection_key is None:
+                msg = "A configured callback requires its selection_key"
+                raise ValueError(msg)
+            plan = compile_configured_call(scope, definition, selection_key, params)
+            router = configured_router(scope, selection_key)
+
+            def adapter(
+                _operation: OperationDefinition, _path: tuple[str, ...]
+            ) -> ExecuteRouter:
+                return router
+        elif selection_key is not None:
+            msg = "selection_key requires a configured callback context"
+            raise ValueError(msg)
         external_files = freeze_external_files(external_files)
         identity = uuid4().hex
         selected = dict(inputs or {})
@@ -92,6 +116,8 @@ def run_operation(
             root,
             explicit_context=context,
             external_files=external_files,
+            prepared_plan=plan,
+            execute_adapter=adapter,
         )
     finally:
         _call_lock.release()

@@ -156,3 +156,83 @@ def test_missing_or_different_qualification_rejects_without_preparing(
     path.write_text(altered.model_dump_json())
     with pytest.raises(ValueError, match="differs"):
         lookup_worker_qualification(worker, names, cache_root=tmp_path)
+
+
+def test_callback_qualification_checks_actual_target_packages_without_controller_versions(
+    tmp_path: Path,
+    qualified: PreparedNativeEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    worker = qualified.model_copy(update={"compatibility": None})
+    monkeypatch.setattr(
+        "artisan.execution.environments.worker_qualification.qualify_local_worker",
+        lambda *args, **kwargs: qualified,
+    )
+    monkeypatch.setattr(
+        "artisan.execution.environments.worker_qualification.verify_runtime_compatibility",
+        lambda *args, **kwargs: pytest.fail(
+            "Compared callback environment with controller"
+        ),
+    )
+    prepare_worker_qualification(
+        worker,
+        TRANSPORT_PACKAGES,
+        cache_root=tmp_path,
+        pixi=tmp_path / "pixi",
+        system_env=Path("/usr/bin/env"),
+        verify_current=False,
+    )
+    monkeypatch.setattr(
+        "artisan.execution.environments.worker_qualification.qualify_local_worker",
+        lambda *args, **kwargs: pytest.fail("Submission launched qualification"),
+    )
+    with pytest.raises(ValueError, match="missing|cover|unavailable"):
+        lookup_worker_qualification(
+            worker,
+            (*TRANSPORT_PACKAGES, "missing-application"),
+            cache_root=tmp_path,
+            verify_current=False,
+        )
+
+
+def test_callback_caller_collects_framework_and_selected_package_requirements(
+    tmp_path: Path,
+    qualified: PreparedNativeEnvironment,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from artisan.composites.base.compiler import compile_definition
+    from artisan.execution import CalledOperation
+    from artisan.execution.environments.configured_calls import resolve_callback_caller
+    from artisan.execution.worker_requirements import observed_controller_sources
+    from artisan.operations.base import OperationDefinition
+    from artisan.operations.examples import DataGenerator
+    from artisan.schemas import Environment
+
+    plan = compile_definition(
+        DataGenerator, called_operations={"generate": CalledOperation(DataGenerator)}
+    )
+    names, sources = observed_controller_sources(plan, (OperationDefinition,))
+    monkeypatch.setattr(
+        "artisan.execution.environments.worker_qualification.qualified_controller_sources",
+        lambda *args: sources,
+    )
+    selected = []
+
+    def lookup(
+        target: PreparedNativeEnvironment, required: tuple[str, ...], **kwargs: object
+    ) -> PreparedNativeEnvironment:
+        selected.append(required)
+        return target
+
+    monkeypatch.setattr(
+        "artisan.execution.environments.configured_calls.lookup_worker_qualification",
+        lookup,
+    )
+    resolve_callback_caller(
+        plan,
+        Environment.from_pixi(tmp_path / "pixi.toml"),
+        qualified,
+        cache_root=tmp_path,
+        application_modules=(),
+    )
+    assert selected == [names]

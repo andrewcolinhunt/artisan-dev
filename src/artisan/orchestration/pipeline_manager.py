@@ -22,6 +22,7 @@ import polars as pl
 from fsspec.registry import get_filesystem_class
 from fsspec.utils import get_protocol
 
+from artisan.composites.base.called_operations import CalledOperation
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.compiler import Definition, Parameters
 from artisan.errors import PersistenceIntegrityError
@@ -709,6 +710,7 @@ class PipelineManager:
         *,
         inputs: PipelineInputs = None,
         params: Parameters = None,
+        called_operations: Mapping[str, CalledOperation] | None = None,
         step_runner: PipelineRunner | None = None,
         runner_resources: RunnerResources | Mapping[str, object] | None = None,
         batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
@@ -732,6 +734,7 @@ class PipelineManager:
             inputs: Named artifact streams or output references. Ingestion also
                 accepts raw paths. Omitted roles use declared fixed artifact defaults.
             params: Scientific parameters as a mapping or the definition's Params.
+            called_operations: Configuration-selected creator calls and fixed settings.
             step_runner: Placement runner. None uses the pipeline default.
             runner_resources: Worker resource patch over definition defaults.
             batch_strategy: Unit partitioning and worker-packing patch.
@@ -755,6 +758,7 @@ class PipelineManager:
         submission = freeze_submission(
             definition,
             params=params,
+            called_operations=called_operations,
             runner_resources=runner_resources,
             batch_strategy=batch_strategy,
             group_by=group_by,
@@ -871,6 +875,7 @@ class PipelineManager:
         *,
         inputs: PipelineInputs = None,
         params: Parameters = None,
+        called_operations: Mapping[str, CalledOperation] | None = None,
         step_runner: PipelineRunner | None = None,
         runner_resources: RunnerResources | Mapping[str, object] | None = None,
         batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
@@ -904,6 +909,7 @@ class PipelineManager:
             definition,
             inputs=inputs,
             params=params,
+            called_operations=called_operations,
             step_runner=step_runner,
             runner_resources=runner_resources,
             batch_strategy=batch_strategy,

@@ -224,10 +224,30 @@ class DefinitionContract(_RecipeModel):
         )
 
 
+class CalledOperationContract(_RecipeModel):
+    """A possible runtime call, with no candidate inputs or scheduled invocation."""
+
+    key: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]+$")
+    calls_operations: bool = False
+    definition: DefinitionIdentity
+    execution: ExecutionContract
+    inputs: tuple[InputContract, ...]
+    outputs: tuple[OutputRoleContract, ...]
+    policy: InvocationPolicy
+    fixed_params_json: str
+    defaults_json: str
+    parameter_schema_json: str
+    default_inputs: tuple[RoleBinding, ...] = ()
+    cacheable: bool
+
+
 class ExecutionRecipe(DefinitionContract):
     """Closed scientific recipe; prepared software is bound separately."""
 
-    schema_version: Literal[1, 2, 3] = 1
+    schema_version: Literal[1, 2, 3, 4] = 1
+    called_operations: tuple[CalledOperationContract, ...] = Field(
+        default=(), exclude_if=lambda entries: not entries
+    )
     calls: tuple[RecipeCall, ...] = ()
     exports: tuple[RoleBinding, ...] = ()
 
@@ -243,9 +263,24 @@ class ExecutionRecipe(DefinitionContract):
             binding.constants is not None
             for call in self.calls
             for binding in call.inputs
-        ) or any(call.recipe.schema_version == 3 for call in self.calls)
-        if constants != (self.schema_version == 3):
+        ) or any(call.recipe.schema_version >= 3 for call in self.calls)
+        if self.schema_version < 4 and constants != (self.schema_version == 3):
             msg = "Constant input bindings require recipe schema version 3"
+            raise ValueError(msg)
+        configured = bool(self.called_operations) or any(
+            call.recipe.schema_version == 4 for call in self.calls
+        )
+        if configured != (self.schema_version == 4):
+            msg = "Configured calls require recipe schema version 4"
+            raise ValueError(msg)
+        keys = [item.key for item in self.called_operations]
+        if keys != sorted(set(keys)):
+            msg = "Configured call keys must be unique and sorted"
+            raise ValueError(msg)
+        if self.cacheable and any(
+            not item.cacheable for item in self.called_operations
+        ):
+            msg = "A parent cannot cache a noncacheable configured call"
             raise ValueError(msg)
         if self.definition.kind == "creator":
             if self.calls or self.exports:

@@ -815,6 +815,7 @@ class ManagedCommand:
         merged: bool,
         external: bool,
         docker_create: list[str] | None = None,
+        call_context: dict[str, Any] | None = None,
     ) -> None:
         self.connection = _Connection(attachment)
         self.identity = uuid.uuid4().hex
@@ -844,6 +845,7 @@ class ManagedCommand:
                 parent=attachment["parent"] or None,
                 external=external,
                 docker_create=docker_create,
+                call_context=call_context,
                 fds=(0, stdout_write, stderr_write),
             )
             self._update(response)
@@ -986,3 +988,25 @@ class ManagedCommand:
             with contextlib.suppress(OSError):
                 os.close(descriptor)
         self.readers.clear()
+
+
+def configured_call_context() -> dict[str, Any] | None:
+    """Read the running command's transient configuration from its existing owner."""
+    attachment = _ambient_attachment()
+    if attachment is None:
+        return None
+    connection = _Connection(attachment)
+    try:
+        response = connection.request(
+            "call_context", parent=attachment["parent"] or None
+        )
+        if response.get("state") != "attached":
+            msg = "Configured call owner is unavailable"
+            raise CommandOwnershipError(msg)
+        value = response.get("context")
+        if value is not None and not isinstance(value, dict):
+            msg = "Invalid configured call context"
+            raise CommandOwnershipError(msg)
+        return value
+    finally:
+        connection.close()

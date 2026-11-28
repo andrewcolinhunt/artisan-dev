@@ -7,6 +7,11 @@ from dataclasses import replace
 
 from pydantic import BaseModel
 
+from artisan.composites.base.called_operations import (
+    CalledOperation,
+    CapturedCalledOperation,
+    capture_called_operations,
+)
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.composite_context import CompositeContext
 from artisan.composites.base.composite_definition import CompositeDefinition
@@ -34,6 +39,7 @@ def compile_definition(
     definition: Definition,
     *,
     params: Parameters = None,
+    called_operations: Mapping[str, CalledOperation] | None = None,
     group_by: GroupByStrategy | None = None,
     batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
     tool: ToolSpec | Mapping[str, object] | None = None,
@@ -43,11 +49,33 @@ def compile_definition(
     selection = normalize_root_selection(
         instance, group_by=group_by, batch_strategy=batch_strategy, tool=tool
     )
-    return _compile_instance(definition, instance, (), selection)
+    plan = _compile_instance(definition, instance, (), selection)
+    return bind_called_operations(plan, capture_called_operations(called_operations))
+
+
+def bind_called_operations(
+    plan: CompiledPlan, captured: tuple[CapturedCalledOperation, ...]
+) -> CompiledPlan:
+    """Attach the frozen run selection to its scientific identity."""
+    if not captured:
+        return plan
+    recipe = ExecutionRecipe.model_validate(
+        {
+            **plan.recipe.model_dump(),
+            "schema_version": 4,
+            "called_operations": [item.contract for item in captured],
+            "cacheable": plan.recipe.cacheable
+            and all(item.contract.cacheable for item in captured),
+        }
+    )
+    return replace(plan, recipe=recipe, called_operations=captured)
 
 
 def compile_captured_definition(
-    definition: Definition, recipe: ExecutionRecipe
+    definition: Definition,
+    recipe: ExecutionRecipe,
+    *,
+    called_operations: Mapping[str, CalledOperation] | None = None,
 ) -> CompiledPlan:
     """Rebuild permitted root choices using trusted code and captured science.
 
@@ -80,9 +108,13 @@ def compile_captured_definition(
         if execution_contract(instance).mode == recipe.execution.mode == "command"
         else None
     )
-    return _compile_instance(
+    plan = _compile_instance(
         definition, instance, (), RootSelection(policy, tool), captured=recipe
     )
+    if recipe.called_operations and not called_operations:
+        msg = "Replay requires trusted configured operation definitions"
+        raise ValueError(msg)
+    return bind_called_operations(plan, capture_called_operations(called_operations))
 
 
 def _compile(

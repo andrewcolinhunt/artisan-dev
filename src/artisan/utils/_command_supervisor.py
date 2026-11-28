@@ -190,6 +190,7 @@ class Command:
     tree: CommandTree | None = None
     tree_complete: bool = False
     tool_returncode: int | None = None
+    call_context: dict[str, Any] | None = None
 
     def settle_collection(self, *, waive: bool = False) -> str:
         if self.collection == "pending" and (
@@ -856,6 +857,19 @@ class Supervisor:
                 channel,
                 {**snapshot, "state": "attached" if allowed else "rejected"},
             )
+        elif kind == "call_context":
+            parent = message.get("parent")
+            if not self._admitted(scope, parent):
+                self.reply(channel, {"state": "rejected"})
+                return
+            command = self.commands.get(parent) if isinstance(parent, str) else None
+            self.reply(
+                channel,
+                {
+                    "state": "attached",
+                    "context": command.call_context if command is not None else None,
+                },
+            )
         elif kind == "completed":
             if (
                 scope.client_channel is not channel
@@ -1014,6 +1028,10 @@ class Supervisor:
         ):
             msg = "Invalid managed Docker command"
             raise ValueError(msg)
+        call_context = request.get("call_context")
+        if call_context is not None and not isinstance(call_context, dict):
+            msg = "Invalid configured call context"
+            raise ValueError(msg)
         command = Command(
             request_id,
             channel.connection.fileno(),
@@ -1021,6 +1039,7 @@ class Supervisor:
             parent=request.get("parent"),
             external=bool(request.get("external", True)),
             client_channel=channel,
+            call_context=call_context,
         )
         for key in ATTACHMENT_ENV:
             env.pop(key, None)

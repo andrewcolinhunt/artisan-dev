@@ -6,8 +6,9 @@ import hashlib
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Literal
+from typing import ClassVar, Literal
 
+from artisan.composites.base.called_operations import environment_key
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.execution.assignment import Assignment
 from artisan.execution.composition import ExecuteAdapter
@@ -56,6 +57,10 @@ from artisan.execution.local_software import LocalSoftware
 from artisan.operations.base.operation_definition import OperationDefinition
 from artisan.schemas.artifact.base import Artifact
 from artisan.schemas.artifact.external_descriptor import PreparedExternalFiles
+from artisan.schemas.execution.called_operations import (
+    ConfiguredCallScope,
+    PreparedCalledOperation,
+)
 from artisan.schemas.execution.command_witness import PreparedCommandWitness
 from artisan.schemas.execution.container_environment import (
     ContainerLauncherIdentity,
@@ -89,6 +94,8 @@ class PreparedToolBinding:
 class PreparedLocalBindings:
     """Closed worker/tool selection; no authored dependency recipe or fallback."""
 
+    supports_configured_calls: ClassVar[bool] = True
+
     worker: PreparedNativeEnvironment | ObservedWorker
     tools: tuple[PreparedToolBinding, ...]
     pixi: Path
@@ -102,6 +109,7 @@ class PreparedLocalBindings:
     application_modules: tuple[str, ...] = ()
     cache_root: Path | None = None
     external_files: Mapping[str, PreparedExternalFiles] = field(default_factory=dict)
+    called_operations: tuple[PreparedCalledOperation, ...] = ()
 
     def __post_init__(self) -> None:
         object.__setattr__(
@@ -121,8 +129,13 @@ class PreparedLocalBindings:
                 "Prepared worker requires qualified live-object transport compatibility"
             )
             raise ValueError(msg)
-        native_activation = isinstance(self.worker, PreparedNativeEnvironment) or any(
-            isinstance(tool.target, PreparedNativeEnvironment) for tool in self.tools
+        native_activation = (
+            isinstance(self.worker, PreparedNativeEnvironment)
+            or any(
+                isinstance(tool.target, PreparedNativeEnvironment)
+                for tool in self.tools
+            )
+            or any(item.target is not None for item in self.called_operations)
         )
         if native_activation != (self.launcher is not None):
             msg = (
@@ -213,6 +226,14 @@ class PreparedLocalBindings:
             if self.launcher is not None
             else {"kind": "observed-direct"},
         }
+        if self.called_operations:
+            descriptor["called_operations"] = [
+                {
+                    "key": item.contract.key,
+                    "target": item.target.digest if item.target else None,
+                }
+                for item in self.called_operations
+            ]
         if self.container_launcher is not None:
             descriptor["container_launcher"] = {
                 "identity": self.container_launcher.model_dump(mode="json"),
@@ -235,6 +256,12 @@ class PreparedLocalBindings:
         expected = _command_paths(plan)
         if {binding.call_path for binding in self.tools} != expected:
             msg = "Prepared tool selection does not exactly match the compiled commands"
+            raise ValueError(msg)
+        if (
+            tuple(item.contract for item in self.called_operations)
+            != plan.recipe.called_operations
+        ):
+            msg = "Prepared calls differ from the configured recipe"
             raise ValueError(msg)
         self._verify_payloads()
 
@@ -265,7 +292,15 @@ class PreparedLocalBindings:
         targets: dict[Path, PreparedNativeEnvironment] = {}
         unique_targets = {
             target.digest: target
-            for target in (self.worker, *(tool.target for tool in self.tools))
+            for target in (
+                self.worker,
+                *(tool.target for tool in self.tools),
+                *(
+                    item.target
+                    for item in self.called_operations
+                    if item.target is not None
+                ),
+            )
         }
         for target in unique_targets.values():
             if isinstance(target, ObservedWorker):
@@ -290,7 +325,10 @@ class PreparedLocalBindings:
                 msg = "One native prefix cannot have conflicting prepared identities"
                 raise ValueError(msg)
             targets[target.prefix] = target
-        if bool(self.tools) != (self.command_witness is not None):
+        has_commands = bool(self.tools) or any(
+            item.contract.execution.mode != "native" for item in self.called_operations
+        )
+        if has_commands != (self.command_witness is not None):
             msg = "Command assignments require exact prepared exit-witness coverage"
             raise ValueError(msg)
         if self.command_witness is not None:
@@ -350,6 +388,59 @@ class PreparedLocalBindings:
         )
 
     def adapter(
+        self,
+        operation: OperationDefinition,
+        path: tuple[str, ...],
+        *,
+        runtime_env: Mapping[str, str],
+        input_files: tuple[Path, ...] = (),
+        external_files: tuple[PreparedExternalFiles, ...] = (),
+    ) -> PreparedExecuteRouter:
+        """Route one operation and carry configured calls into its actual process."""
+        router = self._adapter(
+            operation,
+            path,
+            runtime_env=runtime_env,
+            input_files=input_files,
+            external_files=external_files,
+        )
+        if self.called_operations:
+            target = next(
+                (item.target for item in self.tools if item.call_path == path),
+                self.worker,
+            )
+            if not isinstance(target, (PreparedNativeEnvironment, ObservedWorker)):
+                msg = "Configured calls require native command targets"
+                raise ValueError(msg)
+            router.native_call_context = self._call_scope(
+                self.worker, runtime_env
+            ).model_dump(mode="json")
+            router.call_context = self._call_scope(target, runtime_env).model_dump(
+                mode="json"
+            )
+        return router
+
+    def _call_scope(
+        self,
+        target: PreparedNativeEnvironment | ObservedWorker,
+        runtime_env: Mapping[str, str],
+    ) -> ConfiguredCallScope:
+        assert target.compatibility is not None
+        return ConfiguredCallScope(
+            operations=self.called_operations,
+            caller_prefix=target.prefix,
+            caller_compatibility=target.compatibility,
+            caller_target=target
+            if isinstance(target, PreparedNativeEnvironment)
+            else None,
+            pixi=self.pixi,
+            system_env=self.system_env,
+            witness=self.command_witness,
+            gpu=self.native_gpu,
+            runtime_env=dict(runtime_env),
+        )
+
+    def _adapter(
         self,
         operation: OperationDefinition,
         path: tuple[str, ...],
@@ -505,6 +596,9 @@ def bind_local_software(
     ] = {}
     if tool_backend == "pixi" and worker_environment is not None:
         resolved[worker_environment] = worker
+    if plan.called_operations and tool_backend != "pixi":
+        msg = "Configured callbacks currently require the native Pixi backend"
+        raise ValueError(msg)
     selections = sorted(select_tool_environments(plan), key=lambda item: item.call_path)
     for selection in selections:
         declaration = selection.declaration
@@ -512,6 +606,41 @@ def bind_local_software(
             resolved[declaration] = _lookup_tool(
                 declaration, cache_root, tool_backend, docker, apptainer
             )
+    if plan.called_operations:
+        from artisan.execution.environments.configured_calls import (
+            callback_environments,
+            resolve_callback_caller,
+        )
+
+        for item in plan.called_operations:
+            if item.environment is not None and item.environment not in resolved:
+                resolved[item.environment] = lookup_native_environment(
+                    item.environment, cache_root=cache_root
+                )
+        for declaration in callback_environments(plan):
+            target = resolved[declaration]
+            assert isinstance(target, PreparedNativeEnvironment)
+            resolved[declaration] = resolve_callback_caller(
+                plan,
+                declaration,
+                target,
+                cache_root=cache_root,
+                application_modules=application_modules,
+            )
+    called_items = []
+    for item in plan.called_operations:
+        call_target = (
+            resolved[item.environment] if item.environment is not None else None
+        )
+        assert call_target is None or isinstance(call_target, PreparedNativeEnvironment)
+        called_items.append(
+            PreparedCalledOperation(
+                contract=item.contract,
+                environment_key=environment_key(item.definition, item.environment),
+                target=call_target,
+            )
+        )
+    called = tuple(called_items)
     tools = tuple(
         PreparedToolBinding(
             selection.call_path,
@@ -546,15 +675,19 @@ def bind_local_software(
         LocalLauncherIdentity.capture(pixi, system_env)
         if isinstance(worker, PreparedNativeEnvironment)
         or any(isinstance(tool.target, PreparedNativeEnvironment) for tool in tools)
+        or any(item.target is not None for item in called)
         else None,
         runtime,
         runtime.identity() if runtime is not None else None,
         capture_gpu_driver(runtime.gpu_devices) if runtime is not None else None,
-        lookup_command_witness(cache_root) if tools else None,
+        lookup_command_witness(cache_root)
+        if tools or any(item.contract.execution.mode != "native" for item in called)
+        else None,
         native_gpu,
         application_modules,
         cache_root,
         freeze_external_files(external_files),
+        called,
     )
     bindings.verify(plan)
     return bindings

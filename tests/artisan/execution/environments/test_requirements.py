@@ -124,3 +124,18 @@ def test_selected_declaration_is_not_reloaded_after_admission(
     finally:
         field.default = original
         DeclaredTool.model_rebuild(force=True)
+
+
+@pytest.mark.parametrize(
+    ("definition", "expected"), [(DeclaredTool, ()), (AdaptedNative, (TOOL,))]
+)
+def test_selected_python_adapters_require_framework_coverage(
+    definition: type, expected: tuple[Environment, ...]
+) -> None:
+    from artisan.execution import CalledOperation
+    from artisan.execution.environments.configured_calls import callback_environments
+
+    plan = compile_definition(
+        DataTransformer, called_operations={"selected": CalledOperation(definition)}
+    )
+    assert callback_environments(plan) == expected

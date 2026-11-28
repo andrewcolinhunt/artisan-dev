@@ -304,6 +304,11 @@ class RetainedStepExecution:
                 self.runner_resources,
                 application_modules=self.dispatch.application_modules,
             )
+            if plan.called_operations and not getattr(
+                software, "supports_configured_calls", False
+            ):
+                msg = "Selected runner does not support configured operation calls"
+                raise ValueError(msg)
             self._check_stopped()
             if self.replay is not None:
                 self.replay_diagnostic = self.replay.validate_selection(

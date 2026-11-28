@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -168,6 +168,7 @@ class PreparedExecuteRouter(ExecuteRouter):
         sensitive_values: tuple[str, ...] = (),
         gpu: NativeGPUAllocation | None = None,
         local_software: LocalSoftware | None = None,
+        call_context: dict[str, Any] | None = None,
     ) -> None:
         self.target = target
         self.pixi = pixi
@@ -179,14 +180,27 @@ class PreparedExecuteRouter(ExecuteRouter):
         self.witness = witness
         self.sensitive_values = sensitive_values
         self.local_software = local_software
+        self.call_context = call_context
+        self.native_call_context: dict[str, Any] | None = None
 
-    def context(self) -> AbstractContextManager[None]:
-        """Expose selected local software while all native phases run."""
-        return (
-            local_software_scope(self.local_software)
-            if self.local_software is not None
-            else nullcontext()
-        )
+    @contextmanager
+    def context(self) -> Iterator[None]:
+        """Expose selected software and callback bindings during native phases."""
+        with ExitStack() as stack:
+            if self.local_software is not None:
+                stack.enter_context(local_software_scope(self.local_software))
+            if self.native_call_context is not None:
+                from artisan.execution.configured_calls import configured_calls
+                from artisan.schemas.execution.called_operations import (
+                    ConfiguredCallScope,
+                )
+
+                stack.enter_context(
+                    configured_calls(
+                        ConfiguredCallScope.model_validate(self.native_call_context)
+                    )
+                )
+            yield
 
     def route_execute(
         self,
@@ -225,6 +239,16 @@ class PreparedExecuteRouter(ExecuteRouter):
                         witness,
                         self.gpu,
                         self.local_software,
+                    )
+                if self.call_context is not None:
+                    from artisan.execution.configured_calls import (
+                        ConfiguredCommandEnvironment,
+                    )
+
+                    environment = ConfiguredCommandEnvironment(
+                        environment,
+                        self.call_context,
+                        Path(sandbox_root) / "command-runtime",
                     )
                 prepared = (
                     inputs.inputs

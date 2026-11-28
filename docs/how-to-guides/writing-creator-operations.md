@@ -1125,6 +1125,78 @@ pipeline steps. See [environment preparation](execute-environments.md) for setup
 Calls are sequential. Calling this helper from a normal managed operation is
 supported; recursive helper calls and concurrent calls in one process are not.
 
+### Select calls through run configuration
+
+Use `CalledOperation` when a running operation needs to call creators chosen by
+configuration. Supply the same selection to explicit preparation and submission.
+The parent definition does not need a list of possible operations.
+
+```python
+from pathlib import Path
+from tempfile import TemporaryDirectory
+
+from artisan.execution import CalledOperation
+from artisan.operations.examples import ConfiguredGenerator, DataGenerator
+from artisan.orchestration import PipelineManager, StepStatus
+from artisan.orchestration.runners import LocalRunner
+
+selected = {"generator": CalledOperation(DataGenerator, params={"count": 1})}
+runner = LocalRunner()
+runner.prepare(ConfiguredGenerator, called_operations=selected)
+
+with TemporaryDirectory() as directory:
+    root = Path(directory)
+    with PipelineManager.create(
+        "configured-example",
+        delta_root=str(root / "delta"),
+        staging_root=str(root / "staging"),
+        working_root=str(root / "working"),
+        default_step_runner=runner,
+    ) as pipeline:
+        result = pipeline.run(ConfiguredGenerator, called_operations=selected)
+        assert result.status == StepStatus.SUCCEEDED
+        assert len(pipeline) == 1
+```
+
+`ConfiguredGenerator` calls the selected generator twice, with different seeds,
+and returns two datasets through one parent step. Inside the parent, the call is:
+
+```python
+result = run_operation(
+    DataGenerator,
+    selection_key="generator",
+    params={"seed": seed},
+    work_dir=working_directory,
+)
+```
+
+This fragment assumes a candidate `seed` and a caller-owned working directory.
+Fixed settings such as `count` come from the captured selection. A request cannot
+overwrite them. Required candidate parameters need not exist during preparation.
+Parameter default factories require an explicit fixed value so preparation does
+not invent candidate-dependent settings.
+
+Submission checks prepared software without installing it. Configured calls reuse
+the bound targets without looking up software again. Native phases run in the
+actual caller's Python process; command bodies may use separate environments.
+A selected command that itself hosts callbacks declares `calls_operations = True`
+so preparation checks its Python package coverage. This flag declares a software
+requirement, not a list of callable operations. Python command adapters require
+this package coverage automatically. Ordinary leaf tools need not install Artisan.
+
+The initial configured-call path supports `LocalRunner` with native Pixi tools.
+Docker, Apptainer, and Modal delivery is not yet supported. Ordinary standalone
+calls retain their existing behavior. Configured selections currently contain
+creator operations; static composites remain available through standalone calls.
+
+Changing a selected operation or fixed setting changes the parent's cache
+identity. Selecting a noncacheable operation disables parent reuse. The parent
+must admit all result-affecting inputs/configuration, including seeds, or explicitly
+bypass its cache. Child calls have no independent durable step or result cache;
+the parent retains its declared outputs and reference support through normal
+publication. Runtime handoff files live in command scratch and follow its existing
+cleanup lifetime.
+
 ### Supply declared supporting artifacts
 
 A direct call cannot query a store for missing dependencies. Operations that request

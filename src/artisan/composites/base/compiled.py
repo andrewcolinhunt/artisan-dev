@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
+from artisan.composites.base.called_operations import CapturedCalledOperation
 from artisan.composites.base.root_selection import RootSelection
 from artisan.composites.base.snapshots import parameter_class
 from artisan.schemas.composites.plan import ExecutionRecipe
@@ -41,6 +42,7 @@ class CompiledPlan:
     calls: tuple[CompiledCall, ...] = ()
     root_selection: RootSelection = field(default_factory=RootSelection)
     constants: tuple[ConstantInput, ...] = ()
+    called_operations: tuple[CapturedCalledOperation, ...] = ()
 
     def instantiate(self) -> OperationDefinition | CompositeDefinition:
         """Construct fresh scientific state without importing recorded names."""
@@ -53,8 +55,10 @@ class CompiledPlan:
             )
             instance = self.definition.model_validate({"params": validated})
         current = self.root_selection.snapshot(instance).model_dump()
-        current["cacheable"] = current["cacheable"] and all(
-            call.plan.recipe.cacheable for call in self.calls
+        current["cacheable"] = (
+            current["cacheable"]
+            and all(call.plan.recipe.cacheable for call in self.calls)
+            and all(item.contract.cacheable for item in self.called_operations)
         )
         if current != self.recipe.model_dump(include=set(current)):
             msg = "Definition execution configuration changed; compile the plan again"

@@ -87,10 +87,12 @@ class ExecutorRuntime:
         *,
         explicit_context: FrozenInputContext | None = None,
         external_files: Mapping[str, PreparedExternalFiles] | None = None,
+        prepared_plan: CompiledPlan | None = None,
+        execute_adapter: ExecuteAdapter | None = None,
     ) -> ArtifactResult:
         """Validate all captured inputs before selecting software or invoking science."""
         inputs = {role: tuple(values) for role, values in inputs.items()}
-        plan = compile_definition(definition, params=params)
+        plan = prepared_plan or compile_definition(definition, params=params)
         inputs.update(capture_input_defaults(definition.inputs, inputs.keys()))
         validate_local_inputs(plan, inputs)
         select_tool_environments(plan)
@@ -128,7 +130,7 @@ class ExecutorRuntime:
         if root is None and _requires_files(plan, inputs, references):
             msg = "Operation commands or materialization require work_dir"
             raise ValueError(msg)
-        adapter = self._software(plan, inventory, root)
+        adapter = execute_adapter or self._software(plan, inventory, root)
         execution = execute_local_plan(
             plan,
             inputs,

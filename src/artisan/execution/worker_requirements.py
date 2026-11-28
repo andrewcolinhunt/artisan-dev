@@ -218,6 +218,7 @@ def _plan_definitions(
     for node in _plans(plan):
         node.instantiate()
         definitions.append(node.definition)
+        definitions.extend(item.definition for item in node.called_operations)
     return tuple(definitions)
 
 

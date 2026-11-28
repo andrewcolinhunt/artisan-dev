@@ -59,6 +59,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
     ),
     "artisan.operations.examples": (
         "AppendableGenerator",
+        "ConfiguredGenerator",
         "CsvHead",
         "CsvPair",
         "DataGenerator",
@@ -310,7 +311,7 @@ _PUBLIC_EXPORTS: dict[str, tuple[str, ...]] = {
         "__version__",
         "build_mcp_app",
     ),
-    "artisan.execution": ("Executor", "run_operation"),
+    "artisan.execution": ("CalledOperation", "Executor", "run_operation"),
     "artisan.orchestration.runners": (
         "ApptainerRuntime",
         "DockerRuntime",
