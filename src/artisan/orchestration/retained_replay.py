@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Iterator, Mapping
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from uuid import uuid4
 
+from artisan.composites.base.called_operations import CalledOperation
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.compiler import compile_captured_definition
 from artisan.composites.base.composite_definition import CompositeDefinition
@@ -227,7 +229,19 @@ def _registered_plan(
             "Replay root definition is not registered by the caller",
         )
     definition = registered[key]
-    plan = compile_captured_definition(definition, recipe)
+    configured = {}
+    for call in recipe.called_operations:
+        call_key = call.definition.module, call.definition.qualname
+        target = registered.get(call_key)
+        if target is None or not issubclass(target, OperationDefinition):
+            raise _error(
+                ErrorCode.REPLAY_DEPENDENCY_UNAVAILABLE,
+                "Replay configured definition is not registered by the caller",
+            )
+        configured[call.key] = CalledOperation(
+            target, json.loads(call.fixed_params_json)
+        )
+    plan = compile_captured_definition(definition, recipe, called_operations=configured)
     trusted = set(registered.values())
     pending = [plan]
     while pending:

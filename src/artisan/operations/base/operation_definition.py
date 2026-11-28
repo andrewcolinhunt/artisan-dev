@@ -224,6 +224,9 @@ class OperationDefinition(BaseModel):
     artifacts to amortize model loading.
     """
 
+    calls_operations: ClassVar[bool] = False
+    """Whether this command hosts configured calls and needs their Python code."""
+
     execute_as_tool: ClassVar[bool] = False
     """Run ``execute_function`` as a framework-generated command.
 

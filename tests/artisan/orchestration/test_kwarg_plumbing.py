@@ -11,12 +11,14 @@ import pytest
 from fixtures.retained_pipeline import NativePipelineRunner
 
 from artisan.composites.examples import GenerateAndScore
+from artisan.execution import CalledOperation
 from artisan.operations.examples import DataGenerator
 from artisan.orchestration import PipelineManager
 from artisan.schemas.enums import CachePolicy, FailurePolicy, GroupByStrategy
 from artisan.schemas.orchestration.step_lifecycle import StepStatus
 
 _KWARGS = {
+    "called_operations",
     "inputs",
     "params",
     "step_runner",
@@ -49,6 +51,7 @@ def test_run_forwards_each_option_to_unified_submit(operation: type) -> None:
     receiver = MagicMock(spec=PipelineManager)
     options = {
         "inputs": {"input": []},
+        "called_operations": {"generator": CalledOperation(DataGenerator)},
         "params": {"count": 2},
         "step_runner": object(),
         "runner_resources": {"cpus": 3},

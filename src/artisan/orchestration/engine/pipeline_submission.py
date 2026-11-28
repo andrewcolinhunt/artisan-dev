@@ -11,8 +11,18 @@ from typing import cast
 
 from pydantic import BaseModel
 
+from artisan.composites.base.called_operations import (
+    CalledOperation,
+    CapturedCalledOperation,
+    capture_called_operations,
+)
 from artisan.composites.base.compiled import CompiledPlan
-from artisan.composites.base.compiler import Definition, Parameters, compile_definition
+from artisan.composites.base.compiler import (
+    Definition,
+    Parameters,
+    bind_called_operations,
+    compile_definition,
+)
 from artisan.composites.base.composite_definition import CompositeDefinition
 from artisan.composites.base.root_selection import (
     merge_batch_strategy,
@@ -48,6 +58,7 @@ class PipelineSubmission:
     resources: RunnerResources
     batch_strategy: BatchStrategy
     recorder: CommandRecorder = field(repr=False)
+    called_operations: tuple[CapturedCalledOperation, ...] = ()
 
     @property
     def is_curator(self) -> bool:
@@ -76,6 +87,7 @@ class PipelineSubmission:
             batch_strategy=self.batch_patch,
             tool=self.tool_patch,
         )
+        plan = bind_called_operations(plan, self.called_operations)
         pending = [plan]
         compiled = []
         while pending:
@@ -99,6 +111,7 @@ def freeze_submission(
     definition: Definition,
     *,
     params: Parameters = None,
+    called_operations: Mapping[str, CalledOperation] | None = None,
     group_by: GroupByStrategy | None = None,
     batch_strategy: BatchStrategy | Mapping[str, object] | None = None,
     tool: ToolSpec | Mapping[str, object] | None = None,
@@ -130,6 +143,10 @@ def freeze_submission(
     is_curator = isinstance(instance, OperationDefinition) and (
         type(instance)._kind() == "curator"
     )
+    if is_curator and called_operations:
+        msg = "Curators do not support configured calls"
+        raise ValueError(msg)
+    captured_calls = capture_called_operations(called_operations)
     params_json = parameter_snapshot(instance, allow_private=is_curator)
     recorder = configuration_recorder(instance)
     recorder._learn_json(dict(tool_patch) if tool_patch is not None else None)
@@ -154,6 +171,7 @@ def freeze_submission(
         resources=merge_runner_resources(instance.runner_resources, runner_resources),
         batch_strategy=merge_batch_strategy(instance.batch_strategy, batch_patch),
         recorder=recorder,
+        called_operations=captured_calls,
     )
 
 

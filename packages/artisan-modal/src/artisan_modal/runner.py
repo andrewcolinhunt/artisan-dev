@@ -230,6 +230,9 @@ class ModalRunner:
         *,
         application_modules: tuple[str, ...] = (),
     ) -> AssignmentSoftware:
+        if plan.called_operations:
+            msg = "Configured operation callbacks are not yet supported by Modal"
+            raise ValueError(msg)
         return self._resolve(plan, runner_resources, application_modules)
 
     def resolve_curator(

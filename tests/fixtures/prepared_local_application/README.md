@@ -125,3 +125,30 @@ The worker remains native. Preparation may reuse exact existing tool images;
 it never copies an installed prefix. Use a new work directory and report path
 for each backend. This probe does not qualify native worker GPU allocation or
 classify an ambiguous launcher exit as a confirmed tool failure.
+
+## Shared computation and publication
+
+`run_shared_execution.py` compares one deterministic creator through a direct
+call, an executor session, a configured callback, a prepared pipeline worker and
+a configured callback inside that worker. All five paths must return value `6`
+for input `3`, with the same artifact ID and an explicit edge from the input.
+The pipeline records three steps: the seed and two parent executions. The callback
+creates no extra step. Direct and session calls create no store.
+
+Create a fresh profile from the checkout, then run:
+
+```bash
+pixi lock --manifest-path /absolute/profile/source/pixi.toml
+pixi install --locked --manifest-path /absolute/profile/source/pixi.toml -e worker
+pixi run --locked --manifest-path /absolute/profile/source/pixi.toml -e worker \
+  python tests/fixtures/prepared_local_application/run_shared_execution.py \
+  --profile /absolute/profile \
+  --cache /absolute/prepared-targets \
+  --output /absolute/new-shared-execution-proof
+```
+
+Run these commands from the checkout. The driver explicitly prepares the pipeline
+worker before execution and writes `proof.json` after all assertions pass. The
+controller uses the profile's installed environment; the pipeline uses a separate
+prepared prefix from the same source. This CPU proof does not require model weights
+or a GPU.

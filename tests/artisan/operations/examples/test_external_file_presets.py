@@ -9,8 +9,7 @@ import pytest
 from fixtures.commands import command_router
 
 from artisan.composites.base.compiler import compile_definition
-from artisan.execution import run_operation
-from artisan.execution.executor_runtime import ExecutorRuntime
+from artisan.execution import local_execution, run_operation
 from artisan.operations.examples.external_files import (
     ScaleWithExternalWeights,
     default_scale_weights,
@@ -33,7 +32,7 @@ pytestmark = pytest.mark.usefixtures("external_artifact_types")
 def command_execution(monkeypatch: pytest.MonkeyPatch) -> None:
     """Exercise command execution without claiming prepared software qualification."""
     monkeypatch.setattr(
-        ExecutorRuntime, "_software", lambda *_args: lambda *_call: command_router()
+        local_execution, "select_local_software", lambda *_args, **_kwargs: lambda *_call: command_router()
     )
 
 

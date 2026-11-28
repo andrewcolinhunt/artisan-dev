@@ -8,6 +8,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import ClassVar, Literal, cast
 
+from artisan.composites.base.called_operations import CalledOperation
 from artisan.composites.base.compiled import CompiledPlan
 from artisan.composites.base.compiler import Definition, Parameters, compile_definition
 from artisan.execution.application_bootstrap import validate_worker_applications
@@ -135,13 +136,19 @@ class LocalRunner:
         definition: Definition,
         *,
         params: Parameters = None,
+        called_operations: Mapping[str, CalledOperation] | None = None,
         runner_resources: RunnerResources | None = None,
         application_modules: tuple[str, ...] = (),
     ) -> None:
         """Compile and explicitly provision unique worker/tool software requirements."""
         application_modules = validate_application_modules(application_modules)
         bootstrap_applications(application_modules, purpose="worker preparation")
-        plan = compile_definition(definition, params=params)
+        plan = compile_definition(
+            definition, params=params, called_operations=called_operations
+        )
+        if plan.called_operations and self.tool_backend != "pixi":
+            msg = "Configured callbacks currently require the native Pixi backend"
+            raise ValueError(msg)
         resources = merge_runner_resources(
             plan.instantiate().runner_resources, runner_resources
         )
@@ -153,9 +160,14 @@ class LocalRunner:
             declaration = selection.declaration
             if declaration is not None and declaration not in declarations:
                 declarations.append(declaration)
+        for item in plan.called_operations:
+            if item.environment is not None and item.environment not in declarations:
+                declarations.append(item.environment)
         if declarations and self.tool_backend != "pixi":
             self._validate_container_preparation()
-        if selections:
+        if selections or any(
+            item.contract.execution.mode != "native" for item in plan.called_operations
+        ):
             prepare_command_witness(self.cache_root)
         if self.environment is not None:
             worker = prepare_native_environment(
@@ -177,6 +189,12 @@ class LocalRunner:
             )
         for declaration in declarations:
             self._prepare_tool(declaration)
+        if plan.called_operations:
+            from artisan.execution.environments.configured_calls import (
+                prepare_callback_callers,
+            )
+
+            prepare_callback_callers(plan, self, application_modules)
         self.resolve(plan, resources, application_modules=application_modules)
 
     def prepare_curator(

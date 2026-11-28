@@ -1285,3 +1285,53 @@ def test_missing_required_output_reference_is_scientific_boundary_failure(
         )
     assert raised.value.phase == "output_projection"
     assert raised.value.call_path == ()
+
+
+def test_selected_target_changes_parent_software_identity(
+    bindings: PreparedLocalBindings,
+) -> None:
+    from artisan.composites.base.called_operations import capture_called_operations
+    from artisan.execution import CalledOperation
+    from artisan.operations.examples import DataGenerator
+    from artisan.schemas.execution.called_operations import PreparedCalledOperation
+
+    contract = capture_called_operations({"generate": CalledOperation(DataGenerator)})[
+        0
+    ].contract
+    selected = PreparedCalledOperation(
+        contract=contract, environment_key=None, target=bindings.worker
+    )
+    first = replace(bindings, called_operations=(selected,))
+    changed = bindings.worker.model_copy(update={"platform": "osx-arm64"})
+    second = replace(
+        bindings, called_operations=(selected.model_copy(update={"target": changed}),)
+    )
+    assert first.software_digest != second.software_digest
+
+
+def test_shared_native_router_preserves_prepared_launch_options(
+    tmp_path: Path,
+    bindings: PreparedLocalBindings,
+) -> None:
+    from artisan.execution.compute.native_routing import native_router
+
+    software = LocalSoftware(tmp_path / "cache", bindings.pixi, bindings.system_env, {})
+    context = {"selected": "callback"}
+    router = native_router(
+        bindings.worker,
+        pixi=bindings.pixi,
+        system_env=bindings.system_env,
+        runtime_env={"SERVICE_TOKEN": "synthetic-selected"},
+        witness=bindings.command_witness,
+        gpu=bindings.native_gpu,
+        sensitive_values=("synthetic-private",),
+        local_software=software,
+        call_context=context,
+    )
+    assert router.target is bindings.worker
+    assert router.runtime_env == {"SERVICE_TOKEN": "synthetic-selected"}
+    assert router.witness is bindings.command_witness
+    assert router.gpu is bindings.native_gpu
+    assert router.local_software is software
+    assert router.call_context is context
+    assert router.sensitive_values == ("synthetic-private",)

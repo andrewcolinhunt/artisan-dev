@@ -68,11 +68,14 @@ def prepare_worker_qualification(
     cache_root: Path,
     pixi: Path,
     system_env: Path,
+    verify_current: bool = True,
 ) -> PreparedNativeEnvironment:
     """Capture reusable environment metadata once, then select required packages."""
     path = _qualification_path(cache_root, worker)
     if path.exists():
-        return lookup_worker_qualification(worker, names, cache_root=cache_root)
+        return lookup_worker_qualification(
+            worker, names, cache_root=cache_root, verify_current=verify_current
+        )
     qualified = qualify_local_worker(worker, pixi=pixi, system_env=system_env)
     assert qualified.compatibility is not None
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -83,7 +86,7 @@ def prepare_worker_qualification(
         temporary.replace(path)
     finally:
         temporary.unlink(missing_ok=True)
-    return _select_qualification(qualified, names)
+    return _select_qualification(qualified, names, verify_current=verify_current)
 
 
 def lookup_worker_qualification(
@@ -91,6 +94,7 @@ def lookup_worker_qualification(
     names: tuple[str, ...],
     *,
     cache_root: Path,
+    verify_current: bool = True,
 ) -> PreparedNativeEnvironment:
     """Select package coverage from completed preparation without provisioning."""
     path = _qualification_path(cache_root, worker)
@@ -108,15 +112,19 @@ def lookup_worker_qualification(
             "Worker qualification differs from the selected prepared target or packages"
         )
         raise ValueError(msg)
-    return _select_qualification(qualified, names)
+    return _select_qualification(qualified, names, verify_current=verify_current)
 
 
 def _select_qualification(
-    worker: PreparedNativeEnvironment, names: tuple[str, ...]
+    worker: PreparedNativeEnvironment,
+    names: tuple[str, ...],
+    *,
+    verify_current: bool = True,
 ) -> PreparedNativeEnvironment:
     assert worker.compatibility is not None
     selected = select_runtime_compatibility(worker.compatibility, names)
-    verify_runtime_compatibility(selected)
+    if verify_current:
+        verify_runtime_compatibility(selected)
     return worker.model_copy(update={"compatibility": selected})
 
 

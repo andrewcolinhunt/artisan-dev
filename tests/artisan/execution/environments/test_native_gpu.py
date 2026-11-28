@@ -355,3 +355,49 @@ def test_closed_software_profile_preserves_existing_descriptor_bytes(
     ):
         with pytest.raises(ValueError):
             NativeGPUSoftware.model_validate({**profile.model_dump(), **update})
+
+
+@pytest.mark.parametrize("observed", [False, True])
+def test_shared_native_router_keeps_gpu_and_witness(
+    hardware: Path,
+    tmp_path: Path,
+    oci: PreparedOCIEnvironment,
+    observed: bool,
+) -> None:
+    from artisan.execution.compute.native_routing import native_router
+    from artisan.execution.environments.command_witness import WitnessInvocation
+    from artisan.execution.environments.observed_worker import observe_current_worker
+    from artisan.schemas.execution.command_witness import PreparedCommandWitness
+    from artisan.schemas.execution.worker_transport import TRANSPORT_PACKAGES
+
+    allocation = native_gpu.capture_native_gpu(1)
+    assert allocation is not None
+    witness = PreparedCommandWitness(
+        executable=tmp_path / "witness",
+        architecture="x86_64",
+        source_sha256="a" * 64,
+        binary_sha256="b" * 64,
+        recipe_sha256="c" * 64,
+        builder_digest="b" * 64,
+        compiler_version="synthetic",
+        compiler_files=(),
+    )
+    target = observe_current_worker(TRANSPORT_PACKAGES) if observed else oci.native
+    router = native_router(
+        target,
+        pixi=Path("/qualified/pixi"),
+        system_env=Path("/usr/bin/env"),
+        runtime_env={},
+        witness=witness,
+        gpu=allocation,
+    )
+    assert router.witness is witness
+    assert router.gpu is allocation
+    if observed:
+        assert router.command_environment is not None
+        invocation = WitnessInvocation(witness, tmp_path / "exits")
+        environment = router.command_environment(tmp_path, invocation)
+        assert isinstance(environment, ObservedCommandEnvironment)
+        assert environment.gpu is allocation
+        assert environment.witness is invocation
+        assert environment.prepare_env()["CUDA_VISIBLE_DEVICES"] == UUID_A

@@ -308,6 +308,7 @@ def run_command(
             external=getattr(environment, "cancellation_scope", "external")
             != "process_group",
             docker_create=docker_create,
+            call_context=getattr(environment, "_configured_calls", None),
         )
         if result.returncode != 0:
             attempt = observation.attempt
@@ -335,6 +336,7 @@ def _run_managed(
     streaming: bool,
     external: bool,
     docker_create: list[str] | None = None,
+    call_context: dict[str, Any] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     """Drain worker-owned pipes while the dedicated owner retains command identity."""
     from contextlib import nullcontext
@@ -351,6 +353,7 @@ def _run_managed(
                 merged=streaming,
                 external=external,
                 docker_create=docker_create,
+                call_context=call_context,
             )
             attempt.launch_seconds = command.launch_seconds
         except BaseException:

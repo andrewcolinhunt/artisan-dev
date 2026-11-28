@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from artisan.operations.examples.appendable_generator import AppendableGenerator
+from artisan.operations.examples.configured_generator import ConfiguredGenerator
 from artisan.operations.examples.csv_head import CsvHead
 from artisan.operations.examples.csv_pair import CsvPair
 from artisan.operations.examples.data_generator import DataGenerator
@@ -29,6 +30,7 @@ from artisan.operations.examples.wait_tool import WaitTool
 
 __all__ = [
     "AppendableGenerator",
+    "ConfiguredGenerator",
     "CsvHead",
     "CsvPair",
     "DataGenerator",

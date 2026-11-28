@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Callable, Mapping
-from contextlib import AbstractContextManager, nullcontext
+from collections.abc import Callable, Iterator, Mapping
+from contextlib import ExitStack, contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import MappingProxyType
@@ -13,6 +13,7 @@ from typing import Any, ClassVar, Literal, Protocol
 
 from artisan.execution.compute.base import ExecuteRouter
 from artisan.execution.compute.invoke import tool_command_inputs
+from artisan.execution.compute.local import LocalExecuteRouter
 from artisan.execution.environments.command_witness import WitnessInvocation
 from artisan.execution.environments.native_gpu import (
     native_gpu_command,
@@ -168,6 +169,7 @@ class PreparedExecuteRouter(ExecuteRouter):
         sensitive_values: tuple[str, ...] = (),
         gpu: NativeGPUAllocation | None = None,
         local_software: LocalSoftware | None = None,
+        call_context: dict[str, Any] | None = None,
     ) -> None:
         self.target = target
         self.pixi = pixi
@@ -179,14 +181,27 @@ class PreparedExecuteRouter(ExecuteRouter):
         self.witness = witness
         self.sensitive_values = sensitive_values
         self.local_software = local_software
+        self.call_context = call_context
+        self.native_call_context: dict[str, Any] | None = None
 
-    def context(self) -> AbstractContextManager[None]:
-        """Expose selected local software while all native phases run."""
-        return (
-            local_software_scope(self.local_software)
-            if self.local_software is not None
-            else nullcontext()
-        )
+    @contextmanager
+    def context(self) -> Iterator[None]:
+        """Expose selected software and callback bindings during native phases."""
+        with ExitStack() as stack:
+            if self.local_software is not None:
+                stack.enter_context(local_software_scope(self.local_software))
+            if self.native_call_context is not None:
+                from artisan.execution.configured_calls import configured_calls
+                from artisan.schemas.execution.called_operations import (
+                    ConfiguredCallScope,
+                )
+
+                stack.enter_context(
+                    configured_calls(
+                        ConfiguredCallScope.model_validate(self.native_call_context)
+                    )
+                )
+            yield
 
     def route_execute(
         self,
@@ -194,14 +209,14 @@ class PreparedExecuteRouter(ExecuteRouter):
         execute_inputs: list[ExecuteInput],
         sandbox_root: str | None,
     ) -> list[Any]:
+        if not operation.is_command_op():
+            return LocalExecuteRouter().route_execute(
+                operation, execute_inputs, sandbox_root
+            )
         slots = reserve_invocations(len(execute_inputs))
-        results = []
+        results: list[Any] = []
         for slot, inputs in zip(slots, execute_inputs, strict=True):
             with invocation_scope(operation, slot):
-                if not operation.is_command_op():
-                    with scientific_phase("execute"):
-                        results.append(operation.execute_function(inputs))
-                    continue
                 if sandbox_root is None:
                     msg = "Command execution requires a working directory"
                     raise ValueError(msg)
@@ -225,6 +240,16 @@ class PreparedExecuteRouter(ExecuteRouter):
                         witness,
                         self.gpu,
                         self.local_software,
+                    )
+                if self.call_context is not None:
+                    from artisan.execution.configured_calls import (
+                        ConfiguredCommandEnvironment,
+                    )
+
+                    environment = ConfiguredCommandEnvironment(
+                        environment,
+                        self.call_context,
+                        Path(sandbox_root) / "command-runtime",
                     )
                 prepared = (
                     inputs.inputs
